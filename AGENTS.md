@@ -77,6 +77,14 @@ Ningún hito se da por cerrado sin pasar por los tres roles **y** el checkpoint 
 - El commit y el push los ejecuta siempre el humano. Ningún agente corre `git commit` ni `git push` por su cuenta, ni siquiera con el Reviewer ya aprobado.
 - `v1.x` = MVP lineal · `v2.x` = swarm (subagentes + A2A cliente) · `v3.x` = grafo (A2A servidor) — ver ADR 1 en el arc42.
 
+### Convención de ramas
+
+- Una rama por hito: `hito/vX.Y-nombre-corto` — mismo nombre que su carpeta `docs/progreso/vX.Y-nombre/`, para correlacionar directo.
+- Se crea desde `main` recién cuando el checkpoint humano aprueba el spec/diseño/tareas del hito (inicio del Implementer) — nunca antes.
+- Todos los commits por unidad de trabajo del hito van a esa rama, nunca directo a `main`.
+- Al aprobar el Reviewer y completarse el checklist de cierre, el humano mergea `hito/vX.Y-nombre-corto` a `main` y recién ahí crea el tag `vX.Y.Z` sobre `main`.
+- Ejemplo para el Hito 1: `hito/v1.0-esqueleto-conversacional`.
+
 ### Commits por unidad de trabajo (durante el Implementer)
 
 Cada tarea de `tasks.md` es un commit propio — no un commit gigante al final del hito. Formato:
@@ -104,23 +112,25 @@ Recién con las cuatro casillas marcadas, el humano hace el commit final de cier
 
 ### Cómo se anuncia cada commit propuesto
 
-Cada vez que se completa una parte de la implementación, el agente que propone el commit nunca entrega solo el mensaje — siempre junto con una etiqueta explícita de si cierra hito o no, evaluada contra el checklist de arriba:
+Cada vez que se completa una parte de la implementación, el agente que propone el commit nunca entrega solo el mensaje — siempre junto con la **rama** de destino y una etiqueta explícita de si cierra hito o no, evaluada contra el checklist de arriba:
 
-- **Unidad de trabajo parcial** (no cumple las 4 condiciones del checklist todavía): mensaje con el formato de la sección anterior, más la aclaración *"No es hito completo — falta(n): [lo que del checklist sigue pendiente]"*.
-- **Cierre de hito** (cumple las 4 condiciones): mensaje `docs: cierra Hito X.Y - <nombre>`, más la aclaración *"Es hito completo — Reviewer aprobado, entregable funcional demostrado, docs/progreso/ creado, listo para tag vX.Y.Z"*.
+- **Unidad de trabajo parcial** (no cumple las 4 condiciones del checklist todavía): mensaje con el formato de la sección anterior, la rama del hito (`hito/vX.Y-nombre-corto`), más la aclaración *"No es hito completo — falta(n): [lo que del checklist sigue pendiente]"*.
+- **Cierre de hito** (cumple las 4 condiciones): mensaje `docs: cierra Hito X.Y - <nombre>`, la rama de destino del merge (`main`), más la aclaración *"Es hito completo — Reviewer aprobado, entregable funcional demostrado, docs/progreso/ creado, listo para tag vX.Y.Z"*.
 
 Ejemplo de la diferencia:
 
 ```
+Rama: hito/v1.0-esqueleto-conversacional
 feat(core): implementa resolucion de turno para agente unico (Hito 1.0, tarea 1)
-→ No es hito completo — faltan las tareas 2-4 y la aprobación del Reviewer.
+→ No es hito completo — faltan las tareas 2-16 y la aprobación del Reviewer.
 
+Rama destino: main (merge de hito/v1.0-esqueleto-conversacional)
 docs: cierra Hito 1.0 - esqueleto conversacional
 → Es hito completo — Reviewer aprobado, entregable funcional demostrado,
   docs/progreso/v1.0-esqueleto-conversacional/ creado, listo para tag v1.0.0.
 ```
 
-Nunca se asume un cierre de hito sin marcar explícitamente las 4 casillas del checklist.
+Nunca se asume un cierre de hito sin marcar explícitamente las 4 casillas del checklist, ni se propone un commit sin decir a qué rama va.
 
 ## Mapa de documentación
 
