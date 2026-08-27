@@ -51,12 +51,18 @@ describe("runMigrations", () => {
     const db = new Database(":memory:");
 
     runMigrations(db);
-    runMigrations(db);
-
-    const { count } = db
+    const { count: countAfterFirstRun } = db
       .prepare("SELECT COUNT(*) as count FROM schema_migrations")
       .get() as CountRow;
-    expect(count).toBe(1);
+
+    runMigrations(db);
+    const { count: countAfterSecondRun } = db
+      .prepare("SELECT COUNT(*) as count FROM schema_migrations")
+      .get() as CountRow;
+
+    // Compares before/after the second run instead of a hardcoded literal,
+    // so this test does not need to change every time a migration is added.
+    expect(countAfterSecondRun).toBe(countAfterFirstRun);
   });
 
   it("applies a custom migration list in array order", () => {

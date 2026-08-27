@@ -1,4 +1,5 @@
 import { migration0001CasosSesionesAgente } from "./0001_casos_sesiones_agente.js";
+import { migration0002IdxSesionesCasoAgente } from "./0002_idx_sesiones_caso_agente.js";
 
 /**
  * A single schema migration: a stable `id` (used to track whether it has
@@ -16,4 +17,7 @@ export interface Migration {
   readonly sql: string;
 }
 
-export const migrations: readonly Migration[] = [migration0001CasosSesionesAgente];
+export const migrations: readonly Migration[] = [
+  migration0001CasosSesionesAgente,
+  migration0002IdxSesionesCasoAgente,
+];
