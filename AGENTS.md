@@ -14,6 +14,7 @@ Estas decisiones ya están tomadas (ver arc42, Restricciones de la Arquitectura 
 - Persistencia: SQLite embebido, sin servidor.
 - Interfaz: TUI vía Ink.
 - Comunicación entre agentes: protocolo A2A (JSON-RPC).
+- Testing: `vitest`. TDD obligatorio (red → green → refactor) para toda tarea con lógica de negocio — el Implementer escribe el test antes que la implementación. Excepciones explícitas: setup/scaffolding inicial y verificación manual de un entregable end-to-end.
 
 ## Flujo de trabajo con IA: tres roles
 
