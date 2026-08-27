@@ -1,0 +1,59 @@
+schema: spec-driven
+
+context: |
+  Stack: TypeScript (Node >=18, ESM/"type":"module"), tsconfig strict+NodeNext.
+  Architecture: hexagonal, single package. src/core/ must never import src/adapters/*.
+  Adapters never talk directly to each other — always through core.
+  Deps in place: dotenv (env loading), vitest (test runner), tsx (dev exec).
+  Planned (not yet installed): @anthropic-ai/claude-agent-sdk, better-sqlite3 (or similar), Ink (TUI), A2A (JSON-RPC).
+  Persistence: SQLite embedded, no server. Interface: TUI via Ink.
+  Full rules: AGENTS.md (repo root) — non-negotiable, do not reopen without Spec Author role.
+
+strict_tdd: true
+
+testing:
+  test_command: "npm test"
+  test_command_raw: "vitest run"
+  watch_command: "npm run test:watch"
+  framework: vitest
+  layers:
+    unit: true
+    integration: false
+    e2e: false
+  coverage:
+    available: false
+    command: null
+    note: "@vitest/coverage-v8 / @vitest/coverage-istanbul not installed; only present transitively in package-lock, not in devDependencies or node_modules/@vitest."
+  quality:
+    linter: null
+    type_checker: "npm run typecheck (tsc --noEmit)"
+    formatter: null
+  build_command: "npm run build (tsc -p tsconfig.json)"
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Respect the three-role cycle in AGENTS.md: Spec Author -> human checkpoint -> Implementer -> Reviewer
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Never contradict the non-negotiable rules in AGENTS.md (hexagonal boundaries, SQLite, Ink, A2A, vitest+TDD)
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Each task maps to exactly one commit, format: "<tipo>(<scope>): <descripcion> (Hito X.Y, tarea N)"
+  apply:
+    - Follow existing code patterns (see src/core/config/env.ts + env.test.ts for style: colocated *.test.ts, describe/it/expect, .js extension imports)
+    - Never import src/adapters/* from src/core/
+    tdd: true
+    test_command: "npm test"
+  verify:
+    test_command: "npm test"
+    build_command: "npm run build"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+    - Human executes git commit/push, never the agent (AGENTS.md)
