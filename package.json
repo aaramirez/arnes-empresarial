@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "dev": "tsx src/adapters/tui/main.ts",
+    "dev": "tsx src/main.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

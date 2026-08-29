@@ -5,12 +5,13 @@
  * (`App.tsx`) — where all of I1's actual behavior lives — with the given
  * `onSubmit` (`SubmitPromptHandler`, `tui-port.ts`) as its I1 handler.
  *
- * Nota de alcance — sin caller de producción todavía: nothing in this repo
- * calls `startTui` yet, and there is no default `onSubmit` that reaches a
- * real Núcleo — that wiring, plus the real process entry point
- * (`package.json`'s `dev` script already points at
- * `src/adapters/tui/main.ts`, which does not exist yet), is Hito 1 tarea
- * 15's job (Integración end-to-end), not this task's.
+ * Nota de alcance — actualizado por tarea 15: `startTui`'s real production
+ * caller is now `src/main.ts` (the composition root — deliberately outside
+ * `src/adapters/tui/` itself; see that file's own module doc for why),
+ * which builds the real `onSubmit` around `handleTurn`
+ * (`src/core/turn-selector/handle-turn.ts`) and calls `startTui(onSubmit)`.
+ * This module (`start-tui.tsx`) itself is unchanged by that wiring — it
+ * still has no default `onSubmit` of its own, on purpose.
  *
  * Design decision — `renderTui` as an injectable parameter, same DI pattern
  * as `queryFn` in `invoke-model.ts` and `listAgents`/`hooks` in
