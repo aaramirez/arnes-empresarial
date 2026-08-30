@@ -11,3 +11,7 @@ Thumbs.db
 *.sqlite3
 graphify-out/
 .atl/
+
+# Artefacto de Windows/Git Bash: a veces un proceso hijo (tsc/npm/vitest)
+# crea un archivo literal "nul" en vez de escribir al dispositivo nulo real.
+nul

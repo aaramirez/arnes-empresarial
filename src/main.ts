@@ -154,9 +154,14 @@ const onSubmit: SubmitPromptHandler = (prompt) =>
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
 //    defecto) y recién ahí cierra el handle de SQLite abierto en el paso 2.
 //    Un cierre prolijo del proceso, no una salida abrupta con el archivo de
-//    la base de datos todavía abierto.
-const tui = startTui(onSubmit);
+//    la base de datos todavía abierto. `startTui(onSubmit)` en sí va DENTRO
+//    del `try` (Reviewer finding, WARNING, post-primera versión de este
+//    fix) — no solo el `await` de `waitUntilExit()`: `startTui` ahora puede
+//    tirar sincrónicamente (escribe la secuencia ANSI de pantalla
+//    alternativa antes de montar `App`, ver `start-tui.tsx`), y si eso
+//    pasara antes de que `tui` se asignara, `db.close()` nunca correría.
 try {
+  const tui = startTui(onSubmit);
   await tui.waitUntilExit();
 } finally {
   // `finally`, no solo el camino feliz de Ctrl+C: si `App.tsx` tira un error
