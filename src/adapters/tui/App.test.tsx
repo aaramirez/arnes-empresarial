@@ -109,9 +109,12 @@ async function renderApp(tree: ReactElement): Promise<ReturnType<typeof render>>
 
 const ENTER = "\r";
 const BACKSPACE = "\x7f";
-// Raw byte for Ctrl+J (linefeed, `\n`) — distinct from `ENTER`'s `\r`. See
-// `App.tsx`'s module doc for why Ctrl+J, and not Shift+Enter, is the
-// multiline-insert trigger.
+// Raw byte for Ctrl+J (linefeed, `\n`) — distinct from `ENTER`'s `\r`. Used
+// to prove the draft can never receive an embedded line break from a lone
+// keystroke — see `App.tsx`'s module doc's "Single-line input" note for why
+// this is enforced by stripping `\n`/`\r` inside the generic
+// append-character branch itself, not via a dedicated `input === "\n"`
+// guard branch.
 const CTRL_J = "\n";
 // Standard xterm CSI sequences for the arrow keys — same pattern as the
 // other raw-byte constants above.
@@ -314,7 +317,7 @@ describe("App", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it("inserts a line break into the draft on Ctrl+J instead of submitting", async () => {
+  it("treats Ctrl+J as inserting a single space, not a line break, on the draft in idle state", async () => {
     const onSubmit = vi.fn();
     const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
 
@@ -322,23 +325,28 @@ describe("App", () => {
     stdin.write(CTRL_J);
     stdin.write("linea2");
 
-    expect(lastFrame()).toContain("> linea1\nlinea2");
+    // No literal line break, and Ctrl+J is no longer swallowed entirely: the
+    // human's product decision (see `App.tsx`'s "Single-line input" module
+    // doc note) replaces embedded `\r`/`\n` with a space rather than
+    // deleting them, applied uniformly inside the single generic
+    // append-character branch — there is no reliable way to distinguish a
+    // lone Ctrl+J keystroke from a `\n` embedded inside a longer paste using
+    // `input`/`key` alone (both arrive as `key.name === ""`), so this test's
+    // old "Ctrl+J contributes nothing" premise no longer holds: a lone
+    // Ctrl+J now inserts one real space character into the draft, same as
+    // it would for any newline arriving via a paste.
+    expect(lastFrame()).toContain("> linea1 linea2");
     expect(onSubmit).not.toHaveBeenCalled();
+
+    stdin.write(BACKSPACE);
+    // Backspace removes the last real character typed ("2") — the space
+    // Ctrl+J inserted is now a real character in the draft (unlike before,
+    // when Ctrl+J contributed nothing), so it stays put; only "2" is
+    // removed.
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> linea1 linea");
   });
 
-  it("submits a multiline draft on Enter with the embedded line break intact", async () => {
-    const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
-    const { stdin } = await renderApp(<App onSubmit={onSubmit} />);
-
-    stdin.write("linea1");
-    stdin.write(CTRL_J);
-    stdin.write("linea2");
-    stdin.write(ENTER);
-
-    expect(onSubmit).toHaveBeenCalledWith("linea1\nlinea2");
-  });
-
-  it("ignores Ctrl+J while a submission is still pending", async () => {
+  it("treats Ctrl+J as a no-op while a submission is still pending", async () => {
     const { promise } = deferred<TuiTurnResult>();
     const onSubmit = vi.fn().mockReturnValue(promise);
     const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
@@ -346,59 +354,37 @@ describe("App", () => {
     stdin.write("primero");
     stdin.write(ENTER);
     expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(lastFrame()).toContain("Pensando");
 
-    // Line count right before Ctrl+J, not the frame's exact text: the
-    // pending indicator's spinner (`ink-spinner`) redraws its glyph on its
-    // own timer independent of these writes, so comparing full frame
-    // equality would be flaky. A leaked `\n` — the exact regression this
-    // test guards against, see the Reviewer finding this test was added
-    // for — would still grow the frame by one line (the draft's empty
-    // prompt line splitting in two), which the spinner's own redraws never
-    // do.
-    const lineCountBeforeCtrlJ = (lastFrame() ?? "").split("\n").length;
-
+    // While pending, `isActive`/`pendingRef` already ignore all input — this
+    // proves Ctrl+J specifically does not sneak past that guard and leave
+    // any trace (a stray line break, a stray character, or a second
+    // `onSubmit` call) once the turn is in flight.
     stdin.write(CTRL_J);
-    stdin.write("segundo");
 
-    // Not enough to check "segundo" never appears: the guard must also
-    // block the raw `\n` byte itself, or a leaked line break would slip
-    // into the draft silently while every literal character after it is
-    // still (correctly) rejected — see this file's module doc note and
-    // `App.tsx`'s own module doc on why the Ctrl+J branch sits before this
-    // guard. Mutation-confirmed: moving that branch ahead of the
-    // `pendingRef` check leaves the `not.toContain("segundo")` assertion
-    // alone green, but grows the line count below.
-    expect(lastFrame()).not.toContain("segundo");
-    expect((lastFrame() ?? "").split("\n").length).toBe(lineCountBeforeCtrlJ);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(lastFrame()).toContain("Pensando");
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe(">");
   });
 
-  it("does not call onSubmit when Enter is pressed on a draft containing only line breaks", async () => {
-    const onSubmit = vi.fn();
-    const { stdin } = await renderApp(<App onSubmit={onSubmit} />);
-
-    stdin.write(CTRL_J);
-    stdin.write(CTRL_J);
-    stdin.write(ENTER);
-
-    // A draft made up entirely of line breaks is still whitespace-only —
-    // `submitDraft`'s existing `.trim()` guard (the same one that already
-    // covers a blank draft) must treat it as an empty submission, same as
-    // pressing Enter with nothing typed at all.
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("removes exactly the line break on backspace after Ctrl+J", async () => {
-    const onSubmit = vi.fn();
+  it("replaces an embedded newline from a single pasted write with a space, keeping the draft (and the submitted prompt) single-line", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
     const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
 
-    stdin.write("linea1");
-    stdin.write(CTRL_J);
-    stdin.write(BACKSPACE);
+    // Simulates a real terminal paste, reproduced exactly as Ink's own
+    // `useInput` delivers it: ONE `stdin.write` call carrying the entire
+    // pasted string, embedded `\n` included, not one keystroke at a time —
+    // see `App.tsx`'s module doc ("Single-line input") for why an exact
+    // `input === "\n"` guard cannot catch this. The embedded `\n` becomes a
+    // single space (not deleted outright) so pasted multi-line text stays
+    // readable instead of having its lines smashed together.
+    stdin.write("linea1\nlinea2");
 
-    // The draft line itself (not the whole frame, which also contains the
-    // multiline banner) must be back to a single line with no embedded `\n`.
-    expect((lastFrame() ?? "").trimEnd().endsWith("> linea1")).toBe(true);
-    expect(lastFrame()).not.toContain("> linea1\n");
+    expect(lastFrame()).toContain("> linea1 linea2");
+
+    stdin.write(ENTER);
+
+    expect(onSubmit).toHaveBeenCalledWith("linea1 linea2");
   });
 
   it("does nothing on arrow-up when no prompt has been submitted yet", async () => {
@@ -594,34 +580,6 @@ describe("App", () => {
     // again as the newest entry — one arrow-up must recall it once more.
     stdin.write(ARROW_UP);
     expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
-  });
-
-  it("recalls a multiline entry from history and resubmits it with the embedded line break intact", async () => {
-    const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
-    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
-
-    // Send a multiline draft first (same mechanism as the "Multiline
-    // input" tests above), so it lands in `promptHistoryRef` with its `\n`
-    // intact.
-    stdin.write("linea1");
-    stdin.write(CTRL_J);
-    stdin.write("linea2");
-    stdin.write(ENTER);
-    expect(onSubmit).toHaveBeenNthCalledWith(1, "linea1\nlinea2");
-    // Must wait for the turn to settle (clearing `pendingRef`) before the
-    // next raw input — see the earlier tests' comment on why arrow-up
-    // right after an unsettled submit gets silently dropped by the
-    // still-pending guard.
-    await waitFor(() => (lastFrame() ?? "").includes("Agente: ok"));
-
-    // Recall it from history and resend it as-is — the generic history
-    // mechanism and the multiline mechanism are both exercised by earlier
-    // tests separately, but not together: this is the one test that proves
-    // recalling a multiline entry does not truncate or otherwise mangle the
-    // embedded `\n` before it reaches `onSubmit` again.
-    stdin.write(ARROW_UP);
-    stdin.write(ENTER);
-    expect(onSubmit).toHaveBeenNthCalledWith(2, "linea1\nlinea2");
   });
 
   // Settled turns render via `<Static>` (Ink) instead of a fixed

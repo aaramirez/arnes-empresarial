@@ -114,27 +114,47 @@
  * real terminals for that key) — checking only one of the two would make
  * Backspace not work in a real terminal despite passing a naive test.
  *
- * Multiline input — Ctrl+J inserts a line break, Enter still submits:
- * Shift+Enter was ruled out as the trigger because it is not distinguishable
- * from a plain Enter in most terminals (PowerShell/Windows Terminal
- * included) without the Kitty/CSI-u keyboard protocol, which Ink does not
- * negotiate by default. Ctrl+J (raw byte `\n`, i.e. linefeed) works instead
- * because Ink's own `parse-keypress.js` names `\r` `"return"` and `\n`
- * `"enter"` — two distinct branches, neither of which sets `key.ctrl`. Ink's
- * `hooks/use-input.js` derives its `key.return` flag strictly from
- * `keypress.name === "return"` (line 54), so `\n` never triggers submit; and
- * because `"enter"` is absent from `parse-keypress.js`'s exported
- * `nonAlphanumericKeys` list (only f1-f12/arrows/home/end/insert/delete/
- * pageup/pagedown/tab/clear/backspace are in it), `use-input.js`'s `input`
- * variable (lines 67-69) is left as the raw `"\n"` string instead of being
- * reset to `""`.
- * The branch below makes that behavior an explicit contract instead of
- * relying on it falling through the generic append-character branch by
- * accident, which would silently break if a future refactor added a guard
- * that intercepts this byte first. No render change was needed for
- * multiline output: Ink's `measure-text.js` already computes a `<Text>`
- * node's height as `text.split("\n").length`, so an embedded `\n` in
- * `draft` renders as an extra line for free.
+ * Single-line input — the draft can never contain a literal embedded line
+ * break, from ANY input source, Enter still submits: this used to be the
+ * multiline-insert trigger (Ctrl+J, raw byte `\n`), deliberately removed as
+ * a product decision. The guarantee is enforced inside the generic
+ * append-character branch itself, near the bottom of this handler, not via
+ * a dedicated `input === "\n"` early-return branch (an earlier version of
+ * this fix, which only covered a lone Ctrl+J keystroke): Ink's own
+ * `use-input.js` module doc states plainly that "if user pastes text and
+ * it's more than one character, the callback will be called only once and
+ * the whole string will be passed as `input`" — a pasted multi-line blob
+ * (e.g. `"linea1\nlinea2"`) therefore arrives as ONE `useInput` invocation
+ * with `input` set to the entire pasted string, embedded `\n` (or, for a
+ * Windows-style `\r\n` blob, `\r` too) included. An exact-match guard
+ * (`input === "\n"`) is `false` for that pasted string — it only ever
+ * catches a lone Ctrl+J keystroke in isolation — so the embedded newline
+ * would fall straight through, unguarded, into the very append branch that
+ * guard was meant to protect. Confirmed directly against
+ * `parse-keypress.js`: neither a lone `\n` (`key.name === "enter"`) nor the
+ * embedded `\n` inside a longer paste (which matches none of
+ * `parseKeypress`'s branches, leaving `key.name === ""`) is in
+ * `use-input.js`'s exported `nonAlphanumericKeys` list, so `input` is left
+ * holding the raw byte(s) in both cases — no `key.*` flag this handler
+ * checks ever sees either one.
+ *
+ * That embedded `\r`/`\n` is REPLACED with a single space right before
+ * `input` is appended to `draftRef`, not deleted outright (an earlier
+ * version of this fix): a product decision that a pasted multi-line blob
+ * should stay readable as space-joined text (`"linea1\nlinea2"` →
+ * `"linea1 linea2"`) instead of having its lines silently smashed together
+ * with no separator at all. The regex collapses one-or-more consecutive
+ * `\r`/`\n` characters into exactly ONE space (`/[\r\n]+/g`, not
+ * `/[\r\n]/g`), so a Windows-style `\r\n` pair — two characters, one logical
+ * line break — produces a single space, not two. One consequence,
+ * deliberately not special-cased: a LONE Ctrl+J keystroke is matched by this
+ * same regex on this same branch (see above — `input`/`key` give no way to
+ * tell it apart from a `\n` embedded inside a longer paste), so it now also
+ * inserts a single space into the draft instead of being swallowed entirely
+ * as it was before this change. This closes both the single-keystroke and
+ * the pasted-blob path with one mechanism, instead of layering a second,
+ * narrower guard in front of it that only ever handled the single-keystroke
+ * case.
  *
  * Command history navigation — arrow-up/down walk `promptHistoryRef` the
  * same way `bash`/`readline` walk their own history: `historyIndexRef` is
@@ -147,7 +167,7 @@
  * once past the newest recalled entry, restores `draftBeforeHistoryRef`
  * instead of whatever the recalled entry now reads.
  *
- * Editing a recalled entry (typing a character, backspace, Ctrl+J) does
+ * Editing a recalled entry (typing a character, backspace) does
  * NOT persist the edit back into `promptHistoryRef`, and deliberately does
  * NOT reset `historyIndexRef` either — those branches mutate `draftRef`
  * exactly like they already did before this feature existed, unaware
@@ -214,9 +234,10 @@ import type { SubmitPromptHandler, TuiTurnResult } from "./tui-port.js";
 // This drastically shrinks the corruption-risk surface, but does not erase
 // it entirely: the live region (`<Banner />` plus, at most, one pending
 // turn below) still goes through that same erase-and-redraw cycle every
-// render. An unusually tall banner combined with a long multiline pending
-// prompt, on a small enough terminal, could still in principle overflow
-// that live region before the turn settles and flushes into `<Static>`. Far
+// render. An unusually tall banner combined with a long pending prompt that
+// wraps across several terminal rows, on a small enough terminal, could
+// still in principle overflow that live region before the turn settles and
+// flushes into `<Static>`. Far
 // less likely than a design where the live region held several turns at
 // once (it is now banner + at most one turn), but not structurally
 // impossible — out of scope to fully close here.
@@ -437,18 +458,6 @@ export function App({ onSubmit }: AppProps): ReactElement {
         return;
       }
 
-      // Ctrl+J (raw `\n`) inserts a line break instead of submitting — see
-      // the module doc's "Multiline input" note for why this, and not
-      // Shift+Enter, is the trigger, and why this branch is required to
-      // exist explicitly here (before the generic control-key skip below)
-      // instead of relying on `\n` falling through to the generic
-      // append-character branch by accident.
-      if (input === "\n") {
-        draftRef.current = draftRef.current + "\n";
-        setDraft(draftRef.current);
-        return;
-      }
-
       // Arrow-up recalls older sent prompts, arrow-down walks back towards
       // the present — see the module doc's "Command history navigation"
       // note for the full model. Only fire on an *unmodified* arrow: a
@@ -474,7 +483,27 @@ export function App({ onSubmit }: AppProps): ReactElement {
         return;
       }
 
-      draftRef.current = draftRef.current + input;
+      // Replaces (does not delete) any embedded `\r`/`\n` before appending
+      // — see the module doc's "Single-line input" note for why this, not
+      // an exact `input === "\n"` match, is the mechanism that keeps the
+      // draft free of a literal line break regardless of whether `input` is
+      // a single keystroke or an entire pasted multi-line string delivered
+      // in one `useInput` call. `+` (one-or-more), not a bare character
+      // class, so a run of consecutive `\r`/`\n` (e.g. a Windows-style
+      // `\r\n` pair, still one logical line break) collapses into exactly
+      // ONE space, not one space per character.
+      //
+      // Consequence, deliberately not special-cased: a LONE Ctrl+J keystroke
+      // (raw byte `\n`) now also inserts a single space instead of being
+      // swallowed entirely, because it is matched by this same regex on this
+      // same branch — there is no reliable way to tell "a `\n` that arrived
+      // by itself" apart from "a `\n` embedded inside a longer paste" using
+      // only `input`/`key` (both cases leave `key.name === ""`, see the
+      // module doc's "Single-line input" note), and the product decision
+      // behind this change was expressed as one regex change to this one
+      // branch, not a paste-only special case requiring that distinction.
+      const sanitizedInput = input.replace(/[\r\n]+/g, " ");
+      draftRef.current = draftRef.current + sanitizedInput;
       setDraft(draftRef.current);
     },
     { isActive: !pending },
