@@ -113,6 +113,28 @@
  * `"backspace"` (`\b`/`\x08` is what maps to `"backspace"`, rarely sent by
  * real terminals for that key) — checking only one of the two would make
  * Backspace not work in a real terminal despite passing a naive test.
+ *
+ * Multiline input — Ctrl+J inserts a line break, Enter still submits:
+ * Shift+Enter was ruled out as the trigger because it is not distinguishable
+ * from a plain Enter in most terminals (PowerShell/Windows Terminal
+ * included) without the Kitty/CSI-u keyboard protocol, which Ink does not
+ * negotiate by default. Ctrl+J (raw byte `\n`, i.e. linefeed) works instead
+ * because Ink's own `parse-keypress.js` names `\r` `"return"` and `\n`
+ * `"enter"` — two distinct branches, neither of which sets `key.ctrl`. Ink's
+ * `hooks/use-input.js` derives its `key.return` flag strictly from
+ * `keypress.name === "return"` (line 54), so `\n` never triggers submit; and
+ * because `"enter"` is absent from `parse-keypress.js`'s exported
+ * `nonAlphanumericKeys` list (only f1-f12/arrows/home/end/insert/delete/
+ * pageup/pagedown/tab/clear/backspace are in it), `use-input.js`'s `input`
+ * variable (lines 67-69) is left as the raw `"\n"` string instead of being
+ * reset to `""`.
+ * The branch below makes that behavior an explicit contract instead of
+ * relying on it falling through the generic append-character branch by
+ * accident, which would silently break if a future refactor added a guard
+ * that intercepts this byte first. No render change was needed for
+ * multiline output: Ink's `measure-text.js` already computes a `<Text>`
+ * node's height as `text.split("\n").length`, so an embedded `\n` in
+ * `draft` renders as an extra line for free.
  */
 
 import { Box, Text, useInput } from "ink";
@@ -220,6 +242,18 @@ export function App({ onSubmit }: AppProps): ReactElement {
 
       if (key.backspace || key.delete) {
         draftRef.current = draftRef.current.slice(0, -1);
+        setDraft(draftRef.current);
+        return;
+      }
+
+      // Ctrl+J (raw `\n`) inserts a line break instead of submitting — see
+      // the module doc's "Multiline input" note for why this, and not
+      // Shift+Enter, is the trigger, and why this branch is required to
+      // exist explicitly here (before the generic control-key skip below)
+      // instead of relying on `\n` falling through to the generic
+      // append-character branch by accident.
+      if (input === "\n") {
+        draftRef.current = draftRef.current + "\n";
         setDraft(draftRef.current);
         return;
       }

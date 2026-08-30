@@ -93,6 +93,10 @@ async function renderApp(tree: ReactElement): Promise<ReturnType<typeof render>>
 
 const ENTER = "\r";
 const BACKSPACE = "\x7f";
+// Raw byte for Ctrl+J (linefeed, `\n`) — distinct from `ENTER`'s `\r`. See
+// `App.tsx`'s module doc for why Ctrl+J, and not Shift+Enter, is the
+// multiline-insert trigger.
+const CTRL_J = "\n";
 
 describe("App", () => {
   it("renders an empty input line and does not call onSubmit on first render", async () => {
@@ -236,5 +240,92 @@ describe("App", () => {
     stdin.write("segundo");
     stdin.write(ENTER);
     expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("inserts a line break into the draft on Ctrl+J instead of submitting", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("linea1");
+    stdin.write(CTRL_J);
+    stdin.write("linea2");
+
+    expect(lastFrame()).toContain("> linea1\nlinea2");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("submits a multiline draft on Enter with the embedded line break intact", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
+    const { stdin } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("linea1");
+    stdin.write(CTRL_J);
+    stdin.write("linea2");
+    stdin.write(ENTER);
+
+    expect(onSubmit).toHaveBeenCalledWith("linea1\nlinea2");
+  });
+
+  it("ignores Ctrl+J while a submission is still pending", async () => {
+    const { promise } = deferred<TuiTurnResult>();
+    const onSubmit = vi.fn().mockReturnValue(promise);
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    // Line count right before Ctrl+J, not the frame's exact text: the
+    // pending indicator's spinner (`ink-spinner`) redraws its glyph on its
+    // own timer independent of these writes, so comparing full frame
+    // equality would be flaky. A leaked `\n` — the exact regression this
+    // test guards against, see the Reviewer finding this test was added
+    // for — would still grow the frame by one line (the draft's empty
+    // prompt line splitting in two), which the spinner's own redraws never
+    // do.
+    const lineCountBeforeCtrlJ = (lastFrame() ?? "").split("\n").length;
+
+    stdin.write(CTRL_J);
+    stdin.write("segundo");
+
+    // Not enough to check "segundo" never appears: the guard must also
+    // block the raw `\n` byte itself, or a leaked line break would slip
+    // into the draft silently while every literal character after it is
+    // still (correctly) rejected — see this file's module doc note and
+    // `App.tsx`'s own module doc on why the Ctrl+J branch sits before this
+    // guard. Mutation-confirmed: moving that branch ahead of the
+    // `pendingRef` check leaves the `not.toContain("segundo")` assertion
+    // alone green, but grows the line count below.
+    expect(lastFrame()).not.toContain("segundo");
+    expect((lastFrame() ?? "").split("\n").length).toBe(lineCountBeforeCtrlJ);
+  });
+
+  it("does not call onSubmit when Enter is pressed on a draft containing only line breaks", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write(CTRL_J);
+    stdin.write(CTRL_J);
+    stdin.write(ENTER);
+
+    // A draft made up entirely of line breaks is still whitespace-only —
+    // `submitDraft`'s existing `.trim()` guard (the same one that already
+    // covers a blank draft) must treat it as an empty submission, same as
+    // pressing Enter with nothing typed at all.
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("removes exactly the line break on backspace after Ctrl+J", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("linea1");
+    stdin.write(CTRL_J);
+    stdin.write(BACKSPACE);
+
+    // The draft line itself (not the whole frame, which also contains the
+    // multiline banner) must be back to a single line with no embedded `\n`.
+    expect((lastFrame() ?? "").trimEnd().endsWith("> linea1")).toBe(true);
+    expect(lastFrame()).not.toContain("> linea1\n");
   });
 });
