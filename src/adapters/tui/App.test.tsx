@@ -97,6 +97,16 @@ const BACKSPACE = "\x7f";
 // `App.tsx`'s module doc for why Ctrl+J, and not Shift+Enter, is the
 // multiline-insert trigger.
 const CTRL_J = "\n";
+// Standard xterm CSI sequences for the arrow keys — same pattern as the
+// other raw-byte constants above.
+const ARROW_UP = "\x1b[A";
+const ARROW_DOWN = "\x1b[B";
+// Ctrl+Up: xterm's modified-key CSI form (`\x1b[1;5A`, modifier `5` = ctrl
+// bit set). Ink's `parse-keypress.js` parses this to `key.name === "up"`
+// (so `key.upArrow === true`) AND `key.ctrl === true` at the same time —
+// see `App.tsx`'s module doc for why history navigation must check for
+// that combination explicitly instead of trusting `key.upArrow` alone.
+const CTRL_UP = "\x1b[1;5A";
 
 describe("App", () => {
   it("renders an empty input line and does not call onSubmit on first render", async () => {
@@ -327,5 +337,228 @@ describe("App", () => {
     // multiline banner) must be back to a single line with no embedded `\n`.
     expect((lastFrame() ?? "").trimEnd().endsWith("> linea1")).toBe(true);
     expect(lastFrame()).not.toContain("> linea1\n");
+  });
+
+  it("does nothing on arrow-up when no prompt has been submitted yet", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    expect(() => {
+      stdin.write(ARROW_UP);
+    }).not.toThrow();
+
+    // Draft line stays exactly the empty prompt — no stray content from the
+    // (non-existent) history and no crash. Ink's frame trims the trailing
+    // space of an empty draft line, so the expected value is ">" and not
+    // "> ".
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe(">");
+
+    // Also proves `historyIndexRef` was NOT flipped into "navigating" mode
+    // by the arrow-up above (which the rendered draft alone cannot show,
+    // since it stays empty either way): typing, then arrow-down, must
+    // behave as ordinary un-navigated input — if the empty-history guard
+    // were missing, arrow-down would instead treat this as "past the newest
+    // recalled entry" and wipe the typed text back to the (empty) snapshot
+    // taken before the arrow-up.
+    stdin.write("x");
+    stdin.write(ARROW_DOWN);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> x");
+  });
+
+  it("walks older entries on repeated arrow-up and clamps at the oldest one", async () => {
+    const onSubmit = vi
+      .fn<(prompt: string) => Promise<TuiTurnResult>>()
+      .mockResolvedValueOnce({ responseText: "respuesta 1", agentLabel: "Agente" })
+      .mockResolvedValueOnce({ responseText: "respuesta 2", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+    stdin.write("segundo");
+    stdin.write(ENTER);
+    // Waits for the *settled* second turn, not merely for `onSubmit` to have
+    // been called — `mock.calls.length` flips to 2 synchronously on the
+    // Enter keypress itself, well before the promise resolves and
+    // `pendingRef` clears, which would otherwise make the very next
+    // `stdin.write(ARROW_UP)` below get silently dropped by the
+    // still-pending guard.
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+
+    // Third arrow-up: already at the oldest entry, must stay clamped there
+    // instead of wrapping around.
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+  });
+
+  it("does not navigate history on a modified arrow (Ctrl+Up), same as before this feature existed", async () => {
+    const onSubmit = vi
+      .fn<(prompt: string) => Promise<TuiTurnResult>>()
+      .mockResolvedValueOnce({ responseText: "respuesta 1", agentLabel: "Agente" })
+      .mockResolvedValueOnce({ responseText: "respuesta 2", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+    stdin.write("segundo");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+    // History is loaded ("primero", "segundo") and the draft is currently
+    // empty (cleared by the last submit) — Ctrl+Up must leave it exactly
+    // as-is, not recall "segundo". Regression guard: before this feature,
+    // `key.upArrow` alone in the generic ignore branch made every arrow —
+    // modified or not — inert; a fix for Ctrl+Up that merely re-adds
+    // `key.upArrow` to that branch without also excluding modified arrows
+    // from the new navigation branch would still navigate here.
+    stdin.write(CTRL_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe(">");
+
+    // Also confirms it did not silently enter navigation mode either: an
+    // unmodified arrow-up right after must behave as the *first* arrow-up
+    // (recalling the newest entry), not as a second step already inside
+    // navigation.
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+  });
+
+  it("walks back down to the in-progress draft the user had before navigating history", async () => {
+    const onSubmit = vi
+      .fn<(prompt: string) => Promise<TuiTurnResult>>()
+      .mockResolvedValueOnce({ responseText: "respuesta 1", agentLabel: "Agente" })
+      .mockResolvedValueOnce({ responseText: "respuesta 2", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+    stdin.write("segundo");
+    stdin.write(ENTER);
+    // See the previous test's comment on why this waits for settled text
+    // instead of `onSubmit.mock.calls.length`.
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+    // Non-empty draft written before touching history at all — needed so
+    // the final assertion is unambiguous (a restored "" could otherwise be
+    // confused with "nothing happened").
+    stdin.write("borrador sin enviar");
+
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+
+    stdin.write(ARROW_DOWN);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+
+    stdin.write(ARROW_DOWN);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> borrador sin enviar");
+  });
+
+  it("does nothing on arrow-down when history navigation was never entered", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("algo escrito");
+    stdin.write(ARROW_DOWN);
+
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> algo escrito");
+  });
+
+  it("discards an in-place edit of a recalled entry once arrow-up navigates away from it", async () => {
+    const onSubmit = vi
+      .fn<(prompt: string) => Promise<TuiTurnResult>>()
+      .mockResolvedValueOnce({ responseText: "respuesta 1", agentLabel: "Agente" })
+      .mockResolvedValueOnce({ responseText: "respuesta 2", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+    stdin.write("segundo");
+    stdin.write(ENTER);
+    // See the earlier tests' comment on why this waits for settled text
+    // instead of `onSubmit.mock.calls.length`.
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+
+    // Edit the recalled entry in place — this must NOT be persisted back
+    // into `promptHistoryRef`, and must NOT reset `historyIndexRef` either
+    // (see `App.tsx`'s new module-doc note on history navigation).
+    stdin.write("X");
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundoX");
+
+    // Navigating again must jump to the previous entry ("primero"), not to
+    // the edited text — this is what would break if `historyIndexRef` got
+    // reset by the character-append branch above.
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+  });
+
+  it("submits a recalled history entry and re-adds it as the newest entry", async () => {
+    const onSubmit = vi
+      .fn<(prompt: string) => Promise<TuiTurnResult>>()
+      .mockResolvedValueOnce({ responseText: "respuesta 1", agentLabel: "Agente" })
+      .mockResolvedValueOnce({ responseText: "respuesta 2", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+
+    stdin.write(ENTER);
+    expect(onSubmit).toHaveBeenNthCalledWith(2, "primero");
+    // See earlier tests' comment on why this waits for settled text instead
+    // of `onSubmit.mock.calls.length`.
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+    // Submitting reset navigation back to the present and appended "primero"
+    // again as the newest entry — one arrow-up must recall it once more.
+    stdin.write(ARROW_UP);
+    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+  });
+
+  it("recalls a multiline entry from history and resubmits it with the embedded line break intact", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    // Send a multiline draft first (same mechanism as the "Multiline
+    // input" tests above), so it lands in `promptHistoryRef` with its `\n`
+    // intact.
+    stdin.write("linea1");
+    stdin.write(CTRL_J);
+    stdin.write("linea2");
+    stdin.write(ENTER);
+    expect(onSubmit).toHaveBeenNthCalledWith(1, "linea1\nlinea2");
+    // Must wait for the turn to settle (clearing `pendingRef`) before the
+    // next raw input — see the earlier tests' comment on why arrow-up
+    // right after an unsettled submit gets silently dropped by the
+    // still-pending guard.
+    await waitFor(() => (lastFrame() ?? "").includes("Agente: ok"));
+
+    // Recall it from history and resend it as-is — the generic history
+    // mechanism and the multiline mechanism are both exercised by earlier
+    // tests separately, but not together: this is the one test that proves
+    // recalling a multiline entry does not truncate or otherwise mangle the
+    // embedded `\n` before it reaches `onSubmit` again.
+    stdin.write(ARROW_UP);
+    stdin.write(ENTER);
+    expect(onSubmit).toHaveBeenNthCalledWith(2, "linea1\nlinea2");
   });
 });

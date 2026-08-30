@@ -135,6 +135,52 @@
  * multiline output: Ink's `measure-text.js` already computes a `<Text>`
  * node's height as `text.split("\n").length`, so an embedded `\n` in
  * `draft` renders as an extra line for free.
+ *
+ * Command history navigation — arrow-up/down walk `promptHistoryRef` the
+ * same way `bash`/`readline` walk their own history: `historyIndexRef` is
+ * `null` while the draft shown is the live, in-progress one (the
+ * "present"); pressing arrow-up for the first time snapshots that
+ * in-progress draft into `draftBeforeHistoryRef` *before* overwriting
+ * `draftRef` with a recalled entry, so it can be given back verbatim later.
+ * Repeated arrow-up walks strictly older entries and clamps at index 0
+ * (does not wrap around); arrow-down walks back towards the present and,
+ * once past the newest recalled entry, restores `draftBeforeHistoryRef`
+ * instead of whatever the recalled entry now reads.
+ *
+ * Editing a recalled entry (typing a character, backspace, Ctrl+J) does
+ * NOT persist the edit back into `promptHistoryRef`, and deliberately does
+ * NOT reset `historyIndexRef` either — those branches mutate `draftRef`
+ * exactly like they already did before this feature existed, unaware
+ * history navigation is even active. The practical effect (same as `bash`):
+ * editing a recalled line and then pressing arrow-up again discards that
+ * edit and jumps to the *previous* history entry, not to the edited text.
+ * This is not an oversight to "fix" later — it is the same mental model
+ * `readline` users already have, and avoiding it would require actively
+ * writing the edited draft back into `promptHistoryRef[historyIndexRef]` on
+ * every keystroke, which is both more code and a different (unrequested)
+ * UX.
+ *
+ * `submitDraft` always appends the sent prompt to `promptHistoryRef` and
+ * resets `historyIndexRef` to `null` — sending a prompt (whether freshly
+ * typed or recalled from history) always returns the user to the present,
+ * and the just-sent prompt becomes the newest entry for the next
+ * arrow-up, same as `bash`. No deduplication against the previous entry:
+ * out of scope for this hito, same reasoning as the rest of this module's
+ * deliberately-simple choices.
+ *
+ * The `key.upArrow`/`key.downArrow` branches only fire when none of
+ * `key.ctrl`/`key.meta`/`key.shift` is set — a modified arrow (Ctrl+Up,
+ * Shift+Down, etc.) falls through to the generic ignore branch below
+ * instead, same as it did before history navigation existed. Ink's
+ * `parse-keypress.js` sets `key.name` (and therefore `key.upArrow`) from the
+ * CSI sequence's final letter independently of the modifier bit — a CSI
+ * sequence like `\x1b[1;5A` (Ctrl+Up) parses to `key.name === "up"` AND
+ * `key.ctrl === true` simultaneously (see `use-input.js`'s `handleData`,
+ * which builds `key.upArrow` and `key.ctrl` from the same `parseKeypress`
+ * call without one excluding the other) — checking `key.upArrow` alone would
+ * make every modified arrow combination navigate history too, which is not
+ * something this hito asked for and silently regresses the pre-existing
+ * "any control combo is a no-op" behavior for arrows specifically.
  */
 
 import { Box, Text, useInput } from "ink";
@@ -174,6 +220,66 @@ export function App({ onSubmit }: AppProps): ReactElement {
   // Synchronous mirror of `draft` — see the module doc's note on why
   // `submitDraft` reads this instead of the `draft` state variable.
   const draftRef = useRef("");
+  // Sent-prompt history (via `submitDraft`, most recent last) — see the
+  // module doc's "Command history navigation" note.
+  const promptHistoryRef = useRef<string[]>([]);
+  // `null` = viewing the live draft (the "present"); a non-null index
+  // points into `promptHistoryRef.current`.
+  const historyIndexRef = useRef<number | null>(null);
+  // `draftRef.current` as it was right before the *first* arrow-up that
+  // entered navigation mode — not overwritten again while still navigating.
+  const draftBeforeHistoryRef = useRef("");
+
+  // Shared walk/clamp/commit logic for both arrow-up ("older") and
+  // arrow-down ("newer") — see the module doc's "Command history
+  // navigation" note. Extracted so a future fix to the walk/clamp rules
+  // only has to be made once instead of being applied to one direction and
+  // forgotten in the other.
+  function navigateHistory(direction: "older" | "newer") {
+    const entries = promptHistoryRef.current;
+
+    if (direction === "older") {
+      if (entries.length === 0) {
+        return;
+      }
+
+      let nextIndex: number;
+      if (historyIndexRef.current === null) {
+        draftBeforeHistoryRef.current = draftRef.current;
+        nextIndex = entries.length - 1;
+      } else if (historyIndexRef.current > 0) {
+        nextIndex = historyIndexRef.current - 1;
+      } else {
+        // Already at the oldest entry — clamp, do not wrap around.
+        return;
+      }
+
+      historyIndexRef.current = nextIndex;
+      // Safe: `nextIndex` is always derived from a range check above
+      // (either `entries.length - 1` or a decrement/increment bounded by
+      // it), never an arbitrary index — the `noUncheckedIndexedAccess`
+      // `string | undefined` this would otherwise produce cannot actually
+      // be `undefined` here.
+      draftRef.current = entries[nextIndex]!;
+    } else {
+      if (historyIndexRef.current === null) {
+        // Already viewing the present — nothing to walk back to.
+        return;
+      }
+
+      if (historyIndexRef.current < entries.length - 1) {
+        const nextIndex = historyIndexRef.current + 1;
+        historyIndexRef.current = nextIndex;
+        draftRef.current = entries[nextIndex]!;
+      } else {
+        // Past the newest recalled entry — back to the live draft.
+        historyIndexRef.current = null;
+        draftRef.current = draftBeforeHistoryRef.current;
+      }
+    }
+
+    setDraft(draftRef.current);
+  }
 
   function settleTurn(id: number, outcome: Pick<TurnRecord, "status" | "responseText" | "agentLabel" | "errorMessage">) {
     setHistory((previous) =>
@@ -188,6 +294,11 @@ export function App({ onSubmit }: AppProps): ReactElement {
     if (prompt.length === 0) {
       return;
     }
+
+    // Sending always returns to the present — see the module doc's
+    // "Command history navigation" note.
+    promptHistoryRef.current.push(prompt);
+    historyIndexRef.current = null;
 
     const id = nextTurnId.current;
     nextTurnId.current += 1;
@@ -258,9 +369,27 @@ export function App({ onSubmit }: AppProps): ReactElement {
         return;
       }
 
-      // Ignore other control/navigation keys (arrows, tab, escape, ctrl
-      // combos) — this hito's input is a single-line draft with no cursor
-      // movement or history navigation.
+      // Arrow-up recalls older sent prompts, arrow-down walks back towards
+      // the present — see the module doc's "Command history navigation"
+      // note for the full model. Only fire on an *unmodified* arrow: a
+      // modified one (Ctrl+Up, Shift+Down, etc.) falls through to the
+      // generic ignore branch below instead, same as before this feature
+      // existed — see the module doc's paragraph on why `key.upArrow`/
+      // `key.downArrow` alone is not a sufficient guard.
+      if (key.upArrow && !key.ctrl && !key.meta && !key.shift) {
+        navigateHistory("older");
+        return;
+      }
+
+      if (key.downArrow && !key.ctrl && !key.meta && !key.shift) {
+        navigateHistory("newer");
+        return;
+      }
+
+      // Ignore other control/navigation keys (tab, escape, ctrl combos,
+      // left/right/page, and any *modified* arrow) — this hito's input is a
+      // single-line draft with no cursor movement; unmodified arrow-up/down
+      // are handled explicitly above instead.
       if (key.ctrl || key.meta || key.escape || key.tab || key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.pageUp || key.pageDown) {
         return;
       }
