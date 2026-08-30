@@ -1,12 +1,20 @@
 /**
  * Componente raíz del Adaptador TUI (I1) — Hito 1, tarea 14.
  *
- * Renders the employee's conversation with the harness: a scrollback of
- * prompt/response turns accumulated within this process's session, plus a
- * single input line at the bottom. `onSubmit` (I1's `SubmitPromptHandler`,
- * `tui-port.ts`) is injected — this component has no idea what is on the
- * other side of I1, on purpose: wiring a real Núcleo handler is Hito 1
- * tarea 15's job, not this one's (see `tui-port.ts`'s module doc).
+ * Renders the employee's conversation with the harness: a one-time product
+ * banner (`Banner.tsx` — "Light" ASCII art plus a tagline) above everything
+ * else, a scrollback of prompt/response turns accumulated within this
+ * process's session, and a single input line at the bottom. `onSubmit` (I1's
+ * `SubmitPromptHandler`, `tui-port.ts`) is injected — this component has no
+ * idea what is on the other side of I1, on purpose: wiring a real Núcleo
+ * handler is Hito 1 tarea 15's job, not this one's (see `tui-port.ts`'s
+ * module doc).
+ *
+ * The pending-turn indicator combines an animated `ink-spinner` glyph with
+ * the literal text "Pensando..." — the text is what carries the semantics
+ * (and what this module's own tests assert on; the spinner's specific
+ * animation frame at any instant is not asserted, to avoid coupling tests to
+ * `ink-spinner`'s internal timer).
  *
  * Design decision — turns accumulate in React state, not just render the
  * latest one: the arc42 Escenario de calidad 2 ("un segundo prompt en la
@@ -108,8 +116,10 @@
  */
 
 import { Box, Text, useInput } from "ink";
+import Spinner from "ink-spinner";
 import { useRef, useState } from "react";
 import type { ReactElement } from "react";
+import { Banner } from "./Banner.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./tui-port.js";
 
 type TurnStatus = "pending" | "done" | "error";
@@ -229,10 +239,15 @@ export function App({ onSubmit }: AppProps): ReactElement {
 
   return (
     <Box flexDirection="column">
+      <Banner />
       {history.map((turn) => (
         <Box key={turn.id} flexDirection="column">
           <Text>Vos: {turn.prompt}</Text>
-          {turn.status === "pending" && <Text dimColor>Pensando...</Text>}
+          {turn.status === "pending" && (
+            <Text dimColor>
+              <Spinner type="dots" /> Pensando...
+            </Text>
+          )}
           {turn.status === "done" && (
             <Text>
               {turn.agentLabel}: {turn.responseText}

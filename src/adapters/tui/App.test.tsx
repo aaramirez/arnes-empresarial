@@ -1,8 +1,30 @@
 import { render } from "ink-testing-library";
 import type { ReactElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
 import type { TuiTurnResult } from "./tui-port.js";
+
+/**
+ * Every instance `renderApp` has produced in the current test, unmounted in
+ * `afterEach` below. Needed because of `<Spinner>` (`ink-spinner`), rendered
+ * while a turn is `pending`: it starts a real `setInterval` internally, and
+ * Ink/React only clears it via the effect cleanup that runs on unmount (or
+ * on the component re-rendering without `<Spinner>`, e.g. once a turn
+ * settles). Most tests here resolve/reject the turn before finishing, which
+ * already triggers that cleanup — but at least one test (see "ignores
+ * further input while a submission is still pending") deliberately never
+ * resolves its turn, leaving a live timer if nothing unmounts it. Unmounting
+ * unconditionally in `afterEach`, rather than only in that one test, keeps
+ * this safe against future tests that leave a turn pending too.
+ */
+let renderedInstances: Array<ReturnType<typeof render>> = [];
+
+afterEach(() => {
+  for (const instance of renderedInstances) {
+    instance.unmount();
+  }
+  renderedInstances = [];
+});
 
 /**
  * Deferred promise helper — lets a test control exactly when a fake
@@ -64,6 +86,7 @@ async function settle(ticks = 5): Promise<void> {
  */
 async function renderApp(tree: ReactElement): Promise<ReturnType<typeof render>> {
   const instance = render(tree);
+  renderedInstances.push(instance);
   await settle();
   return instance;
 }
@@ -79,6 +102,14 @@ describe("App", () => {
 
     expect(lastFrame()).toContain(">");
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("renders the product banner once, above the conversation", async () => {
+    const onSubmit = vi.fn();
+
+    const { lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    expect(lastFrame()).toContain("arnés empresarial de IA");
   });
 
   it("echoes typed characters into the input line", async () => {
