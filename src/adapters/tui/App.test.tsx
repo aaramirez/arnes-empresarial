@@ -77,6 +77,22 @@ async function settle(ticks = 5): Promise<void> {
 }
 
 /**
+ * Builds a fake `onSubmit` queued to resolve `count` turns in submission
+ * order, each with a distinct `responseText` (`"respuesta 1"`, `"respuesta
+ * 2"`, ...) — same `mockResolvedValueOnce`-per-turn pattern the history-
+ * navigation tests above already use, so each turn can be `waitFor`-ed
+ * individually instead of racing on `onSubmit.mock.calls.length` (see this
+ * file's other comments on why that race exists).
+ */
+function buildOnSubmit(count: number): ReturnType<typeof vi.fn<(prompt: string) => Promise<TuiTurnResult>>> {
+  const mock = vi.fn<(prompt: string) => Promise<TuiTurnResult>>();
+  for (let i = 1; i <= count; i += 1) {
+    mock.mockResolvedValueOnce({ responseText: `respuesta ${i}`, agentLabel: "Agente" });
+  }
+  return mock;
+}
+
+/**
  * Renders `tree` via `ink-testing-library` and settles before returning.
  * Necessary because `useInput`'s raw-stdin subscription is set up in a
  * `useEffect`, which React runs asynchronously after the initial mount —
@@ -119,11 +135,57 @@ describe("App", () => {
   });
 
   it("renders the product banner once, above the conversation", async () => {
-    const onSubmit = vi.fn();
-
-    const { lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+    const onSubmit = vi.fn().mockResolvedValue({ responseText: "hola humano", agentLabel: "Agente" });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
 
     expect(lastFrame()).toContain("arnés empresarial de IA");
+
+    stdin.write("hola agente");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("hola humano"));
+
+    // Not just "the banner is somewhere in the frame" — it must sit BEFORE
+    // the first turn's "Vos:" line, i.e. above the conversation, not below
+    // it. `indexOf` on the flattened frame string is enough here (both
+    // substrings are single-line-unique at this point in the test) without
+    // needing a line-by-line walk.
+    const frame = lastFrame() ?? "";
+    const bannerIndex = frame.indexOf("arnés empresarial de IA");
+    const firstTurnIndex = frame.indexOf("Vos:");
+    expect(bannerIndex).toBeGreaterThanOrEqual(0);
+    expect(firstTurnIndex).toBeGreaterThanOrEqual(0);
+    expect(bannerIndex).toBeLessThan(firstTurnIndex);
+  });
+
+  it("keeps the banner rendered exactly once, above every turn, as more turns accumulate", async () => {
+    const onSubmit = buildOnSubmit(3);
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("primero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+    stdin.write("segundo");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+    stdin.write("tercero");
+    stdin.write(ENTER);
+    await waitFor(() => (lastFrame() ?? "").includes("respuesta 3"));
+
+    // Guards directly against the bug this test was added for: the banner
+    // being rewritten below each newly flushed `<Static>` block on every
+    // turn instead of staying fixed as the first item — i.e. "arrastrarse"
+    // (dragging) further down with every new prompt.
+    const frame = lastFrame() ?? "";
+    const bannerOccurrences = frame.split("arnés empresarial de IA").length - 1;
+    expect(bannerOccurrences).toBe(1);
+
+    const bannerIndex = frame.indexOf("arnés empresarial de IA");
+    const firstTurnIndex = frame.indexOf("Vos: primero");
+    const lastTurnIndex = frame.indexOf("Vos: tercero");
+    expect(bannerIndex).toBeLessThan(firstTurnIndex);
+    expect(bannerIndex).toBeLessThan(lastTurnIndex);
   });
 
   it("echoes typed characters into the input line", async () => {
@@ -560,5 +622,33 @@ describe("App", () => {
     stdin.write(ARROW_UP);
     stdin.write(ENTER);
     expect(onSubmit).toHaveBeenNthCalledWith(2, "linea1\nlinea2");
+  });
+
+  // Settled turns render via `<Static>` (Ink) instead of a fixed
+  // visible-turn window — see `App.tsx`'s module doc for the full design
+  // rationale. This test cannot prove "no limit whatsoever" (any fixed
+  // `turnCount` is itself a bound a mutation could sneak under), so it
+  // deliberately sends a generous 30 turns: high enough that any reasonably
+  // sized fixed window someone might reintroduce later (8, 15, 20, ...)
+  // would have to also cover 30 to pass unnoticed, which is not a
+  // "reasonably sized" window anymore. What it actually asserts: the first
+  // and last turns of a long conversation are both still present in the
+  // rendered frame, with no hidden-turns indicator — i.e. nothing was
+  // dropped from render.
+  it("keeps both the first and last turn of a long conversation reachable, with no hidden-turns indicator", async () => {
+    const turnCount = 30;
+    const onSubmit = buildOnSubmit(turnCount);
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    for (let i = 1; i <= turnCount; i += 1) {
+      stdin.write(`prompt ${i}`);
+      stdin.write(ENTER);
+      await waitFor(() => (lastFrame() ?? "").includes(`respuesta ${i}`));
+    }
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Vos: prompt 1");
+    expect(frame).toContain(`Vos: prompt ${turnCount}`);
+    expect(frame).not.toContain("oculto");
   });
 });

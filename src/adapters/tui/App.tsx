@@ -183,12 +183,78 @@
  * "any control combo is a no-op" behavior for arrows specifically.
  */
 
-import { Box, Text, useInput } from "ink";
+import { Box, Static, Text, useInput } from "ink";
 import Spinner from "ink-spinner";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { Banner } from "./Banner.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./tui-port.js";
+
+// Settled turns render via Ink's `<Static>`, not a fixed visible-turn
+// window: a fixed window (e.g. "only the last N turns") would just
+// reintroduce, by construction, the exact problem this design avoids — old
+// or long responses becoming unreachable/corrupted once the conversation
+// outgrows the terminal's live-redraw region. Root cause, verified directly
+// against Ink's source (`node_modules/ink/build/log-update.js`, `ink.js`):
+// every render, Ink erases and rewrites its ENTIRE live output region via
+// relative-cursor escape codes, on the assumption that region is still
+// exactly where it left it. Once that region's total height exceeds the
+// real terminal height, the terminal itself scrolls the overflow into
+// scrollback — content Ink can no longer reach or safely rewrite, but keeps
+// trying to, on every subsequent render. `<Static>` (`ink`'s own export)
+// sidesteps this: per `ink.js` (~lines 118-131), on any render with new
+// static content, Ink calls `this.log.clear()` (clears only the current
+// live region), `stdout.write(staticOutput)` (writes the new static content
+// straight to the real stream ONCE, permanently — never touched again), then
+// `this.log(output)` (redraws the now-smaller live region). Once a turn is
+// flushed into `<Static>` it becomes genuine terminal scrollback, exactly
+// like a normal `console.log` line — outside Ink's redraw cycle for good,
+// with no count limit.
+//
+// This drastically shrinks the corruption-risk surface, but does not erase
+// it entirely: the live region (`<Banner />` plus, at most, one pending
+// turn below) still goes through that same erase-and-redraw cycle every
+// render. An unusually tall banner combined with a long multiline pending
+// prompt, on a small enough terminal, could still in principle overflow
+// that live region before the turn settles and flushes into `<Static>`. Far
+// less likely than a design where the live region held several turns at
+// once (it is now banner + at most one turn), but not structurally
+// impossible — out of scope to fully close here.
+//
+// A turn can only enter `<Static>` once its `status` is `"done"` or
+// `"error"` — never while `"pending"`: `<Static>`'s contract (see
+// `node_modules/ink/build/components/Static.js`) is that an item, once
+// flushed (tracked via an internal `index` cursor), is NEVER re-rendered.
+// A pending turn's content still changes (spinner frame, then the final
+// response text once it settles) — flushing it early would freeze whatever
+// it looked like at that instant, permanently, the very corruption this
+// design avoids for settled turns.
+//
+// `<Banner />` is the FIRST item of this same `<Static>`, not a separate
+// live element rendered alongside it (as an earlier version of this module
+// did) — two independent bugs, verified directly against Ink's source,
+// rule that alternative out:
+//
+// 1. A `<Banner />` left in the live region gets rewritten on every render
+//    that also flushes new static content — `ink.js` (~lines 118-131) does
+//    `stdout.write(staticOutput)` (the newly settled turn, permanent) THEN
+//    `this.log(output)` (redraws the live region, banner included) on that
+//    same render pass. Repeated once per settled turn, this makes the
+//    banner's own redraw always land visually AFTER whatever static content
+//    the terminal already accumulated — i.e. it silently "drags" further
+//    down the screen with every new prompt instead of staying fixed at the
+//    top, exactly the bug this comment is warning against.
+// 2. A second, banner-only `<Static>` cannot fix it either: `ink`'s own
+//    reconciler (`node_modules/ink/build/reconciler.js:150-154`) tracks
+//    static content via `rootNode.staticNode = node` — a single field
+//    assignment, not a list/set. Mounting two `<Static>` elements in the
+//    same tree makes the second one silently overwrite the first's
+//    reference; only one `<Static>` can ever be live per app.
+//
+// Folding the banner into this `<Static>`'s own item list, first, sidesteps
+// both problems at once: it flushes to the real stream exactly once, before
+// any turn, and — being genuinely static content from Ink's perspective —
+// is never touched by the live-region redraw cycle again.
 
 type TurnStatus = "pending" | "done" | "error";
 
@@ -201,12 +267,26 @@ interface TurnRecord {
   readonly errorMessage?: string;
 }
 
+// Discriminated union for `<Static>`'s item list — see the module doc above
+// ("A turn can only enter `<Static>`...") for why `<Banner />` has to be
+// item 0 here instead of a separately rendered live element.
+type StaticItem =
+  | { readonly kind: "banner" }
+  | { readonly kind: "turn"; readonly turn: TurnRecord };
+
 export interface AppProps {
   readonly onSubmit: SubmitPromptHandler;
 }
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// Shared by both the `<Static>` (settled turns) and pending-turn render
+// paths below — a turn's prompt echo must look identical regardless of
+// which of those two paths renders it.
+function TurnPrompt({ prompt }: { readonly prompt: string }): ReactElement {
+  return <Text>Vos: {prompt}</Text>;
 }
 
 export function App({ onSubmit }: AppProps): ReactElement {
@@ -400,25 +480,68 @@ export function App({ onSubmit }: AppProps): ReactElement {
     { isActive: !pending },
   );
 
+  // Split by settlement — see the module doc above for why only settled
+  // turns can flush into `<Static>`. At most one `pendingTurn` exists at a
+  // time: this module's own "one turn in flight at a time" design decision
+  // (see the module doc) already guarantees it, no re-check needed here.
+  //
+  // Computed in a single `useMemo` pass over `history`, keyed only on
+  // `history` itself — not recomputed on renders `history` didn't cause
+  // (e.g. every keystroke, which only changes `draft`). `history` is
+  // deliberately never capped (see the module doc above), so redoing this
+  // scan on every render regardless of what changed would get steadily more
+  // wasteful as a session's turn count grows; gating on `history`'s own
+  // reference identity (only changed by `setHistory`) makes keystroke-only
+  // renders skip it entirely.
+  // `Static`'s own type declares `items` as a mutable array (not
+  // `readonly`), unlike the rest of this module's props/state — the
+  // mismatch is purely a typing artifact of `ink`'s declaration, not a real
+  // mutability concern here (this array is never mutated after being built).
+  const { staticItems, pendingTurn } = useMemo(() => {
+    const items: StaticItem[] = [{ kind: "banner" }];
+    let pending: TurnRecord | undefined;
+
+    for (const turn of history) {
+      if (turn.status === "pending") {
+        pending = turn;
+      } else {
+        items.push({ kind: "turn", turn });
+      }
+    }
+
+    return { staticItems: items, pendingTurn: pending };
+  }, [history]);
+
   return (
     <Box flexDirection="column">
-      <Banner />
-      {history.map((turn) => (
-        <Box key={turn.id} flexDirection="column">
-          <Text>Vos: {turn.prompt}</Text>
-          {turn.status === "pending" && (
-            <Text dimColor>
-              <Spinner type="dots" /> Pensando...
-            </Text>
-          )}
-          {turn.status === "done" && (
-            <Text>
-              {turn.agentLabel}: {turn.responseText}
-            </Text>
-          )}
-          {turn.status === "error" && <Text color="red">Error: {turn.errorMessage}</Text>}
+      <Static items={staticItems}>
+        {(item) => {
+          if (item.kind === "banner") {
+            return <Banner key="banner" />;
+          }
+
+          const { turn } = item;
+          return (
+            <Box key={`turn-${turn.id}`} flexDirection="column">
+              <TurnPrompt prompt={turn.prompt} />
+              {turn.status === "done" && (
+                <Text>
+                  {turn.agentLabel}: {turn.responseText}
+                </Text>
+              )}
+              {turn.status === "error" && <Text color="red">Error: {turn.errorMessage}</Text>}
+            </Box>
+          );
+        }}
+      </Static>
+      {pendingTurn && (
+        <Box flexDirection="column">
+          <TurnPrompt prompt={pendingTurn.prompt} />
+          <Text dimColor>
+            <Spinner type="dots" /> Pensando...
+          </Text>
         </Box>
-      ))}
+      )}
       <Text>{`> ${draft}`}</Text>
     </Box>
   );

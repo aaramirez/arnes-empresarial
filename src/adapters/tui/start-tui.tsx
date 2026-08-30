@@ -26,77 +26,60 @@
  * rendered behavior — this module has nothing left to verify beyond "did it
  * mount `App` with the right prop", which is what its test checks.
  *
- * Alternate screen buffer note (post-Hito 1.0 addition, decided by the Spec
- * Author role and approved at the human checkpoint, choosing "alternate
- * screen" over "just clear the screen on startup"): `startTui` wraps the TUI
- * lifecycle with the standard ANSI sequences that switch the terminal into
- * its alternate screen buffer on entry (`ENTER_ALT_SCREEN`) and back to the
- * original buffer on exit (`EXIT_ALT_SCREEN`) — the same mechanism
- * `vim`/`htop` use: the app gets its own screen, and when it exits the
- * terminal is restored exactly to what it showed before, with none of the
- * TUI's own output left in scrollback. This is terminal control around the
- * TUI's lifecycle, so it belongs in this adapter (I1), not in the
- * composition root (`src/main.ts`) — `main.ts` shouldn't need to know
- * anything about ANSI sequences. Ink already owns showing/hiding the cursor
- * (`\x1B[?25l`/`\x1B[?25h`) on its own; this only adds the screen-buffer
- * switch, which Ink does not do.
- *
- * Cursor-home note (bugfix, reported by the user after trying the alternate
- * screen buffer live: the banner rendered mid-screen instead of at the top).
- * `ENTER_ALT_SCREEN` (`\x1B[?1049h`) is not enough on its own: switching into
- * the alternate screen buffer does not guarantee the cursor lands at the
- * terminal's top-left corner on every terminal emulator — some preserve
- * whatever row the cursor was on in the previous buffer when they switch.
- * Ink's first frame draws assuming "wherever the cursor is right now" is its
- * own row 0; if the cursor is left mid-screen when the alternate buffer is
- * entered, that first frame (the banner) starts there instead of at the top.
- * `CLEAR_AND_HOME` (`\x1B[2J\x1B[H`) fixes this explicitly: `\x1B[2J` clears
- * the (now-alternate) screen and `\x1B[H` moves the cursor to row 1, column 1
- * — so Ink's row 0 is always the terminal's actual top row, regardless of
- * what the previous buffer's cursor position was.
- *
  * `writeToTerminal` is injectable for the same reason `renderTui` is (see
  * above), same DI pattern as `now`/`write` in `turn-logger.ts` and `queryFn`
  * in `invoke-model.ts` — the real default writes to `process.stdout`, which
  * isn't meaningful to assert on in a unit test.
  *
- * The exit sequence is written from `waitUntilExit()`'s `.finally(...)`, not
- * `.then(...)`, so that whatever `waitUntilExit()` itself resolves or
- * rejects with keeps propagating unchanged to the caller — same criterion
- * already applied in `main.ts`'s `try`/`finally` around `db.close()`. The
- * `writeToTerminal(EXIT_ALT_SCREEN)` call inside that `finally` is itself
- * wrapped in its own `try`/`catch` (Reviewer finding, WARNING, post-first
- * version of this file): `Promise.prototype.finally`'s callback throwing
- * REPLACES whatever the original promise resolved or rejected with — a
- * `writeToTerminal` failure (e.g. `process.stdout` already torn down during
- * process exit) would silently mask the real `waitUntilExit()` outcome
- * instead of just failing to restore the screen buffer. Same
- * "cleanup must never mask the real result" criterion `turn-logger.ts`'s
- * `createFileLogWriter` and `main.ts`'s own `db.close()` catch already
- * apply.
+ * Alternate screen buffer removal note (post-Hito 1.0 change, decided with
+ * the user after a live bug report: the banner "dragged" down the screen on
+ * every prompt, and the mouse wheel could not scroll up to see earlier
+ * messages or full long responses). Root cause: the alternate screen buffer
+ * (`\x1B[?1049h`/`\x1B[?1049l`, this module's previous approach) is, by
+ * standard terminal convention — the same reason `vim`/`htop` use it — a
+ * FIXED-SIZE buffer with no scrollback of its own. `<Static>` (`App.tsx`,
+ * see that module's own doc for the full explanation of what it needs and
+ * why) relies on genuine terminal scrollback to keep already-rendered
+ * content around; inside the alternate buffer, anything `<Static>` writes
+ * past that fixed height has nowhere to go and gets overwritten/lost, no
+ * matter how correctly it is implemented. That explains both symptoms. This
+ * module no longer enters the alternate screen buffer at all — it stays on
+ * the terminal's NORMAL buffer, where `<Static>` gets real, native,
+ * mouse-wheel scrollback with no artificial limit.
  *
- * Entry-path crash guard (Reviewer finding, `code-review`, post-`CLEAR_AND_HOME`
- * version of this file): `renderTui(...)` itself is now wrapped in its own
- * `try`/`catch`. Before this, if `renderTui` threw synchronously (a
- * React/Ink reconciler error), `instance` was never assigned, so the
- * `EXIT_ALT_SCREEN` write — which only happens from the wrapped
- * `waitUntilExit()` built around `instance` — could never run either,
- * leaving the terminal stuck on the alternate screen with no way to recover
- * short of `reset`/`tput rmcup`. The `catch` here writes `EXIT_ALT_SCREEN`
- * (itself in its own best-effort `try`/`catch`, same criterion as the exit
- * path above) and rethrows the original error unchanged.
+ * `CLEAR_AND_HOME` (`\x1B[2J\x1B[H`) is still needed even without the
+ * alternate screen buffer, for the same original reason: homing the cursor
+ * so Ink's first frame (the banner) starts at the terminal's actual top row
+ * instead of wherever the shell's cursor happened to be left. `\x1B[2J`
+ * clears only what is currently VISIBLE — it does not touch scrollback
+ * already there — so any prior shell output (e.g. `npm run dev` /
+ * PowerShell lines) remains reachable by scrolling up, it just is not shown
+ * on startup, which is the visual effect that was originally requested.
  *
- * `waitUntilExit()` idempotency (Reviewer finding, `code-review`, same
- * round): real Ink's `waitUntilExit()` memoizes its promise
- * (`this.exitPromise ||= new Promise(...)`, verified against
- * `ink/build/ink.js`) — calling it more than once returns the exact same
- * promise, which is part of `Instance`'s real contract. The wrapper here
- * does the same via a closed-over `exitPromise` variable populated on first
- * call; without it, each call to the wrapped `waitUntilExit()` would attach
- * a fresh `.finally(...)` to the same underlying promise and write
- * `EXIT_ALT_SCREEN` again — harmless today (`main.ts` only calls it once)
- * but a silent break of `TuiInstance`'s contract for any future caller that
- * relies on Ink's real idempotent semantics.
+ * Accepted trade-off, confirmed with the user (not a code gap): dropping the
+ * alternate screen buffer also means exiting the TUI no longer restores the
+ * terminal to its exact pre-launch state — commit `31ab5c8` had made that
+ * restoration a deliberate, human-checkpoint-approved requirement, which
+ * this change knowingly reverses. The full conversation (banner included)
+ * now remains genuine scrollback in the user's real terminal after exit,
+ * the same way any normal command's stdout does — traded for being able to
+ * scroll back through conversation history at all, which the alternate
+ * buffer had been silently breaking.
+ *
+ * No instance wrapping: `renderTui`'s real return value (`Instance`) already
+ * satisfies `TuiInstance` structurally, so it is returned as-is.
+ *
+ * No crash guard, on purpose, and for the same reason as the exit trade-off
+ * above rather than because there is truly nothing to consider: unlike the
+ * removed alternate-screen version, a synchronous `renderTui` throw here
+ * cannot be followed by any restorative write — `CLEAR_AND_HOME` has already
+ * cleared the visible screen by that point, and there is no alternate buffer
+ * left to swap back to. The crash therefore surfaces over a screen that
+ * looks blank rather than over the shell's pre-launch content; the original
+ * content is not lost (same `\x1B[2J` scrollback note above still applies),
+ * just not immediately visible. The error itself is left to propagate
+ * unchanged — `main.ts` already handles that from its own `try` around this
+ * call (see that file's module doc).
  */
 
 import { render, type Instance } from "ink";
@@ -104,16 +87,10 @@ import type { ReactElement } from "react";
 import { App } from "./App.js";
 import type { SubmitPromptHandler } from "./tui-port.js";
 
-/** ANSI sequence that switches the terminal into the alternate screen buffer. */
-const ENTER_ALT_SCREEN = "\x1B[?1049h";
-
-/** ANSI sequence that restores the terminal's original screen buffer. */
-const EXIT_ALT_SCREEN = "\x1B[?1049l";
-
 /**
  * ANSI sequence that clears the screen (`\x1B[2J`) and moves the cursor to
- * the top-left corner (`\x1B[H`). See the module doc's "Cursor-home note"
- * for why this is needed in addition to `ENTER_ALT_SCREEN`.
+ * the top-left corner (`\x1B[H`). See the module doc for why this is still
+ * needed without the alternate screen buffer.
  */
 const CLEAR_AND_HOME = "\x1B[2J\x1B[H";
 
@@ -128,71 +105,25 @@ export type TuiInstance = Pick<Instance, "unmount" | "waitUntilExit">;
 export type RenderTui = (tree: ReactElement) => TuiInstance;
 
 /**
- * Writes raw data to the terminal. See the module doc's "Alternate screen
- * buffer note" for why this is injectable and what it's used for here.
+ * Writes raw data to the terminal. See the module doc for why this is
+ * injectable and what it's used for here.
  */
 export type WriteToTerminal = (data: string) => void;
 
 /**
  * Mounts the TUI (`App`) with `onSubmit` as its I1 handler for submitted
- * prompts, switching the terminal into its alternate screen buffer and then
- * clearing it and homing the cursor before rendering — see the module doc's
- * "Alternate screen buffer note" and "Cursor-home note" for why — and back
- * to the original buffer on exit. Returns the mounted instance, wrapping
- * `waitUntilExit` so the exit sequence is written once it settles, either
- * way.
+ * prompts, clearing the (normal) screen and homing the cursor first — see
+ * the module doc for why — and returns the mounted instance as-is.
  *
  * `renderTui` defaults to the real Ink `render` export, `writeToTerminal`
  * defaults to writing to `process.stdout` — see the module doc's DI notes
- * for why. Production callers (the future end-to-end integration, Hito 1
- * tarea 15) omit both.
+ * for why. Production callers (`src/main.ts`) omit both.
  */
 export function startTui(
   onSubmit: SubmitPromptHandler,
   renderTui: RenderTui = render,
   writeToTerminal: WriteToTerminal = (data) => process.stdout.write(data),
 ): TuiInstance {
-  writeToTerminal(ENTER_ALT_SCREEN);
   writeToTerminal(CLEAR_AND_HOME);
-
-  let instance: TuiInstance;
-  try {
-    instance = renderTui(<App onSubmit={onSubmit} />);
-  } catch (error) {
-    // `renderTui` throwing synchronously (a React/Ink reconciler error) means
-    // `instance` never gets created — and since the exit sequence is
-    // normally only written from the wrapped `waitUntilExit()` built around
-    // `instance` below, that write would otherwise never happen, leaving the
-    // user's terminal stuck on the alternate screen. Same best-effort
-    // "cleanup must never mask the real result" criterion as the `finally`
-    // block below: restore the screen buffer here too, then rethrow the
-    // original error unchanged.
-    try {
-      writeToTerminal(EXIT_ALT_SCREEN);
-    } catch {
-      // Best-effort — see above.
-    }
-    throw error;
-  }
-
-  // Memoized so the wrapper stays idempotent like Ink's own `waitUntilExit`
-  // (verified against `ink`'s implementation: it caches its exit promise via
-  // `this.exitPromise ||= new Promise(...)` and returns the same promise on
-  // repeated calls). Without this, each call would attach a new `.finally`
-  // to the same underlying promise, writing `EXIT_ALT_SCREEN` once per call
-  // instead of once per exit.
-  let exitPromise: ReturnType<TuiInstance["waitUntilExit"]> | undefined;
-
-  return {
-    unmount: (...args) => instance.unmount(...args),
-    waitUntilExit: () =>
-      (exitPromise ??= instance.waitUntilExit().finally(() => {
-        try {
-          writeToTerminal(EXIT_ALT_SCREEN);
-        } catch {
-          // Best-effort — see the module doc's note on why this must never
-          // mask the real resolve/reject of `waitUntilExit()`.
-        }
-      })),
-  };
+  return renderTui(<App onSubmit={onSubmit} />);
 }
