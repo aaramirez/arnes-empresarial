@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "../agents/definitions.js";
 import { DEFAULT_AGENT_MODEL } from "../agents/definitions.js";
@@ -6,6 +6,7 @@ import { createHookEngine } from "../hooks/hook-engine.js";
 import { TurnFailedError } from "./turn-error.js";
 import { handleTurn, CASO_ESTADO_ACTIVO, type MemoryPort } from "./handle-turn.js";
 import type { QueryFn } from "./invoke-model.js";
+import type { LogTurnEventDeps } from "../logging/turn-logger.js";
 
 /**
  * Fake `queryFn` fixtures, same shape `invoke-model.test.ts` already
@@ -68,16 +69,29 @@ function makeCasoRow(casoId: string) {
   };
 }
 
+/**
+ * `handleTurn`'s own `logDeps` default (`turn-logger.ts`'s
+ * `DEFAULT_LOG_TURN_EVENT_DEPS`) writes to a real file
+ * (`data/harness.log`) — every test below injects this fake instead, both
+ * to assert on logged content and, just as importantly, so this file never
+ * touches the real filesystem on a plain `npm test` run (same reasoning
+ * `fakeQueryFn`/`throwingQueryFn` already apply to avoid a real network
+ * call).
+ */
+function fakeLogDeps(): { readonly deps: LogTurnEventDeps; readonly lines: string[] } {
+  const lines: string[] = [];
+  return {
+    lines,
+    deps: {
+      now: () => "2026-08-29T00:00:00.000Z",
+      write: (line) => {
+        lines.push(line);
+      },
+    },
+  };
+}
+
 describe("handleTurn", () => {
-  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  });
-
-  afterEach(() => {
-    consoleLogSpy.mockRestore();
-  });
 
   it("runs context -> model -> close in order, then returns responseText/agentLabel", async () => {
     const callOrder: string[] = [];
@@ -110,12 +124,14 @@ describe("handleTurn", () => {
     );
 
     const hooks = createHookEngine();
+    const log = fakeLogDeps();
 
     const result = await handleTurn(casoId, "hola", {
       memory,
       hooks,
       candidateAgents: [agent],
       queryFn,
+      logDeps: log.deps,
     });
 
     expect(callOrder).toEqual([
@@ -133,8 +149,8 @@ describe("handleTurn", () => {
     // Success path must also log via logTurnEvent (tarea 12) — the module
     // doc says this fires unconditionally, not only on the failure path
     // already covered by the "turno-fallido" test below.
-    expect(consoleLogSpy).toHaveBeenCalledTimes(1);
-    const line = consoleLogSpy.mock.calls[0]?.[0] as string;
+    expect(log.lines).toHaveLength(1);
+    const line = log.lines[0] as string;
     expect(JSON.parse(line)).toMatchObject({
       casoId: "caso-1",
       event: "turno-completado",
@@ -157,6 +173,7 @@ describe("handleTurn", () => {
         memory,
         hooks,
         candidateAgents: [makeAgent()],
+        logDeps: fakeLogDeps().deps,
       }),
     ).rejects.toMatchObject({ name: "TurnFailedError", stage: "context" });
   });
@@ -178,6 +195,7 @@ describe("handleTurn", () => {
         hooks,
         candidateAgents: [makeAgent()],
         queryFn,
+        logDeps: fakeLogDeps().deps,
       }),
     ).rejects.toMatchObject({ name: "TurnFailedError", stage: "model", cause: boom });
   });
@@ -203,11 +221,12 @@ describe("handleTurn", () => {
         hooks,
         candidateAgents: [makeAgent()],
         queryFn,
+        logDeps: fakeLogDeps().deps,
       }),
     ).rejects.toMatchObject({ name: "TurnFailedError", stage: "close" });
   });
 
-  it("logs a 'turno-fallido' event (via console.log/logTurnEvent) before re-throwing on failure", async () => {
+  it("logs a 'turno-fallido' event (via logTurnEvent) before re-throwing on failure", async () => {
     const memory: MemoryPort = {
       getCasoById: vi.fn(() => undefined),
       getLatestSesionAgente: vi.fn(),
@@ -215,17 +234,19 @@ describe("handleTurn", () => {
       createSesionAgente: vi.fn(),
     };
     const hooks = createHookEngine();
+    const log = fakeLogDeps();
 
     await expect(
       handleTurn("caso-1", "hola", {
         memory,
         hooks,
         candidateAgents: [makeAgent()],
+        logDeps: log.deps,
       }),
     ).rejects.toBeInstanceOf(TurnFailedError);
 
-    expect(consoleLogSpy).toHaveBeenCalledTimes(1);
-    const line = consoleLogSpy.mock.calls[0]?.[0] as string;
+    expect(log.lines).toHaveLength(1);
+    const line = log.lines[0] as string;
     expect(JSON.parse(line)).toMatchObject({
       casoId: "caso-1",
       event: "turno-fallido",

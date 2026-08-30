@@ -37,7 +37,7 @@
  * `invokeModel`/`closeTurn` (each with one or two injectable
  * dependencies, so a positional parameter reads fine), this function has
  * several unrelated collaborators (`memory`, `hooks`, `candidateAgents`,
- * `queryFn`) that are always supplied together by the same caller
+ * `queryFn`, `logDeps`) that are always supplied together by the same caller
  * (`main.ts`) and never partially defaulted in production — a `deps`
  * object groups them without forcing every call site to remember a fixed
  * positional order for several same-ish-looking values. None of them has
@@ -126,7 +126,7 @@
 
 import type { AgentDefinition } from "../agents/definitions.js";
 import type { HookEngine } from "../hooks/hook-engine.js";
-import { logTurnEvent } from "../logging/turn-logger.js";
+import { logTurnEvent, type LogTurnEventDeps } from "../logging/turn-logger.js";
 import { assembleContext, type MemoryContextPort } from "./assemble-context.js";
 import { closeTurn, type MemoryWritePort } from "./close-turn.js";
 import { invokeModel, type QueryFn } from "./invoke-model.js";
@@ -168,6 +168,15 @@ export interface HandleTurnDeps {
    * default directly.
    */
   readonly queryFn?: QueryFn;
+  /**
+   * Forwarded as-is to `logTurnEvent`'s own `deps` parameter (both log
+   * calls below). Omit in production — `logTurnEvent` defaults it to a
+   * real file writer (`turn-logger.ts`'s `DEFAULT_LOG_TURN_EVENT_DEPS`).
+   * Same reasoning as `queryFn` above: keeps `handle-turn.test.ts` able to
+   * inject a captured-lines fake instead of touching the real filesystem on
+   * every test run.
+   */
+  readonly logDeps?: LogTurnEventDeps;
 }
 
 /**
@@ -201,7 +210,7 @@ export async function handleTurn(
   prompt: string,
   deps: HandleTurnDeps,
 ): Promise<HandleTurnResult> {
-  const { memory, hooks, candidateAgents, queryFn } = deps;
+  const { memory, hooks, candidateAgents, queryFn, logDeps } = deps;
 
   const agent = resolveTurn(prompt, candidateAgents);
 
@@ -210,19 +219,22 @@ export async function handleTurn(
     const result = await runTurnStage("model", () => invokeModel(agent, context, prompt, hooks, queryFn));
     await runTurnStage("close", () => closeTurn(memory, context, agent, result, CASO_ESTADO_ACTIVO));
 
-    logTurnEvent(casoId, "turno-completado", {
-      agentId: agent.id,
-      sdkSessionId: result.sdkSessionId,
-    });
+    logTurnEvent(
+      casoId,
+      "turno-completado",
+      { agentId: agent.id, sdkSessionId: result.sdkSessionId },
+      logDeps,
+    );
 
     return { responseText: result.responseText, agentLabel: agent.id };
   } catch (error) {
     if (error instanceof TurnFailedError) {
-      logTurnEvent(casoId, "turno-fallido", {
-        agentId: agent.id,
-        stage: error.stage,
-        message: error.message,
-      });
+      logTurnEvent(
+        casoId,
+        "turno-fallido",
+        { agentId: agent.id, stage: error.stage, message: error.message },
+        logDeps,
+      );
     }
     throw error;
   }

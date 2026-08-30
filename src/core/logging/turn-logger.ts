@@ -28,8 +28,8 @@
  *
  * Design decision — `now`/`write` inyectables, mismo patrón DI que
  * `queryFn` en `invoke-model.ts` y `CloseTurnDeps` en `close-turn.ts`: el
- * default usa `Date`/`console.log` reales, los tests inyectan fakes. Esto no
- * es específico del turno (`src/core/turn-selector/`) — vive en
+ * default usa `Date`/`console.error` reales, los tests inyectan fakes. Esto
+ * no es específico del turno (`src/core/turn-selector/`) — vive en
  * `src/core/logging/` porque cualquier bloque del núcleo, y más adelante
  * los adaptadores (que sí pueden importar de `src/core/`; la regla no
  * negociable solo prohíbe la dirección opuesta), puede necesitar loguear con
@@ -41,24 +41,102 @@
  * responsabilidad de tareas posteriores (Secuencia de arranque, tarea 13;
  * Integración end-to-end, tarea 15) — mismo criterio que ya se aplicó en la
  * tarea 11 para `runTurnStage`.
+ *
+ * Design decision — default `write` escribe a un archivo (`data/harness.log`
+ * vía `createFileLogWriter`), no a ningún stream del proceso (hallazgo
+ * post-Hito 1, mejora del Adaptador TUI): esta tarea se implementó antes de
+ * que existiera ninguna UI, así que `console.log` (stdout) era un destino
+ * inocuo en ese momento. Una vez que el Adaptador TUI (tarea 14) monta con
+ * Ink, `render()` asume control exclusivo de stdout para poder redibujar la
+ * pantalla en cada frame — cualquier otra escritura cruda a ese canal (como
+ * una línea de `logTurnEvent` disparada en medio de un turno por
+ * `handleTurn`) corrompe el tracking de líneas de Ink. Un primer intento
+ * movió el default a `console.error` (stderr) asumiendo que, al ser Ink
+ * ajeno a ese stream, dejaría de interferir — cierto para el tracking
+ * interno de Ink, pero insuficiente: stdout y stderr son streams separados a
+ * nivel de proceso, pero una terminal real los intercala en la misma
+ * pantalla salvo que cada uno se redirija por separado, así que la línea
+ * seguía apareciendo igual (verificado por el usuario). Escribir a un
+ * archivo en cambio no toca ningún stream que la terminal muestre — la
+ * única forma de que el log de correlación no aparezca en pantalla es que
+ * no pase por la terminal en absoluto.
+ *
+ * Design decision — el path del archivo (`DEFAULT_LOG_FILE_PATH`) es un
+ * default interno de este módulo, no un parámetro que `handleTurn`/`main.ts`
+ * deban pasar explícitamente, a diferencia de `openDatabase(filePath)`
+ * (`src/adapters/memory/db.ts`): ese path SÍ es obligatorio porque distintos
+ * callers (producción vs. tests con `mkdtempSync`) necesitan valores
+ * distintos con frecuencia. Acá el valor por defecto sirve para el 100% de
+ * los casos de producción (mismo criterio que `CASO_ESTADO_ACTIVO` en
+ * `handle-turn.ts` o `DEFAULT_AGENT_MODEL` en `definitions.ts`) — lo que
+ * SÍ es inyectable, y lo que los tests realmente necesitan, es `write`
+ * (la función completa), no solo el path. `createFileLogWriter` queda
+ * exportado para que los propios tests de este módulo ejerciten el
+ * mecanismo real contra un archivo temporal (mismo patrón que
+ * `db.test.ts` ya usa con `mkdtempSync`), sin acoplar la aserción a
+ * `data/harness.log` real del repo.
+ *
+ * Design decision — fallas de escritura se tragan (try/catch interno de
+ * `createFileLogWriter`), nunca se propagan: este módulo existe para
+ * observabilidad (Concepto Transversal 3), no para corrección de negocio —
+ * si el disco está lleno o el proceso no tiene permiso de escritura, eso no
+ * puede convertir un turno que sí completó exitosamente (`handleTurn`) en
+ * uno que aparenta haber fallado. Mismo criterio que ya aplica en
+ * `close-turn.ts`/`invoke-model.ts`: cada módulo falla solo por su propia
+ * responsabilidad, no por la de otro.
  */
 
-/** Writes a single already-formatted log line. Default: `console.log`. */
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+/**
+ * Writes a single already-formatted log line. Default: appends to
+ * `DEFAULT_LOG_FILE_PATH` via `createFileLogWriter` — no process stream,
+ * stdout or stderr (see the module doc's "default `write` escribe a un
+ * archivo" note for why).
+ */
 export type LogWriter = (line: string) => void;
 
 /**
  * Injectable timestamp/write, so `logTurnEvent` is testable without
- * touching the real clock or real stdout. Production callers omit this
- * argument and get the default below.
+ * touching the real clock or the real filesystem. Production callers omit
+ * this argument and get the default below.
  */
 export interface LogTurnEventDeps {
   readonly now: () => string;
   readonly write: LogWriter;
 }
 
+/**
+ * Builds a `LogWriter` that appends `line` (plus a trailing newline) to
+ * `filePath`, creating any missing parent directories first. Failures
+ * (missing permissions, full disk, an invalid path, ...) are swallowed, not
+ * thrown — see the module doc's "fallas de escritura se tragan" note for
+ * why. Exported so this module's own tests can exercise the real mechanism
+ * against a temporary file (same pattern `db.test.ts` uses with
+ * `mkdtempSync`), instead of only ever testing a fake `write`.
+ */
+export function createFileLogWriter(filePath: string): LogWriter {
+  return (line) => {
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+      appendFileSync(filePath, `${line}\n`);
+    } catch {
+      // Best-effort — see this function's own doc for why a logging
+      // failure must never propagate.
+    }
+  };
+}
+
+/**
+ * Conventional path for `logTurnEvent`'s default file sink — same `data/`
+ * directory `main.ts` already uses for `data/harness.db` (`openDatabase`).
+ */
+export const DEFAULT_LOG_FILE_PATH = "data/harness.log";
+
 const DEFAULT_LOG_TURN_EVENT_DEPS: LogTurnEventDeps = {
   now: () => new Date().toISOString(),
-  write: (line) => console.log(line),
+  write: createFileLogWriter(DEFAULT_LOG_FILE_PATH),
 };
 
 /**

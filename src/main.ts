@@ -76,6 +76,7 @@ interface StartupResult {
   readonly hooks: ReturnType<typeof bootstrapHarness>["hooks"];
   readonly memory: MemoryPort;
   readonly caso: Caso;
+  readonly db: ReturnType<typeof openDatabase>;
 }
 
 /**
@@ -126,7 +127,7 @@ function startHarness(): StartupResult {
     updatedAt: startedAt,
   });
 
-  return { agents, hooks, memory, caso };
+  return { agents, hooks, memory, caso, db };
 }
 
 let startup: StartupResult;
@@ -139,7 +140,7 @@ try {
   process.exit(1);
 }
 
-const { agents, hooks, memory, caso } = startup;
+const { agents, hooks, memory, caso, db } = startup;
 
 // 4. `onSubmit` (I1, `SubmitPromptHandler`) cierra sobre `caso.id`/`memory`/
 //    `hooks`/`agents` y delega la secuencia completa del turno al
@@ -149,5 +150,27 @@ const { agents, hooks, memory, caso } = startup;
 const onSubmit: SubmitPromptHandler = (prompt) =>
   handleTurn(caso.id, prompt, { memory, hooks, candidateAgents: agents });
 
-// 5. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo.
-startTui(onSubmit);
+// 5. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
+//    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
+//    defecto) y recién ahí cierra el handle de SQLite abierto en el paso 2.
+//    Un cierre prolijo del proceso, no una salida abrupta con el archivo de
+//    la base de datos todavía abierto.
+const tui = startTui(onSubmit);
+try {
+  await tui.waitUntilExit();
+} finally {
+  // `finally`, no solo el camino feliz de Ctrl+C: si `App.tsx` tira un error
+  // de render, el error boundary de Ink (`node_modules/ink/build/ink.js`,
+  // `unmount(error)`) hace que `waitUntilExit()` rechace en vez de resolver
+  // — con top-level `await`, ese rechazo aborta la evaluación del módulo, así
+  // que `db.close()` tiene que correr acá para no perderse ese camino de
+  // salida también.
+  try {
+    db.close();
+  } catch (error) {
+    // El proceso ya está terminando — un fallo acá no debe convertirse en un
+    // crash con código de salida confuso, ni tapar el error original de
+    // `waitUntilExit` si lo hubiera; solo se reporta.
+    console.error(`No se pudo cerrar la base de datos: ${toErrorMessage(error)}`);
+  }
+}
