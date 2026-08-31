@@ -28,7 +28,11 @@ import figlet from "figlet";
 import type { ReactElement } from "react";
 
 const TAGLINE = "arnés empresarial de IA";
-const ASCII_ART_LINES = figlet.textSync("Light", { font: "Standard" }).split("\n");
+// "Big" — figlet's own scaled-up variant of the same letterform family as
+// "Standard" (same shapes, taller strokes), not a different visual style —
+// picked for a modest size bump (6 → 8 rendered lines, near-identical
+// width) without the more drastic redesign a font like "Block" would be.
+const ASCII_ART_LINES = figlet.textSync("Light", { font: "Big" }).split("\n");
 
 // Exported so `App.tsx` can size a bottom-padding spacer around the banner
 // without importing `figlet` itself or duplicating this computation — see
