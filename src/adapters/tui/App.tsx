@@ -305,9 +305,42 @@ function toErrorMessage(error: unknown): string {
 
 // Shared by both the `<Static>` (settled turns) and pending-turn render
 // paths below — a turn's prompt echo must look identical regardless of
-// which of those two paths renders it.
-function TurnPrompt({ prompt }: { readonly prompt: string }): ReactElement {
-  return <Text>Vos: {prompt}</Text>;
+// which of those two paths renders it. `color="cyan"` distinguishes the
+// employee's own prompt from the agent's response (`AgentResponse` below,
+// left uncolored on purpose — see its own comment) and from the error branch
+// (red, untouched) — exported so this module's own test suite can call it
+// directly as a plain function instead of going through Ink's render
+// pipeline (see `App.test.tsx`'s "role color differentiation" describe block
+// for why: Chalk, which Ink uses internally to color `<Text>`, detects "no
+// color support" in this test environment, so `lastFrame()` never carries
+// color codes to assert on).
+export function TurnPrompt({ prompt }: { readonly prompt: string }): ReactElement {
+  return <Text color="cyan">Vos: {prompt}</Text>;
+}
+
+// Renders a settled turn's agent response line — extracted from what used to
+// be inline JSX inside the `<Static>` render below, same pattern as
+// `TurnPrompt` above (a single hook-free `<Text>`), for the same reason:
+// exported so the test suite can call it directly and inspect its props
+// without relying on `lastFrame()`, which cannot observe color in this test
+// environment (see `TurnPrompt`'s comment above). Deliberately no `color`
+// prop (plain/default foreground) — an explicit `color="white"` would look
+// wrong on a light-background terminal (white-on-white), so "leave it
+// uncolored" is the portable choice, distinguishing it from the employee's
+// own prompt (cyan) and the error branch (red) without assuming a dark
+// background.
+export function AgentResponse({
+  agentLabel,
+  responseText,
+}: {
+  readonly agentLabel?: string | undefined;
+  readonly responseText?: string | undefined;
+}): ReactElement {
+  return (
+    <Text>
+      {agentLabel}: {responseText}
+    </Text>
+  );
 }
 
 export function App({ onSubmit }: AppProps): ReactElement {
@@ -554,9 +587,7 @@ export function App({ onSubmit }: AppProps): ReactElement {
             <Box key={`turn-${turn.id}`} flexDirection="column">
               <TurnPrompt prompt={turn.prompt} />
               {turn.status === "done" && (
-                <Text>
-                  {turn.agentLabel}: {turn.responseText}
-                </Text>
+                <AgentResponse agentLabel={turn.agentLabel} responseText={turn.responseText} />
               )}
               {turn.status === "error" && <Text color="red">Error: {turn.errorMessage}</Text>}
             </Box>

@@ -3,7 +3,7 @@ import { render as renderInkDirect } from "ink";
 import { render } from "ink-testing-library";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App.js";
+import { AgentResponse, App, TurnPrompt } from "./App.js";
 import type { TuiTurnResult } from "./tui-port.js";
 
 /**
@@ -788,6 +788,36 @@ describe("App", () => {
         instance.unmount();
         instance.cleanup();
       }
+    });
+  });
+
+  /**
+   * Role color differentiation ("Vos:" en cian, la respuesta del agente sin
+   * color/por defecto) is asserted here by calling `TurnPrompt`/
+   * `AgentResponse` directly as plain functions — NOT via JSX/`lastFrame()`
+   * like the rest of this file. Both are hook-free function components (a
+   * single `<Text>` each), so calling them directly returns the raw React
+   * element with its `.props` inspectable straight away, bypassing Ink's
+   * render pipeline entirely. This matters because `ink-testing-library`'s
+   * `lastFrame()` does not carry color at all in this test environment: Ink
+   * colors via Chalk internally, and Chalk detects "no color support" here,
+   * so `color="cyan"` never shows up as an ANSI code in the returned string —
+   * empirically confirmed, not a theoretical gap. Asserting on `.props.color`
+   * directly is the only reliable way to test this.
+   */
+  describe("role color differentiation (props, not lastFrame)", () => {
+    it("TurnPrompt renders in cyan and keeps the 'Vos:' echo content", () => {
+      const element = TurnPrompt({ prompt: "hola" });
+
+      expect(element.props.color).toBe("cyan");
+      expect(element.props.children).toEqual(["Vos: ", "hola"]);
+    });
+
+    it("AgentResponse renders uncolored (no color prop) and keeps the agent label/response content", () => {
+      const element = AgentResponse({ agentLabel: "Agente", responseText: "respuesta" });
+
+      expect(element.props.color).toBeUndefined();
+      expect(element.props.children).toEqual(["Agente", ": ", "respuesta"]);
     });
   });
 });
