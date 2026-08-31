@@ -224,6 +224,26 @@ describe("App", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("shows which agent is answering as soon as onSubmit resolves it, before the turn's promise settles", async () => {
+    const { promise } = deferred<TuiTurnResult>();
+    const onSubmit = vi.fn((_prompt: string, onAgentResolved?: (agentLabel: string) => void) => {
+      // Simulates `main.ts` calling `resolveTurn` synchronously, before
+      // `handleTurn`'s promise starts resolving — see `tui-port.ts`'s module
+      // doc for why this callback fires before the promise settles.
+      onAgentResolved?.("Agente Conversacional");
+      return promise;
+    });
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("hola agente");
+    stdin.write(ENTER);
+
+    // The agent label must already be visible in the pending indicator —
+    // the promise has NOT been resolved yet at this point in the test.
+    expect(lastFrame()).toContain("Agente Conversacional: ");
+    expect(lastFrame()).toContain("Pensando");
+  });
+
   it("renders the product banner once, above the conversation", async () => {
     const onSubmit = vi.fn().mockResolvedValue({ responseText: "hola humano", agentLabel: "Agente" });
     const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
@@ -316,7 +336,11 @@ describe("App", () => {
     stdin.write("hola agente");
     stdin.write(ENTER);
 
-    expect(onSubmit).toHaveBeenCalledWith("hola agente");
+    // Second argument is `onAgentResolved` (`SubmitPromptHandler`'s optional
+    // second parameter, `tui-port.ts`) — `submitDraft` always passes a
+    // function there, so this asserts the prompt exactly and the second
+    // argument's shape only, not its identity.
+    expect(onSubmit).toHaveBeenCalledWith("hola agente", expect.any(Function));
     expect(lastFrame()).toContain("Vos: hola agente");
     expect(lastFrame()).toContain("Pensando");
     expect(lastFrame()).not.toContain("> hola agente");
@@ -363,7 +387,7 @@ describe("App", () => {
     stdin.write("otro prompt");
     stdin.write(ENTER);
     expect(onSubmit).toHaveBeenCalledTimes(2);
-    expect(onSubmit).toHaveBeenNthCalledWith(2, "otro prompt");
+    expect(onSubmit).toHaveBeenNthCalledWith(2, "otro prompt", expect.any(Function));
 
     await waitFor(() => (lastFrame() ?? "").includes("Agente: recuperado"));
   });
@@ -471,7 +495,7 @@ describe("App", () => {
 
     stdin.write(ENTER);
 
-    expect(onSubmit).toHaveBeenCalledWith("linea1 linea2");
+    expect(onSubmit).toHaveBeenCalledWith("linea1 linea2", expect.any(Function));
   });
 
   it("does nothing on arrow-up when no prompt has been submitted yet", async () => {
@@ -658,7 +682,7 @@ describe("App", () => {
     expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
 
     stdin.write(ENTER);
-    expect(onSubmit).toHaveBeenNthCalledWith(2, "primero");
+    expect(onSubmit).toHaveBeenNthCalledWith(2, "primero", expect.any(Function));
     // See earlier tests' comment on why this waits for settled text instead
     // of `onSubmit.mock.calls.length`.
     await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));

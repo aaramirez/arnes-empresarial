@@ -87,8 +87,8 @@
  * too, not only a rejected promise — `SubmitPromptHandler`'s type promises a
  * `Promise<TuiTurnResult>` return, but nothing stops a real implementation
  * from throwing before it ever returns one (e.g. a non-`async` handler with
- * a validation bug). `submitDraft` wraps the `onSubmit(prompt)` call itself
- * in `try`/`catch`, routing a synchronous throw into the same `settleTurn`
+ * a validation bug). `submitDraft` wraps the `onSubmit(prompt, onAgentResolved)`
+ * call itself in `try`/`catch`, routing a synchronous throw into the same `settleTurn`
  * error path the rejection handler below already uses — instead of letting
  * it propagate out of `submitDraft`, out of the `useInput` callback, and
  * become an uncaught exception on the underlying stdin `EventEmitter`, which
@@ -96,8 +96,8 @@
  * `pendingRef`/`pending` stuck at `true` forever (the `settleTurn` call that
  * resets them would never run), permanently blocking all further input via
  * the guard below. Deliberately `try`/`catch` around a direct, synchronous
- * `onSubmit(prompt)` call, not `Promise.resolve().then(() =>
- * onSubmit(prompt))` (an earlier version of this fix, which also catches the
+ * `onSubmit(prompt, onAgentResolved)` call, not `Promise.resolve().then(() =>
+ * onSubmit(prompt, onAgentResolved))` (an earlier version of this fix, which also catches the
  * throw): that alternative defers the call itself to a microtask, changing
  * `onSubmit` from being invoked synchronously within the same keystroke's
  * `useInput` callback — relied upon elsewhere, e.g. by this module's own
@@ -415,10 +415,24 @@ export function App({ onSubmit }: AppProps): ReactElement {
     setDraft(draftRef.current);
   }
 
+  // Shared by `settleTurn` (below) and `onAgentResolved` (inside
+  // `submitDraft`) — both patch a single turn by `id` inside `history`, the
+  // former on settlement, the latter as soon as the agent is known. One
+  // helper instead of two copies of the same `setHistory((previous) =>
+  // previous.map(...))` means a future guard (e.g. ignoring a late
+  // `onAgentResolved` call for a turn that already settled — see
+  // `tui-port.ts`'s note on why `onAgentResolved` is expected to fire
+  // synchronously) only has one place to be added, not two to remember to
+  // keep in sync.
+  function updateTurn(
+    id: number,
+    patch: Partial<Pick<TurnRecord, "status" | "responseText" | "agentLabel" | "errorMessage">>,
+  ) {
+    setHistory((previous) => previous.map((turn) => (turn.id === id ? { ...turn, ...patch } : turn)));
+  }
+
   function settleTurn(id: number, outcome: Pick<TurnRecord, "status" | "responseText" | "agentLabel" | "errorMessage">) {
-    setHistory((previous) =>
-      previous.map((turn) => (turn.id === id ? { ...turn, ...outcome } : turn)),
-    );
+    updateTurn(id, outcome);
     pendingRef.current = false;
     setPending(false);
   }
@@ -443,19 +457,30 @@ export function App({ onSubmit }: AppProps): ReactElement {
     pendingRef.current = true;
     setPending(true);
 
-    // `onSubmit(prompt)` itself is wrapped in try/catch — see the module
-    // doc's note on synchronous throws for why: a throw there hits `catch`
-    // and routes into the same `settleTurn` error path a rejected `onSubmit`
-    // promise already uses below, instead of propagating out of
-    // `submitDraft` uncaught. Deliberately not `Promise.resolve().then(() =>
-    // onSubmit(prompt))` (an earlier version of this fix) — that alternative
-    // also catches a synchronous throw, but defers the *call itself* to a
-    // microtask, which would change `onSubmit` from being invoked
-    // synchronously within this same keystroke's `useInput` callback (relied
-    // upon elsewhere, e.g. by tests asserting `onSubmit` was called
-    // immediately after a raw Enter keypress) to one microtask later.
+    // `onAgentResolved` is `onSubmit`'s optional second argument
+    // (`SubmitPromptHandler`, `tui-port.ts`) — called synchronously, before
+    // `onSubmit`'s promise settles, so the pending indicator can show which
+    // agent is handling this turn while it is still in flight. Uses the same
+    // `updateTurn` helper `settleTurn` does above, touching only
+    // `agentLabel` — the turn stays `"pending"`.
+    function onAgentResolved(agentLabel: string) {
+      updateTurn(id, { agentLabel });
+    }
+
+    // `onSubmit(prompt, onAgentResolved)` itself is wrapped in try/catch —
+    // see the module doc's note on synchronous throws for why: a throw
+    // there hits `catch` and routes into the same `settleTurn` error path a
+    // rejected `onSubmit` promise already uses below, instead of
+    // propagating out of `submitDraft` uncaught. Deliberately not
+    // `Promise.resolve().then(() => onSubmit(prompt, onAgentResolved))` (an
+    // earlier version of this fix) — that alternative also catches a
+    // synchronous throw, but defers the *call itself* to a microtask, which
+    // would change `onSubmit` from being invoked synchronously within this
+    // same keystroke's `useInput` callback (relied upon elsewhere, e.g. by
+    // tests asserting `onSubmit` was called immediately after a raw Enter
+    // keypress) to one microtask later.
     try {
-      onSubmit(prompt).then(
+      onSubmit(prompt, onAgentResolved).then(
         (result: TuiTurnResult) => {
           settleTurn(id, {
             status: "done",
@@ -598,6 +623,7 @@ export function App({ onSubmit }: AppProps): ReactElement {
         <Box flexDirection="column">
           <TurnPrompt prompt={pendingTurn.prompt} />
           <Text dimColor>
+            {pendingTurn.agentLabel ? `${pendingTurn.agentLabel}: ` : ""}
             <Spinner type="dots" /> Pensando...
           </Text>
         </Box>

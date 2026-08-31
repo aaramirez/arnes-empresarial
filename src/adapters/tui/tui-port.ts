@@ -28,8 +28,18 @@
  * result once the Núcleo has produced a final answer for it. Rejects if the
  * Núcleo fails to produce one — `App.tsx` renders that rejection as an
  * error instead of leaving the turn's pending state unresolved.
+ *
+ * `onAgentResolved` (optional) is called SYNCHRONOUSLY, before the returned
+ * promise settles, with the id/label of the agent handling this turn — the
+ * same "estado del agente" this module doc already calls out on the output
+ * side of I1 (`TuiTurnResult.agentLabel`), just available earlier. This lets
+ * the TUI show which agent is answering while the turn is still in flight,
+ * instead of only once the final response arrives.
  */
-export type SubmitPromptHandler = (prompt: string) => Promise<TuiTurnResult>;
+export type SubmitPromptHandler = (
+  prompt: string,
+  onAgentResolved?: (agentLabel: string) => void,
+) => Promise<TuiTurnResult>;
 
 /** What a resolved turn renders in the TUI: the answer, and which agent gave it. */
 export interface TuiTurnResult {

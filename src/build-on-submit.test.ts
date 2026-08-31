@@ -1,0 +1,177 @@
+/**
+ * Tests for `buildOnSubmit` — see `build-on-submit.ts`'s module doc for what
+ * this wiring does and why it was extracted out of `main.ts` for testing.
+ *
+ * SDK boundary note: `buildOnSubmit`'s signature deliberately matches
+ * `main.ts`'s own production wiring 1:1 (see that module's doc) — it does
+ * NOT forward a `queryFn`/`logDeps` injection point to `handleTurn`, because
+ * production never needs one. That means the ONLY way to let a real
+ * `handleTurn` call (unmocked — this file never does `vi.mock` on
+ * `handle-turn.js`) complete without reaching the real network (and, per
+ * this SDK, a real local CLI subprocess) is to fake the third-party
+ * `@anthropic-ai/claude-agent-sdk` module boundary itself, the same
+ * `system`/`init` + `result`/`success` message shapes
+ * `handle-turn.test.ts` already establishes for its own `queryFn` fakes.
+ * This is a different kind of mock than mocking `handleTurn`: it fakes an
+ * external system `invoke-model.ts` already documents as unmockable any
+ * other way at this layer (its own module doc: "the real `query()` hits the
+ * live Anthropic API over the network, which is unusable in tests").
+ */
+import { describe, expect, it, vi } from "vitest";
+import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+
+/**
+ * Fakes the SDK's `query()` export itself — same `system`/`init` +
+ * `result`/`success` message shapes `handle-turn.test.ts` already
+ * establishes for its own `queryFn` fakes, just wired via `vi.mock` instead
+ * of DI (see this file's module doc for why `buildOnSubmit` leaves no other
+ * seam here). Defined as a standalone function (not a closure over
+ * describe/it-scoped variables) so it stays safe under `vi.mock`'s factory
+ * hoisting.
+ */
+function fakeQueryGenerator() {
+  return vi.fn(async function* (_params: { readonly prompt: string; readonly options?: Options }) {
+    yield {
+      type: "system",
+      subtype: "init",
+      session_id: "sdk-session-fake",
+    } as unknown as SDKMessage;
+    yield {
+      type: "result",
+      subtype: "success",
+      result: "hola desde el agente",
+      is_error: false,
+      session_id: "sdk-session-fake",
+    } as unknown as SDKMessage;
+  });
+}
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  return { ...actual, query: fakeQueryGenerator() };
+});
+
+import { buildOnSubmit } from "./build-on-submit.js";
+import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle-turn.js";
+import { createHookEngine } from "./core/hooks/hook-engine.js";
+import { DEFAULT_AGENT_MODEL, type AgentDefinition } from "./core/agents/definitions.js";
+import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
+
+/**
+ * Same fake `LogTurnEventDeps` shape/reasoning `handle-turn.test.ts`'s own
+ * `fakeLogDeps()` already establishes: `handleTurn`'s real default writes to
+ * `data/harness.log` on the real filesystem — every `buildOnSubmit(...)`
+ * call below injects this instead, so a plain `npm test` run never touches
+ * it (Reviewer finding, WARNING — the first version of this file omitted
+ * this and appended real lines to that log on every run).
+ */
+function fakeLogDeps(): LogTurnEventDeps {
+  return {
+    now: () => "2026-08-30T00:00:00.000Z",
+    write: () => {
+      // Discarded — no test here asserts on logged content, only on
+      // `handleTurn`'s real filesystem write being avoided.
+    },
+  };
+}
+
+function makeCasoRow(casoId: string) {
+  return {
+    id: casoId,
+    tipo: "conversacion",
+    estado: CASO_ESTADO_ACTIVO,
+    createdAt: "2026-08-30T00:00:00.000Z",
+    updatedAt: "2026-08-30T00:00:00.000Z",
+  };
+}
+
+/** Same fake `MemoryPort` shape `handle-turn.test.ts` already establishes. */
+function fakeMemory(): MemoryPort {
+  return {
+    getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+    getLatestSesionAgente: vi.fn(() => undefined),
+    updateCaso: vi.fn(),
+    createSesionAgente: vi.fn(),
+  };
+}
+
+function makeAgent(id: string): AgentDefinition {
+  return {
+    id,
+    systemPrompt: `system prompt de ${id}`,
+    allowedTools: [],
+    model: DEFAULT_AGENT_MODEL,
+  };
+}
+
+describe("buildOnSubmit", () => {
+  it(
+    "calls onAgentResolved with the FIRST agent's id before handleTurn reaches memory (context stage)",
+    async () => {
+      // `resolveTurn` always returns the first candidate (see
+      // `resolve-turn.ts`) — two distinct agents here so this test actually
+      // proves *which* id was threaded through, not a trivial single-agent
+      // case.
+      const callOrder: string[] = [];
+      const memory: MemoryPort = {
+        getCasoById: vi.fn((id: string) => {
+          callOrder.push("getCasoById");
+          return makeCasoRow(id);
+        }),
+        getLatestSesionAgente: vi.fn(() => undefined),
+        updateCaso: vi.fn(),
+        createSesionAgente: vi.fn(),
+      };
+      const hooks = createHookEngine();
+      const agents = [makeAgent("agente-uno"), makeAgent("agente-dos")];
+      const onSubmit = buildOnSubmit("caso-1", memory, hooks, agents, fakeLogDeps());
+
+      const onAgentResolved = vi.fn((agentLabel: string) => {
+        callOrder.push(`resolved:${agentLabel}`);
+      });
+
+      const promise = onSubmit("hola", onAgentResolved);
+      await promise;
+
+      // `onAgentResolved` must have already fired — with the FIRST agent's
+      // id — before `handleTurn`'s context stage ever reaches `memory`.
+      // `handleTurn`/`runTurnStage`/`assembleContext` call `getCasoById`
+      // synchronously (no `await` precedes that call — see
+      // `turn-error.ts`'s `runTurnStage`), so this ordering is a REAL signal
+      // of source-line order inside `buildOnSubmit`'s closure, not an
+      // artificial timing assumption. A version that called `handleTurn`
+      // before `onAgentResolved` would flip this order: `getCasoById` would
+      // land first in `callOrder`.
+      expect(callOrder[0]).toBe("resolved:agente-uno");
+      expect(callOrder).toContain("getCasoById");
+      expect(onAgentResolved).toHaveBeenCalledTimes(1);
+      expect(onAgentResolved).toHaveBeenCalledWith("agente-uno");
+    },
+  );
+
+  it("resolves with the same responseText/agentLabel handleTurn itself produces", async () => {
+    const memory = fakeMemory();
+    const hooks = createHookEngine();
+    const agents = [makeAgent("agente-uno"), makeAgent("agente-dos")];
+    const onSubmit = buildOnSubmit("caso-1", memory, hooks, agents, fakeLogDeps());
+
+    const result = await onSubmit("hola", () => {});
+
+    expect(result).toEqual({
+      responseText: "hola desde el agente",
+      agentLabel: "agente-uno",
+    });
+  });
+
+  it("does not throw when onAgentResolved is omitted (optional ?.() call)", async () => {
+    const memory = fakeMemory();
+    const hooks = createHookEngine();
+    const agents = [makeAgent("agente-uno"), makeAgent("agente-dos")];
+    const onSubmit = buildOnSubmit("caso-1", memory, hooks, agents, fakeLogDeps());
+
+    await expect(onSubmit("hola")).resolves.toMatchObject({
+      responseText: "hola desde el agente",
+      agentLabel: "agente-uno",
+    });
+  });
+});

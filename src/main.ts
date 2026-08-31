@@ -54,7 +54,7 @@ import "./core/config/env.js";
 
 import { randomUUID } from "node:crypto";
 import { bootstrapHarness, HarnessBootstrapError } from "./core/startup/bootstrap.js";
-import { CASO_ESTADO_ACTIVO, handleTurn, type MemoryPort } from "./core/turn-selector/handle-turn.js";
+import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { openDatabase } from "./adapters/memory/db.js";
 import {
   createCaso,
@@ -65,7 +65,7 @@ import {
   type Caso,
 } from "./adapters/memory/repository.js";
 import { startTui } from "./adapters/tui/start-tui.js";
-import type { SubmitPromptHandler } from "./adapters/tui/tui-port.js";
+import { buildOnSubmit } from "./build-on-submit.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -146,9 +146,14 @@ const { agents, hooks, memory, caso, db } = startup;
 //    `hooks`/`agents` y delega la secuencia completa del turno al
 //    Manejador de Turno (`handle-turn.ts`) — resolver agente, ensamblar
 //    contexto (I3 lectura), invocar el modelo (I5), cerrar el turno
-//    (I3 escritura).
-const onSubmit: SubmitPromptHandler = (prompt) =>
-  handleTurn(caso.id, prompt, { memory, hooks, candidateAgents: agents });
+//    (I3 escritura). Construcción extraída a `build-on-submit.ts` (mismo
+//    nivel que este archivo, no dentro de ningún adaptador — ver el module
+//    doc de ese archivo, que también documenta por qué `resolveTurn` se
+//    llama acá TAMBIÉN, redundantemente, antes de `handleTurn`) para que
+//    esta pieza de wiring tenga su propio archivo de test — este mismo
+//    archivo no se puede importar desde un test sin disparar
+//    `bootstrapHarness()`/`openDatabase()`/`createCaso()` reales.
+const onSubmit = buildOnSubmit(caso.id, memory, hooks, agents);
 
 // 5. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por

@@ -46,6 +46,19 @@
  *   `prompt` is still a required parameter (unused today) so the contract
  *   already matches the shape a future routing implementation needs,
  *   instead of having to add it later and touch every caller.
+ *
+ * Purity note — `src/main.ts`'s `onSubmit` calls this function a second
+ * time, redundantly, before calling `handleTurn` (which calls it again
+ * internally) — done so the TUI can show which agent is handling a turn
+ * before the model responds, without changing `handleTurn`'s contract (see
+ * `main.ts`'s own comment at that call site). That duplication is only safe
+ * because `resolveTurn` is pure today (no randomness, no I/O, deterministic
+ * given the same `prompt`/`candidates`) — if this function ever grows
+ * content-based routing that is not purely deterministic (e.g. a
+ * classifier call), `main.ts`'s early call and `handleTurn`'s internal call
+ * could return different agents with no test catching the drift. Revisit
+ * that duplication at the same time this bullet's "no content-based
+ * routing" stops being true.
  */
 
 import { type AgentDefinition, listAgentDefinitions } from "../agents/definitions.js";
