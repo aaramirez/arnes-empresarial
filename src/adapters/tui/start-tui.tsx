@@ -26,10 +26,11 @@
  * rendered behavior — this module has nothing left to verify beyond "did it
  * mount `App` with the right prop", which is what its test checks.
  *
- * `writeToTerminal` is injectable for the same reason `renderTui` is (see
+ * `clearScreen` is injectable for the same reason `renderTui` is (see
  * above), same DI pattern as `now`/`write` in `turn-logger.ts` and `queryFn`
- * in `invoke-model.ts` — the real default writes to `process.stdout`, which
- * isn't meaningful to assert on in a unit test.
+ * in `invoke-model.ts` — the real default (`defaultClearScreen`) writes to
+ * `process.stdout` via `node:readline`, which isn't meaningful to assert on
+ * in a unit test.
  *
  * Alternate screen buffer removal note (post-Hito 1.0 change, decided with
  * the user after a live bug report: the banner "dragged" down the screen on
@@ -47,14 +48,27 @@
  * the terminal's NORMAL buffer, where `<Static>` gets real, native,
  * mouse-wheel scrollback with no artificial limit.
  *
- * `CLEAR_AND_HOME` (`\x1B[2J\x1B[H`) is still needed even without the
- * alternate screen buffer, for the same original reason: homing the cursor
- * so Ink's first frame (the banner) starts at the terminal's actual top row
- * instead of wherever the shell's cursor happened to be left. `\x1B[2J`
- * clears only what is currently VISIBLE — it does not touch scrollback
- * already there — so any prior shell output (e.g. `npm run dev` /
- * PowerShell lines) remains reachable by scrolling up, it just is not shown
- * on startup, which is the visual effect that was originally requested.
+ * Clearing the screen and homing the cursor is still needed even without the
+ * alternate screen buffer, for the same original reason: so Ink's first
+ * frame (the banner) starts at the terminal's actual top row instead of
+ * wherever the shell's cursor happened to be left.
+ *
+ * Raw ANSI (`\x1B[2J\x1B[H`, this module's previous approach) was replaced
+ * by `node:readline`'s `cursorTo`/`clearScreenDown`, after a live bug report
+ * from the user (screenshot attached) confirmed the raw sequence does not
+ * reliably clear the screen in the Windows legacy console host
+ * (`conhost.exe`, no ConPTY — confirmed with the user, not Windows
+ * Terminal): running `npm run dev` there left the PowerShell/`tsx` lines
+ * visible above the banner instead of being cleared. Root cause: that
+ * legacy console does not interpret raw VT/ANSI escape sequences reliably —
+ * a known conhost compatibility gap. `readline.cursorTo`/`clearScreenDown`
+ * is the fix because it is the exact mechanism Node's own `console.clear()`
+ * uses internally — it is built specifically to behave correctly
+ * cross-platform, including on that legacy console, instead of writing raw
+ * escape codes by hand. Like the raw `\x1B[2J` before it, this only clears
+ * what is currently VISIBLE — it does not touch scrollback — so any prior
+ * shell output remains reachable by scrolling up, it just is not shown on
+ * startup, which is the visual effect that was originally requested.
  *
  * Accepted trade-off, confirmed with the user (not a code gap): dropping the
  * alternate screen buffer also means exiting the TUI no longer restores the
@@ -72,27 +86,21 @@
  * No crash guard, on purpose, and for the same reason as the exit trade-off
  * above rather than because there is truly nothing to consider: unlike the
  * removed alternate-screen version, a synchronous `renderTui` throw here
- * cannot be followed by any restorative write — `CLEAR_AND_HOME` has already
+ * cannot be followed by any restorative write — `clearScreen` has already
  * cleared the visible screen by that point, and there is no alternate buffer
  * left to swap back to. The crash therefore surfaces over a screen that
  * looks blank rather than over the shell's pre-launch content; the original
- * content is not lost (same `\x1B[2J` scrollback note above still applies),
- * just not immediately visible. The error itself is left to propagate
- * unchanged — `main.ts` already handles that from its own `try` around this
- * call (see that file's module doc).
+ * content is not lost (same scrollback note above still applies), just not
+ * immediately visible. The error itself is left to propagate unchanged —
+ * `main.ts` already handles that from its own `try` around this call (see
+ * that file's module doc).
  */
 
 import { render, type Instance } from "ink";
+import { clearScreenDown, cursorTo } from "node:readline";
 import type { ReactElement } from "react";
 import { App } from "./App.js";
 import type { SubmitPromptHandler } from "./tui-port.js";
-
-/**
- * ANSI sequence that clears the screen (`\x1B[2J`) and moves the cursor to
- * the top-left corner (`\x1B[H`). See the module doc for why this is still
- * needed without the alternate screen buffer.
- */
-const CLEAR_AND_HOME = "\x1B[2J\x1B[H";
 
 /**
  * The slice of Ink's `Instance` this module actually depends on. See the
@@ -105,25 +113,38 @@ export type TuiInstance = Pick<Instance, "unmount" | "waitUntilExit">;
 export type RenderTui = (tree: ReactElement) => TuiInstance;
 
 /**
- * Writes raw data to the terminal. See the module doc for why this is
- * injectable and what it's used for here.
+ * Clears the terminal screen and homes the cursor. See the module doc for
+ * why this is injectable and why it uses `node:readline` instead of raw
+ * ANSI.
  */
-export type WriteToTerminal = (data: string) => void;
+export type ClearScreen = () => void;
+
+/**
+ * Real default for `ClearScreen`: homes the cursor and clears everything
+ * below it on `process.stdout`, via `node:readline` — the same mechanism
+ * Node's own `console.clear()` uses internally. See the module doc for why
+ * this replaced raw ANSI escape sequences.
+ */
+function defaultClearScreen(): void {
+  cursorTo(process.stdout, 0, 0);
+  clearScreenDown(process.stdout);
+}
 
 /**
  * Mounts the TUI (`App`) with `onSubmit` as its I1 handler for submitted
  * prompts, clearing the (normal) screen and homing the cursor first — see
  * the module doc for why — and returns the mounted instance as-is.
  *
- * `renderTui` defaults to the real Ink `render` export, `writeToTerminal`
- * defaults to writing to `process.stdout` — see the module doc's DI notes
- * for why. Production callers (`src/main.ts`) omit both.
+ * `renderTui` defaults to the real Ink `render` export, `clearScreen`
+ * defaults to `defaultClearScreen` (real `node:readline` calls against
+ * `process.stdout`) — see the module doc's DI notes for why. Production
+ * callers (`src/main.ts`) omit both.
  */
 export function startTui(
   onSubmit: SubmitPromptHandler,
   renderTui: RenderTui = render,
-  writeToTerminal: WriteToTerminal = (data) => process.stdout.write(data),
+  clearScreen: ClearScreen = defaultClearScreen,
 ): TuiInstance {
-  writeToTerminal(CLEAR_AND_HOME);
+  clearScreen();
   return renderTui(<App onSubmit={onSubmit} />);
 }

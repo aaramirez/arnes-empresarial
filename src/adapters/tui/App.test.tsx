@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { render as renderInkDirect } from "ink";
 import { render } from "ink-testing-library";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -126,6 +128,91 @@ const ARROW_DOWN = "\x1b[B";
 // see `App.tsx`'s module doc for why history navigation must check for
 // that combination explicitly instead of trusting `key.upArrow` alone.
 const CTRL_UP = "\x1b[1;5A";
+
+/**
+ * Minimal fake `stdin`/`stdout`/`stderr` for driving `ink`'s own `render`
+ * directly (not via `ink-testing-library`) — see the "banner placement —
+ * real (non-debug) Ink render path" `describe` block below for why this
+ * exists at all.
+ *
+ * `FakeInkStdin` mirrors `ink-testing-library`'s own internal `Stdin` class
+ * (`node_modules/ink-testing-library/build/index.js`) byte-for-byte in
+ * shape — same `isTTY`/`write`/`setEncoding`/`setRawMode`/`resume`/`pause`/
+ * `ref`/`unref`/`read` surface — so it satisfies exactly what `ink`'s
+ * `useStdin`/`useInput` (and `App.js`'s `handleSetRawMode`/`handleReadable`)
+ * actually call, without pulling in `ink-testing-library` itself.
+ */
+class FakeInkStdin extends EventEmitter {
+  isTTY = true;
+  private data: string | null = null;
+
+  write = (data: string) => {
+    this.data = data;
+    this.emit("readable");
+    this.emit("data", data);
+  };
+
+  setEncoding() {
+    // Do nothing — matches ink-testing-library's own no-op.
+  }
+
+  setRawMode() {
+    // Do nothing — matches ink-testing-library's own no-op.
+  }
+
+  resume() {
+    // Do nothing — matches ink-testing-library's own no-op.
+  }
+
+  pause() {
+    // Do nothing — matches ink-testing-library's own no-op.
+  }
+
+  ref() {
+    // Do nothing — matches ink-testing-library's own no-op.
+  }
+
+  unref() {
+    // Do nothing — matches ink-testing-library's own no-op.
+  }
+
+  read = (): string | null => {
+    const { data } = this;
+    this.data = null;
+    return data;
+  };
+}
+
+/**
+ * Records every raw `stdout.write(chunk)` call, in order, instead of only
+ * exposing a single `lastFrame()` like `ink-testing-library`'s own fake
+ * does — the whole point of this fake is to observe the *sequence* of
+ * writes `ink.js`'s real (non-debug) `onRender` produces, which is exactly
+ * what the debug-mode shortcut collapses away. `columns`/`rows` are set to
+ * plausible terminal dimensions so `ink.js`'s `outputHeight >=
+ * this.options.stdout.rows` branch (the "clear + redraw everything" escape
+ * hatch for content taller than the terminal) is not accidentally
+ * triggered by this test's small output.
+ */
+class FakeInkStdout extends EventEmitter {
+  columns = 100;
+  rows = 30;
+  readonly writes: string[] = [];
+
+  write = (chunk: string) => {
+    this.writes.push(chunk);
+  };
+}
+
+/** Same recording shape as `FakeInkStdout`, for the (unused by this test,
+ * but required by `ink`'s `render` options) `stderr` stream. */
+class FakeInkStderr extends EventEmitter {
+  readonly writes: string[] = [];
+
+  write = (chunk: string) => {
+    this.writes.push(chunk);
+  };
+}
 
 describe("App", () => {
   it("renders an empty input line and does not call onSubmit on first render", async () => {
@@ -608,5 +695,99 @@ describe("App", () => {
     expect(frame).toContain("Vos: prompt 1");
     expect(frame).toContain(`Vos: prompt ${turnCount}`);
     expect(frame).not.toContain("oculto");
+  });
+
+  /**
+   * `ink-testing-library`'s `render` (used by every other test in this
+   * file, via the module-level `render` import) always calls `ink`'s own
+   * `render` with `debug: true` hardcoded — see
+   * `node_modules/ink-testing-library/build/index.js:74` — with no option
+   * to turn it off. In debug mode, `ink.js`'s `onRender`
+   * (`node_modules/ink/build/ink.js`, ~lines 104-109) takes a completely
+   * different branch than production: it accumulates ALL static output
+   * ever produced into `this.fullStaticOutput` and does a single
+   * `stdout.write(this.fullStaticOutput + output)` per render — one fresh,
+   * fully-reassembled string every time, built directly from the current
+   * React tree's child order. It never exercises the real, non-debug path
+   * (~lines 118-131: `this.log.clear()` → `stdout.write(staticOutput)` →
+   * `this.log(output)`) where this bug actually lived — the one where a
+   * live `<Banner />` gets its own redraw written to the real stream
+   * *after* each newly flushed static turn.
+   *
+   * Consequence: since a broken `<Banner />` (live, outside `<Static>`) is
+   * still the first JSX child in both the buggy and fixed versions of
+   * `App.tsx`, `lastFrame()` shows it "above" the conversation in BOTH
+   * cases — debug mode's single reassembled string is ordered by JSX
+   * position, not by write order over time. No assertion built on
+   * `lastFrame()`/`ink-testing-library` can ever tell these two versions
+   * apart, regardless of what it checks. This is a real gap, empirically
+   * confirmed (`git stash` on `App.tsx` alone left every `ink-testing-
+   * library`-based test in this file green, including the two banner-
+   * ordering tests above), not a theoretical one.
+   *
+   * This block bypasses `ink-testing-library` and drives `ink`'s own
+   * `render` directly, with `debug: false`, against fake `stdin`/`stdout`/
+   * `stderr` streams that record every raw `stdout.write` call in order —
+   * the same production code path a real terminal session takes, and the
+   * only way to actually observe whether the banner is written to the
+   * stream once, before the conversation, and never again.
+   */
+  describe("banner placement — real (non-debug) Ink render path", () => {
+    it("flushes the banner to the real stdout stream exactly once, before the first completed turn, and never again afterwards", async () => {
+      const onSubmit = vi
+        .fn<(prompt: string) => Promise<TuiTurnResult>>()
+        .mockResolvedValueOnce({ responseText: "respuesta uno", agentLabel: "Agente" })
+        .mockResolvedValueOnce({ responseText: "respuesta dos", agentLabel: "Agente" });
+
+      const stdin = new FakeInkStdin();
+      const stdout = new FakeInkStdout();
+      const stderr = new FakeInkStderr();
+
+      const instance = renderInkDirect(<App onSubmit={onSubmit} />, {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stderr: stderr as unknown as NodeJS.WriteStream,
+        debug: false,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      });
+
+      try {
+        // Same reasoning as `renderApp`'s own `settle()` call above: the
+        // raw-stdin subscription is wired up in a `useEffect`, which React
+        // only runs asynchronously after the initial mount.
+        await settle();
+
+        stdin.write("primer turno");
+        stdin.write(ENTER);
+        await waitFor(() => stdout.writes.some((chunk) => chunk.includes("respuesta uno")));
+
+        const bannerIndex = stdout.writes.findIndex((chunk) => chunk.includes("arnés empresarial de IA"));
+        const firstTurnIndex = stdout.writes.findIndex((chunk) => chunk.includes("respuesta uno"));
+        expect(bannerIndex).toBeGreaterThanOrEqual(0);
+        expect(firstTurnIndex).toBeGreaterThanOrEqual(0);
+        // The real ordering assertion this describe block exists for: the
+        // banner's write must precede the first completed turn's write in
+        // the actual stream write sequence, not merely in a single
+        // reassembled debug-mode string.
+        expect(bannerIndex).toBeLessThan(firstTurnIndex);
+
+        stdin.write("segundo turno");
+        stdin.write(ENTER);
+        await waitFor(() => stdout.writes.some((chunk) => chunk.includes("respuesta dos")));
+
+        // The regression this bug actually was: the banner getting
+        // rewritten to the stream again (and again) as more turns settle,
+        // dragging it further down. Once flushed, it must never appear in
+        // any later write.
+        const laterBannerWrites = stdout.writes
+          .slice(bannerIndex + 1)
+          .filter((chunk) => chunk.includes("arnés empresarial de IA"));
+        expect(laterBannerWrites).toHaveLength(0);
+      } finally {
+        instance.unmount();
+        instance.cleanup();
+      }
+    });
   });
 });

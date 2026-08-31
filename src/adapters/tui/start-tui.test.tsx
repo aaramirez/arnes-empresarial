@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
-import { startTui, type RenderTui } from "./start-tui.js";
+import { startTui, type ClearScreen, type RenderTui } from "./start-tui.js";
 import type { SubmitPromptHandler } from "./tui-port.js";
 
-const CLEAR_AND_HOME = "\x1B[2J\x1B[H";
-
 describe("startTui", () => {
-  it("writes CLEAR_AND_HOME before renderTui is called", () => {
+  it("calls clearScreen before renderTui is called", () => {
     const onSubmit: SubmitPromptHandler = vi.fn();
     const fakeInstance = { unmount: vi.fn(), waitUntilExit: vi.fn().mockResolvedValue(undefined) };
     const calls: string[] = [];
@@ -14,13 +12,13 @@ describe("startTui", () => {
       calls.push("renderTui");
       return fakeInstance;
     });
-    const writeToTerminal = vi.fn().mockImplementation((data: string) => {
-      calls.push(`write:${data}`);
+    const clearScreen: ClearScreen = vi.fn().mockImplementation(() => {
+      calls.push("clearScreen");
     });
 
-    startTui(onSubmit, renderTui, writeToTerminal);
+    startTui(onSubmit, renderTui, clearScreen);
 
-    expect(calls).toEqual([`write:${CLEAR_AND_HOME}`, "renderTui"]);
+    expect(calls).toEqual(["clearScreen", "renderTui"]);
   });
 
   it("renders <App onSubmit={onSubmit} /> via the injected renderer", () => {
@@ -48,13 +46,13 @@ describe("startTui", () => {
     expect(instance.waitUntilExit).toBe(fakeInstance.waitUntilExit);
   });
 
-  it("lets a synchronous renderTui error propagate unchanged, without writing anything else", () => {
+  it("lets a synchronous renderTui error propagate unchanged, without calling anything else", () => {
     const onSubmit: SubmitPromptHandler = vi.fn();
     const renderCrash = new Error("reconciler blew up");
     const renderTui: RenderTui = vi.fn().mockImplementation(() => {
       throw renderCrash;
     });
-    const writeToTerminal = vi.fn();
+    const clearScreen: ClearScreen = vi.fn();
 
     // `toThrow(renderCrash)` alone only compares `.message` (confirmed
     // against Vitest's own matcher — same as Jest's), so it would not catch
@@ -65,13 +63,12 @@ describe("startTui", () => {
     // directly is what actually proves that, not just the message matching.
     let caught: unknown;
     try {
-      startTui(onSubmit, renderTui, writeToTerminal);
+      startTui(onSubmit, renderTui, clearScreen);
     } catch (error) {
       caught = error;
     }
     expect(caught).toBe(renderCrash);
 
-    expect(writeToTerminal).toHaveBeenCalledTimes(1);
-    expect(writeToTerminal).toHaveBeenCalledWith(CLEAR_AND_HOME);
+    expect(clearScreen).toHaveBeenCalledTimes(1);
   });
 });
