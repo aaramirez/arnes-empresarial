@@ -494,6 +494,48 @@ describe("App", () => {
     expect(frame).toContain("respuesta 2");
   });
 
+  describe("turn timestamp (AppProps.now DI, same pattern as LogTurnEventDeps.now)", () => {
+    it("stamps a submitted turn with the injected now(), visible both while pending and after it settles", async () => {
+      const { promise, resolve } = deferred<TuiTurnResult>();
+      const onSubmit = vi.fn().mockReturnValue(promise);
+      // Fixed, deterministic clock — see `AppProps.now`'s comment in
+      // `App.tsx` for why this is injectable at all instead of relying on
+      // the real clock (`() => new Date()`), which no test can assert an
+      // exact value against without flaking.
+      const fixedNow = () => new Date("2026-08-30T14:05:09");
+      const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} now={fixedNow} />);
+
+      stdin.write("hola agente");
+      stdin.write(ENTER);
+
+      // Pending turn — timestamp is fixed at submission, not recomputed
+      // while "Pensando..." is showing.
+      expect(lastFrame()).toContain("[14:05:09] Vos: hola agente");
+
+      resolve({ responseText: "hola humano", agentLabel: "Agente" });
+      await waitFor(() => (lastFrame() ?? "").includes("Agente: hola humano"));
+
+      // Same timestamp survives the turn's move into `<Static>` once
+      // settled — it was never re-derived from a fresh `now()` call.
+      expect(lastFrame()).toContain("[14:05:09] Vos: hola agente");
+    });
+
+    it("does not crash when now is omitted, falling back to the real clock", async () => {
+      const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
+      const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+      expect(() => {
+        stdin.write("hola");
+        stdin.write(ENTER);
+      }).not.toThrow();
+
+      await waitFor(() => (lastFrame() ?? "").includes("Agente: ok"));
+      // Exact value is the real clock's — not asserted, only that SOME
+      // well-formed HH:MM:SS timestamp was rendered.
+      expect(lastFrame()).toMatch(/\[\d{2}:\d{2}:\d{2}\] Vos: hola/);
+    });
+  });
+
   it("ignores further input while a submission is still pending", async () => {
     const { promise } = deferred<TuiTurnResult>();
     const onSubmit = vi.fn().mockReturnValue(promise);
@@ -910,11 +952,12 @@ describe("App", () => {
    * directly is the only reliable way to test this.
    */
   describe("role color differentiation (props, not lastFrame)", () => {
-    it("TurnPrompt renders in cyan and keeps the 'Vos:' echo content", () => {
-      const element = TurnPrompt({ prompt: "hola" });
+    it("TurnPrompt renders in cyan, prefixed with '[timestamp]', and keeps the 'Vos:' echo content", () => {
+      const element = TurnPrompt({ prompt: "hola", timestamp: "14:05:09" });
 
       expect(element.props.color).toBe("cyan");
-      expect(element.props.children).toEqual(["Vos: ", "hola"]);
+      expect(element.props.children).toEqual(["[", "14:05:09", "] Vos: ", "hola"]);
+      expect((element.props.children as string[]).join("")).toBe("[14:05:09] Vos: hola");
     });
 
     it("AgentResponse renders uncolored (no color prop) and keeps the agent label/response content", () => {

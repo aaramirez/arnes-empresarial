@@ -282,6 +282,10 @@ type TurnStatus = "pending" | "done" | "error";
 interface TurnRecord {
   readonly id: number;
   readonly prompt: string;
+  // Fixed once, by `submitDraft`, at the moment this record is created — not
+  // recomputed on later renders (e.g. once the turn settles and moves into
+  // `<Static>`). `HH:MM:SS`, local time — see `formatTimestamp` below.
+  readonly timestamp: string;
   readonly status: TurnStatus;
   readonly responseText?: string;
   readonly agentLabel?: string;
@@ -298,10 +302,23 @@ type StaticItem =
 
 export interface AppProps {
   readonly onSubmit: SubmitPromptHandler;
+  // Injectable clock, same DI pattern as `LogTurnEventDeps.now` in
+  // `src/core/logging/turn-logger.ts`: production omits this and gets the
+  // real clock (`App`'s own default parameter below, `() => new Date()`);
+  // tests inject a fixed `Date` so a turn's rendered timestamp is
+  // deterministic instead of depending on when the test happens to run.
+  readonly now?: () => Date;
 }
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// `HH:MM:SS`, 24h, zero-padded, local time — the only format this hito asks
+// for (no date: a terminal session is single-day; no configurable timezone).
+function formatTimestamp(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 // Shared by both the `<Static>` (settled turns) and pending-turn render
@@ -315,8 +332,24 @@ function toErrorMessage(error: unknown): string {
 // for why: Chalk, which Ink uses internally to color `<Text>`, detects "no
 // color support" in this test environment, so `lastFrame()` never carries
 // color codes to assert on).
-export function TurnPrompt({ prompt }: { readonly prompt: string }): ReactElement {
-  return <Text color="cyan">Vos: {prompt}</Text>;
+//
+// `timestamp` (already formatted `HH:MM:SS` — see `formatTimestamp` above)
+// is a required prop, not computed here: this component stays a pure render
+// of whatever it is given, same as `prompt` itself — the actual clock read
+// happens once, in `submitDraft`, at turn-creation time (see `TurnRecord`'s
+// own comment for why).
+export function TurnPrompt({
+  prompt,
+  timestamp,
+}: {
+  readonly prompt: string;
+  readonly timestamp: string;
+}): ReactElement {
+  return (
+    <Text color="cyan">
+      [{timestamp}] Vos: {prompt}
+    </Text>
+  );
 }
 
 // Renders a settled turn's agent response line — extracted from what used to
@@ -437,7 +470,7 @@ export function computeFillerLines(terminalRows: number | undefined): number {
   return Math.max(0, terminalRows - BANNER_LINE_COUNT - PROMPT_INPUT_ROWS);
 }
 
-export function App({ onSubmit }: AppProps): ReactElement {
+export function App({ onSubmit, now = () => new Date() }: AppProps): ReactElement {
   const [history, setHistory] = useState<readonly TurnRecord[]>([]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
@@ -555,8 +588,12 @@ export function App({ onSubmit }: AppProps): ReactElement {
 
     const id = nextTurnId.current;
     nextTurnId.current += 1;
+    // Fixed here, once, at creation — see `TurnRecord`'s own comment for why
+    // this must not be recomputed on a later render (e.g. once the turn
+    // settles).
+    const timestamp = formatTimestamp(now());
 
-    setHistory((previous) => [...previous, { id, prompt, status: "pending" }]);
+    setHistory((previous) => [...previous, { id, prompt, status: "pending", timestamp }]);
     draftRef.current = "";
     setDraft("");
     pendingRef.current = true;
@@ -729,7 +766,7 @@ export function App({ onSubmit }: AppProps): ReactElement {
           const { turn } = item;
           return (
             <Box key={`turn-${turn.id}`} flexDirection="column">
-              <TurnPrompt prompt={turn.prompt} />
+              <TurnPrompt prompt={turn.prompt} timestamp={turn.timestamp} />
               {turn.status === "done" && (
                 <AgentResponse agentLabel={turn.agentLabel} responseText={turn.responseText} />
               )}
@@ -740,7 +777,7 @@ export function App({ onSubmit }: AppProps): ReactElement {
       </Static>
       {pendingTurn && (
         <Box flexDirection="column">
-          <TurnPrompt prompt={pendingTurn.prompt} />
+          <TurnPrompt prompt={pendingTurn.prompt} timestamp={pendingTurn.timestamp} />
           <Text dimColor>
             {pendingTurn.agentLabel ? `${pendingTurn.agentLabel}: ` : ""}
             <Spinner type="dots" /> Pensando...
