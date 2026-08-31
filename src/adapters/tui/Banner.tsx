@@ -30,6 +30,11 @@ import type { ReactElement } from "react";
 const TAGLINE = "arnés empresarial de IA";
 const ASCII_ART_LINES = figlet.textSync("Light", { font: "Standard" }).split("\n");
 
+// Exported so `App.tsx` can size a bottom-padding spacer around the banner
+// without importing `figlet` itself or duplicating this computation — see
+// `App.tsx`'s "pad up to the terminal height" module doc note.
+export const BANNER_LINE_COUNT = ASCII_ART_LINES.length + 1;
+
 export function Banner(): ReactElement {
   return (
     <Box flexDirection="column">

@@ -203,11 +203,11 @@
  * "any control combo is a no-op" behavior for arrows specifically.
  */
 
-import { Box, Static, Text, useInput } from "ink";
+import { Box, Static, Text, useInput, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import { useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { Banner } from "./Banner.js";
+import { Banner, BANNER_LINE_COUNT } from "./Banner.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./tui-port.js";
 
 // Settled turns render via Ink's `<Static>`, not a fixed visible-turn
@@ -293,6 +293,7 @@ interface TurnRecord {
 // item 0 here instead of a separately rendered live element.
 type StaticItem =
   | { readonly kind: "banner" }
+  | { readonly kind: "filler"; readonly lines: number }
   | { readonly kind: "turn"; readonly turn: TurnRecord };
 
 export interface AppProps {
@@ -343,6 +344,99 @@ export function AgentResponse({
   );
 }
 
+// Frames the input line with a blue single-line border, top and bottom —
+// same reason this is its own exported, hook-free function component as
+// `TurnPrompt`/`AgentResponse` above: `borderColor="blue"` is invisible to
+// `lastFrame()` in this test environment (Chalk, which Ink uses internally
+// for both `color` and `borderColor`, detects "no color support" here), so
+// the test suite calls this directly and asserts `.props.borderColor`
+// instead. `borderStyle="single"` draws the frame using Ink's native Unicode
+// box-drawing support (`node_modules/ink/build/styles.js`) — no manual
+// character math needed. `width="100%"` (a string, not a number) is also
+// resolved natively by Ink's underlying Yoga layout as a percentage of the
+// available width, so this does not need to read `process.stdout.columns`
+// either.
+//
+// Shrinks (does not remove) an already-accepted residual risk (Reviewer
+// finding, WARNING — see `start-tui.tsx`'s module doc for the original
+// "not structurally impossible" note this refers to): the live region's
+// input line used to cost exactly 1 row; framed, it costs 3+ (top border +
+// content + bottom border) on every single render, unconditionally. A
+// pending prompt long/wide enough to wrap can now push the live region past
+// the terminal's height two rows sooner than before. Out of scope to close
+// here — same as the prior note — just worth naming precisely, since this
+// component is what actually shrank that margin.
+export function PromptInput({ draft }: { readonly draft: string }): ReactElement {
+  return (
+    <Box borderStyle="single" borderColor="blue" width="100%">
+      <Text>{`> ${draft}`}</Text>
+    </Box>
+  );
+}
+
+// Rows `PromptInput` itself costs — top border + content + bottom border,
+// for a draft short enough not to wrap. See `PromptInput`'s own comment
+// ("costs 3+ rows") for where this number comes from. Exported so tests can
+// compute expected filler counts against the same constant `computeFillerLines`
+// itself uses, instead of a second hardcoded `3` that could silently drift.
+export const PROMPT_INPUT_ROWS = 3;
+
+// Design decision — pad up to the terminal height on mount, as a STATIC
+// item (flushed once, alongside the banner, never touched again): requested
+// after the human saw a reference screenshot of a similar tool where the
+// bordered input sits low in the terminal even on a fresh, empty session,
+// rather than right under the banner with a large gap of blank space below
+// it down to the terminal's bottom edge (this file's default flow layout,
+// unpadded).
+//
+// Computed ONCE, from whatever `stdout.rows` reads at mount, and frozen from
+// then on (see `App`'s `fillerLines` state below) — deliberately NOT
+// recomputed from live state on every render gated by e.g. "has no turns
+// yet". An earlier version of this feature did exactly that (`hasHistory`
+// flipping the padding on/off), and it produced a real, reported bug: the
+// instant the first prompt was submitted, `hasHistory` flipped true and the
+// filler amount collapsed from a potentially large number straight to 0 in
+// a single render. Because that filler lived in the LIVE region (redrawn via
+// Ink's own erase-and-rewrite cycle every render — see the module doc above
+// on why only settled turns are safe from this), the live region's rendered
+// height dropped by that same large amount in one frame, and Ink erased
+// that many rows via cursor-up escapes to redraw the now-shorter region —
+// visually, the whole screen appeared to "snap" back upward the moment a
+// prompt was sent. Freezing the value and flushing it as a `<Static>` item
+// (this file's own established mechanism for "written once, permanent,
+// never redrawn") sidesteps the entire class of bug: nothing ever has to
+// erase it, because it is never rewritten, exactly like the banner it sits
+// next to.
+//
+// Not "always keep padding to fill the screen as the conversation grows",
+// either: once real turns exist, `<Static>`-flushed content becomes genuine
+// terminal scrollback outside Ink's own reach (see the module doc above), so
+// there is no reliable way to know how many rows that flushed content will
+// eventually occupy — it depends on terminal width wrapping for arbitrary
+// prompt/response text, which nothing here tracks. A conversation that has
+// grown enough to fill or exceed the terminal already gets the "input glued
+// to the bottom" look for free, for a different reason: the terminal's own
+// auto-scroll keeps the most recently written line (the live region, i.e.
+// this input) at the bottom of the visible viewport once total output
+// exceeds the terminal's height. A fixed, one-time filler is the right size
+// for exactly the case it targets (a fresh, still-empty session) and simply
+// stops mattering once real content grows past it.
+//
+// Exported as a standalone pure function (same reasoning as `PromptInput`/
+// `TurnPrompt`/`AgentResponse` above: directly unit-testable without
+// depending on Ink's rendering pipeline or a real/faked terminal size).
+// `terminalRows` is `number | undefined` because `ink-testing-library`'s
+// fake `stdout` (used by nearly every other test in this file) exposes no
+// `rows` property at all — only a real terminal, or this file's own
+// `FakeInkStdout` (used by the "banner placement" describe block), does.
+export function computeFillerLines(terminalRows: number | undefined): number {
+  if (terminalRows === undefined) {
+    return 0;
+  }
+
+  return Math.max(0, terminalRows - BANNER_LINE_COUNT - PROMPT_INPUT_ROWS);
+}
+
 export function App({ onSubmit }: AppProps): ReactElement {
   const [history, setHistory] = useState<readonly TurnRecord[]>([]);
   const [draft, setDraft] = useState("");
@@ -363,6 +457,17 @@ export function App({ onSubmit }: AppProps): ReactElement {
   // `draftRef.current` as it was right before the *first* arrow-up that
   // entered navigation mode — not overwritten again while still navigating.
   const draftBeforeHistoryRef = useRef("");
+
+  // Frozen at mount, via a lazy `useState` initializer — see
+  // `computeFillerLines`'s comment above for why this must NOT be
+  // recomputed later (that was the actual bug: a live-recomputed filler
+  // collapsing to 0 mid-session caused the whole screen to visibly snap
+  // upward). No resize tracking after mount is intentional for the same
+  // reason: once this value is flushed into `<Static>` (below), a later
+  // change to it would never be seen anyway — `<Static>`'s own contract is
+  // that a flushed item is never re-rendered.
+  const { stdout } = useStdout();
+  const [fillerLines] = useState(() => computeFillerLines(stdout.rows));
 
   // Shared walk/clamp/commit logic for both arrow-up ("older") and
   // arrow-down ("newer") — see the module doc's "Command history
@@ -584,8 +689,18 @@ export function App({ onSubmit }: AppProps): ReactElement {
   // `readonly`), unlike the rest of this module's props/state — the
   // mismatch is purely a typing artifact of `ink`'s declaration, not a real
   // mutability concern here (this array is never mutated after being built).
+  //
+  // The filler item (if any) sits right after the banner, item index 1 —
+  // both flush together on the very first render, before any turn exists,
+  // so the padded gap appears above the still-empty live region exactly
+  // once, permanently, same as the banner itself. See `computeFillerLines`'s
+  // comment above for why this has to be a `<Static>` item and not a
+  // conditionally-rendered live element.
   const { staticItems, pendingTurn } = useMemo(() => {
     const items: StaticItem[] = [{ kind: "banner" }];
+    if (fillerLines > 0) {
+      items.push({ kind: "filler", lines: fillerLines });
+    }
     let pending: TurnRecord | undefined;
 
     for (const turn of history) {
@@ -597,7 +712,7 @@ export function App({ onSubmit }: AppProps): ReactElement {
     }
 
     return { staticItems: items, pendingTurn: pending };
-  }, [history]);
+  }, [history, fillerLines]);
 
   return (
     <Box flexDirection="column">
@@ -605,6 +720,10 @@ export function App({ onSubmit }: AppProps): ReactElement {
         {(item) => {
           if (item.kind === "banner") {
             return <Banner key="banner" />;
+          }
+
+          if (item.kind === "filler") {
+            return <Box key="filler" height={item.lines} />;
           }
 
           const { turn } = item;
@@ -628,7 +747,7 @@ export function App({ onSubmit }: AppProps): ReactElement {
           </Text>
         </Box>
       )}
-      <Text>{`> ${draft}`}</Text>
+      <PromptInput draft={draft} />
     </Box>
   );
 }

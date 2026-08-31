@@ -3,7 +3,8 @@ import { render as renderInkDirect } from "ink";
 import { render } from "ink-testing-library";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentResponse, App, TurnPrompt } from "./App.js";
+import { AgentResponse, App, computeFillerLines, PromptInput, PROMPT_INPUT_ROWS, TurnPrompt } from "./App.js";
+import { BANNER_LINE_COUNT } from "./Banner.js";
 import type { TuiTurnResult } from "./tui-port.js";
 
 /**
@@ -76,6 +77,46 @@ async function settle(ticks = 5): Promise<void> {
   for (let i = 0; i < ticks; i += 1) {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
+}
+
+/**
+ * Extracts the input line's own text (the "> draft" content, border
+ * characters stripped) from a rendered frame. Needed since `PromptInput`
+ * (`App.tsx`) now wraps the input line in a bordered `<Box>`: the frame's
+ * LAST line is the border's bottom edge (`└───...───┘`), not the input line
+ * itself anymore, so this file's previous `.split("\n").at(-1)` pattern no
+ * longer reaches it. Locates the line by its `"│>"` prefix — `│` is the
+ * border's left edge, immediately followed by the "> " prompt itself, since
+ * `PromptInput` applies no left padding — instead of assuming a fixed
+ * position in the frame.
+ *
+ * Searches from the END of the frame (`.reverse().find(...)` — `.findLast`
+ * would read cleaner but this project's configured `lib` predates ES2023),
+ * not `.find(...)` from the start (Reviewer finding, WARNING): `.find`
+ * takes the FIRST matching line top-to-bottom — if an already-settled
+ * historical prompt (rendered above, inside `<Static>`) happened to wrap in
+ * a way where a continuation line's first two characters coincided with
+ * `"│>"`, `.find` would match that wrong line instead of the real input
+ * box. `PromptInput` is always the LAST element in the live region (see
+ * `App.tsx`'s `return`), so searching from the end is what actually
+ * guarantees hitting the real input box regardless of what any earlier
+ * content happens to contain.
+ *
+ * Strips the left `│` (via `.slice(1)`) and the right `│` plus the box's own
+ * right-padding spaces (via the trailing `replace`, single pass — the `\s*`
+ * before `│` absorbs what a separate `.trimEnd()` would otherwise have to
+ * clean up afterward), matching the exact trimmed strings this file's
+ * assertions already expected before the border existed (an empty draft
+ * renders as literal `"> "` inside the box, which becomes bare `">"` once
+ * trailing whitespace is stripped — same end result Ink's own line-trimming
+ * produced pre-border).
+ */
+function inputLineText(frame: string): string {
+  const line = frame.split("\n").reverse().find((candidate) => candidate.startsWith("│>"));
+  if (line === undefined) {
+    throw new Error('inputLineText: no line starting with the input border+prompt ("│>") found in frame');
+  }
+  return line.slice(1).replace(/\s*│\s*$/, "");
 }
 
 /**
@@ -307,6 +348,45 @@ describe("App", () => {
     expect(lastFrame()).toContain("> hola");
   });
 
+  it("frames the input line with a horizontal border above and below it", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("hola");
+
+    // Unicode box-drawing characters (`─`/`│`/etc.), unlike `borderColor`,
+    // are literal characters, not color — Chalk's "no color support"
+    // detection in this test environment (see the "role color
+    // differentiation" describe block below) does not touch them, so this
+    // IS a valid `lastFrame()` assertion. Checks the line right above and
+    // right below the one holding "> hola" both carry a horizontal border
+    // glyph, i.e. the input line is actually framed top and bottom, not
+    // just "a border exists somewhere in the frame".
+    const lines = (lastFrame() ?? "").split("\n");
+    const inputLineIndex = lines.findIndex((line) => line.includes("> hola"));
+
+    expect(inputLineIndex).toBeGreaterThan(0);
+    expect(lines[inputLineIndex - 1] ?? "").toContain("─");
+    expect(lines[inputLineIndex + 1] ?? "").toContain("─");
+  });
+
+  it("inputLineText preserves a │ character embedded in the draft, stripping only the real trailing border", async () => {
+    // Regression test for a Reviewer-found mutation-testing gap: the
+    // `inputLineText` helper's stripping regex (`/\s*│\s*$/`) relies on its
+    // trailing `$` anchor to only ever touch the box's own right border, not
+    // any `│` the user's draft itself might contain. Removing that anchor
+    // passed all other tests in this file untouched (nothing else exercises
+    // an embedded `│`) — this test exists specifically to catch that
+    // mutation: a draft containing `"│"` mid-content must come back intact,
+    // not truncated or corrupted at that character.
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+    stdin.write("ab│cd");
+
+    expect(inputLineText(lastFrame() ?? "")).toBe("> ab│cd");
+  });
+
   it("removes the last typed character on backspace", async () => {
     const onSubmit = vi.fn();
     const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
@@ -454,7 +534,7 @@ describe("App", () => {
     // Ctrl+J inserted is now a real character in the draft (unlike before,
     // when Ctrl+J contributed nothing), so it stays put; only "2" is
     // removed.
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> linea1 linea");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> linea1 linea");
   });
 
   it("treats Ctrl+J as a no-op while a submission is still pending", async () => {
@@ -475,7 +555,7 @@ describe("App", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(lastFrame()).toContain("Pensando");
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe(">");
+    expect(inputLineText(lastFrame() ?? "")).toBe(">");
   });
 
   it("replaces an embedded newline from a single pasted write with a space, keeping the draft (and the submitted prompt) single-line", async () => {
@@ -510,7 +590,7 @@ describe("App", () => {
     // (non-existent) history and no crash. Ink's frame trims the trailing
     // space of an empty draft line, so the expected value is ">" and not
     // "> ".
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe(">");
+    expect(inputLineText(lastFrame() ?? "")).toBe(">");
 
     // Also proves `historyIndexRef` was NOT flipped into "navigating" mode
     // by the arrow-up above (which the rendered draft alone cannot show,
@@ -521,7 +601,7 @@ describe("App", () => {
     // taken before the arrow-up.
     stdin.write("x");
     stdin.write(ARROW_DOWN);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> x");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> x");
   });
 
   it("walks older entries on repeated arrow-up and clamps at the oldest one", async () => {
@@ -546,15 +626,15 @@ describe("App", () => {
     await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
 
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> segundo");
 
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> primero");
 
     // Third arrow-up: already at the oldest entry, must stay clamped there
     // instead of wrapping around.
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> primero");
   });
 
   it("does not navigate history on a modified arrow (Ctrl+Up), same as before this feature existed", async () => {
@@ -580,14 +660,14 @@ describe("App", () => {
     // `key.upArrow` to that branch without also excluding modified arrows
     // from the new navigation branch would still navigate here.
     stdin.write(CTRL_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe(">");
+    expect(inputLineText(lastFrame() ?? "")).toBe(">");
 
     // Also confirms it did not silently enter navigation mode either: an
     // unmodified arrow-up right after must behave as the *first* arrow-up
     // (recalling the newest entry), not as a second step already inside
     // navigation.
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> segundo");
   });
 
   it("walks back down to the in-progress draft the user had before navigating history", async () => {
@@ -613,15 +693,15 @@ describe("App", () => {
     stdin.write("borrador sin enviar");
 
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> segundo");
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> primero");
 
     stdin.write(ARROW_DOWN);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> segundo");
 
     stdin.write(ARROW_DOWN);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> borrador sin enviar");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> borrador sin enviar");
   });
 
   it("does nothing on arrow-down when history navigation was never entered", async () => {
@@ -631,7 +711,7 @@ describe("App", () => {
     stdin.write("algo escrito");
     stdin.write(ARROW_DOWN);
 
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> algo escrito");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> algo escrito");
   });
 
   it("discards an in-place edit of a recalled entry once arrow-up navigates away from it", async () => {
@@ -652,19 +732,19 @@ describe("App", () => {
     await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
 
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundo");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> segundo");
 
     // Edit the recalled entry in place — this must NOT be persisted back
     // into `promptHistoryRef`, and must NOT reset `historyIndexRef` either
     // (see `App.tsx`'s new module-doc note on history navigation).
     stdin.write("X");
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> segundoX");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> segundoX");
 
     // Navigating again must jump to the previous entry ("primero"), not to
     // the edited text — this is what would break if `historyIndexRef` got
     // reset by the character-append branch above.
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> primero");
   });
 
   it("submits a recalled history entry and re-adds it as the newest entry", async () => {
@@ -679,7 +759,7 @@ describe("App", () => {
     await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
 
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> primero");
 
     stdin.write(ENTER);
     expect(onSubmit).toHaveBeenNthCalledWith(2, "primero", expect.any(Function));
@@ -690,7 +770,7 @@ describe("App", () => {
     // Submitting reset navigation back to the present and appended "primero"
     // again as the newest entry — one arrow-up must recall it once more.
     stdin.write(ARROW_UP);
-    expect((lastFrame() ?? "").split("\n").at(-1)).toBe("> primero");
+    expect(inputLineText(lastFrame() ?? "")).toBe("> primero");
   });
 
   // Settled turns render via `<Static>` (Ink) instead of a fixed
@@ -842,6 +922,168 @@ describe("App", () => {
 
       expect(element.props.color).toBeUndefined();
       expect(element.props.children).toEqual(["Agente", ": ", "respuesta"]);
+    });
+  });
+
+  /**
+   * PromptInput's blue border is asserted the same way `TurnPrompt`/
+   * `AgentResponse` above assert their color: calling the function directly
+   * and inspecting `.props`, not via JSX/`lastFrame()`. Same underlying
+   * reason — Chalk (which Ink uses internally for `borderColor`, same as
+   * `color`) detects "no color support" in this test environment, so
+   * `borderColor="blue"` never shows up as an ANSI code in `lastFrame()`.
+   * `borderStyle`/`width`, unlike `borderColor`, are not color, but are
+   * asserted here too for the same reason `TurnPrompt` above asserts
+   * `.props.children` directly instead of relying on `lastFrame()`: a
+   * simpler, more direct assertion than reaching into a rendered frame's
+   * Unicode box-drawing characters for something that is not itself about
+   * visual output. The border's actual on-screen appearance (the `─` glyphs
+   * it produces) is covered separately by the "frames the input line..."
+   * `lastFrame()`-based test above, in the main `App` describe block, since
+   * those glyphs ARE literal characters, not color.
+   */
+  describe("PromptInput framing (props, not lastFrame for color)", () => {
+    it("renders a single-line blue border spanning the full width, and keeps the '> draft' content", () => {
+      const element = PromptInput({ draft: "hola" });
+
+      expect(element.props.borderStyle).toBe("single");
+      expect(element.props.borderColor).toBe("blue");
+      expect(element.props.width).toBe("100%");
+      expect(element.props.children.props.children).toBe("> hola");
+    });
+  });
+
+  /**
+   * `computeFillerLines` is a pure function specifically so this logic can
+   * be exhaustively tested without any Ink rendering at all — see its own
+   * comment in `App.tsx` for why: `ink-testing-library`'s fake `stdout` (used
+   * by nearly every other test in this file) has no `rows` property, so a
+   * full-render assertion could never exercise the "generous terminal"
+   * branch in the first place.
+   */
+  describe("computeFillerLines (pure)", () => {
+    it("pads up to the terminal height when the terminal is generously tall", () => {
+      const rows = BANNER_LINE_COUNT + PROMPT_INPUT_ROWS + 10;
+
+      expect(computeFillerLines(rows)).toBe(10);
+    });
+
+    it("clamps to zero instead of going negative when the terminal is shorter than banner + input alone", () => {
+      const rows = BANNER_LINE_COUNT + PROMPT_INPUT_ROWS - 1;
+
+      expect(computeFillerLines(rows)).toBe(0);
+    });
+
+    it("returns zero when the terminal's row count is unknown (e.g. ink-testing-library's fake stdout)", () => {
+      expect(computeFillerLines(undefined)).toBe(0);
+    });
+  });
+
+  /**
+   * End-to-end confirmation that `computeFillerLines`'s output actually
+   * reaches the real terminal as blank rows, AND — the actual regression
+   * this describe block exists for — that it never has to be taken back.
+   * Same `FakeInkStdout` + `renderInkDirect` pattern as the "banner
+   * placement" describe block above, for the same reason: `ink-testing-
+   * library`'s fake `stdout` has no controllable `rows`, so only a real (or
+   * realistically faked) Ink render path can exercise this at all. Uses
+   * `debug: true` (unlike the banner-placement tests above, which use
+   * `debug: false`) specifically to get the same accumulated-full-frame
+   * writes `ink-testing-library` itself relies on internally — these tests
+   * care about total line COUNT of the final rendered frame, which needs
+   * the whole frame reassembled, not the incremental raw write sequence the
+   * banner-placement tests inspect instead.
+   */
+  describe("bottom padding on an empty session (real Ink render path)", () => {
+    it("pads the initial frame so an empty session's total rendered line count reaches the terminal's row count", async () => {
+      const onSubmit = vi.fn();
+      const rows = BANNER_LINE_COUNT + PROMPT_INPUT_ROWS + 7;
+
+      const stdin = new FakeInkStdin();
+      const stdout = new FakeInkStdout();
+      stdout.rows = rows;
+      const stderr = new FakeInkStderr();
+
+      const instance = renderInkDirect(<App onSubmit={onSubmit} />, {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stderr: stderr as unknown as NodeJS.WriteStream,
+        debug: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      });
+
+      try {
+        await settle();
+
+        const lastWrite = stdout.writes.at(-1) ?? "";
+        // `debug: true` accumulates the full frame on every write (same
+        // mechanism `ink-testing-library`'s own `lastFrame()` relies on) —
+        // the last write is therefore the complete, final rendered frame.
+        const lineCount = lastWrite.split("\n").length;
+
+        expect(lineCount).toBe(rows);
+      } finally {
+        instance.unmount();
+        instance.cleanup();
+      }
+    });
+
+    // Regression test for the actual bug report: submitting a prompt on a
+    // freshly padded, empty session made the whole screen visibly "jump"
+    // back upward. Root cause (see `computeFillerLines`'s module doc for
+    // the full account): an earlier version recomputed the filler from
+    // live state, gated on "no turns yet" — the instant a prompt was sent,
+    // that gate flipped and the filler collapsed to 0 in the same render as
+    // a LIVE (redrawable) element, so Ink erased that many rows via
+    // cursor-up escapes. Fixed by freezing the filler once and flushing it
+    // as a `<Static>` item instead (same file, same fix) — this test proves
+    // that fix holds by checking the one thing that actually matters: the
+    // rendered line count must never DECREASE across a submit, only grow or
+    // stay the same, however many turns are sent.
+    it("never shrinks the total rendered line count when a prompt is submitted on a padded, empty session", async () => {
+      const onSubmit = vi.fn().mockResolvedValue({ responseText: "respuesta", agentLabel: "Agente" });
+      const rows = BANNER_LINE_COUNT + PROMPT_INPUT_ROWS + 12;
+
+      const stdin = new FakeInkStdin();
+      const stdout = new FakeInkStdout();
+      stdout.rows = rows;
+      const stderr = new FakeInkStderr();
+
+      const instance = renderInkDirect(<App onSubmit={onSubmit} />, {
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stderr: stderr as unknown as NodeJS.WriteStream,
+        debug: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+      });
+
+      try {
+        await settle();
+
+        const lineCountBeforeSubmit = (stdout.writes.at(-1) ?? "").split("\n").length;
+        expect(lineCountBeforeSubmit).toBe(rows);
+
+        stdin.write("primer prompt");
+        stdin.write(ENTER);
+
+        // Immediately after submit, while the turn is still pending — the
+        // exact instant the original bug's collapse happened.
+        const lineCountWhilePending = (stdout.writes.at(-1) ?? "").split("\n").length;
+        expect(lineCountWhilePending).toBeGreaterThanOrEqual(lineCountBeforeSubmit);
+
+        await waitFor(() => (stdout.writes.at(-1) ?? "").includes("respuesta"));
+
+        // And once the turn settles (flushes into `<Static>`, replacing the
+        // pending indicator) — the other point where a naive fix could
+        // still shrink things.
+        const lineCountAfterSettle = (stdout.writes.at(-1) ?? "").split("\n").length;
+        expect(lineCountAfterSettle).toBeGreaterThanOrEqual(lineCountBeforeSubmit);
+      } finally {
+        instance.unmount();
+        instance.cleanup();
+      }
     });
   });
 });
