@@ -43,6 +43,7 @@ import { handleTurn, type MemoryPort } from "./core/turn-selector/handle-turn.js
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import type { SubmitPromptHandler } from "./adapters/tui/tui-port.js";
+import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 
 /**
  * Closes over `casoId`/`memory`/`hooks`/`agents` and returns the
@@ -59,6 +60,14 @@ import type { SubmitPromptHandler } from "./adapters/tui/tui-port.js";
  * `build-on-submit.test.ts` (Reviewer finding, WARNING) from appending real
  * lines to `data/harness.log` on every run, same reasoning
  * `handle-turn.test.ts`'s own `fakeLogDeps()` already documents.
+ *
+ * `knowledge` is optional too, same reasoning as `logDeps` above, and
+ * forwarded as a SINGLE unit (Hito 2, tarea 11, design.md §6): `mcpServers`
+ * and `feedback` are the two halves of the same `KnowledgeAdapter` and share
+ * one `CitedNodesRecorder` (`src/adapters/knowledge/index.ts`) — passing
+ * them as two independent parameters would let a caller inject one without
+ * the other, and an `mcpServers` with no matching `feedback` accumulates
+ * cited nodes that nothing ever drains.
  */
 export function buildOnSubmit(
   casoId: string,
@@ -66,20 +75,23 @@ export function buildOnSubmit(
   hooks: ReturnType<typeof bootstrapHarness>["hooks"],
   agents: ReturnType<typeof bootstrapHarness>["agents"],
   logDeps?: LogTurnEventDeps,
+  knowledge?: KnowledgeAdapter,
 ): SubmitPromptHandler {
   return (prompt, onAgentResolved) => {
     const agent = resolveTurn(prompt, agents);
     onAgentResolved?.(agent.id);
-    // `logDeps` is spread in only when actually provided — `HandleTurnDeps`
-    // declares it as an optional property (`logDeps?:`), which under this
-    // project's `exactOptionalPropertyTypes: true` means "may be absent",
-    // not "may be present with value `undefined`"; always including the key
-    // (even as `undefined`) fails typecheck for that reason.
+    // `logDeps`/`mcpServers`/`knowledgeFeedback` are spread in only when
+    // actually provided — `HandleTurnDeps` declares all three as optional
+    // properties, which under this project's `exactOptionalPropertyTypes:
+    // true` means "may be absent", not "may be present with value
+    // `undefined`"; always including the key (even as `undefined`) fails
+    // typecheck for that reason.
     return handleTurn(casoId, prompt, {
       memory,
       hooks,
       candidateAgents: agents,
       ...(logDeps ? { logDeps } : {}),
+      ...(knowledge ? { mcpServers: knowledge.mcpServers, knowledgeFeedback: knowledge.feedback } : {}),
     });
   };
 }
