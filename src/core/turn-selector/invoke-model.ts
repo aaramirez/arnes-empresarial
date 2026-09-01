@@ -251,9 +251,28 @@ function toSdkAgentDefinition(agent: AgentDefinition): SdkAgentDefinition {
  * is defined — with `exactOptionalPropertyTypes: true` (see
  * `tsconfig.json`), assigning `resume: undefined` explicitly is a distinct
  * type error from omitting the property, so this builds the object
- * incrementally instead of always including the key.
+ * incrementally instead of always including the key. Same incremental
+ * pattern for `options.allowedTools` and `options.mcpServers` below.
+ *
+ * Hito 2, tarea 8 — `options.allowedTools` (top-level, distinct from
+ * `agents[id].tools` set by `toSdkAgentDefinition`): ADR 4 states that for
+ * this harness *granting* a tool is *auto-approving* it — without this,
+ * `permissionMode: 'default'` would prompt for an approval nobody can give
+ * in a headless TUI. Populated from `agent.allowedTools` only when
+ * non-empty; Fix 1's restriction mechanism (`agents[id].tools`) is
+ * unaffected by this addition — the two fields serve different purposes
+ * (available toolset vs. auto-approved toolset).
+ *
+ * Hito 2, tarea 8 — `options.mcpServers`: registers MCP servers (e.g. the
+ * Adaptador de Conocimiento) for the turn. Optional and set only when the
+ * caller passes one, so a Hito 1 caller that omits it gets `options`
+ * identical to Hito 1's behavior (no `mcpServers` key at all).
  */
-function toQueryOptions(agent: AgentDefinition, context: AssembledContext): Options {
+function toQueryOptions(
+  agent: AgentDefinition,
+  context: AssembledContext,
+  mcpServers?: Options["mcpServers"],
+): Options {
   const options: Options = {
     agent: agent.id,
     agents: { [agent.id]: toSdkAgentDefinition(agent) },
@@ -261,6 +280,14 @@ function toQueryOptions(agent: AgentDefinition, context: AssembledContext): Opti
 
   if (context.resumeSessionId !== undefined) {
     options.resume = context.resumeSessionId;
+  }
+
+  if (agent.allowedTools.length > 0) {
+    options.allowedTools = [...agent.allowedTools];
+  }
+
+  if (mcpServers !== undefined) {
+    options.mcpServers = mcpServers;
   }
 
   return options;
@@ -275,6 +302,12 @@ function toQueryOptions(agent: AgentDefinition, context: AssembledContext): Opti
  * "`queryFn` as an injectable parameter" note for why. Production callers
  * (the future end-to-end integration, Hito 1 tarea 15) omit it.
  *
+ * `mcpServers` (Hito 2, tarea 8) is an optional trailing parameter — added
+ * after `queryFn` instead of migrating this function to a `deps` object —
+ * so every Hito 1 call site keeps compiling unchanged; see `design.md`
+ * §5.1's "Alternativa rechazada" note for why a `deps` object was rejected
+ * for this function specifically. Forwarded as-is to `toQueryOptions`.
+ *
  * Throws `ModelResponseIncompleteError` if the turn ends without a usable
  * session id + response text. Lets any `queryFn` rejection propagate
  * unwrapped (error policy deferred to Hito 1, tarea 11).
@@ -285,8 +318,9 @@ export async function invokeModel(
   prompt: string,
   hookEngine: HookEngine,
   queryFn: QueryFn = query,
+  mcpServers?: Options["mcpServers"],
 ): Promise<InvokeModelResult> {
-  const options = toQueryOptions(agent, context);
+  const options = toQueryOptions(agent, context, mcpServers);
 
   let sdkSessionId: string | undefined;
   let responseText: string | undefined;

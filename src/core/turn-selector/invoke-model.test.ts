@@ -154,6 +154,11 @@ describe("invokeModel", () => {
             model: "sonnet",
           },
         },
+        // Hito 2, tarea 8 (ADR 4): a non-empty allowedTools now also
+        // populates top-level options.allowedTools (auto-approval),
+        // distinct from agents[id].tools (Fix 1's restriction mechanism)
+        // asserted above.
+        allowedTools: ["Read", "Grep"],
       },
     });
   });
@@ -291,5 +296,66 @@ describe("invokeModel", () => {
     });
 
     await expect(invokeModel(agent, context, "hola", hookEngine, queryFn)).rejects.toBe(boom);
+  });
+
+  // Hito 2, tarea 8 — mcpServers + allowedTools (ADR 4) added to
+  // toQueryOptions. See design.md §5.1.
+  describe("mcpServers and allowedTools (Hito 2, tarea 8)", () => {
+    it("omits options.mcpServers entirely when the caller passes none (Hito 1 regression guard)", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-nomcp"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-nomcp"),
+      ]);
+
+      // No mcpServers argument passed — same call shape as every Hito 1 site.
+      await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      expect(callArgs?.options).not.toHaveProperty("mcpServers");
+    });
+
+    it("passes mcpServers through to options.mcpServers verbatim when provided", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const mcpServers: NonNullable<Options["mcpServers"]> = {
+        knowledge: { type: "stdio", command: "graphify" },
+      };
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-mcp"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-mcp"),
+      ]);
+
+      await invokeModel(agent, context, "hola", hookEngine, queryFn, mcpServers);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      expect(callArgs?.options?.mcpServers).toBe(mcpServers);
+    });
+
+    it("populates options.allowedTools from agent.allowedTools as a new array when non-empty (ADR 4 — granting is auto-approving)", async () => {
+      const agent = makeAgent({ allowedTools: ["mcp__knowledge__query_knowledge_base"] });
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-allowed"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-allowed"),
+      ]);
+
+      await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      expect(callArgs?.options?.allowedTools).toEqual(agent.allowedTools);
+      expect(callArgs?.options?.allowedTools).not.toBe(agent.allowedTools);
+    });
+
+    // The "omitted when empty" case is already covered strictly (not just
+    // toBeUndefined) by the existing "restricts the agent to an empty
+    // toolset..." test above (line ~161), which asserts
+    // `not.toHaveProperty("allowedTools")` for an agent with
+    // `allowedTools: []` — same criterion tasks.md tarea 8 asks for, so it
+    // is not duplicated here.
   });
 });
