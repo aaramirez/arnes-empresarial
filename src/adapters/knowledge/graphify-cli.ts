@@ -74,14 +74,28 @@ function classifyFailure(error: unknown): GraphifyFailureReason {
 }
 
 /**
- * Builds the argv for `graphify query -- <question> --graph <graphPath>
- * --budget <budget>`. The `--` separator is mandatory here, not decorative:
- * `question` is free text typed by an employee, and a question starting with
- * `-`/`--` (e.g. "-y esto que") would otherwise be parsed by `graphify`'s own
- * argument parser as a flag instead of the positional question argument.
+ * Builds the argv for `graphify query <question> --graph <graphPath>
+ * --budget <budget>`.
+ *
+ * NO `--` end-of-options separator here — an earlier version of this
+ * function added one, on the theory that a `question` starting with `-`
+ * could otherwise be misread as a flag by `graphify`'s argument parser. That
+ * theory does not hold for this CLI: `graphify --help` (installed binary,
+ * `graphify --version` → 0.8.44) documents `query`'s own syntax as
+ * `query "<question>" [--dfs] [--context C] [--budget N] [--graph <path>]`
+ * with no `--` separator support at all, and verifying against the real
+ * binary (not a mock — a mocked `execFile` cannot catch this) confirms both
+ * directions: `graphify query -- "CitedNodesRecorder" --graph
+ * graphify-out/graph.json --budget 200` returns "No matching nodes found."
+ * (it silently swallows the `--` into the question sent to the traversal),
+ * while the same call without `--` returns real BFS results; separately,
+ * `graphify query "-y esto que convencion de commits usa" --graph
+ * graphify-out/graph.json --budget 200` (a question that itself starts with
+ * `-`) is handled correctly as plain text with no `--` needed. So `--` is
+ * not decorative-but-harmless here — it actively breaks every real query.
  */
 export function buildQueryArgs(question: string, config: GraphifyConfig): readonly string[] {
-  return ["query", "--", question, "--graph", config.graphPath, "--budget", String(config.budget)];
+  return ["query", question, "--graph", config.graphPath, "--budget", String(config.budget)];
 }
 
 /** Builds the argv for `graphify save-result --question <q> --answer <a> --nodes <label1> <label2> ...`. */
