@@ -100,7 +100,10 @@ function fakeLogDeps(): { readonly deps: LogTurnEventDeps; readonly lines: strin
  */
 function fakeKnowledgeFeedback(
   callOrder?: string[],
-): { readonly port: KnowledgeFeedbackPort; readonly calls: Array<{ casoId: string; question: string; answer: string }> } {
+): {
+  readonly port: KnowledgeFeedbackPort;
+  readonly calls: Array<{ casoId: string; question: string; answer: string }>;
+} {
   const calls: Array<{ casoId: string; question: string; answer: string }> = [];
   return {
     calls,
@@ -109,7 +112,20 @@ function fakeKnowledgeFeedback(
         callOrder?.push("saveTurnResult");
         calls.push({ ...input });
       }),
+      discardPendingCitations: vi.fn(() => {
+        callOrder?.push("discardPendingCitations");
+      }),
     },
+  };
+}
+
+/** `KnowledgeFeedbackPort` fixture whose `saveTurnResult` rejects, violating its own "never rejects" contract on purpose — see the test below that asserts `handleTurn` never lets that rejection escape `onSubmit`. */
+function fakeKnowledgeFeedbackThatRejects(rejection: unknown): KnowledgeFeedbackPort {
+  return {
+    saveTurnResult: vi.fn(async () => {
+      throw rejection;
+    }),
+    discardPendingCitations: vi.fn(),
   };
 }
 
@@ -410,5 +426,69 @@ describe("handleTurn", () => {
     ).rejects.toMatchObject({ name: "TurnFailedError", stage: "close" });
 
     expect(knowledgeFeedback.port.saveTurnResult).not.toHaveBeenCalled();
+  });
+
+  it("discards pending citations via knowledgeFeedback.discardPendingCitations when closeTurn throws, without ever calling saveTurnResult", async () => {
+    const memory: MemoryPort = {
+      getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+      getLatestSesionAgente: vi.fn(() => undefined),
+      updateCaso: vi.fn(() => {
+        throw new Error("fallo de escritura simulado");
+      }),
+      createSesionAgente: vi.fn(),
+    };
+    const hooks = createHookEngine();
+    const queryFn = fakeQueryFn([
+      fakeSystemInitMessage("sdk-session-close-fail-3"),
+      fakeResultSuccessMessage("respuesta", "sdk-session-close-fail-3"),
+    ]);
+    const knowledgeFeedback = fakeKnowledgeFeedback();
+
+    await expect(
+      handleTurn("caso-1", "hola", {
+        memory,
+        hooks,
+        candidateAgents: [makeAgent()],
+        queryFn,
+        logDeps: fakeLogDeps().deps,
+        knowledgeFeedback: knowledgeFeedback.port,
+      }),
+    ).rejects.toMatchObject({ name: "TurnFailedError", stage: "close" });
+
+    expect(knowledgeFeedback.port.discardPendingCitations).toHaveBeenCalledTimes(1);
+    expect(knowledgeFeedback.port.saveTurnResult).not.toHaveBeenCalled();
+  });
+
+  it("does not propagate a rejection from knowledgeFeedback.saveTurnResult — the turn already completed successfully", async () => {
+    const casoId = "caso-1";
+    const agent = makeAgent();
+
+    const memory: MemoryPort = {
+      getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+      getLatestSesionAgente: vi.fn(() => undefined),
+      updateCaso: vi.fn(),
+      createSesionAgente: vi.fn(),
+    };
+
+    const queryFn = fakeQueryFn([
+      fakeSystemInitMessage("sdk-session-feedback-rejects"),
+      fakeResultSuccessMessage("respuesta", "sdk-session-feedback-rejects"),
+    ]);
+
+    const hooks = createHookEngine();
+    const log = fakeLogDeps();
+    const rejection = new Error("violación de contrato simulada: saveTurnResult rechazó");
+    const knowledgeFeedback = fakeKnowledgeFeedbackThatRejects(rejection);
+
+    const result = await handleTurn(casoId, "hola", {
+      memory,
+      hooks,
+      candidateAgents: [agent],
+      queryFn,
+      logDeps: log.deps,
+      knowledgeFeedback,
+    });
+
+    expect(result).toEqual({ responseText: "respuesta", agentLabel: "agente-conversacional" });
   });
 });

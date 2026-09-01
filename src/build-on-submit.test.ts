@@ -222,7 +222,10 @@ describe("buildOnSubmit", () => {
     const fakeMcpServers: NonNullable<Options["mcpServers"]> = {
       knowledge: { type: "stdio", command: "graphify" },
     };
-    const fakeFeedback = { saveTurnResult: vi.fn().mockResolvedValue(undefined) };
+    const fakeFeedback = {
+      saveTurnResult: vi.fn().mockResolvedValue(undefined),
+      discardPendingCitations: vi.fn(),
+    };
     const fakeKnowledge = { mcpServers: fakeMcpServers, feedback: fakeFeedback };
     const onSubmit = buildOnSubmit("caso-1", memory, hooks, agents, fakeLogDeps(), fakeKnowledge);
 

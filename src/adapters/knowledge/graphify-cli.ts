@@ -73,9 +73,15 @@ function classifyFailure(error: unknown): GraphifyFailureReason {
   return "unknown";
 }
 
-/** Builds the argv for `graphify query <question> --graph <graphPath> --budget <budget>`. */
+/**
+ * Builds the argv for `graphify query -- <question> --graph <graphPath>
+ * --budget <budget>`. The `--` separator is mandatory here, not decorative:
+ * `question` is free text typed by an employee, and a question starting with
+ * `-`/`--` (e.g. "-y esto que") would otherwise be parsed by `graphify`'s own
+ * argument parser as a flag instead of the positional question argument.
+ */
 export function buildQueryArgs(question: string, config: GraphifyConfig): readonly string[] {
-  return ["query", question, "--graph", config.graphPath, "--budget", String(config.budget)];
+  return ["query", "--", question, "--graph", config.graphPath, "--budget", String(config.budget)];
 }
 
 /** Builds the argv for `graphify save-result --question <q> --answer <a> --nodes <label1> <label2> ...`. */

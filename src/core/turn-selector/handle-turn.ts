@@ -252,12 +252,32 @@ export async function handleTurn(
     // runTurnStage. Best-effort por contrato (`KnowledgeFeedbackPort` nunca
     // rechaza) y nunca debe producir un `TurnFailedError`; ver el module doc
     // para por qué esto no vive en el hook `POST_TURN`.
+    //
+    // Hallazgo de code-review post-implementación: el `await` de abajo no
+    // confiaba únicamente en el contrato "nunca rechaza" documentado en
+    // `KnowledgeFeedbackPort` — lo refuerza en el call site. Si una futura
+    // implementación del port llegara a violar ese contrato, el turno ya
+    // completó exitosamente (respuesta ya devuelta al empleado, "turno-
+    // completado" ya logueado) y una excepción acá no debe convertirlo
+    // retroactivamente en un turno fallido.
     if (knowledgeFeedback !== undefined) {
-      await knowledgeFeedback.saveTurnResult({
-        casoId,
-        question: prompt,
-        answer: result.responseText,
-      });
+      try {
+        await knowledgeFeedback.saveTurnResult({
+          casoId,
+          question: prompt,
+          answer: result.responseText,
+        });
+      } catch (error) {
+        logTurnEvent(
+          casoId,
+          "conocimiento-feedback-fallido",
+          {
+            agentId: agent.id,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          logDeps,
+        );
+      }
     }
 
     return { responseText: result.responseText, agentLabel: agent.id };
@@ -270,6 +290,16 @@ export async function handleTurn(
         logDeps,
       );
     }
+
+    // Hallazgo de code-review post-implementación: `CitedNodesRecorder` es un
+    // singleton de vida de proceso, solo drenado dentro de
+    // `saveTurnResult` (arriba, camino exitoso). Un turno que falla acá nunca
+    // llega a ese `await`, así que lo que el modelo haya citado antes de la
+    // falla quedaba sin drenar y se mezclaba con las citas del próximo turno
+    // exitoso. `discardPendingCitations` vacía ese estado sin persistir nada
+    // a graphify — el turno falló, no hay respuesta válida que citar.
+    knowledgeFeedback?.discardPendingCitations();
+
     throw error;
   }
 }

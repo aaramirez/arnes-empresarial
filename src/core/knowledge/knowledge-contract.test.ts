@@ -30,6 +30,7 @@ describe("KnowledgeFeedbackPort", () => {
         expect(input.question).toBe("¿cuál es la política?");
         expect(input.answer).toBe("la respuesta");
       },
+      discardPendingCitations() {},
     };
 
     await expect(
@@ -39,6 +40,20 @@ describe("KnowledgeFeedbackPort", () => {
         answer: "la respuesta",
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it("is satisfied by an object implementing discardPendingCitations(): void", () => {
+    let discarded = false;
+    const port: KnowledgeFeedbackPort = {
+      async saveTurnResult() {},
+      discardPendingCitations() {
+        discarded = true;
+      },
+    };
+
+    port.discardPendingCitations();
+
+    expect(discarded).toBe(true);
   });
 });
 

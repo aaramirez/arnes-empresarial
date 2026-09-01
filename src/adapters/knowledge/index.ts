@@ -52,6 +52,30 @@ function toCallToolResult(result: KnowledgeToolTextResult): { content: [{ type: 
   return { content: [{ type: "text", text: result.content[0].text }] };
 }
 
+/**
+ * Truncates `text` to at most `maxChars` UTF-16 code units, the same way a
+ * plain `text.slice(0, maxChars)` would — except it never splits a surrogate
+ * pair (an emoji or any other character from a supplementary Unicode plane)
+ * in half. A plain `slice` cuts by code unit count, so a cut that happens to
+ * land exactly between a pair's high and low surrogate keeps the lone high
+ * surrogate, corrupting the string. When the code unit right at the cut
+ * boundary is a high surrogate, the cut backs off one position so that
+ * dangling surrogate is dropped along with the rest of its pair.
+ */
+function truncateSafely(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const HIGH_SURROGATE_START = 0xd800;
+  const HIGH_SURROGATE_END = 0xdbff;
+  const boundaryCharCode = text.charCodeAt(maxChars - 1);
+  const cutAt =
+    boundaryCharCode >= HIGH_SURROGATE_START && boundaryCharCode <= HIGH_SURROGATE_END
+      ? maxChars - 1
+      : maxChars;
+  return text.slice(0, cutAt);
+}
+
 export interface KnowledgeAdapter {
   /** Listo para `HandleTurnDeps.mcpServers` / `options.mcpServers`. */
   readonly mcpServers: NonNullable<Options["mcpServers"]>;
@@ -119,8 +143,7 @@ export function createKnowledgeAdapter(deps: {
         return;
       }
 
-      const answer =
-        input.answer.length > MAX_ANSWER_CHARS ? input.answer.slice(0, MAX_ANSWER_CHARS) : input.answer;
+      const answer = truncateSafely(input.answer, MAX_ANSWER_CHARS);
 
       try {
         await runGraphifySaveResult({ question: input.question, answer, nodes }, config, execFileFn);
@@ -129,6 +152,13 @@ export function createKnowledgeAdapter(deps: {
         const reason = error instanceof GraphifyCliError ? error.reason : "unknown";
         deps.logEvent("conocimiento-guardado-fallido", { reason });
       }
+    },
+
+    discardPendingCitations() {
+      // Same "siempre primero: drain" rule as saveTurnResult above, but
+      // never followed by a `runGraphifySaveResult` call — a failed turn has
+      // no valid answer to cite (see the port doc in `knowledge-contract.ts`).
+      recorder.drain();
     },
   };
 

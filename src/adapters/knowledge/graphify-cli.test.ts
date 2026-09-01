@@ -26,6 +26,7 @@ describe("buildQueryArgs", () => {
 
     expect(buildQueryArgs("¿Cuál es la política de vacaciones?", config)).toEqual([
       "query",
+      "--",
       "¿Cuál es la política de vacaciones?",
       "--graph",
       "graphify-out/graph.json",
@@ -39,12 +40,24 @@ describe("buildQueryArgs", () => {
 
     expect(buildQueryArgs("otra pregunta", config)).toEqual([
       "query",
+      "--",
       "otra pregunta",
       "--graph",
       "custom/other-graph.json",
       "--budget",
       "500",
     ]);
+  });
+
+  it("inserts -- immediately before the question so a leading-dash question is never parsed as a flag", () => {
+    const config = makeConfig();
+    const question = "-y esto que";
+
+    const args = buildQueryArgs(question, config);
+
+    const separatorIndex = args.indexOf("--");
+    expect(separatorIndex).toBeGreaterThanOrEqual(0);
+    expect(args[separatorIndex + 1]).toBe(question);
   });
 });
 

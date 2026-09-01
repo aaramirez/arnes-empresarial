@@ -153,6 +153,33 @@ describe("createKnowledgeAdapter — feedback.saveTurnResult", () => {
     expect(args[answerIndex]).toBe("a".repeat(4_000));
   });
 
+  it("truncates safely across a surrogate-pair boundary, never leaving a lone surrogate in the argv", async () => {
+    const config = makeConfig();
+    const execFileFn = vi.fn<ExecFileFn>().mockResolvedValue({ stdout: CITED_STDOUT, stderr: "" });
+    const adapter = createKnowledgeAdapter({ casoId: "caso-1", logEvent: vi.fn(), config, execFileFn });
+
+    await invokeKnowledgeTool(adapter, "pregunta");
+    execFileFn.mockClear();
+    execFileFn.mockResolvedValue({ stdout: "", stderr: "" });
+
+    // MAX_ANSWER_CHARS is 4000. Build a string of length 4001 whose emoji
+    // (a surrogate pair, 2 UTF-16 code units) straddles the cut boundary: the
+    // emoji's high surrogate lands exactly at index 3999 (the last index a
+    // plain `slice(0, 4000)` would keep), so a naive slice would keep the
+    // high surrogate but drop its low surrogate, leaving a lone surrogate.
+    const longAnswer = `${"a".repeat(3_999)}😀`;
+    expect(longAnswer.length).toBe(4_001);
+
+    await adapter.feedback.saveTurnResult({ casoId: "caso-1", question: "pregunta", answer: longAnswer });
+
+    const [, args] = execFileFn.mock.calls[0]!;
+    const answerIndex = args.indexOf("--answer") + 1;
+    const truncated = args[answerIndex] as string;
+
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(truncated).not.toMatch(LONE_SURROGATE);
+  });
+
   it("resolves even when the CLI rejects, and logs conocimiento-guardado-fallido with the classified reason", async () => {
     const config = makeConfig();
     const execFileFn = vi.fn<ExecFileFn>();
@@ -190,6 +217,43 @@ describe("createKnowledgeAdapter — feedback.saveTurnResult", () => {
       casoId: "caso-1",
       question: "otra pregunta",
       answer: "otra respuesta",
+    });
+
+    expect(execFileFn).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("conocimiento-sin-consulta");
+  });
+});
+
+describe("createKnowledgeAdapter — feedback.discardPendingCitations", () => {
+  it("drains the shared recorder without ever invoking execFileFn (never persists to graphify)", async () => {
+    const config = makeConfig();
+    const execFileFn = vi.fn<ExecFileFn>().mockResolvedValue({ stdout: CITED_STDOUT, stderr: "" });
+    const adapter = createKnowledgeAdapter({ casoId: "caso-1", logEvent: vi.fn(), config, execFileFn });
+
+    await invokeKnowledgeTool(adapter, "pregunta");
+    execFileFn.mockClear();
+
+    adapter.feedback.discardPendingCitations();
+
+    expect(execFileFn).not.toHaveBeenCalled();
+  });
+
+  it("leaves the recorder empty for the next saveTurnResult call, same as a normal drain", async () => {
+    const config = makeConfig();
+    const execFileFn = vi.fn<ExecFileFn>().mockResolvedValue({ stdout: CITED_STDOUT, stderr: "" });
+    const logEvent = vi.fn();
+    const adapter = createKnowledgeAdapter({ casoId: "caso-1", logEvent, config, execFileFn });
+
+    await invokeKnowledgeTool(adapter, "pregunta que falló");
+    adapter.feedback.discardPendingCitations();
+
+    execFileFn.mockClear();
+    logEvent.mockClear();
+
+    await adapter.feedback.saveTurnResult({
+      casoId: "caso-1",
+      question: "siguiente pregunta",
+      answer: "siguiente respuesta",
     });
 
     expect(execFileFn).not.toHaveBeenCalled();

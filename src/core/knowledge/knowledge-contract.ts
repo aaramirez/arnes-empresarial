@@ -39,4 +39,18 @@ export interface KnowledgeFeedbackPort {
     readonly question: string;
     readonly answer: string;
   }): Promise<void>;
+
+  /**
+   * Discards whatever has been recorded for the in-flight turn, WITHOUT
+   * persisting anything to graphify. Called by `handleTurn`'s `catch` branch
+   * (`src/core/turn-selector/handle-turn.ts`) when a turn fails after
+   * `resolveTurn`: the underlying accumulator the adapter shares with the
+   * MCP tool handler is a process-lifetime singleton, drained only by
+   * `saveTurnResult` — which never runs on a failed turn. Without this,
+   * whatever got recorded before the failure survives into the next turn and
+   * contaminates that next turn's `saveTurnResult` call with citations that
+   * do not belong to it. A failed turn has no valid answer to cite, so this
+   * must never call out to `graphify save-result`; it only clears state.
+   */
+  discardPendingCitations(): void;
 }

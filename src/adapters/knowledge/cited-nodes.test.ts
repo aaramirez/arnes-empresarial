@@ -42,6 +42,32 @@ describe("parseNodeLabels", () => {
     expect(parseNodeLabels(stdout)).toEqual(["Política de Vacaciones"]);
   });
 
+  it("never lets a fallback (no-metadata) label include brackets, even when '[' immediately follows the label with no space", () => {
+    const stdout = "NODE Array[string]";
+
+    const labels = parseNodeLabels(stdout);
+
+    for (const label of labels) {
+      expect(label).not.toContain("[");
+      expect(label).not.toContain("]");
+    }
+  });
+
+  it("never lets a stray ']' with no preceding '[' leak into a fallback label — the line is discarded as noise instead", () => {
+    const stdout = "NODE Foo]";
+
+    const labels = parseNodeLabels(stdout);
+
+    for (const label of labels) {
+      expect(label).not.toContain("]");
+    }
+    // No `[` anywhere and a `]` the fallback pattern can't legally consume:
+    // the correct, already-documented behavior is to discard this line as
+    // noise (same as any other line matching no `NODE` pattern), not to
+    // produce a label at all.
+    expect(labels).toEqual([]);
+  });
+
   it("ignores lines that do not start with NODE", () => {
     const stdout = [
       "Traversal: BFS depth=2 | Start: ['X'] | 3 nodes found",

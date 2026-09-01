@@ -20,8 +20,26 @@ export const MAX_CITED_NODES = 20;
 /** Matches a `NODE <label> [...]` line carrying a `src=/loc=/community=` metadata block. */
 const NODE_WITH_METADATA_PATTERN = /^NODE\s+(.+?)\s+\[/;
 
-/** Fallback for a bare `NODE <label>` line with no metadata block. */
-const NODE_WITHOUT_METADATA_PATTERN = /^NODE\s+(.+?)\s*$/;
+/**
+ * Fallback for a bare `NODE <label>` line with no (well-formed) metadata
+ * block. The label itself is restricted to `[^[\]]` — never crossing into
+ * either `[` or `]` — so a line like `"NODE Array[string]"` (no space before
+ * `[`, so `NODE_WITH_METADATA_PATTERN` above does not match it) still yields
+ * `Array` instead of swallowing `[string]` into the label. The trailing
+ * optional `(?:\[.*)?` absorbs that leftover bracket content instead of
+ * failing the whole match, while the plain "no bracket at all" case (the
+ * common one) behaves exactly as before.
+ *
+ * Excluding only `[` from the character class (an earlier version of this
+ * fix) left a hole: a line with a stray `]` and no preceding `[` (e.g.
+ * `"NODE Foo]"`) would still match, capturing `"Foo]"` — a label containing
+ * `]`. Excluding `]` too closes that hole: such a line no longer matches
+ * this pattern at all (the class can't extend past the `]`, and the trailing
+ * optional clause only ever starts with `\[`, never `]`), so it falls
+ * through as ordinary non-`NODE` noise — the same documented behavior as any
+ * other line that matches no `NODE` pattern.
+ */
+const NODE_WITHOUT_METADATA_PATTERN = /^NODE\s+([^[\]]+?)\s*(?:\[.*)?$/;
 
 /**
  * Extracts the labels from `NODE <label> [src=... loc=... community=...]`
