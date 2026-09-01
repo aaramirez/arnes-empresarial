@@ -3,6 +3,7 @@ import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "../agents/definitions.js";
 import { DEFAULT_AGENT_MODEL } from "../agents/definitions.js";
 import { createHookEngine } from "../hooks/hook-engine.js";
+import type { KnowledgeFeedbackPort } from "../knowledge/knowledge-contract.js";
 import { TurnFailedError } from "./turn-error.js";
 import { handleTurn, CASO_ESTADO_ACTIVO, type MemoryPort } from "./handle-turn.js";
 import type { QueryFn } from "./invoke-model.js";
@@ -87,6 +88,27 @@ function fakeLogDeps(): { readonly deps: LogTurnEventDeps; readonly lines: strin
       write: (line) => {
         lines.push(line);
       },
+    },
+  };
+}
+
+/**
+ * Fake `KnowledgeFeedbackPort` fixture. `callOrder` (when passed) lets tests
+ * assert `saveTurnResult` fires strictly after `closeTurn`'s own writes
+ * (`updateCaso`/`createSesionAgente`), matching tarea 9's "después de
+ * `closeTurn` y fuera de `runTurnStage`" requirement.
+ */
+function fakeKnowledgeFeedback(
+  callOrder?: string[],
+): { readonly port: KnowledgeFeedbackPort; readonly calls: Array<{ casoId: string; question: string; answer: string }> } {
+  const calls: Array<{ casoId: string; question: string; answer: string }> = [];
+  return {
+    calls,
+    port: {
+      saveTurnResult: vi.fn(async (input) => {
+        callOrder?.push("saveTurnResult");
+        calls.push({ ...input });
+      }),
     },
   };
 }
@@ -252,5 +274,141 @@ describe("handleTurn", () => {
       event: "turno-fallido",
       stage: "context",
     });
+  });
+
+  it("calls knowledgeFeedback.saveTurnResult after closeTurn with question=prompt and answer=responseText", async () => {
+    const callOrder: string[] = [];
+    const casoId = "caso-1";
+    const agent = makeAgent();
+
+    const memory: MemoryPort = {
+      getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+      getLatestSesionAgente: vi.fn(() => undefined),
+      updateCaso: vi.fn(() => {
+        callOrder.push("updateCaso");
+      }),
+      createSesionAgente: vi.fn(() => {
+        callOrder.push("createSesionAgente");
+      }),
+    };
+
+    const queryFn = fakeQueryFn([
+      fakeSystemInitMessage("sdk-session-feedback"),
+      fakeResultSuccessMessage("respuesta con cita", "sdk-session-feedback"),
+    ]);
+
+    const hooks = createHookEngine();
+    const log = fakeLogDeps();
+    const knowledgeFeedback = fakeKnowledgeFeedback(callOrder);
+
+    const result = await handleTurn(casoId, "¿cuál es la política?", {
+      memory,
+      hooks,
+      candidateAgents: [agent],
+      queryFn,
+      logDeps: log.deps,
+      knowledgeFeedback: knowledgeFeedback.port,
+    });
+
+    // closeTurn's own writes (updateCaso/createSesionAgente) must precede
+    // saveTurnResult — tarea 9 requires the call to happen "después de
+    // closeTurn y fuera de runTurnStage".
+    expect(callOrder.indexOf("saveTurnResult")).toBeGreaterThan(callOrder.indexOf("updateCaso"));
+    expect(callOrder.indexOf("saveTurnResult")).toBeGreaterThan(callOrder.indexOf("createSesionAgente"));
+
+    expect(knowledgeFeedback.calls).toEqual([
+      { casoId: "caso-1", question: "¿cuál es la política?", answer: "respuesta con cita" },
+    ]);
+    expect(result.responseText).toBe("respuesta con cita");
+  });
+
+  it("omitting knowledgeFeedback leaves the turn identical to Hito 1 (no new call, nothing breaks)", async () => {
+    const casoId = "caso-1";
+    const agent = makeAgent();
+
+    const memory: MemoryPort = {
+      getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+      getLatestSesionAgente: vi.fn(() => undefined),
+      updateCaso: vi.fn(),
+      createSesionAgente: vi.fn(),
+    };
+
+    const queryFn = fakeQueryFn([
+      fakeSystemInitMessage("sdk-session-no-feedback"),
+      fakeResultSuccessMessage("respuesta sin conocimiento", "sdk-session-no-feedback"),
+    ]);
+
+    const hooks = createHookEngine();
+    const log = fakeLogDeps();
+
+    // No `knowledgeFeedback`, no `mcpServers` in deps — Hito 1 shape.
+    const result = await handleTurn(casoId, "hola", {
+      memory,
+      hooks,
+      candidateAgents: [agent],
+      queryFn,
+      logDeps: log.deps,
+    });
+
+    expect(result).toEqual({
+      responseText: "respuesta sin conocimiento",
+      agentLabel: "agente-conversacional",
+    });
+    expect(log.lines).toHaveLength(1);
+  });
+
+  it("does not call saveTurnResult when the turn fails before reaching close (model-stage failure)", async () => {
+    const memory: MemoryPort = {
+      getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+      getLatestSesionAgente: vi.fn(() => undefined),
+      updateCaso: vi.fn(),
+      createSesionAgente: vi.fn(),
+    };
+    const hooks = createHookEngine();
+    const queryFn = throwingQueryFn(new Error("network boom"));
+    const knowledgeFeedback = fakeKnowledgeFeedback();
+
+    await expect(
+      handleTurn("caso-1", "hola", {
+        memory,
+        hooks,
+        candidateAgents: [makeAgent()],
+        queryFn,
+        logDeps: fakeLogDeps().deps,
+        knowledgeFeedback: knowledgeFeedback.port,
+      }),
+    ).rejects.toMatchObject({ name: "TurnFailedError", stage: "model" });
+
+    expect(knowledgeFeedback.port.saveTurnResult).not.toHaveBeenCalled();
+  });
+
+  it("does not call saveTurnResult when the turn fails at the close stage", async () => {
+    const memory: MemoryPort = {
+      getCasoById: vi.fn((id: string) => makeCasoRow(id)),
+      getLatestSesionAgente: vi.fn(() => undefined),
+      updateCaso: vi.fn(() => {
+        throw new Error("fallo de escritura simulado");
+      }),
+      createSesionAgente: vi.fn(),
+    };
+    const hooks = createHookEngine();
+    const queryFn = fakeQueryFn([
+      fakeSystemInitMessage("sdk-session-close-fail-2"),
+      fakeResultSuccessMessage("respuesta", "sdk-session-close-fail-2"),
+    ]);
+    const knowledgeFeedback = fakeKnowledgeFeedback();
+
+    await expect(
+      handleTurn("caso-1", "hola", {
+        memory,
+        hooks,
+        candidateAgents: [makeAgent()],
+        queryFn,
+        logDeps: fakeLogDeps().deps,
+        knowledgeFeedback: knowledgeFeedback.port,
+      }),
+    ).rejects.toMatchObject({ name: "TurnFailedError", stage: "close" });
+
+    expect(knowledgeFeedback.port.saveTurnResult).not.toHaveBeenCalled();
   });
 });
