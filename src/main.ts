@@ -55,6 +55,7 @@ import "./core/config/env.js";
 import { randomUUID } from "node:crypto";
 import { bootstrapHarness, HarnessBootstrapError } from "./core/startup/bootstrap.js";
 import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle-turn.js";
+import { logTurnEvent } from "./core/logging/turn-logger.js";
 import { openDatabase } from "./adapters/memory/db.js";
 import {
   createCaso,
@@ -65,6 +66,7 @@ import {
   type Caso,
 } from "./adapters/memory/repository.js";
 import { startTui } from "./adapters/tui/start-tui.js";
+import { createKnowledgeAdapter, type KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import { buildOnSubmit } from "./build-on-submit.js";
 
 function toErrorMessage(error: unknown): string {
@@ -77,6 +79,7 @@ interface StartupResult {
   readonly memory: MemoryPort;
   readonly caso: Caso;
   readonly db: ReturnType<typeof openDatabase>;
+  readonly knowledge: KnowledgeAdapter;
 }
 
 /**
@@ -127,7 +130,19 @@ function startHarness(): StartupResult {
     updatedAt: startedAt,
   });
 
-  return { agents, hooks, memory, caso, db };
+  // 4. Adaptador de Conocimiento (I2, Hito 2 tarea 7): una única vez por
+  //    corrida, después de `caso` porque necesita su `id` para correlacionar
+  //    los eventos de log (`logTurnEvent`) y para el `CitedNodesRecorder`
+  //    compartido entre la tool MCP y `feedback` (design.md §6). Va dentro
+  //    de este mismo `try`: si `resolveGraphifyConfig` fallara, es un error
+  //    de arranque tan legible como los tres pasos anteriores, no algo que
+  //    crashee sin contexto.
+  const knowledge = createKnowledgeAdapter({
+    casoId: caso.id,
+    logEvent: (event, fields) => logTurnEvent(caso.id, event, fields),
+  });
+
+  return { agents, hooks, memory, caso, db, knowledge };
 }
 
 let startup: StartupResult;
@@ -140,7 +155,7 @@ try {
   process.exit(1);
 }
 
-const { agents, hooks, memory, caso, db } = startup;
+const { agents, hooks, memory, caso, db, knowledge } = startup;
 
 // 4. `onSubmit` (I1, `SubmitPromptHandler`) cierra sobre `caso.id`/`memory`/
 //    `hooks`/`agents` y delega la secuencia completa del turno al
@@ -153,7 +168,7 @@ const { agents, hooks, memory, caso, db } = startup;
 //    esta pieza de wiring tenga su propio archivo de test — este mismo
 //    archivo no se puede importar desde un test sin disparar
 //    `bootstrapHarness()`/`openDatabase()`/`createCaso()` reales.
-const onSubmit = buildOnSubmit(caso.id, memory, hooks, agents);
+const onSubmit = buildOnSubmit(caso.id, memory, hooks, agents, undefined, knowledge);
 
 // 5. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por

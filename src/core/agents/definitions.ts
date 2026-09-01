@@ -16,7 +16,13 @@
  * `query()` expects (`description`/`prompt` required, `tools`/`model`
  * optional) — field names here favor core readability (`systemPrompt` over
  * `prompt`) over a 1:1 match with that external shape.
+ *
+ * `KNOWLEDGE_TOOL_QUALIFIED_NAME` is imported from
+ * `src/core/knowledge/knowledge-contract.ts` (Hito 2, tarea 1), a
+ * dependency-free core module — importing it does not violate the
+ * SDK-agnostic rule above, it is still core talking to core.
  */
+import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.js";
 
 /** Configuration for a single first-level agent, independent of any SDK. */
 export interface AgentDefinition {
@@ -25,9 +31,9 @@ export interface AgentDefinition {
   /** Instructions that define the agent's role and behavior for the model. */
   readonly systemPrompt: string;
   /**
-   * Tool names the agent is allowed to invoke. Empty means the agent can
-   * only converse — see the scope note on `CONVERSATIONAL_AGENT` below for
-   * why the MVP agent starts with no tools.
+   * Tool names the agent is allowed to invoke. See the scope note on
+   * `CONVERSATIONAL_AGENT` below for the current toolset and the security
+   * consequence of adding an entry here.
    */
   readonly allowedTools: readonly string[];
   /** Claude model identifier this agent is invoked with. */
@@ -52,28 +58,43 @@ export const DEFAULT_AGENT_MODEL = "sonnet";
 export const CONVERSATIONAL_AGENT_ID = "agente-conversacional";
 
 /**
- * The only agent defined for Hito 1 (esqueleto conversacional).
+ * The only agent defined for the harness so far — Hito 1 (esqueleto
+ * conversacional) plus the Hito 2 knowledge-query capability (I2) layered
+ * on top.
  *
- * Nota de alcance — herramientas: `allowedTools` is intentionally empty.
- * This hito does not exercise the knowledge base (I2), A2A (I4) is not
- * active yet, and Comandos/Skills are not exercised in this hito either
- * (see `openspec/changes/hito-1.0-esqueleto-conversacional/tasks.md`,
- * tarea 13's scope note). Granting tool access (Bash, Write, etc.) without
- * a real use case is a security decision that should not be made ahead of
- * need — it belongs to whichever future hito introduces the business
- * capability that actually requires it.
+ * Nota de alcance — herramientas: `allowedTools` grants exactly one tool,
+ * `KNOWLEDGE_TOOL_QUALIFIED_NAME` (`mcp__knowledge__query_knowledge_base`),
+ * because I2 (consulta de conocimiento) is an active business capability of
+ * Hito 2 — the agent must answer questions about company policy, process,
+ * or internal documentation from the real knowledge base instead of
+ * guessing. A2A (I4) is still not active and Comandos/Skills are still not
+ * exercised in this hito, so no other tool is granted.
+ *
+ * Consecuencia de seguridad (ADR 4): listing a tool in `allowedTools`
+ * auto-approves every call the model makes to it — there is no per-call
+ * human-in-the-loop confirmation. `toQueryOptions`
+ * (`src/core/turn-selector/invoke-model.ts`, Hito 2 tarea 8) already
+ * forwards `allowedTools` straight into the SDK's `options.allowedTools`,
+ * so granting a tool here is the actual authorization decision, not a
+ * formality — it should stay reserved for capabilities with a real,
+ * demonstrated use case (as intentional gating still applies to Bash,
+ * Write, etc.).
  */
 const CONVERSATIONAL_AGENT: AgentDefinition = {
   id: CONVERSATIONAL_AGENT_ID,
   systemPrompt:
-    "Sos el agente conversacional de un arnés empresarial. Tu rol en este " +
-    "hito es sostener una conversación clara y coherente con el empleado, " +
-    "manteniendo el contexto de la sesión en curso. Todavía no tenés acceso " +
-    "a herramientas, base de conocimiento ni delegación a otros agentes " +
-    "— respondé únicamente con lo que la conversación te da. Si el pedido " +
-    "requiere una capacidad que no tenés disponible, decilo explícitamente " +
-    "en vez de inventar una respuesta.",
-  allowedTools: [],
+    "Sos el agente conversacional de un arnés empresarial. Tu rol es sostener " +
+    "una conversación clara y coherente con el empleado, manteniendo el " +
+    "contexto de la sesión en curso. Tenés acceso a la base de conocimiento " +
+    "interna de la empresa mediante la herramienta " +
+    `\`${KNOWLEDGE_TOOL_QUALIFIED_NAME}\`: usala siempre que la pregunta ` +
+    "involucre políticas, procesos, documentación o cualquier dato propio de " +
+    "la organización, en vez de responder de memoria. Cuando la uses, CITÁ " +
+    "SIEMPRE la fuente (el `src` del resultado, y el `loc` cuando exista) " +
+    "dentro de tu respuesta. Si la herramienta no devuelve conocimiento " +
+    "disponible, decíselo explícitamente al empleado en vez de inventar una " +
+    "respuesta. Todavía no tenés delegación a otros agentes.",
+  allowedTools: [KNOWLEDGE_TOOL_QUALIFIED_NAME],
   model: DEFAULT_AGENT_MODEL,
 };
 

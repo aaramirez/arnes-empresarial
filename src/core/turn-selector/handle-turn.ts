@@ -124,8 +124,10 @@
  * other caller.
  */
 
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "../agents/definitions.js";
 import type { HookEngine } from "../hooks/hook-engine.js";
+import type { KnowledgeFeedbackPort } from "../knowledge/knowledge-contract.js";
 import { logTurnEvent, type LogTurnEventDeps } from "../logging/turn-logger.js";
 import { assembleContext, type MemoryContextPort } from "./assemble-context.js";
 import { closeTurn, type MemoryWritePort } from "./close-turn.js";
@@ -177,6 +179,24 @@ export interface HandleTurnDeps {
    * every test run.
    */
   readonly logDeps?: LogTurnEventDeps;
+  /**
+   * Hito 2, tarea 9 — reenviado tal cual a `invokeModel`'s own `mcpServers`
+   * trailing parameter (tarea 8). Omitting this keeps `toQueryOptions`
+   * building the exact same `Options` shape Hito 1 produced (no
+   * `mcpServers` key at all) — see `invoke-model.ts`'s own "Hito 2, tarea 8"
+   * note for that guarantee.
+   */
+  readonly mcpServers?: Options["mcpServers"];
+  /**
+   * Hito 2, tarea 9 — closes the I2 feedback loop: `handleTurn` calls
+   * `saveTurnResult` once the turn has fully closed (after `closeTurn`,
+   * outside `runTurnStage`). Omitting this means no call at all — turn
+   * behavior identical to Hito 1. See the call site below for why this
+   * cannot live inside the `POST_TURN` hook instead (wrong moment — fires
+   * before `closeTurn`'s I3 write — and would mis-attribute a failure to
+   * the `"model"` stage).
+   */
+  readonly knowledgeFeedback?: KnowledgeFeedbackPort;
 }
 
 /**
@@ -210,13 +230,15 @@ export async function handleTurn(
   prompt: string,
   deps: HandleTurnDeps,
 ): Promise<HandleTurnResult> {
-  const { memory, hooks, candidateAgents, queryFn, logDeps } = deps;
+  const { memory, hooks, candidateAgents, queryFn, logDeps, mcpServers, knowledgeFeedback } = deps;
 
   const agent = resolveTurn(prompt, candidateAgents);
 
   try {
     const context = await runTurnStage("context", () => assembleContext(memory, casoId, agent.id));
-    const result = await runTurnStage("model", () => invokeModel(agent, context, prompt, hooks, queryFn));
+    const result = await runTurnStage("model", () =>
+      invokeModel(agent, context, prompt, hooks, queryFn, mcpServers),
+    );
     await runTurnStage("close", () => closeTurn(memory, context, agent, result, CASO_ESTADO_ACTIVO));
 
     logTurnEvent(
@@ -225,6 +247,38 @@ export async function handleTurn(
       { agentId: agent.id, sdkSessionId: result.sdkSessionId },
       logDeps,
     );
+
+    // Hito 2, tarea 9 — cierre del loop I2: DESPUÉS de closeTurn y FUERA de
+    // runTurnStage. Best-effort por contrato (`KnowledgeFeedbackPort` nunca
+    // rechaza) y nunca debe producir un `TurnFailedError`; ver el module doc
+    // para por qué esto no vive en el hook `POST_TURN`.
+    //
+    // Hallazgo de code-review post-implementación: el `await` de abajo no
+    // confiaba únicamente en el contrato "nunca rechaza" documentado en
+    // `KnowledgeFeedbackPort` — lo refuerza en el call site. Si una futura
+    // implementación del port llegara a violar ese contrato, el turno ya
+    // completó exitosamente (respuesta ya devuelta al empleado, "turno-
+    // completado" ya logueado) y una excepción acá no debe convertirlo
+    // retroactivamente en un turno fallido.
+    if (knowledgeFeedback !== undefined) {
+      try {
+        await knowledgeFeedback.saveTurnResult({
+          casoId,
+          question: prompt,
+          answer: result.responseText,
+        });
+      } catch (error) {
+        logTurnEvent(
+          casoId,
+          "conocimiento-feedback-fallido",
+          {
+            agentId: agent.id,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          logDeps,
+        );
+      }
+    }
 
     return { responseText: result.responseText, agentLabel: agent.id };
   } catch (error) {
@@ -236,6 +290,16 @@ export async function handleTurn(
         logDeps,
       );
     }
+
+    // Hallazgo de code-review post-implementación: `CitedNodesRecorder` es un
+    // singleton de vida de proceso, solo drenado dentro de
+    // `saveTurnResult` (arriba, camino exitoso). Un turno que falla acá nunca
+    // llega a ese `await`, así que lo que el modelo haya citado antes de la
+    // falla quedaba sin drenar y se mezclaba con las citas del próximo turno
+    // exitoso. `discardPendingCitations` vacía ese estado sin persistir nada
+    // a graphify — el turno falló, no hay respuesta válida que citar.
+    knowledgeFeedback?.discardPendingCitations();
+
     throw error;
   }
 }
