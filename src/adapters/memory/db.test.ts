@@ -84,4 +84,19 @@ describe("openDatabase", () => {
     // because the process still holds a handle to it.
     expect(() => rmSync(filePath)).not.toThrow();
   });
+
+  it("enables WAL journal mode when opening a real file database", () => {
+    tempDir = mkdtempSync(join(tmpdir(), "harness-db-test-"));
+    const filePath = join(tempDir, "harness.db");
+
+    openDb = openDatabase(filePath);
+
+    expect(openDb.pragma("journal_mode", { simple: true })).toBe("wal");
+  });
+
+  it("leaves :memory: databases in memory journal mode, unaffected by the WAL pragma", () => {
+    const db = openDatabase(":memory:");
+
+    expect(db.pragma("journal_mode", { simple: true })).toBe("memory");
+  });
 });
