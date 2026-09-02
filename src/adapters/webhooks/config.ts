@@ -20,6 +20,8 @@ export const DEFAULT_WEBHOOK_PATH = "/webhooks/github";
 export const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 /** Techo del drenaje de turnos en vuelo al cerrar. Constante, NO env var (es un presupuesto de UX, no un hecho del entorno). Ver ADR 10. */
 export const SERVER_CLOSE_TIMEOUT_MS = 5_000;
+/** Id de correlación para eventos de ciclo de vida del proceso sin `deliveryId` natural (arranque, apagado, timeouts de drenaje). Ver design.md §9.1 y §9.2. */
+export const WEBHOOK_LOG_CORRELATION_ID = "webhook-adapter";
 
 /**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
