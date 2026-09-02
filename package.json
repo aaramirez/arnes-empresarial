@@ -5,7 +5,7 @@
   "description": "Harness empresarial de agentes de IA — MVP conversacional (Hito 1).",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
