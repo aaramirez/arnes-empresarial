@@ -1,0 +1,45 @@
+{
+  "action": "created",
+  "issue": {
+    "id": 2412349999,
+    "number": 7,
+    "title": "El link de descarga del manual devuelve 404",
+    "body": "El link a docs/manual.pdf en el README rompe desde el ultimo deploy.",
+    "user": {
+      "login": "someuser",
+      "id": 771122,
+      "type": "User"
+    },
+    "state": "open",
+    "html_url": "https://github.com/octo-org/hello-world/issues/7"
+  },
+  "comment": {
+    "id": 987600001,
+    "body": "Confirmado, tambien me pasa a mi.",
+    "user": {
+      "login": "another-user",
+      "id": 771133,
+      "type": "User"
+    },
+    "html_url": "https://github.com/octo-org/hello-world/issues/7#issuecomment-987600001",
+    "created_at": "2026-08-30T16:00:00Z",
+    "updated_at": "2026-08-30T16:00:00Z"
+  },
+  "repository": {
+    "id": 1296269,
+    "name": "hello-world",
+    "full_name": "octo-org/hello-world",
+    "private": false,
+    "html_url": "https://github.com/octo-org/hello-world",
+    "owner": {
+      "login": "octo-org",
+      "id": 1,
+      "type": "Organization"
+    }
+  },
+  "sender": {
+    "login": "another-user",
+    "id": 771133,
+    "type": "User"
+  }
+}
