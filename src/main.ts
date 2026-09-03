@@ -8,6 +8,14 @@
  * TUI (tarea 14, `startTui`) — el escenario de ejecución 1 completo del
  * arc42, prompt entrante por I1 hasta respuesta renderizada.
  *
+ * Hito 3 (tarea 22, ADR 5) agrega una SEGUNDA fuente de turnos: el
+ * Adaptador de Webhooks (`src/adapters/webhooks/`), que recibe eventos de
+ * actividad de GitHub y los enruta a `build-on-activity.ts` en vez de
+ * `build-on-submit.ts`. Las dos fuentes comparten `db`/`memory`/`hooks`/
+ * `agents` (el arnés es uno solo) pero cada una arma su propio
+ * `KnowledgeAdapter` por `casoId` — ver `startHarness()`'s `createKnowledge`
+ * más abajo.
+ *
  * Ubicación — `src/main.ts`, no dentro de `src/adapters/tui/` ni de
  * `src/adapters/memory/` (Reviewer finding, CRITICAL, post-primera versión
  * de este archivo): AGENTS.md's regla no negociable dice literalmente
@@ -48,7 +56,9 @@
  * sophisticated startup error policy this hito does not ask for. `startTui`
  * itself stays outside the `try` — once it runs, `onSubmit`/`handleTurn`
  * already has its own per-turn failure path (`TurnFailedError`, rendered
- * inline by `App.tsx`, not a process crash).
+ * inline by `App.tsx`, not a process crash). El wiring del servidor de
+ * webhooks (Hito 3) sigue el mismo criterio con su PROPIO `try`/`catch`, más
+ * abajo: no comparte el de `startHarness()`.
  */
 import "./core/config/env.js";
 
@@ -68,6 +78,11 @@ import {
 import { startTui } from "./adapters/tui/start-tui.js";
 import { createKnowledgeAdapter, type KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import { buildOnSubmit } from "./build-on-submit.js";
+import { buildOnActivity } from "./build-on-activity.js";
+import { createBoardAdapter } from "./adapters/board/index.js";
+import { startWebhookServer, type WebhookAdapter } from "./adapters/webhooks/index.js";
+import { WEBHOOK_LOG_CORRELATION_ID } from "./adapters/webhooks/config.js";
+import { createKeyedQueue } from "./core/concurrency/keyed-queue.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -79,7 +94,18 @@ interface StartupResult {
   readonly memory: MemoryPort;
   readonly caso: Caso;
   readonly db: ReturnType<typeof openDatabase>;
-  readonly knowledge: KnowledgeAdapter;
+  /**
+   * Fábrica del Adaptador de Conocimiento POR `casoId` (Hito 3, tarea 22,
+   * ADR 5) — reemplaza la instancia `knowledge` única de v1.1.0. Con dos
+   * fuentes de turnos (TUI + webhooks) una instancia compartida cruzaría el
+   * `CitedNodesRecorder` de un turno de la TUI con el de un turno de webhook
+   * concurrente (R1). La TUI llama esta fábrica UNA sola vez, con
+   * `caso.id`, para sostener una única instancia durante toda su corrida
+   * (ver el call site de `buildOnSubmit` más abajo); el wiring de webhooks
+   * llama la misma fábrica una vez POR turno, con el `casoId` que cada uno
+   * resuelve.
+   */
+  readonly createKnowledge: (casoId: string) => KnowledgeAdapter;
 }
 
 /**
@@ -130,19 +156,21 @@ function startHarness(): StartupResult {
     updatedAt: startedAt,
   });
 
-  // 4. Adaptador de Conocimiento (I2, Hito 2 tarea 7): una única vez por
-  //    corrida, después de `caso` porque necesita su `id` para correlacionar
-  //    los eventos de log (`logTurnEvent`) y para el `CitedNodesRecorder`
-  //    compartido entre la tool MCP y `feedback` (design.md §6). Va dentro
-  //    de este mismo `try`: si `resolveGraphifyConfig` fallara, es un error
-  //    de arranque tan legible como los tres pasos anteriores, no algo que
-  //    crashee sin contexto.
-  const knowledge = createKnowledgeAdapter({
-    casoId: caso.id,
-    logEvent: (event, fields) => logTurnEvent(caso.id, event, fields),
-  });
+  // 4. Adaptador de Conocimiento (I2, Hito 2 tarea 7): Hito 3 (tarea 22,
+  //    ADR 5) lo convierte de una instancia única por corrida a una FÁBRICA
+  //    por `casoId` — ver el comentario de `StartupResult.createKnowledge`
+  //    arriba para el motivo. `createKnowledgeAdapter` no tiene efecto
+  //    global (verificado en design.md §6.3, leyendo
+  //    `src/adapters/knowledge/index.ts` completo): no hay singleton de
+  //    módulo, no hay puerto ni subproceso — instanciar una vez por caso es
+  //    seguro y barato.
+  const createKnowledge = (casoId: string): KnowledgeAdapter =>
+    createKnowledgeAdapter({
+      casoId,
+      logEvent: (event, fields) => logTurnEvent(casoId, event, fields),
+    });
 
-  return { agents, hooks, memory, caso, db, knowledge };
+  return { agents, hooks, memory, caso, db, createKnowledge };
 }
 
 let startup: StartupResult;
@@ -155,7 +183,7 @@ try {
   process.exit(1);
 }
 
-const { agents, hooks, memory, caso, db, knowledge } = startup;
+const { agents, hooks, memory, caso, db, createKnowledge } = startup;
 
 // 4. `onSubmit` (I1, `SubmitPromptHandler`) cierra sobre `caso.id`/`memory`/
 //    `hooks`/`agents` y delega la secuencia completa del turno al
@@ -168,18 +196,62 @@ const { agents, hooks, memory, caso, db, knowledge } = startup;
 //    esta pieza de wiring tenga su propio archivo de test — este mismo
 //    archivo no se puede importar desde un test sin disparar
 //    `bootstrapHarness()`/`openDatabase()`/`createCaso()` reales.
-const onSubmit = buildOnSubmit(caso.id, memory, hooks, agents, undefined, knowledge);
+//    `createKnowledge(caso.id)` (Hito 3, tarea 22) se llama UNA sola vez
+//    acá: la TUI sostiene una única instancia de `KnowledgeAdapter` para
+//    toda su corrida, tal como antes — solo que ahora es propia de la TUI,
+//    no compartida con los turnos de webhook armados a continuación.
+const onSubmit = buildOnSubmit(caso.id, memory, hooks, agents, undefined, createKnowledge(caso.id));
 
-// 5. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
+// 5. Segunda fuente de turnos (Hito 3, ADR 5): Adaptador de Tablero
+//    (tarea 16), `onActivity` (wiring de `build-on-activity.ts`, tarea 21)
+//    y el listener de webhooks (tarea 12). Va DESPUÉS de armar `onSubmit`
+//    pero ANTES de montar la TUI, con su PROPIO `try`/`catch` — no el de
+//    `startHarness()`, que ya terminó y es síncrono. Un rechazo de
+//    `startWebhookServer` (p. ej. `EADDRINUSE`) se loguea como
+//    `webhook-arranque-fallido` (correlación `WEBHOOK_LOG_CORRELATION_ID`,
+//    ya usada por el propio adaptador para sus eventos
+//    `webhook-escuchando`/`webhook-deshabilitado`) y el proceso sigue con
+//    `webhook = undefined`: que el puerto esté ocupado no puede impedir que
+//    el empleado use la TUI. `undefined` también es el resultado normal
+//    (sin excepción) cuando los webhooks están deshabilitados por config —
+//    ese caso no pasa por este `catch`, lo maneja `startWebhookServer`
+//    internamente.
+const board = createBoardAdapter({
+  logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
+});
+
+const onActivity = buildOnActivity({
+  db,
+  memory,
+  hooks,
+  agents,
+  board,
+  queue: createKeyedQueue(),
+  createKnowledge,
+});
+
+let webhook: WebhookAdapter | undefined;
+try {
+  webhook = await startWebhookServer({
+    onEvent: onActivity,
+    logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
+  });
+} catch (error) {
+  logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, "webhook-arranque-fallido", { message: toErrorMessage(error) });
+  webhook = undefined;
+}
+
+// 6. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
-//    defecto) y recién ahí cierra el handle de SQLite abierto en el paso 2.
-//    Un cierre prolijo del proceso, no una salida abrupta con el archivo de
-//    la base de datos todavía abierto. `startTui(onSubmit)` en sí va DENTRO
-//    del `try` (Reviewer finding, WARNING, post-primera versión de este
-//    fix) — no solo el `await` de `waitUntilExit()`: `startTui`/`renderTui`
-//    puede tirar sincrónicamente si falla el mount de Ink (ver
-//    `start-tui.tsx`), y si eso pasara antes de que `tui` se asignara,
-//    `db.close()` nunca correría.
+//    defecto) y recién ahí cierra el servidor de webhooks (si arrancó) y el
+//    handle de SQLite abierto en el paso 2. Un cierre prolijo del proceso,
+//    no una salida abrupta con el archivo de la base de datos todavía
+//    abierto. `startTui(onSubmit)` en sí va DENTRO del `try` (Reviewer
+//    finding, WARNING, post-primera versión de este fix) — no solo el
+//    `await` de `waitUntilExit()`: `startTui`/`renderTui` puede tirar
+//    sincrónicamente si falla el mount de Ink (ver `start-tui.tsx`), y si
+//    eso pasara antes de que `tui` se asignara, el `finally` de abajo
+//    nunca correría.
 try {
   const tui = startTui(onSubmit);
   await tui.waitUntilExit();
@@ -188,8 +260,23 @@ try {
   // de render, el error boundary de Ink (`node_modules/ink/build/ink.js`,
   // `unmount(error)`) hace que `waitUntilExit()` rechace en vez de resolver
   // — con top-level `await`, ese rechazo aborta la evaluación del módulo, así
-  // que `db.close()` tiene que correr acá para no perderse ese camino de
+  // que este cierre tiene que correr acá para no perderse ese camino de
   // salida también.
+  //
+  // ADR 10: primero se deja de aceptar y se drenan los turnos de webhook en
+  // vuelo (`webhook.close()`), DESPUÉS se cierra el handle de SQLite. Al
+  // revés, un turno de webhook a mitad de camino escribiría contra una base
+  // ya cerrada.
+  if (webhook !== undefined) {
+    try {
+      await webhook.close();
+    } catch (error) {
+      // Red de seguridad sobre un método que ya promete no rechazar
+      // (`WebhookAdapter.close()`, `src/adapters/webhooks/index.ts`): si
+      // algún día lo violara, no puede impedir que `db.close()` corra.
+      console.error(`No se pudo cerrar el servidor de webhooks: ${toErrorMessage(error)}`);
+    }
+  }
   try {
     db.close();
   } catch (error) {
