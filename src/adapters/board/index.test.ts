@@ -3,7 +3,7 @@ import { ESTADO_APROBADO, ESTADO_RESUELTO } from "../../core/activity/activity-c
 import type { BoardConfig } from "./config.js";
 import { MAX_CHANGED_FILES, MAX_COMMENT_CHARS } from "./config.js";
 import type { FetchFn, FetchResponseLike } from "./github-client.js";
-import { createBoardAdapter, createNoopBoardAdapter } from "./index.js";
+import { createBoardAdapter, createNoopBoardAdapter, resolveBotLogin } from "./index.js";
 
 const PROYECTO_ID = "owner/repo";
 const REF = "42";
@@ -416,5 +416,73 @@ describe("createBoardAdapter.leerMetadatos", () => {
     const metadatos = await board.leerMetadatos({ proyectoId: PROYECTO_ID, referenciaExterna: REF, casoId: CASO_ID });
 
     expect(metadatos?.archivosTruncados).toBe(false);
+  });
+});
+
+interface LoggedCall2 {
+  readonly event: string;
+  readonly fields: Readonly<Record<string, unknown>> | undefined;
+}
+
+/** Doble de la firma de 2 parametros que `resolveBotLogin` recibe (ya cerrada sobre el id de correlacion, igual que `createKnowledge` en main.ts). */
+function makeLogEvent2(): {
+  readonly logEvent: (event: string, fields?: Readonly<Record<string, unknown>>) => void;
+  readonly calls: LoggedCall2[];
+} {
+  const calls: LoggedCall2[] = [];
+  return {
+    logEvent: (event, fields) => {
+      calls.push({ event, fields });
+    },
+    calls,
+  };
+}
+
+describe("resolveBotLogin", () => {
+  it("config deshabilitada (sin token): devuelve undefined, no llama fetchFn, loguea bot-login-no-resuelto con reason 'deshabilitado'", async () => {
+    const { logEvent, calls } = makeLogEvent2();
+    const fetchFn: FetchFn = vi.fn();
+
+    const login = await resolveBotLogin({ config: makeConfig({ token: "" }), fetchFn, logEvent });
+
+    expect(login).toBeUndefined();
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ event: "bot-login-no-resuelto", fields: { reason: "deshabilitado" } }]);
+  });
+
+  it("GET /user exitoso: devuelve el login, loguea bot-login-resuelto con login", async () => {
+    const { logEvent, calls } = makeLogEvent2();
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(okResponse({ login: "arnes-empresarial-bot" }));
+
+    const login = await resolveBotLogin({ config: makeConfig(), fetchFn, logEvent });
+
+    expect(login).toBe("arnes-empresarial-bot");
+    const [url, init] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string, { method: string }];
+    expect(url).toBe("https://api.github.com/user");
+    expect(init.method).toBe("GET");
+    expect(calls).toEqual([{ event: "bot-login-resuelto", fields: { login: "arnes-empresarial-bot" } }]);
+  });
+
+  it("GET /user falla (401): devuelve undefined, loguea bot-login-no-resuelto con reason/status", async () => {
+    const { logEvent, calls } = makeLogEvent2();
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(errorResponse(401, "bad credentials"));
+
+    const login = await resolveBotLogin({ config: makeConfig(), fetchFn, logEvent });
+
+    expect(login).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.event).toBe("bot-login-no-resuelto");
+    expect(calls[0]?.fields?.reason).toBe("http");
+    expect(calls[0]?.fields?.status).toBe(401);
+  });
+
+  it("GET /user OK pero sin login (respuesta deforme): devuelve undefined, loguea bot-login-no-resuelto con reason 'parse'", async () => {
+    const { logEvent, calls } = makeLogEvent2();
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(okResponse({}));
+
+    const login = await resolveBotLogin({ config: makeConfig(), fetchFn, logEvent });
+
+    expect(login).toBeUndefined();
+    expect(calls).toEqual([{ event: "bot-login-no-resuelto", fields: { reason: "parse" } }]);
   });
 });

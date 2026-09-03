@@ -85,6 +85,70 @@ function describirFalla(error: unknown): { readonly reason: string; readonly sta
   return { reason: "unknown" };
 }
 
+/** Narrows lo que `githubRequest` devuelve como `unknown` para el único campo que `resolveBotLogin` lee. */
+interface UserPayload {
+  readonly login?: unknown;
+}
+
+/**
+ * Resuelve el login del bot llamando `GET /user` con `GITHUB_TOKEN` — pensado
+ * para correr UNA VEZ al arrancar el proceso (no por evento), cachear el
+ * resultado y pasarlo como dependencia inyectada hasta `mapGithubEvent`, que
+ * filtra ahí los comentarios que el propio bot publicó (bug real de
+ * verificación manual end-to-end, Hito 3 tarea 24: `publicarRevision`
+ * comenta el PR, GitHub reenvía ese comentario como `issue_comment.created`,
+ * y sin este filtro el proceso reprocesa su propio eco — loop infinito).
+ *
+ * `logEvent` recibe la firma de 2 parámetros (`event`, `fields`) ya cerrada
+ * sobre el id de correlación de transporte — NO se importa acá
+ * `WEBHOOK_LOG_CORRELATION_ID` de `adapters/webhooks/config.ts`, porque eso
+ * sería un adaptador (`board`) hablándole directo a otro adaptador
+ * (`webhooks`), justo lo que AGENTS.md prohíbe. Mismo patrón que
+ * `createKnowledge` en `main.ts`: `(event, fields) => logTurnEvent(casoId,
+ * event, fields)`.
+ *
+ * Degradación: si el tablero está deshabilitado (sin token) o la resolución
+ * falla por cualquier motivo (`GithubApiError` o un throw inesperado),
+ * devuelve `undefined` y nunca lanza — mismo criterio que el resto del
+ * Adaptador de Tablero, nunca bloquea el arranque.
+ */
+export async function resolveBotLogin(deps: {
+  readonly config?: BoardConfig;
+  readonly fetchFn?: FetchFn;
+  readonly logEvent: (event: string, fields?: Readonly<Record<string, unknown>>) => void;
+}): Promise<string | undefined> {
+  const config = deps.config ?? resolveBoardConfig();
+
+  if (!isBoardEnabled(config)) {
+    deps.logEvent("bot-login-no-resuelto", { reason: "deshabilitado" });
+    return undefined;
+  }
+
+  const fetchFn = deps.fetchFn ?? (globalThis.fetch as FetchFn);
+
+  try {
+    const user = (await githubRequest({
+      method: "GET",
+      path: "/user",
+      config,
+      fetchFn,
+    })) as UserPayload;
+
+    const login = user.login;
+    if (typeof login !== "string" || login === "") {
+      deps.logEvent("bot-login-no-resuelto", { reason: "parse" });
+      return undefined;
+    }
+
+    deps.logEvent("bot-login-resuelto", { login });
+    return login;
+  } catch (error) {
+    const { reason, status } = describirFalla(error);
+    deps.logEvent("bot-login-no-resuelto", { reason, ...(status !== undefined ? { status } : {}) });
+    return undefined;
+  }
+}
+
 /**
  * Construye el `ActivityBoardPort` real. Si `!isBoardEnabled(config)`
  * devuelve directamente `createNoopBoardAdapter(logEvent)` — degradación sin
