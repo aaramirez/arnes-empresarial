@@ -80,6 +80,24 @@ async function settle(ticks = 5): Promise<void> {
 }
 
 /**
+ * Strips ANSI SGR escape sequences (`\x1b[<params>m`) from `text`. Needed
+ * because Chalk (used internally by Ink for `borderColor`) decides whether
+ * to colorize based on the REAL `process.stdout` of the test process, not on
+ * the fake stdout instance Ink is actually rendering against here — so in an
+ * environment where `FORCE_COLOR` is set, `PromptInput`'s
+ * `borderColor="blue"` shows up as real ANSI codes wrapped around the border
+ * glyphs even inside `ink-testing-library`'s frame (e.g.
+ * `"\x1b[34m│\x1b[39m> draft\x1b[34m│\x1b[39m"`), instead of the plain
+ * `"│> draft│"` this file's line-matching helpers below assume. Stripping
+ * ANSI before matching keeps those helpers correct regardless of whether the
+ * environment forces color — the fix belongs here, not in disabling color
+ * for the environment.
+ */
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/**
  * Extracts the input line's own text (the "> draft" content, border
  * characters stripped) from a rendered frame. Needed since `PromptInput`
  * (`App.tsx`) now wraps the input line in a bordered `<Box>`: the frame's
@@ -89,6 +107,11 @@ async function settle(ticks = 5): Promise<void> {
  * border's left edge, immediately followed by the "> " prompt itself, since
  * `PromptInput` applies no left padding — instead of assuming a fixed
  * position in the frame.
+ *
+ * Strips ANSI color codes from the whole frame first (via `stripAnsi`) so
+ * the `"│>"` prefix match below is not defeated by a color escape sequence
+ * Chalk may have inserted between the border glyph and the prompt (see
+ * `stripAnsi`'s own comment).
  *
  * Searches from the END of the frame (`.reverse().find(...)` — `.findLast`
  * would read cleaner but this project's configured `lib` predates ES2023),
@@ -112,7 +135,10 @@ async function settle(ticks = 5): Promise<void> {
  * produced pre-border).
  */
 function inputLineText(frame: string): string {
-  const line = frame.split("\n").reverse().find((candidate) => candidate.startsWith("│>"));
+  const line = stripAnsi(frame)
+    .split("\n")
+    .reverse()
+    .find((candidate) => candidate.startsWith("│>"));
   if (line === undefined) {
     throw new Error('inputLineText: no line starting with the input border+prompt ("│>") found in frame');
   }
