@@ -544,4 +544,52 @@ describe("createActivityStore", () => {
       expect(actualizada.updatedAt).toBe("2026-01-02T00:00:00.000Z");
     });
   });
+
+  it("findActividadPorReferencia: lanza si `tipo` en la fila no está en ACTIVIDAD_TIPOS (corrupción de datos)", () => {
+    withDb((db) => {
+      const store = createActivityStore(db);
+      store.createCasoConActividad({
+        proyecto: { id: "acme/repo", nombre: "repo", repoUrl: "https://github.com/acme/repo" },
+        caso: { id: "caso-1", tipo: "pr_review", estado: "activo" },
+        actividad: {
+          id: "actividad-1",
+          tipo: ACTIVIDAD_TIPO_PR_REVIEW,
+          referenciaExterna: "1",
+          estado: ESTADO_PENDIENTE_REVISION,
+        },
+        timestamp: TIMESTAMP,
+      });
+      // Simula corrupción real: `actividades.tipo` es TEXT sin CHECK (por
+      // diseño de `repository.ts`), así que escribir directo por SQL es la
+      // única forma de producir un valor inválido sin pasar por ninguna
+      // validación de escritura que lo bloquearía antes de llegar acá.
+      db.prepare("UPDATE actividades SET tipo = ? WHERE id = ?").run("tipo_invalido", "actividad-1");
+
+      expect(() =>
+        store.findActividadPorReferencia({ proyectoId: "acme/repo", referenciaExterna: "1" }),
+      ).toThrowError(/actividad-1.*tipo_invalido/s);
+    });
+  });
+
+  it("findActividadPorReferencia: lanza si `estado` en la fila no está en ACTIVIDAD_ESTADOS (corrupción de datos)", () => {
+    withDb((db) => {
+      const store = createActivityStore(db);
+      store.createCasoConActividad({
+        proyecto: { id: "acme/repo", nombre: "repo", repoUrl: "https://github.com/acme/repo" },
+        caso: { id: "caso-1", tipo: "pr_review", estado: "activo" },
+        actividad: {
+          id: "actividad-1",
+          tipo: ACTIVIDAD_TIPO_PR_REVIEW,
+          referenciaExterna: "1",
+          estado: ESTADO_PENDIENTE_REVISION,
+        },
+        timestamp: TIMESTAMP,
+      });
+      db.prepare("UPDATE actividades SET estado = ? WHERE id = ?").run("estado_invalido", "actividad-1");
+
+      expect(() =>
+        store.findActividadPorReferencia({ proyectoId: "acme/repo", referenciaExterna: "1" }),
+      ).toThrowError(/actividad-1.*estado_invalido/s);
+    });
+  });
 });

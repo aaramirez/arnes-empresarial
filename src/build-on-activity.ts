@@ -40,13 +40,15 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import type { KeyedQueue } from "./core/concurrency/keyed-queue.js";
 import { runActivityTurn } from "./core/activity/run-activity-turn.js";
-import type {
-  ActivityBoardPort,
-  ActivityStorePort,
-  Actividad,
-  ActividadEstado,
-  ActividadTipo,
-  IncomingActivityEvent,
+import {
+  ACTIVIDAD_ESTADOS,
+  ACTIVIDAD_TIPOS,
+  type ActivityBoardPort,
+  type ActivityStorePort,
+  type Actividad,
+  type ActividadEstado,
+  type ActividadTipo,
+  type IncomingActivityEvent,
 } from "./core/activity/activity-contract.js";
 import { handleTurn, type MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
@@ -86,17 +88,39 @@ export interface BuildOnActivityDeps {
 }
 
 /**
+ * Lanzado por `toPortActividad` cuando una fila de `actividades` trae un
+ * `tipo`/`estado` que no pertenece a `ACTIVIDAD_TIPOS`/`ACTIVIDAD_ESTADOS`.
+ * `repository.ts` deja esas columnas como TEXT sin `CHECK` a propósito (su
+ * module doc: "el conjunto de estados válidos es asunto del núcleo, no de
+ * un enum de columna"), así que esto NUNCA es una entrada externa
+ * impredecible (a diferencia del veredicto que devuelve el modelo, texto
+ * libre) — es corrupción de datos real: un bug en algún punto de escritura,
+ * o manipulación externa de la base. `ActivityStorePort` es explícito
+ * ("CONTRATO: falla RUIDOSAMENTE") — este error es esa falla ruidosa, en el
+ * único punto donde se puede detectar: la traducción a la forma del puerto,
+ * no la capa SQL (por eso vive acá y no en `repository.ts`).
+ */
+export class ActividadTipoEstadoInvalidoError extends Error {
+  constructor(actividadId: string, tipo: string, estado: string) {
+    super(`Actividad ${actividadId} tiene tipo/estado inválido en la base: ${tipo}/${estado}`);
+    this.name = "ActividadTipoEstadoInvalidoError";
+  }
+}
+
+/**
  * Traduce una fila `Actividad` de `repository.ts` (`tipo`/`estado` como
  * `string` suelto) a la `Actividad` del puerto (`tipo: ActividadTipo`,
- * `estado: ActividadEstado`, uniones literales). El cast controlado es
- * seguro en runtime porque `activity-contract.ts` es la ÚNICA fuente de esos
- * valores en todo el sistema — todo lo que `repository.ts` alguna vez
- * escribe en esas columnas ya viene de ahí — pero TypeScript no lo sabe sin
- * ayuda, porque `repository.ts` deliberadamente mantiene esas columnas como
- * `string` abierto (su propio module doc: "el conjunto de estados válidos
- * es asunto del núcleo, no de un enum de columna").
+ * `estado: ActividadEstado`, uniones literales). Valida contra las listas
+ * canónicas de `activity-contract.ts` en vez de castear a ciegas: si
+ * `row.tipo`/`row.estado` no aparecen ahí, lanza `ActividadTipoEstadoInvalidoError`
+ * en vez de devolver un objeto con un valor inválido disfrazado de válido.
  */
 function toPortActividad(row: RepositoryActividad): Actividad {
+  const tipoValido = (ACTIVIDAD_TIPOS as readonly string[]).includes(row.tipo);
+  const estadoValido = (ACTIVIDAD_ESTADOS as readonly string[]).includes(row.estado);
+  if (!tipoValido || !estadoValido) {
+    throw new ActividadTipoEstadoInvalidoError(row.id, row.tipo, row.estado);
+  }
   return {
     ...row,
     tipo: row.tipo as ActividadTipo,
