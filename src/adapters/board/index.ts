@@ -53,6 +53,30 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Truncates `text` to at most `maxChars` UTF-16 code units, the same way a
+ * plain `text.slice(0, maxChars)` would — except it never splits a surrogate
+ * pair (an emoji or any other character from a supplementary Unicode plane)
+ * in half. A plain `slice` cuts by code unit count, so a cut that happens to
+ * land exactly between a pair's high and low surrogate keeps the lone high
+ * surrogate, corrupting the string. When the code unit right at the cut
+ * boundary is a high surrogate, the cut backs off one position so that
+ * dangling surrogate is dropped along with the rest of its pair.
+ */
+function truncateSafely(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const HIGH_SURROGATE_START = 0xd800;
+  const HIGH_SURROGATE_END = 0xdbff;
+  const boundaryCharCode = text.charCodeAt(maxChars - 1);
+  const cutAt =
+    boundaryCharCode >= HIGH_SURROGATE_START && boundaryCharCode <= HIGH_SURROGATE_END
+      ? maxChars - 1
+      : maxChars;
+  return text.slice(0, cutAt);
+}
+
 /** Traduce cualquier falla (`GithubApiError` o un throw inesperado) a `{ reason, status? }` para el log. */
 function describirFalla(error: unknown): { readonly reason: string; readonly status?: number } {
   if (error instanceof GithubApiError) {
@@ -134,7 +158,7 @@ export function createBoardAdapter(deps: {
       const { proyectoId, referenciaExterna, texto, casoId } = input;
       try {
         const { owner, repo } = splitProyectoId(proyectoId);
-        const truncado = texto.length > MAX_COMMENT_CHARS ? texto.slice(0, MAX_COMMENT_CHARS) : texto;
+        const truncado = truncateSafely(texto, MAX_COMMENT_CHARS);
 
         await githubRequest({
           method: "POST",

@@ -110,6 +110,16 @@ describe("createBoardAdapter — contrato 'nunca rechaza'", () => {
     const fallo = calls.find((call) => call.event === "tablero-actualizacion-fallida");
     expect(fallo).toBeDefined();
     expect(fallo?.fields?.reason).toBeDefined();
+
+    // El GET de labels tambien falla con este fetchFn: ademas del fallo del
+    // PATCH, se debe loguear tablero-labels-no-leidos y nunca
+    // tablero-actualizado en este escenario.
+    const noLeidos = calls.find((call) => call.event === "tablero-labels-no-leidos");
+    expect(noLeidos).toBeDefined();
+    expect(noLeidos?.fields?.reason).toBeDefined();
+
+    const actualizado = calls.find((call) => call.event === "tablero-actualizado");
+    expect(actualizado).toBeUndefined();
   });
 
   it("publicarRevision con fetchFn que rechaza resuelve igual y loguea tablero-comentario-fallido con reason", async () => {
@@ -269,6 +279,34 @@ describe("createBoardAdapter.publicarRevision", () => {
     const [, init] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string, { body?: string }];
     const body = JSON.parse(init.body ?? "{}") as { body: string };
     expect(body.body).toBe("hola mundo");
+  });
+
+  it("trunca sin partir un par subrogado UTF-16 que cae justo en el limite de corte", async () => {
+    const { logEvent } = makeLogEvent();
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(okResponse({}));
+
+    const board = createBoardAdapter({ logEvent, config: makeConfig(), fetchFn });
+
+    // MAX_COMMENT_CHARS es 60_000. Se arma un string de longitud 60_001 cuyo
+    // emoji (un par subrogado, 2 code units UTF-16) cae justo en el limite
+    // de corte: la surrogate alta del emoji queda en el indice 59_999 (el
+    // ultimo indice que un `slice(0, 60_000)` ingenuo conservaria), asi que
+    // un slice ingenuo conservaria la surrogate alta pero descartaria su
+    // surrogate baja, dejando una surrogate huerfana al final del string.
+    const textoLargo = `${"a".repeat(MAX_COMMENT_CHARS - 1)}😀`;
+    expect(textoLargo.length).toBe(MAX_COMMENT_CHARS + 1);
+
+    await board.publicarRevision({ proyectoId: PROYECTO_ID, referenciaExterna: REF, texto: textoLargo, casoId: CASO_ID });
+
+    const [, init] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string, { body?: string }];
+    const body = JSON.parse(init.body ?? "{}") as { body: string };
+
+    // El corte ingenuo `.slice(0, MAX_COMMENT_CHARS)` produciria
+    // `"a".repeat(MAX_COMMENT_CHARS - 1)` + la surrogate alta huerfana del
+    // emoji. El corte seguro debe retroceder y descartar el emoji entero.
+    expect(body.body).toBe("a".repeat(MAX_COMMENT_CHARS - 1));
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(body.body).not.toMatch(LONE_SURROGATE);
   });
 });
 
