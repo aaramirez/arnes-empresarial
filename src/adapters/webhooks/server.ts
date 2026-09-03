@@ -96,6 +96,20 @@ function pathFromUrl(url: string | undefined): string {
 }
 
 /**
+ * `payload.action` solo existe en algunos eventos de GitHub (ej.
+ * `pull_request.opened`) — guard estructural que nunca lanza si `payload` no
+ * tiene esa forma (design.md §9.2, evento `webhook-recibido`).
+ */
+function extractPayloadAction(payload: unknown): string | undefined {
+  return typeof payload === "object" &&
+    payload !== null &&
+    "action" in payload &&
+    typeof (payload as { action: unknown }).action === "string"
+    ? (payload as { action: string }).action
+    : undefined;
+}
+
+/**
  * El listener HTTP, aislado del ciclo de vida del servidor para poder
  * testear cada respuesta con dobles planos.
  *
@@ -191,6 +205,13 @@ export function createRequestListener(
         logEvent(deliveryId, "webhook-payload-invalido", {});
         return;
       }
+
+      const action = extractPayloadAction(payload);
+      logEvent(deliveryId, "webhook-recibido", {
+        event: eventName,
+        ...(action !== undefined ? { action } : {}),
+        bytes: rawBody.length,
+      });
 
       const evento = mapGithubEvent({
         eventName,

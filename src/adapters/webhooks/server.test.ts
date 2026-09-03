@@ -378,6 +378,205 @@ describe("createRequestListener", () => {
   });
 });
 
+describe("createRequestListener — webhook-recibido (design.md §9.2)", () => {
+  it("logs webhook-recibido with event, action and bytes when the payload carries an action, and the event is processed", () => {
+    const logEvent = vi.fn();
+    const onEvent = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({ onEvent, logEvent });
+    const listener = createRequestListener(deps);
+    const payload = { action: "opened" };
+    const { buffer, signature } = signedBody(JSON.stringify(payload));
+    const mapSpy = vi.spyOn(githubMapperModule, "mapGithubEvent").mockReturnValue(VALID_EVENT);
+    const req = new FakeRequest({
+      method: "POST",
+      url: CONFIG.path,
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "pull_request",
+        "x-github-delivery": "delivery-recibido-action",
+      },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([buffer]);
+
+    expect(logEvent).toHaveBeenCalledWith("delivery-recibido-action", "webhook-recibido", {
+      event: "pull_request",
+      action: "opened",
+      bytes: buffer.length,
+    });
+    expect(onEvent).toHaveBeenCalledTimes(1);
+
+    mapSpy.mockRestore();
+  });
+
+  it("logs webhook-recibido without an 'action' field when the payload has none", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const payload = { ref: "refs/heads/main" };
+    const { buffer, signature } = signedBody(JSON.stringify(payload));
+    const mapSpy = vi.spyOn(githubMapperModule, "mapGithubEvent").mockReturnValue(VALID_EVENT);
+    const req = new FakeRequest({
+      method: "POST",
+      url: CONFIG.path,
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "push",
+        "x-github-delivery": "delivery-recibido-sin-action",
+      },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([buffer]);
+
+    const recibidoCall = logEvent.mock.calls.find((call) => call[1] === "webhook-recibido");
+    expect(recibidoCall).toBeDefined();
+    const fields = recibidoCall?.[2] as Record<string, unknown>;
+    expect(Object.keys(fields)).not.toContain("action");
+    expect(fields).toEqual({ event: "push", bytes: buffer.length });
+
+    mapSpy.mockRestore();
+  });
+
+  it("logs webhook-recibido even when mapGithubEvent ignores the event (returns undefined)", () => {
+    const logEvent = vi.fn();
+    const onEvent = vi.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({ onEvent, logEvent });
+    const listener = createRequestListener(deps);
+    const payload = { action: "closed" };
+    const { buffer, signature } = signedBody(JSON.stringify(payload));
+    const mapSpy = vi.spyOn(githubMapperModule, "mapGithubEvent").mockReturnValue(undefined);
+    const req = new FakeRequest({
+      method: "POST",
+      url: CONFIG.path,
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "pull_request",
+        "x-github-delivery": "delivery-recibido-ignorado",
+      },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([buffer]);
+
+    expect(logEvent).toHaveBeenCalledWith("delivery-recibido-ignorado", "webhook-recibido", {
+      event: "pull_request",
+      action: "closed",
+      bytes: buffer.length,
+    });
+    expect(onEvent).not.toHaveBeenCalled();
+
+    mapSpy.mockRestore();
+  });
+
+  it("does not log webhook-recibido for a non-POST/path-mismatch request (404)", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: CONFIG.path, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+
+    expect(logEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "webhook-recibido",
+      expect.anything(),
+    );
+  });
+
+  it("does not log webhook-recibido when the body exceeds maxBodyBytes (413)", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: CONFIG.path,
+      headers: { "x-hub-signature-256": "sha256=deadbeef" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([Buffer.alloc(700, "a"), Buffer.alloc(400, "b")]);
+
+    expect(logEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "webhook-recibido",
+      expect.anything(),
+    );
+  });
+
+  it("does not log webhook-recibido on a request 'error' event (400)", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: CONFIG.path, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitError(new Error("socket hang up"));
+
+    expect(logEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "webhook-recibido",
+      expect.anything(),
+    );
+  });
+
+  it("does not log webhook-recibido on invalid signature (401)", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: CONFIG.path,
+      headers: {
+        "x-hub-signature-256": "sha256=invalida",
+        "x-github-delivery": "delivery-401-recibido",
+      },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([Buffer.from(JSON.stringify({ action: "opened" }), "utf8")]);
+
+    expect(logEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "webhook-recibido",
+      expect.anything(),
+    );
+  });
+
+  it("does not log webhook-recibido when JSON.parse fails after a valid signature (400)", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const { buffer, signature } = signedBody("no-es-json{{{");
+    const req = new FakeRequest({
+      method: "POST",
+      url: CONFIG.path,
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-delivery": "delivery-400-recibido",
+      },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([buffer]);
+
+    expect(logEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "webhook-recibido",
+      expect.anything(),
+    );
+  });
+});
+
 describe("createRequestListener — close() drains in-flight onEvent calls", () => {
   // Estos tests ejercitan startServer con un doble de HttpServerLike para
   // poder probar close(). No abren ningún puerto real.
