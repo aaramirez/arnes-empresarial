@@ -70,6 +70,8 @@ export interface WebhookServerDeps {
     fields?: Readonly<Record<string, unknown>>,
   ) => void;
   readonly now?: () => string;
+  /** Login del bot (resuelto una vez al arrancar el proceso, `resolveBotLogin`) — filtro anti-loop de `mapGithubEvent`. */
+  readonly botLogin?: string;
 }
 
 export interface WebhookServerHandle {
@@ -137,7 +139,7 @@ function extractPayloadAction(payload: unknown): string | undefined {
 export function createRequestListener(
   deps: WebhookServerDeps,
 ): (req: WebhookRequest, res: WebhookResponse) => void {
-  const { config, onEvent, logEvent } = deps;
+  const { config, onEvent, logEvent, botLogin } = deps;
   const now = deps.now ?? (() => new Date().toISOString());
 
   return (req: WebhookRequest, res: WebhookResponse): void => {
@@ -218,6 +220,7 @@ export function createRequestListener(
         payload,
         deliveryId,
         recibidoEn: now(),
+        ...(botLogin !== undefined ? { botLogin } : {}),
       });
 
       if (evento === undefined) {

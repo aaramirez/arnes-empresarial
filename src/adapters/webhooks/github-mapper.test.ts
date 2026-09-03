@@ -124,6 +124,45 @@ describe("mapGithubEvent — issue_comment", () => {
   });
 });
 
+describe("mapGithubEvent — issue_comment, filtro anti-loop por autor del comentario", () => {
+  it("returns undefined when comment.user.login matches botLogin (evita el loop de auto-comentario del bot)", () => {
+    const result = mapGithubEvent({
+      eventName: "issue_comment",
+      payload: issueCommentOnPrFixture,
+      deliveryId: DELIVERY_ID,
+      recibidoEn: RECIBIDO_EN,
+      botLogin: issueCommentOnPrFixture.comment.user.login,
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it("maps normally when comment.user.login is DIFFERENT from botLogin (guarda de regresion)", () => {
+    const result = mapGithubEvent({
+      eventName: "issue_comment",
+      payload: issueCommentOnPrFixture,
+      deliveryId: DELIVERY_ID,
+      recibidoEn: RECIBIDO_EN,
+      botLogin: "otro-usuario-distinto",
+    });
+
+    expect(result).toBeDefined();
+    expect(result?.comentarioDisparador).toBe(issueCommentOnPrFixture.comment.body);
+  });
+
+  it("maps normally when botLogin is not passed (undefined) — comportamiento sin cambios respecto a hoy", () => {
+    const result = mapGithubEvent({
+      eventName: "issue_comment",
+      payload: issueCommentOnPrFixture,
+      deliveryId: DELIVERY_ID,
+      recibidoEn: RECIBIDO_EN,
+    });
+
+    expect(result).toBeDefined();
+    expect(result?.comentarioDisparador).toBe(issueCommentOnPrFixture.comment.body);
+  });
+});
+
 describe("mapGithubEvent — eventos e inputs invalidos", () => {
   it("returns undefined for an unknown event name (e.g. 'push')", () => {
     const result = mapGithubEvent({

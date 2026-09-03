@@ -104,6 +104,7 @@ function readIssue(payload: Record<string, unknown>): IssueShape | undefined {
 
 interface CommentShape {
   readonly body: string;
+  readonly authorLogin: string | undefined;
 }
 
 function readComment(payload: Record<string, unknown>): CommentShape | undefined {
@@ -115,7 +116,8 @@ function readComment(payload: Record<string, unknown>): CommentShape | undefined
   if (typeof body !== "string") {
     return undefined;
   }
-  return { body };
+  const actor = readActor(comment.user);
+  return { body, authorLogin: actor?.login };
 }
 
 function isSupportedPullRequestAction(action: unknown): action is SupportedPullRequestAction {
@@ -166,6 +168,7 @@ function mapIssueCommentEvent(
   payload: Record<string, unknown>,
   deliveryId: string,
   recibidoEn: string,
+  botLogin: string | undefined,
 ): IncomingActivityEvent | undefined {
   if (!isSupportedIssueCommentAction(payload.action)) {
     return undefined;
@@ -177,6 +180,15 @@ function mapIssueCommentEvent(
     return undefined;
   }
   if (!issue.isPullRequest) {
+    return undefined;
+  }
+  // Filtro anti-loop (bug real de verificación manual end-to-end, Hito 3
+  // tarea 24): `publicarRevision` comenta el PR con `GITHUB_TOKEN`, GitHub
+  // dispara `issue_comment.created` de vuelta, y sin este filtro ese eco se
+  // mapea a un turno nuevo que vuelve a comentar — loop infinito confirmado
+  // en logs reales. Se ignora únicamente cuando el autor del comentario
+  // coincide con el login del propio bot.
+  if (botLogin !== undefined && comment.authorLogin === botLogin) {
     return undefined;
   }
 
@@ -209,7 +221,10 @@ function mapIssueCommentEvent(
  * - el payload no tiene la forma mínima esperada (`repository.full_name`,
  *   número, título). Un payload deforme se ignora, no rompe: el listener ya
  *   verificó que viene de GitHub, así que una forma inesperada es un cambio
- *   de la API, no un ataque.
+ *   de la API, no un ataque;
+ * - es `issue_comment` y `comment.user.login === input.botLogin`: filtro
+ *   anti-loop — sin él, el propio comentario que `publicarRevision` postea
+ *   al PR se reprocesa como un turno nuevo (bug real, ver Hito 3 tarea 24).
  *
  * El narrowing es a mano (type guards locales), sin `zod`: acá TODO camino
  * de invalidez termina en el mismo `undefined`, así que un schema solo
@@ -238,6 +253,7 @@ export function mapGithubEvent(input: {
   readonly payload: unknown;
   readonly deliveryId: string;
   readonly recibidoEn: string;
+  readonly botLogin?: string;
 }): IncomingActivityEvent | undefined {
   const { eventName, payload, deliveryId, recibidoEn } = input;
   if (!isRecord(payload)) {
@@ -248,7 +264,7 @@ export function mapGithubEvent(input: {
     return mapPullRequestEvent(payload, deliveryId, recibidoEn);
   }
   if (eventName === "issue_comment") {
-    return mapIssueCommentEvent(payload, deliveryId, recibidoEn);
+    return mapIssueCommentEvent(payload, deliveryId, recibidoEn, input.botLogin);
   }
   return undefined;
 }

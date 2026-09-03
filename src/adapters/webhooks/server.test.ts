@@ -10,6 +10,7 @@ import {
   type WebhookResponse,
   type WebhookServerDeps,
 } from "./server.js";
+import issueCommentOnPrFixture from "./__fixtures__/issue-comment.on-pr.json" with { type: "json" };
 
 const CONFIG: WebhookConfig = {
   secret: "test-secret",
@@ -375,6 +376,49 @@ describe("createRequestListener", () => {
     expect(order).toEqual(["end-called", "onEvent-settled"]);
 
     mapSpy.mockRestore();
+  });
+});
+
+describe("createRequestListener — filtro anti-loop por botLogin (Hito 3, tarea 24)", () => {
+  it("responde 202, loguea webhook-evento-ignorado y NUNCA llama onEvent cuando el comentario lo publicó el propio bot", () => {
+    // Sin spy sobre mapGithubEvent: se ejercita el mapeo REAL contra un
+    // fixture donde comment.user.login coincide con deps.botLogin, para
+    // probar el filtro de punta a punta a través de createRequestListener.
+    const onEvent = vi.fn().mockResolvedValue(undefined);
+    const logEvent = vi.fn();
+    const config: WebhookConfig = { ...CONFIG, maxBodyBytes: 1_048_576 };
+    const deps = makeDeps({
+      config,
+      onEvent,
+      logEvent,
+      botLogin: issueCommentOnPrFixture.comment.user.login,
+    });
+    const listener = createRequestListener(deps);
+    // `config.secret` no cambia respecto a `CONFIG` — solo se sube
+    // `maxBodyBytes` para que el fixture (mayor a los 1024 bytes de
+    // `CONFIG`) no dispare el 413 antes de llegar al filtro anti-loop.
+    const { buffer, signature } = signedBody(JSON.stringify(issueCommentOnPrFixture));
+    const req = new FakeRequest({
+      method: "POST",
+      url: config.path,
+      headers: {
+        "x-hub-signature-256": signature,
+        "x-github-event": "issue_comment",
+        "x-github-delivery": "delivery-anti-loop",
+      },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([buffer]);
+
+    expect(res.statusCode).toBe(202);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      "delivery-anti-loop",
+      "webhook-evento-ignorado",
+      expect.anything(),
+    );
   });
 });
 

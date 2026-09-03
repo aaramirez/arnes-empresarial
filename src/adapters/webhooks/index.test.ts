@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IncomingActivityEvent } from "../../core/activity/activity-contract.js";
 import { WEBHOOK_LOG_CORRELATION_ID, type WebhookConfig } from "./config.js";
+import * as serverModule from "./server.js";
 import type { CreateServerFn, HttpServerLike } from "./server.js";
 import { startWebhookServer } from "./index.js";
 
@@ -125,6 +126,43 @@ describe("startWebhookServer", () => {
       port: ENABLED_CONFIG.port,
       path: ENABLED_CONFIG.path,
     });
+  });
+
+  it("forwards botLogin to serverDeps (startServer) when passed to startWebhookServer", async () => {
+    const { createServer } = makeSuccessfulServer();
+    const startServerSpy = vi.spyOn(serverModule, "startServer");
+    const deps = makeDeps();
+
+    await startWebhookServer({
+      ...deps,
+      config: ENABLED_CONFIG,
+      createServer,
+      botLogin: "arnes-empresarial-bot",
+    });
+
+    expect(startServerSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ botLogin: "arnes-empresarial-bot" }),
+      createServer,
+    );
+
+    startServerSpy.mockRestore();
+  });
+
+  it("does not include botLogin in serverDeps when not provided (undefined, no spread crash)", async () => {
+    const { createServer } = makeSuccessfulServer();
+    const startServerSpy = vi.spyOn(serverModule, "startServer");
+    const deps = makeDeps();
+
+    await startWebhookServer({
+      ...deps,
+      config: ENABLED_CONFIG,
+      createServer,
+    });
+
+    const [serverDeps] = startServerSpy.mock.calls[0] as unknown as [{ botLogin?: string }];
+    expect(serverDeps.botLogin).toBeUndefined();
+
+    startServerSpy.mockRestore();
   });
 
   it("propagates a rejected listen (e.g. EADDRINUSE) instead of swallowing it or logging webhook-arranque-fallido", async () => {

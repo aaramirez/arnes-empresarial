@@ -57,6 +57,7 @@ export async function startWebhookServer(deps: {
   ) => void;
   readonly config?: WebhookConfig;
   readonly createServer?: CreateServerFn;
+  readonly botLogin?: string;
 }): Promise<WebhookAdapter | undefined> {
   const config = deps.config ?? resolveWebhookConfig();
 
@@ -69,6 +70,7 @@ export async function startWebhookServer(deps: {
     config,
     onEvent: deps.onEvent,
     logEvent: deps.logEvent,
+    ...(deps.botLogin !== undefined ? { botLogin: deps.botLogin } : {}),
   };
 
   const handle = await startServer(serverDeps, deps.createServer);
