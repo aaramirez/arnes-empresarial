@@ -79,7 +79,8 @@ import { startTui } from "./adapters/tui/start-tui.js";
 import { createKnowledgeAdapter, type KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import { buildOnSubmit } from "./build-on-submit.js";
 import { buildOnActivity } from "./build-on-activity.js";
-import { createBoardAdapter } from "./adapters/board/index.js";
+import { createBoardAdapter, resolveBotLogin } from "./adapters/board/index.js";
+import { resolveBoardConfig } from "./adapters/board/config.js";
 import { startWebhookServer, type WebhookAdapter } from "./adapters/webhooks/index.js";
 import { WEBHOOK_LOG_CORRELATION_ID } from "./adapters/webhooks/config.js";
 import { createKeyedQueue } from "./core/concurrency/keyed-queue.js";
@@ -216,7 +217,17 @@ const onSubmit = buildOnSubmit(caso.id, memory, hooks, agents, undefined, create
 //    (sin excepción) cuando los webhooks están deshabilitados por config —
 //    ese caso no pasa por este `catch`, lo maneja `startWebhookServer`
 //    internamente.
+//
+// `resolveBotLogin` (tarea 24, verificación manual end-to-end) resuelve el
+// login del bot UNA vez acá, antes de escuchar — no por evento — y se lo
+// pasa a `startWebhookServer`, que lo reenvía hasta `mapGithubEvent`: el
+// filtro anti-loop que evita que el propio comentario de `publicarRevision`
+// se reprocese como un turno nuevo (bug real: 2 vueltas encadenadas
+// capturadas en logs antes de que un humano cortara el proceso).
+const boardConfig = resolveBoardConfig();
+
 const board = createBoardAdapter({
+  config: boardConfig,
   logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
 });
 
@@ -230,11 +241,17 @@ const onActivity = buildOnActivity({
   createKnowledge,
 });
 
+const botLogin = await resolveBotLogin({
+  config: boardConfig,
+  logEvent: (event, fields) => logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, event, fields),
+});
+
 let webhook: WebhookAdapter | undefined;
 try {
   webhook = await startWebhookServer({
     onEvent: onActivity,
     logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
+    ...(botLogin !== undefined ? { botLogin } : {}),
   });
 } catch (error) {
   logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, "webhook-arranque-fallido", { message: toErrorMessage(error) });
