@@ -14,6 +14,19 @@ import { config as loadDotenv } from "dotenv";
  * and reads `process.env.ANTHROPIC_API_KEY` as soon as it is loaded — if the
  * SDK module is evaluated first, setting the variable afterwards has no
  * effect on it.
+ *
+ * Variables recognized by this loading point (populated into `process.env`,
+ * with no name registration required for dotenv itself to pick them up):
+ * `ANTHROPIC_API_KEY` (read by `getAnthropicApiKey` below), plus the
+ * `GRAPHIFY_*` variables consumed by `adapters/knowledge/config.ts`.
+ *
+ * `GITHUB_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `WEBHOOK_PORT`, `WEBHOOK_PATH`,
+ * `WEBHOOK_MAX_BODY_BYTES`, `GITHUB_API_BASE_URL`, and `BOARD_TIMEOUT_MS`
+ * are also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveWebhookConfig`
+ * (`adapters/webhooks/config.ts`) and `resolveBoardConfig`
+ * (`adapters/board/config.ts`), not here — this module only guarantees
+ * `.env` has been loaded before those adapters read `process.env` directly.
  */
 loadDotenv();
 

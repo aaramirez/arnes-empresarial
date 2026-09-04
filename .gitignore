@@ -7,6 +7,9 @@ build/
 .DS_Store
 Thumbs.db
 *.db
+# Archivos WAL/SHM de SQLite (modo WAL habilitado en Hito 3, tarea 18)
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 graphify-out/

@@ -42,6 +42,35 @@
  * Integración end-to-end, tarea 15) — mismo criterio que ya se aplicó en la
  * tarea 11 para `runTurnStage`.
  *
+ * Design decision — desde Hito 3, `logTurnEvent` también lo consumen los
+ * adaptadores de Webhooks y de Tablero, y el orquestador de actividad
+ * (`build-on-activity.ts`, `run-activity-turn.ts`) — no solo `handleTurn`
+ * (Hito 1) y los adaptadores de Conocimiento/Memoria/TUI. Ejemplos
+ * representativos de los ~25 eventos nuevos: `webhook-recibido`,
+ * `webhook-firma-invalida`, `actividad-encolada`, `actividad-creada`,
+ * `actividad-turno-fallido`, `tablero-actualizado`. El contrato de esta
+ * función NO cambió para soportarlos: `design.md` §9 de ese hito lo
+ * resuelve explícitamente ("no gana código; a lo sumo una línea en su
+ * module doc") — ver esa sección para la tabla completa.
+ *
+ * Nota — el parámetro posicional `casoId` no siempre recibe, en la
+ * práctica, un id de `caso` real, aunque su nombre en la firma no cambió
+ * (eso sí sería un cambio de contrato, fuera de alcance de esta nota).
+ * `design.md` §9.1 de Hito 3 resuelve que hay DOS espacios de id de
+ * correlación distintos: los eventos de transporte de Webhooks
+ * (`webhook-recibido`, `webhook-firma-invalida`, ...) ocurren ANTES de que
+ * exista ningún `caso` — una firma inválida, por diseño, no crea fila —
+ * así que se correlacionan por `deliveryId` (el `X-GitHub-Delivery` de
+ * GitHub); los eventos de ciclo de vida del proceso sin ningún delivery
+ * (`webhook-escuchando`, arranque/cierre del servidor) usan en su lugar la
+ * constante `"webhook-adapter"` (`WEBHOOK_LOG_CORRELATION_ID`,
+ * `adapters/webhooks/config.ts`). Los eventos de turno, una vez que existe
+ * `caso`, siguen usando `casoId` como siempre. El puente entre ambos
+ * espacios son `actividad-creada` / `actividad-reusada`: se loguean con
+ * `casoId` como primer parámetro, pero llevan además `deliveryId` dentro
+ * de `fields`, así una línea de `data/harness.log` permite saltar de un
+ * espacio al otro.
+ *
  * Design decision — default `write` escribe a un archivo (`data/harness.log`
  * vía `createFileLogWriter`), no a ningún stream del proceso (hallazgo
  * post-Hito 1, mejora del Adaptador TUI): esta tarea se implementó antes de
