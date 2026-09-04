@@ -27,6 +27,25 @@ import { config as loadDotenv } from "dotenv";
  * (`adapters/webhooks/config.ts`) and `resolveBoardConfig`
  * (`adapters/board/config.ts`), not here — this module only guarantees
  * `.env` has been loaded before those adapters read `process.env` directly.
+ *
+ * `WEB_PORT`, `WEB_PUBLIC_URL`, `VENTAS_API_TOKEN`, and `WEB_MAX_BODY_BYTES`
+ * are also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveWebConfig`
+ * (`adapters/web/config.ts`), not here — this module only guarantees `.env`
+ * has been loaded before that adapter reads `process.env` directly.
+ *
+ * `COMISION_PORCENTAJE`, `REEMBOLSO_UMBRAL`, and `VENTA_TOKEN_TTL_HORAS` are
+ * also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveVentasConfig`
+ * (`core/ventas/ventas-config.ts`), not here — this module only guarantees
+ * `.env` has been loaded before that resolver reads `process.env` directly.
+ *
+ * `EMAIL_API_KEY`, `EMAIL_FROM`, `EMAIL_API_URL`, and `EMAIL_TIMEOUT_MS` are
+ * also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveNotificacionesConfig`
+ * (`adapters/notificaciones/config.ts`), not here — this module only
+ * guarantees `.env` has been loaded before that adapter reads
+ * `process.env` directly.
  */
 loadDotenv();
 
