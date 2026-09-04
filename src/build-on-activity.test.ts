@@ -247,7 +247,7 @@ describe("buildOnActivity", () => {
       run: (key, task) => runSpy(key, task) as ReturnType<typeof task>,
       size: 0,
     };
-    const handler = buildOnActivity(makeBaseDeps({ store: makeStore(), queue }));
+    const handler = buildOnActivity(makeBaseDeps({ store: makeStore(), queue, logDeps: fakeLogDeps() }));
 
     await handler(makeEvento({ proyectoId: "acme/otro-repo" }));
 
@@ -289,7 +289,7 @@ describe("buildOnActivity", () => {
       size: 0,
     };
 
-    const handler = buildOnActivity(makeBaseDeps({ store, queue }));
+    const handler = buildOnActivity(makeBaseDeps({ store, queue, logDeps: fakeLogDeps() }));
     void handler(makeEvento());
 
     // El handler ya devolvió (síncronamente encoló en `queue.run`), pero
@@ -308,7 +308,7 @@ describe("buildOnActivity", () => {
     const newId = makeCounterNewId("caso-nuevo");
     const createKnowledge = makeFakeKnowledge();
     const handler = buildOnActivity(
-      makeBaseDeps({ store: makeStore(), newId, createKnowledge }),
+      makeBaseDeps({ store: makeStore(), newId, createKnowledge, logDeps: fakeLogDeps() }),
     );
 
     await handler(makeEvento());
@@ -342,7 +342,9 @@ describe("buildOnActivity", () => {
     });
 
     const queue = createKeyedQueue();
-    const handler = buildOnActivity(makeBaseDeps({ store: makeStore(), queue, newId: makeCounterNewId() }));
+    const handler = buildOnActivity(
+      makeBaseDeps({ store: makeStore(), queue, newId: makeCounterNewId(), logDeps: fakeLogDeps() }),
+    );
 
     const p1 = handler(makeEvento({ referenciaExterna: "1" }));
     const p2 = handler(makeEvento({ referenciaExterna: "2" }));
@@ -377,7 +379,10 @@ describe("buildOnActivity", () => {
     });
 
     const queue = createKeyedQueue();
-    const handler = buildOnActivity(makeBaseDeps({ store: makeStore(), queue, newId: makeCounterNewId() }));
+    const logDeps = fakeLogDeps();
+    const handler = buildOnActivity(
+      makeBaseDeps({ store: makeStore(), queue, newId: makeCounterNewId(), logDeps }),
+    );
 
     const p1 = handler(makeEvento({ proyectoId: "acme/repo-a", referenciaExterna: "1" }));
     const p2 = handler(makeEvento({ proyectoId: "acme/repo-b", referenciaExterna: "1" }));
@@ -444,7 +449,8 @@ describe("buildOnActivity", () => {
     });
 
     const queue = createKeyedQueue();
-    const handler = buildOnActivity(makeBaseDeps({ store, queue, createKnowledge }));
+    const logDeps = fakeLogDeps();
+    const handler = buildOnActivity(makeBaseDeps({ store, queue, createKnowledge, logDeps }));
 
     // proyectoId distinto → corren efectivamente concurrentes, no solo
     // "uno después del otro" por la cola.
