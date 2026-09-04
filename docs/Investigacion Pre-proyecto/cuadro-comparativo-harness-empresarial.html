@@ -1,0 +1,440 @@
+<title>Cuadro comparativo — Harnesses de agentes vs. criterios empresariales</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#eef1f5; --panel:#ffffff; --ink:#161b22;
+    --ink-soft:#414b57; --ink-faint:#6b7684; --line:#d6dce4; --line-soft:#e6eaf0;
+    --accent:#2d5bd7; --accent-soft:#e5ebfb;
+    --full:#1f8a5b; --full-bg:#dff0e7;
+    --part:#b8842a; --part-bg:#f6ecd6;
+    --none:#c0473f; --none-bg:#f7dfdd;
+    --na:#8a94a1; --na-bg:#e9edf2;
+    --shadow:0 1px 2px rgba(20,27,34,.06),0 8px 24px rgba(20,27,34,.05);
+    --mono:ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --serif:Georgia,"Iowan Old Style",Cambria,"Times New Roman",serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0e1218; --panel:#161c24; --ink:#e7ecf2; --ink-soft:#c2cad4; --ink-faint:#8a94a1;
+      --line:#2a333e; --line-soft:#212a34; --accent:#6f97ff; --accent-soft:#1b2740;
+      --full:#4fbf88; --full-bg:#123023; --part:#dcab54; --part-bg:#332813;
+      --none:#e0736b; --none-bg:#361b19; --na:#7c8794; --na-bg:#1c242d;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#eef1f5; --panel:#ffffff; --ink:#161b22; --ink-soft:#414b57; --ink-faint:#6b7684;
+    --line:#d6dce4; --line-soft:#e6eaf0; --accent:#2d5bd7; --accent-soft:#e5ebfb;
+    --full:#1f8a5b; --full-bg:#dff0e7; --part:#b8842a; --part-bg:#f6ecd6;
+    --none:#c0473f; --none-bg:#f7dfdd; --na:#8a94a1; --na-bg:#e9edf2;
+    --shadow:0 1px 2px rgba(20,27,34,.06),0 8px 24px rgba(20,27,34,.05);
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1218; --panel:#161c24; --ink:#e7ecf2; --ink-soft:#c2cad4; --ink-faint:#8a94a1;
+    --line:#2a333e; --line-soft:#212a34; --accent:#6f97ff; --accent-soft:#1b2740;
+    --full:#4fbf88; --full-bg:#123023; --part:#dcab54; --part-bg:#332813;
+    --none:#e0736b; --none-bg:#361b19; --na:#7c8794; --na-bg:#1c242d;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;margin:0;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:clamp(28px,5vw,72px) clamp(18px,4vw,44px)}
+  .measure{max-width:70ch}
+  h1,h2,h3{font-family:var(--sans);letter-spacing:-.02em;text-wrap:balance;line-height:1.15;font-weight:700}
+  a{color:var(--accent)}
+
+  /* Masthead */
+  .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin:0 0 14px}
+  h1{font-size:clamp(1.9rem,4.6vw,3.05rem);margin:0 0 18px}
+  .lede{font-family:var(--serif);font-size:clamp(1.05rem,2vw,1.28rem);color:var(--ink-soft);margin:0}
+  .masthead{border-bottom:2px solid var(--ink);padding-bottom:26px;margin-bottom:8px}
+  .meta{font-family:var(--mono);font-size:.74rem;color:var(--ink-faint);margin-top:22px;
+    display:flex;flex-wrap:wrap;gap:6px 22px;letter-spacing:.02em}
+
+  section{margin-top:clamp(40px,6vw,68px)}
+  h2{font-size:clamp(1.3rem,2.6vw,1.7rem);margin:0 0 6px;display:flex;align-items:baseline;gap:12px}
+  h2 .n{font-family:var(--mono);font-size:.85rem;color:var(--accent);font-weight:600;letter-spacing:0}
+  .sub{color:var(--ink-faint);font-size:.95rem;margin:0 0 24px;font-family:var(--serif);font-style:italic}
+  p{margin:0 0 16px}
+  .prose p{font-family:var(--serif);color:var(--ink-soft);font-size:1.02rem}
+  strong{color:var(--ink);font-weight:700}
+
+  /* Criteria grid */
+  .crit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+  .crit{background:var(--panel);padding:16px 18px}
+  .crit .code{font-family:var(--mono);font-size:.72rem;color:var(--accent);font-weight:700;letter-spacing:.04em}
+  .crit .name{font-weight:650;font-size:.95rem;margin:3px 0 4px}
+  .crit .q{font-size:.82rem;color:var(--ink-faint);line-height:1.45}
+
+  /* Legend */
+  .legend{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;margin:18px 0 10px;
+    font-family:var(--mono);font-size:.78rem}
+  .lg{display:inline-flex;align-items:center;gap:8px}
+  .dot{width:15px;height:15px;border-radius:50%;display:inline-grid;place-items:center;font-size:.7rem;font-weight:700}
+  .dot.full{background:var(--full-bg);color:var(--full);box-shadow:inset 0 0 0 1.5px var(--full)}
+  .dot.part{background:var(--part-bg);color:var(--part);box-shadow:inset 0 0 0 1.5px var(--part)}
+  .dot.none{background:var(--none-bg);color:var(--none);box-shadow:inset 0 0 0 1.5px var(--none)}
+
+  /* Matrix */
+  .scroller{overflow-x:auto;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);
+    background:var(--panel)}
+  table.matrix{border-collapse:separate;border-spacing:0;width:100%;min-width:940px;font-family:var(--mono)}
+  table.matrix th,table.matrix td{padding:0;text-align:center;border-bottom:1px solid var(--line-soft)}
+  table.matrix thead th{position:sticky;top:0;background:var(--panel);z-index:3;font-size:.72rem;
+    color:var(--ink-faint);font-weight:600;padding:12px 0 10px;border-bottom:2px solid var(--line)}
+  table.matrix thead th.c{writing-mode:vertical-rl;transform:rotate(180deg);height:88px;letter-spacing:.05em}
+  .cprojh{text-align:left!important;padding-left:16px!important;min-width:190px;position:sticky;left:0;z-index:5;
+    writing-mode:initial!important;transform:none!important;height:auto!important}
+  .cscoreh,.ctierh{min-width:74px}
+  th.ctierh{min-width:150px}
+  td.proj{position:sticky;left:0;background:var(--panel);z-index:2;text-align:left;padding:12px 16px;
+    border-right:1px solid var(--line);font-family:var(--sans)}
+  td.proj .pn{font-weight:700;font-size:.94rem;letter-spacing:-.01em;display:block}
+  td.proj .pk{font-family:var(--mono);font-size:.71rem;color:var(--ink-faint);display:block;margin-top:2px}
+  tr:hover td{background:var(--accent-soft)}
+  tr:hover td.proj{background:var(--accent-soft)}
+  td.cell{width:56px;height:52px;cursor:default}
+  td.cell .m{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:7px;font-size:.9rem;font-weight:700;margin:0 auto}
+  td.cell.full .m{background:var(--full-bg);color:var(--full)}
+  td.cell.part .m{background:var(--part-bg);color:var(--part)}
+  td.cell.none .m{background:var(--none-bg);color:var(--none)}
+  td.score{font-weight:700;font-size:.98rem;font-variant-numeric:tabular-nums;color:var(--ink)}
+  td.score .of{color:var(--ink-faint);font-weight:400;font-size:.75rem}
+  td.tier{font-family:var(--sans);font-size:.78rem;text-align:left;padding:0 14px;color:var(--ink-soft)}
+  .tierbadge{display:inline-block;font-family:var(--mono);font-size:.68rem;font-weight:700;padding:3px 8px;
+    border-radius:5px;letter-spacing:.03em;white-space:nowrap}
+  .tierbadge.a{background:var(--accent-soft);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .tierbadge.b{background:var(--part-bg);color:var(--part);box-shadow:inset 0 0 0 1px var(--part)}
+  .hint{font-family:var(--mono);font-size:.72rem;color:var(--ink-faint);margin-top:10px}
+
+  /* Tier cards */
+  .tiers{display:grid;gap:16px}
+  @media(min-width:760px){.tiers{grid-template-columns:1fr 1fr 1fr}}
+  .tcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 20px 22px;
+    box-shadow:var(--shadow);border-top:3px solid var(--edge,var(--line))}
+  .tcard.a{--edge:var(--accent)} .tcard.b{--edge:var(--part)} .tcard.x{--edge:var(--na)}
+  .tcard h3{font-size:1.02rem;margin:0 0 3px}
+  .tcard .tlabel{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-faint);font-weight:600;margin:0 0 12px}
+  .tcard ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:11px}
+  .tcard li{display:flex;gap:11px;align-items:baseline;font-size:.9rem}
+  .tcard li .rk{font-family:var(--mono);font-weight:700;font-size:.8rem;color:var(--edge,var(--ink));
+    min-width:34px;font-variant-numeric:tabular-nums}
+  .tcard li .nm{font-weight:650}
+  .tcard li .ds{color:var(--ink-faint);font-size:.82rem;display:block;margin-top:1px}
+
+  /* Verdict */
+  .verdict{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(22px,4vw,34px);
+    box-shadow:var(--shadow);border-left:4px solid var(--accent)}
+  .verdict .tag{font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);font-weight:700}
+  .verdict h3{font-size:clamp(1.2rem,2.4vw,1.55rem);margin:8px 0 14px}
+  .verdict p{font-family:var(--serif);color:var(--ink-soft)}
+  .picks{display:grid;gap:12px;margin:22px 0 4px}
+  @media(min-width:720px){.picks{grid-template-columns:1fr 1fr 1fr}}
+  .pick{border:1px solid var(--line);border-radius:10px;padding:15px 16px;background:var(--bg)}
+  .pick .h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px}
+  .pick .h .nm{font-weight:700}
+  .pick .h .sc{font-family:var(--mono);font-weight:700;font-size:.82rem;color:var(--accent);font-variant-numeric:tabular-nums}
+  .pick .role{font-family:var(--mono);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-faint);display:block;margin-bottom:7px}
+  .pick p{font-family:var(--sans);font-size:.85rem;color:var(--ink-soft);margin:0}
+
+  .callout{background:var(--accent-soft);border-radius:12px;padding:20px 22px;margin-top:22px;
+    border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+  .callout p{font-family:var(--serif);color:var(--ink-soft);margin:0}
+  .callout p strong{color:var(--ink)}
+
+  .note{font-family:var(--mono);font-size:.75rem;color:var(--ink-faint);border-top:1px solid var(--line);
+    margin-top:56px;padding-top:18px;line-height:1.6}
+  .toggle{position:fixed;top:14px;right:14px;z-index:20;font-family:var(--mono);font-size:.72rem;
+    background:var(--panel);color:var(--ink-soft);border:1px solid var(--line);border-radius:20px;
+    padding:7px 13px;cursor:pointer;box-shadow:var(--shadow)}
+  .toggle:focus-visible,td.cell:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media(prefers-reduced-motion:no-preference){tr,td{transition:background .12s ease}}
+</style>
+
+<button class="toggle" id="themeBtn" aria-label="Cambiar tema">◐ tema</button>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Reporte de arquitecturas · Marco de 14 criterios</p>
+    <h1>¿Qué harness de agentes resiste un entorno empresarial?</h1>
+    <p class="lede measure">Ocho proyectos confrontados contra los catorce criterios para un harness empresarial. La pregunta no es cuál tiene mejor demo, sino cuál fue diseñado para vivir detrás de un webhook, con multi-tenencia, identidad delegada y auditoría regulatoria.</p>
+    <div class="meta">
+      <span>8 documentos analizados</span><span>14 criterios de diseño</span><span>Fuente: los .md de arquitectura del repo</span><span>2026-08-10</span>
+    </div>
+  </header>
+
+  <section class="prose">
+    <h2><span class="n">00</span> Cómo leer esto</h2>
+    <p class="measure">El documento maestro sostiene una tesis incómoda: casi todos los harnesses de hoy nacieron con el modelo mental <strong>“un humano, un terminal, un ciclo”</strong>. Sirven para asistir a un desarrollador, no para sostener miles de sesiones concurrentes de clientes en un contexto regulado. Evaluar “cuál cumple” exige primero separar tres cosas que los ocho .md mezclan.</p>
+    <p class="measure">Primero: <strong>dos de los ocho ni siquiera son harnesses.</strong> <span style="font-family:var(--mono);font-size:.9em">memU</span> es un subsistema de memoria (sidecar, sin LLM propio) y <span style="font-family:var(--mono);font-size:.9em">OpenHands Agent Canvas</span> es explícitamente solo el frontend React — “el trabajo real lo hace el Agent Server”, que no está en el documento. No pueden “cumplir” el marco porque no son la capa de runtime que el marco evalúa. Se analizan aparte.</p>
+    <p class="measure">Segundo: de los <strong>seis harnesses reales</strong>, ninguno cubre los catorce criterios — y eso es <em>exactamente</em> lo que predice el maestro (“ningún harness público cubre todos los criterios”). Lo que sí cambia entre ellos es <strong>cuántas de las capas empresariales ya vienen resueltas de fábrica</strong> versus cuántas hay que construir por fuera. Ese es el eje de decisión.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">01</span> Los criterios de comparación</h2>
+    <p class="sub">Los catorce ejes del marco. Cada columna del cuadro corresponde a uno de estos códigos.</p>
+    <div class="crit-grid">
+      <div class="crit"><div class="code">C1</div><div class="name">Modelo de activación</div><div class="q">¿El ciclo del agente está desacoplado del canal de entrada? Webhook, cola, REST/gRPC, cron.</div></div>
+      <div class="crit"><div class="code">C2</div><div class="name">Persistencia de sesión</div><div class="q">¿Sesiones de larga duración con checkpoint, hibernación y reanudación tras caída?</div></div>
+      <div class="crit"><div class="code">C3</div><div class="name">Concurrencia y multi-tenencia</div><div class="q">¿Aislamiento estricto entre tenants, con cuotas y sandboxing por-tenant?</div></div>
+      <div class="crit"><div class="code">C4</div><div class="name">Identidad y delegación</div><div class="q">¿Cuenta de servicio o delegación <em>on-behalf-of</em> del usuario final autenticado?</div></div>
+      <div class="crit"><div class="code">C5</div><div class="name">Auditoría y trazabilidad</div><div class="q">¿Registro inmutable (append-only), con replay forense de prompt/tool/respuesta?</div></div>
+      <div class="crit"><div class="code">C6</div><div class="name">Gobernanza y guardrails</div><div class="q">¿Aprobación humana, políticas por rol y límites de gasto como primitivas del runtime?</div></div>
+      <div class="crit"><div class="code">C7</div><div class="name">Semántica de fallo</div><div class="q">¿Idempotencia, reintentos con backoff, dead-letter queue y escalamiento sin humano observando?</div></div>
+      <div class="crit"><div class="code">C8</div><div class="name">Integración saliente</div><div class="q">¿Puntos de extensión limpios (MCP) para hablar con sistemas reales, incluido legacy?</div></div>
+      <div class="crit"><div class="code">C9</div><div class="name">Memoria a largo plazo</div><div class="q">¿Memoria por cliente/caso, con residencia de datos y cifrado bien separados del runtime?</div></div>
+      <div class="crit"><div class="code">C10</div><div class="name">Topología de despliegue</div><div class="q">¿Servicio distribuido con escala horizontal (K8s), o proceso único de escritorio?</div></div>
+      <div class="crit"><div class="code">C11</div><div class="name">Contrato y versionado de tools</div><div class="q">¿El catálogo de herramientas evoluciona con versionado y compatibilidad hacia atrás?</div></div>
+      <div class="crit"><div class="code">C12</div><div class="name">Evaluación y regresión</div><div class="q">¿Harness de evaluación separado, con datasets de negocio corriendo en CI?</div></div>
+      <div class="crit"><div class="code">C13</div><div class="name">Observabilidad de negocio</div><div class="q">¿Costo por tenant/caso, tasa de resolución, retorno — no solo latencia y tokens?</div></div>
+      <div class="crit"><div class="code">C14</div><div class="name">Patrones humano-agente</div><div class="q">¿Tablero asíncrono, interrupción por umbral, HITL, handoff limpio — no solo chat síncrono?</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">02</span> El cuadro comparativo</h2>
+    <p class="sub">Seis harnesses reales × catorce criterios. Pasá el cursor por cada celda para ver la evidencia del .md. Puntaje: ● cumple = 1, ◐ parcial = 0,5, ○ ausente = 0.</p>
+    <div class="legend">
+      <span class="lg"><span class="dot full">●</span> Cumple — primitiva del runtime</span>
+      <span class="lg"><span class="dot part">◐</span> Parcial — existe pero limitado o no explícito</span>
+      <span class="lg"><span class="dot none">○</span> Ausente / débil</span>
+    </div>
+    <div class="scroller">
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th class="cprojh">Harness</th>
+            <th class="c">C1 · Activación</th>
+            <th class="c">C2 · Persist. sesión</th>
+            <th class="c">C3 · Multi-tenencia</th>
+            <th class="c">C4 · Identidad deleg.</th>
+            <th class="c">C5 · Auditoría</th>
+            <th class="c">C6 · Gobernanza</th>
+            <th class="c">C7 · Semántica fallo</th>
+            <th class="c">C8 · Integr. saliente</th>
+            <th class="c">C9 · Memoria L.P.</th>
+            <th class="c">C10 · Despliegue</th>
+            <th class="c">C11 · Versionado tools</th>
+            <th class="c">C12 · Evaluación</th>
+            <th class="c">C13 · Observ. negocio</th>
+            <th class="c">C14 · Patrones humano</th>
+            <th class="cscoreh">Puntaje</th>
+            <th class="ctierh">Categoría</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- DEERFLOW -->
+          <tr>
+            <td class="proj"><span class="pn">DeerFlow</span><span class="pk">LangGraph · full-stack</span></td>
+            <td class="cell full" title="Gateway REST + runtime LangGraph, canales IM (Feishu/Slack/…), webhooks de GitHub, cliente embebido"><span class="m">●</span></td>
+            <td class="cell full" title="Aislamiento por-thread, checkpointer de LangGraph, threads_meta, contexto durable"><span class="m">●</span></td>
+            <td class="cell full" title="Per-thread/per-user, sandbox con rutas virtuales por usuario, provisioner K8s"><span class="m">●</span></td>
+            <td class="cell part" title="Auth y tabla users; delegación on-behalf-of no explícita"><span class="m">◐</span></td>
+            <td class="cell part" title="Tablas runs, run_events, feedback (Alembic); no inmutable/hash-encadenado"><span class="m">◐</span></td>
+            <td class="cell part" title="Middleware de autorización/guardrails + SkillScan; sin aprobación batch ni límite de gasto de primera clase"><span class="m">◐</span></td>
+            <td class="cell part" title="stop_reason de subagentes, normalización de errores LLM, clarificación; sin DLQ/idempotencia explícita"><span class="m">◐</span></td>
+            <td class="cell full" title="MultiServerMCPClient + tools de comunidad + built-in"><span class="m">●</span></td>
+            <td class="cell full" title="Memoria persistente por usuario, FTS5/BM25, extracción por LLM, backend remoto openviking"><span class="m">●</span></td>
+            <td class="cell full" title="Topología de 4 servicios, Docker/K8s, Nginx, provisioner"><span class="m">●</span></td>
+            <td class="cell part" title="Caché MCP invalidada por firma de contenido; sin versionado formal de firmas"><span class="m">◐</span></td>
+            <td class="cell none" title="Sin harness de evaluación/regresión explícito en el documento"><span class="m">○</span></td>
+            <td class="cell part" title="runs/feedback/metrics; sin costo por tenant/caso"><span class="m">◐</span></td>
+            <td class="cell part" title="Clarificación (HITL interrupt), canales IM, subagentes, plan mode todo-list"><span class="m">◐</span></td>
+            <td class="score">9,5<span class="of">/14</span></td>
+            <td class="tier"><span class="tierbadge a">Empresarial</span></td>
+          </tr>
+          <!-- OPENCODE -->
+          <tr>
+            <td class="proj"><span class="pn">OpenCode</span><span class="pk">Effect-TS · cliente/servidor</span></td>
+            <td class="cell full" title="HttpApi autoritativo: transporte desacoplado del razonamiento; admisión durable separada de la ejecución"><span class="m">●</span></td>
+            <td class="cell full" title="Núcleo de sesión V2 durable, SQLite, Session Drain, Context Epoch, control-plane move-session"><span class="m">●</span></td>
+            <td class="cell part" title="Paquetes enterprise/identity, control-plane move-session, ejecución global por Session-ID"><span class="m">◐</span></td>
+            <td class="cell part" title="Paquete identity + grupo credentials en el API; delegación on-behalf-of no detallada"><span class="m">◐</span></td>
+            <td class="cell part" title="sessions.events: stream durable y reproducible por sesión (SSE); sin inmutabilidad/hash forense"><span class="m">◐</span></td>
+            <td class="cell part" title="Grupo permission en el API + CodeMode (ejecución confinada); sin aprobación/gasto como primitiva"><span class="m">◐</span></td>
+            <td class="cell part" title="Admisión durable separada de ejecución: sobrevive a caída; sin DLQ/idempotencia nombrada"><span class="m">◐</span></td>
+            <td class="cell full" title="MCP + LSP + ACP como paquetes de primera clase"><span class="m">●</span></td>
+            <td class="cell part" title="Almacenamiento durable SQLite vía effect-drizzle; residencia de datos no abordada"><span class="m">◐</span></td>
+            <td class="cell full" title="Split cliente/servidor, HttpApi, embebido O en red, diseñado como servicio"><span class="m">●</span></td>
+            <td class="cell part" title="SDK generado desde el contrato (codegen contract-first); versionado de tools no formalizado"><span class="m">◐</span></td>
+            <td class="cell part" title="http-recorder: cassettes deterministas para tests; no eval de negocio en CI"><span class="m">◐</span></td>
+            <td class="cell part" title="Paquete console con facturación Stripe + auth"><span class="m">◐</span></td>
+            <td class="cell part" title="Grupo permission/questions en el API + ACP; patrones asíncronos parciales"><span class="m">◐</span></td>
+            <td class="score">9,0<span class="of">/14</span></td>
+            <td class="tier"><span class="tierbadge a">Empresarial</span></td>
+          </tr>
+          <!-- HIVE -->
+          <tr>
+            <td class="proj"><span class="pn">Hive</span><span class="pk">Aden · swarm outcome-driven</span></td>
+            <td class="cell full" title="ExecutionManager con EntryPointSpec: manual, webhook, timer, event, api; WebhookServer"><span class="m">●</span></td>
+            <td class="cell part" title="ConversationStore write-through, checkpoint/session_state para recuperación ante crash; hibernación no explícita"><span class="m">◐</span></td>
+            <td class="cell part" title="Colonias + isolation.py + niveles de aislamiento; cuotas por-tenant no formalizadas"><span class="m">◐</span></td>
+            <td class="cell part" title="Credential store + routes_credentials; delegación on-behalf-of no detallada"><span class="m">◐</span></td>
+            <td class="cell part" title="Esquemas Decision/Outcome/Run registran el ciclo de decisión + dump JSONL; no inmutable forense"><span class="m">◐</span></td>
+            <td class="cell full" title="HITL (pause_nodes, requires_approval, ESCALATE), constraints duros safety/cost/time, trust gating de skills"><span class="m">●</span></td>
+            <td class="cell part" title="Veredicto RETRY/ESCALATE, reflexion loops, escalamiento a humano; sin DLQ/idempotencia de webhook"><span class="m">◐</span></td>
+            <td class="cell full" title="routes_mcp + browser bridge + ecosistema amplio de tools"><span class="m">●</span></td>
+            <td class="cell part" title="routes_memories + memory tools; residencia/cifrado no detallados"><span class="m">◐</span></td>
+            <td class="cell part" title="Servidor aiohttp con executor aislado; escala horizontal K8s no demostrada"><span class="m">◐</span></td>
+            <td class="cell none" title="tool_tiers (gating por niveles) pero sin versionado ni compatibilidad hacia atrás"><span class="m">○</span></td>
+            <td class="cell part" title="success_criteria del Goal + verificación triangulada; no harness de regresión separado en CI"><span class="m">◐</span></td>
+            <td class="cell full" title="Tracking de goals, cost_usd/credits en eventos, señal PAYMENT_REQUIRED, RunMetrics"><span class="m">●</span></td>
+            <td class="cell full" title="HITL, escalamiento, delegación a sub-agentes, supervisión de la Queen, browser bridge al usuario"><span class="m">●</span></td>
+            <td class="score">9,0<span class="of">/14</span></td>
+            <td class="tier"><span class="tierbadge a">Empresarial</span></td>
+          </tr>
+          <!-- PI -->
+          <tr>
+            <td class="proj"><span class="pn">Pi Agent Harness</span><span class="pk">Earendil · hexagonal</span></td>
+            <td class="cell part" title="CLI + modos headless JSON/RPC/SDK + cliente/servidor remoto CBOR; sin webhook/cola nativos"><span class="m">◐</span></td>
+            <td class="cell full" title="SessionManager + SQLite; estado del harness JSON-serializable → persistible y transportable"><span class="m">●</span></td>
+            <td class="cell part" title="LiveSessionManager gestiona múltiples sesiones vivas (servidor experimental)"><span class="m">◐</span></td>
+            <td class="cell part" title="Flujos OAuth + resolución de credenciales (env/archivo/keychain); sin delegación on-behalf-of"><span class="m">◐</span></td>
+            <td class="cell none" title="Telemetría vendor-neutral (spans); no es auditoría inmutable con replay"><span class="m">○</span></td>
+            <td class="cell none" title="CLI Startup & Sandbox; sin aprobación humana, roles ni límites de gasto"><span class="m">○</span></td>
+            <td class="cell none" title="Bucle del agente con shouldStopAfterTurn; sin idempotencia/reintentos/DLQ/escalamiento"><span class="m">○</span></td>
+            <td class="cell part" title="Tools built-in + ExtensionAPI; MCP no mencionado como primitiva"><span class="m">◐</span></td>
+            <td class="cell part" title="Sesiones en SQLite; sin memoria semántica por cliente/caso"><span class="m">◐</span></td>
+            <td class="cell part" title="Cliente/servidor experimental sobre CBOR; arquitectura hexagonal reutilizable"><span class="m">◐</span></td>
+            <td class="cell part" title="ExtensionAPI + package-manager de extensiones; versionado de tools no formal"><span class="m">◐</span></td>
+            <td class="cell full" title="Paquete evals dedicado: createPiCodingAgentHarness, vitest-evals, suites smoke/extensions"><span class="m">●</span></td>
+            <td class="cell none" title="Telemetría técnica; sin observabilidad de negocio"><span class="m">○</span></td>
+            <td class="cell part" title="TUI síncrona + cadena de sub-agentes scout→planner→worker"><span class="m">◐</span></td>
+            <td class="score">6,0<span class="of">/14</span></td>
+            <td class="tier"><span class="tierbadge b">Asist. dev</span></td>
+          </tr>
+          <!-- CODEX -->
+          <tr>
+            <td class="proj"><span class="pn">Codex CLI</span><span class="pk">OpenAI · Rust ~90 crates</span></td>
+            <td class="cell part" title="TUI + exec (CI/no-interactivo) + app-server JSON-RPC conducible; sin webhook/cola nativos"><span class="m">◐</span></td>
+            <td class="cell part" title="rollout/thread-store con resume y fork de conversaciones"><span class="m">◐</span></td>
+            <td class="cell none" title="Local, un usuario, un workspace; sin multi-tenencia"><span class="m">○</span></td>
+            <td class="cell part" title="login/aws-auth/keyring/secrets/workload-identity; crédenciales locales, sin delegación por usuario final"><span class="m">◐</span></td>
+            <td class="cell none" title="otel/analytics/diagnostics técnicos; no auditoría forense con replay"><span class="m">○</span></td>
+            <td class="cell full" title="execpolicy (allow/prompt/forbidden en Starlark), approval policies, sandbox por SO, requirements.toml gestionado, trust_level"><span class="m">●</span></td>
+            <td class="cell none" title="approval 'never' devuelve el fallo al modelo; enfoque local, sin DLQ/escalamiento a humano de negocio"><span class="m">○</span></td>
+            <td class="cell full" title="Cliente MCP (rmcp-client, OAuth) + servidor MCP (codex mcp)"><span class="m">●</span></td>
+            <td class="cell part" title="Persistencia de config/threads local; sin memoria por cliente ni residencia"><span class="m">◐</span></td>
+            <td class="cell part" title="CLI local + crate cloud-tasks + superficie Codex Web; no distribuido on-prem"><span class="m">◐</span></td>
+            <td class="cell part" title="app-server-protocol volcable a TS/JSON Schema garantizado igual a la versión de Codex"><span class="m">◐</span></td>
+            <td class="cell none" title="Infra de tests masiva (testabilidad), pero no eval de regresión de negocio"><span class="m">○</span></td>
+            <td class="cell none" title="otel/analytics técnicos; sin observabilidad de negocio"><span class="m">○</span></td>
+            <td class="cell part" title="Aprobaciones + TUI síncrona; patrones asíncronos limitados"><span class="m">◐</span></td>
+            <td class="score">5,5<span class="of">/14</span></td>
+            <td class="tier"><span class="tierbadge b">Asist. dev</span></td>
+          </tr>
+          <!-- CLAUDE CODE -->
+          <tr>
+            <td class="proj"><span class="pn">Claude Code</span><span class="pk">Anthropic · CLI React/Ink</span></td>
+            <td class="cell part" title="REPL interactivo + modo servidor MCP + tareas/cron; sesión acoplada a la terminal"><span class="m">◐</span></td>
+            <td class="cell part" title="SessionMemory + ResumeConversation; estado en memoria del proceso"><span class="m">◐</span></td>
+            <td class="cell none" title="Un usuario, un cwd; sin multi-tenencia"><span class="m">○</span></td>
+            <td class="cell none" title="OAuth PKCE para su propia auth; un solo juego de credenciales, sin delegación"><span class="m">○</span></td>
+            <td class="cell none" title="logForDebugging/analytics para depuración; no auditoría inmutable"><span class="m">○</span></td>
+            <td class="cell part" title="Sistema de permisos fuerte + sandbox + hooks + policyLimits; sin aprobación batch ni gasto por-tenant"><span class="m">◐</span></td>
+            <td class="cell none" title="Asume humano frente a la pantalla que reintenta; sin idempotencia/DLQ/escalamiento"><span class="m">○</span></td>
+            <td class="cell full" title="Cliente y servidor MCP + cliente LSP"><span class="m">●</span></td>
+            <td class="cell part" title="Jerarquía CLAUDE.md + memorias auto-extraídas + SessionMemory; local"><span class="m">◐</span></td>
+            <td class="cell none" title="Binario único de terminal; no pensado para cientos de réplicas en K8s"><span class="m">○</span></td>
+            <td class="cell none" title="Sin versionado de contrato de herramientas"><span class="m">○</span></td>
+            <td class="cell none" title="Sin harness de evaluación/regresión"><span class="m">○</span></td>
+            <td class="cell none" title="Analytics/OpenTelemetry técnicos; sin observabilidad de negocio"><span class="m">○</span></td>
+            <td class="cell part" title="Chat síncrono + sistema de tareas + coordinador multi-agente + subagentes"><span class="m">◐</span></td>
+            <td class="score">4,0<span class="of">/14</span></td>
+            <td class="tier"><span class="tierbadge b">Asist. dev</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">▸ Desplazá la tabla horizontalmente. Cada celda tiene la evidencia del .md en su tooltip. Puntaje = Σ (cumple 1 · parcial 0,5 · ausente 0).</p>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span> Las tres categorías</h2>
+    <p class="sub">Responde tu segunda pregunta: cuáles son harness de entorno empresarial, cuáles no, y cuáles ni siquiera son harness.</p>
+    <div class="tiers">
+      <div class="tcard a">
+        <div class="tlabel">Categoría A</div>
+        <h3>Harness de entorno empresarial</h3>
+        <p style="font-size:.86rem;color:var(--ink-faint);margin:0 0 16px;font-family:var(--serif);font-style:italic">Nacieron con cliente/servidor, sesión durable, activación múltiple o gobernanza. Ya traen resueltas varias capas empresariales.</p>
+        <ul>
+          <li><span class="rk">9,5</span><span><span class="nm">DeerFlow</span><span class="ds">Frontera Harness/App explícita, distribuido, per-thread, multi-canal, K8s.</span></span></li>
+          <li><span class="rk">9,0</span><span><span class="nm">OpenCode</span><span class="ds">Núcleo de sesión durable V2, HttpApi contract-first, control-plane, facturación.</span></span></li>
+          <li><span class="rk">9,0</span><span><span class="nm">Hive</span><span class="ds">Activación por evento, HITL/constraints, billing y observabilidad de negocio.</span></span></li>
+        </ul>
+      </div>
+      <div class="tcard b">
+        <div class="tlabel">Categoría B</div>
+        <h3>Harness de asistencia al desarrollador</h3>
+        <p style="font-size:.86rem;color:var(--ink-faint);margin:0 0 16px;font-family:var(--serif);font-style:italic">El sesgo “un humano, un terminal, un ciclo”. Excelentes como herramienta local; sin multi-tenencia, identidad delegada ni auditoría.</p>
+        <ul>
+          <li><span class="rk">6,0</span><span><span class="nm">Pi Agent Harness</span><span class="ds">Hexagonal, estado serializable, evals dedicado — el mejor arquitecturado del grupo.</span></span></li>
+          <li><span class="rk">5,5</span><span><span class="nm">Codex CLI</span><span class="ds">Gobernanza de seguridad fuerte (execpolicy/sandbox), pero local y mono-usuario.</span></span></li>
+          <li><span class="rk">4,0</span><span><span class="nm">Claude Code</span><span class="ds">Arquetipo del asistente interactivo de terminal. Permisos fuertes, nada empresarial.</span></span></li>
+        </ul>
+      </div>
+      <div class="tcard x">
+        <div class="tlabel">Fuera de categoría</div>
+        <h3>No son harness</h3>
+        <p style="font-size:.86rem;color:var(--ink-faint);margin:0 0 16px;font-family:var(--serif);font-style:italic">No son la capa de runtime que el marco evalúa. Se descartan de la comparación — pero uno resuelve un criterio mejor que nadie.</p>
+        <ul>
+          <li><span class="rk">—</span><span><span class="nm">memU</span><span class="ds">Subsistema de <strong>memoria</strong> (sidecar sin LLM). Resuelve C9 mejor que cualquier harness: multi-host, postgres/pgvector, scope de usuario, telemetría con privacidad. Es un <em>complemento</em>, no un harness.</span></span></li>
+          <li><span class="rk">—</span><span><span class="nm">OpenHands Agent Canvas</span><span class="ds">Frontend React. “No ejecuta acciones, no provee sandbox”. El harness real es el Agent Server, ausente del documento.</span></span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span> El candidato indicado</h2>
+    <div class="verdict">
+      <span class="tag">Recomendación</span>
+      <h3>Ningún harness “cumple” los catorce — y el maestro dice que así debe ser. La decisión es qué núcleo envolver.</h3>
+      <p>El propio documento maestro cierra con la conclusión operativa: <strong>hoy no existe un harness listo para casos empresariales complejos</strong>; la respuesta correcta es un <strong>“harness envuelto”</strong> — un núcleo de runtime sólido más una capa propia que resuelve activación, multi-tenencia, identidad delegada, auditoría, gobernanza y evaluación. Por eso la pregunta no es “¿cuál cumple?” sino <strong>“¿cuál me deja menos por construir?”</strong>. Tres candidatos, según dónde pongas la prioridad:</p>
+      <div class="picks">
+        <div class="pick">
+          <div class="h"><span class="nm">DeerFlow</span><span class="sc">9,5/14</span></div>
+          <span class="role">Elección por defecto</span>
+          <p>El más “empresarial de fábrica”: frontera Harness/App verificada en CI, per-thread isolation, sandbox con provisioner K8s y multi-canal (REST + IM + webhooks). Lo que falta: evaluación de regresión (C12) y auditoría forense (C5).</p>
+        </div>
+        <div class="pick">
+          <div class="h"><span class="nm">OpenCode</span><span class="sc">9,0/14</span></div>
+          <span class="role">Si priorizás el núcleo</span>
+          <p>El mejor <em>core</em> para envolver: sesión durable V2, admisión separada de la ejecución (sobrevive a caídas), HttpApi contract-first y paquetes enterprise/identity ya presentes. Ideal si vas a construir tu propia capa envolvente encima.</p>
+        </div>
+        <div class="pick">
+          <div class="h"><span class="nm">Hive</span><span class="sc">9,0/14</span></div>
+          <span class="role">Si priorizás gobernanza</span>
+          <p>El único con HITL, constraints duros (safety/cost), señal de billing y observabilidad de negocio como ciudadanos de primera clase. Elegilo si el caso es regulado y el control humano manda. Su punto débil: versionado de tools (C11).</p>
+        </div>
+      </div>
+      <div class="callout">
+        <p><strong>Y una pieza que no compite: memU.</strong> Cualquiera sea el núcleo que elijas, ninguno resuelve bien C9 (memoria a largo plazo con residencia de datos). memU está diseñado exactamente para eso — como sidecar multi-host con postgres/pgvector y scope de usuario. En una arquitectura envolvente real, el candidato no es <em>un</em> producto: es <strong>DeerFlow u OpenCode como núcleo + memU para la memoria + tu capa propia de auditoría, versionado y evaluación</strong>. Eso es exactamente el “harness envuelto” del documento maestro.</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="note">Método · Cada celda se apoya en una afirmación textual del .md de arquitectura correspondiente (visible en el tooltip). Escala: cumple = primitiva del runtime presente y explícita; parcial = existe pero limitada, experimental o no documentada al detalle; ausente = no aparece o contradice el criterio. El puntaje es una guía de lectura, no un ranking absoluto: los seis harnesses sirven propósitos distintos, y el marco de 14 criterios está pensado para un caso de uso empresarial concreto, no como nota general de calidad.</p>
+
+</div>
+
+<script>
+  (function(){
+    var btn=document.getElementById('themeBtn');
+    var root=document.documentElement;
+    btn.addEventListener('click',function(){
+      var cur=root.getAttribute('data-theme');
+      if(!cur){cur=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+      root.setAttribute('data-theme',cur==='dark'?'light':'dark');
+    });
+    // make cells focusable for keyboard tooltip access
+    document.querySelectorAll('td.cell').forEach(function(c){c.setAttribute('tabindex','0');});
+  })();
+</script>
