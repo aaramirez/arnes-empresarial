@@ -197,4 +197,126 @@ describe("runMigrations", () => {
     expect(row.proyecto_id).toBe("proyecto-1");
     expect(row.caso_id).toBe("caso-1");
   });
+
+  it("creates vendedores, ventas, comisiones and idx_ventas_vendedor, idx_comisiones_periodo on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    const names = tableNames(db);
+    expect(names).toContain("vendedores");
+    expect(names).toContain("ventas");
+    expect(names).toContain("comisiones");
+    expect(indexNames(db)).toContain("idx_ventas_vendedor");
+    expect(indexNames(db)).toContain("idx_comisiones_periodo");
+  });
+
+  it("rejects inserting a venta with a non-existent vendedor_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "abierto", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "venta-1",
+          "vendedor-inexistente",
+          "cliente-1",
+          null,
+          "plan-pro",
+          100,
+          "pendiente_confirmacion",
+          "caso-1",
+          "token-1",
+          "2026-08-26T00:00:00.000Z",
+          null,
+          null,
+        ),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("rejects inserting a venta with a non-existent caso_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO vendedores (id, nombre, created_at) VALUES (?, ?, ?)",
+    ).run("vendedor-1", "Jimmy Fung", "2026-08-26T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "venta-1",
+          "vendedor-1",
+          "cliente-1",
+          null,
+          "plan-pro",
+          100,
+          "pendiente_confirmacion",
+          "caso-inexistente",
+          "token-1",
+          "2026-08-26T00:00:00.000Z",
+          null,
+          null,
+        ),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("rejects inserting two ventas with the same token_confirmacion", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO vendedores (id, nombre, created_at) VALUES (?, ?, ?)",
+    ).run("vendedor-1", "Jimmy Fung", "2026-08-26T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "abierto", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      "venta-1",
+      "vendedor-1",
+      "cliente-1",
+      null,
+      "plan-pro",
+      100,
+      "pendiente_confirmacion",
+      "caso-1",
+      "token-duplicado",
+      "2026-08-26T00:00:00.000Z",
+      null,
+      null,
+    );
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "venta-2",
+          "vendedor-1",
+          "cliente-2",
+          null,
+          "plan-pro",
+          200,
+          "pendiente_confirmacion",
+          "caso-1",
+          "token-duplicado",
+          "2026-08-26T00:00:00.000Z",
+          null,
+          null,
+        ),
+    ).toThrow(/UNIQUE/);
+  });
 });
