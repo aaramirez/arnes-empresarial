@@ -838,3 +838,207 @@ export function getVentaById(db: Database.Database, id: string): VentaRow | unde
     | undefined;
   return row ? rowToVenta(row) : undefined;
 }
+
+/**
+ * Public shape of a `comision`, camelCase — field-for-field the same as
+ * `Comision` in `src/core/ventas/ventas-contract.ts`. Same reasoning as
+ * `VentaRow`: this adapter never imports that contract, but the shapes must
+ * line up 1:1 so the composition root can wire this module behind
+ * `VentaStorePort` without a translation layer.
+ */
+export interface ComisionRow {
+  readonly id: string;
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly monto: number;
+  readonly periodo: string;
+  readonly createdAt: string;
+}
+
+interface ComisionSqlRow {
+  id: string;
+  venta_id: string;
+  vendedor_id: string;
+  monto: number;
+  periodo: string;
+  created_at: string;
+}
+
+const COMISION_SELECT_COLUMNS = "id, venta_id, vendedor_id, monto, periodo, created_at";
+
+function rowToComision(row: ComisionSqlRow): ComisionRow {
+  return {
+    id: row.id,
+    ventaId: row.venta_id,
+    vendedorId: row.vendedor_id,
+    monto: row.monto,
+    periodo: row.periodo,
+    createdAt: row.created_at,
+  };
+}
+
+export interface ConfirmarVentaConComisionInput {
+  readonly ventaId: string;
+  readonly comisionId: string;
+  readonly comisionMonto: number;
+  readonly periodo: string;
+  /**
+   * Un único valor: se usa como `confirmed_at`, como `created_at` de la
+   * comisión Y como el `@ahora` del predicado de expiración (ADR 15).
+   */
+  readonly ahora: string;
+}
+
+/**
+ * EL corazón del hito (design.md §6.2). UNA transacción, dos escrituras, y
+ * el compare-and-swap de ADR 15:
+ *
+ * 1. El `WHERE estado = 'pendiente_confirmacion' AND (expires_at IS NULL OR
+ *    expires_at > @ahora)` es la guarda REAL contra el doble click y contra
+ *    dos POST simultáneos — no un chequeo en JS que ocurrió antes de llegar
+ *    acá. `undefined` NO es un error: es "ya estaba procesada" o "venció", y
+ *    el caller lo traduce a la página genérica.
+ * 2. El `INSERT` en `comisiones` ocurre SOLO en la rama donde el `UPDATE`
+ *    matcheó. Por construcción no puede haber dos comisiones para la misma
+ *    venta: la segunda confirmación nunca llega a insertar.
+ * 3. `vendedor_id` de la comisión sale de la fila que el `RETURNING` acaba
+ *    de devolver, no de un parámetro — así el denormalizado
+ *    (`comisiones.vendedor_id`) no puede divergir de `ventas.vendedor_id`
+ *    aunque el caller se equivoque.
+ *
+ * `expires_at > @ahora` es comparación lexicográfica de TEXT: correcta solo
+ * porque todo timestamp de este repo es ISO-8601 UTC de ancho fijo (ADR 16,
+ * regla 3).
+ */
+export function confirmarVentaConComision(
+  db: Database.Database,
+  input: ConfirmarVentaConComisionInput,
+): { readonly venta: VentaRow; readonly comision: ComisionRow } | undefined {
+  const runInTransaction = db.transaction(():
+    | { readonly venta: VentaRow; readonly comision: ComisionRow }
+    | undefined => {
+    const ventaRow = db
+      .prepare(
+        `UPDATE ventas
+            SET estado = 'confirmada', confirmed_at = @ahora
+          WHERE id = @ventaId
+            AND estado = 'pendiente_confirmacion'
+            AND (expires_at IS NULL OR expires_at > @ahora)
+         RETURNING ${VENTA_SELECT_COLUMNS}`,
+      )
+      .get({ ventaId: input.ventaId, ahora: input.ahora }) as VentaSqlRow | undefined;
+
+    if (!ventaRow) {
+      return undefined;
+    }
+
+    const venta = rowToVenta(ventaRow);
+
+    const comisionRow = db
+      .prepare(
+        `INSERT INTO comisiones (id, venta_id, vendedor_id, monto, periodo, created_at)
+         VALUES (@id, @ventaId, @vendedorId, @monto, @periodo, @createdAt)
+         RETURNING ${COMISION_SELECT_COLUMNS}`,
+      )
+      .get({
+        id: input.comisionId,
+        ventaId: venta.id,
+        vendedorId: venta.vendedorId,
+        monto: input.comisionMonto,
+        periodo: input.periodo,
+        createdAt: input.ahora,
+      }) as ComisionSqlRow;
+
+    return { venta, comision: rowToComision(comisionRow) };
+  });
+
+  return runInTransaction();
+}
+
+/**
+ * CAS a `'rechazada'` desde `'pendiente_confirmacion'`, misma guarda de
+ * expiración que `confirmarVentaConComision`. `undefined` = no aplicó
+ * (molde de `updateCaso`/`updateActividad`: un solo `UPDATE ... RETURNING`,
+ * atómico por sí mismo sin necesitar `db.transaction`). NUNCA toca
+ * `comisiones` — no hay ningún `INSERT` en este cuerpo.
+ */
+export function rechazarVenta(
+  db: Database.Database,
+  input: { readonly ventaId: string; readonly ahora: string },
+): VentaRow | undefined {
+  const row = db
+    .prepare(
+      `UPDATE ventas
+          SET estado = 'rechazada'
+        WHERE id = @ventaId
+          AND estado = 'pendiente_confirmacion'
+          AND (expires_at IS NULL OR expires_at > @ahora)
+       RETURNING ${VENTA_SELECT_COLUMNS}`,
+    )
+    .get(input) as VentaSqlRow | undefined;
+  return row ? rowToVenta(row) : undefined;
+}
+
+/**
+ * CAS a `'reembolsada'` desde `'confirmada'`. SIN guarda de expiración (ADR
+ * 19, punto 2): una devolución ocurre después de confirmar, potencialmente
+ * meses después de que `expires_at` haya vencido — esa columna solo acota la
+ * ventana para CONFIRMAR, no la de pedir un reembolso. NO toca `comisiones`
+ * (spec: "la comisión ya pagada permanece").
+ */
+export function aprobarReembolso(
+  db: Database.Database,
+  input: { readonly ventaId: string; readonly ahora: string },
+): VentaRow | undefined {
+  const row = db
+    .prepare(
+      `UPDATE ventas
+          SET estado = 'reembolsada'
+        WHERE id = @ventaId
+          AND estado = 'confirmada'
+       RETURNING ${VENTA_SELECT_COLUMNS}`,
+    )
+    .get(input) as VentaSqlRow | undefined;
+  return row ? rowToVenta(row) : undefined;
+}
+
+/**
+ * CAS a `'reembolso_pendiente'` desde `'confirmada'` Y
+ * `updateCaso(db, casoId, { estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+ * updatedAt: ahora })` en la MISMA `db.transaction` (ADR 11 de la propuesta,
+ * punto 2). Si el `UPDATE` de `ventas` no matchea, se devuelve `undefined`
+ * ANTES de tocar el `caso`: no existe el estado intermedio "caso escalado,
+ * venta no". `updateCaso` ya existe (arriba en este archivo) y se REUSA tal
+ * cual — cero cambios en esa función; si `casoId` no existe, su
+ * `CasoNotFoundError` revierte también el `UPDATE` de `ventas` gracias a la
+ * transacción. NO toca `comisiones`.
+ */
+export function escalarReembolso(
+  db: Database.Database,
+  input: { readonly ventaId: string; readonly casoId: string; readonly ahora: string },
+): VentaRow | undefined {
+  const runInTransaction = db.transaction((): VentaRow | undefined => {
+    const row = db
+      .prepare(
+        `UPDATE ventas
+            SET estado = 'reembolso_pendiente'
+          WHERE id = @ventaId
+            AND estado = 'confirmada'
+         RETURNING ${VENTA_SELECT_COLUMNS}`,
+      )
+      .get({ ventaId: input.ventaId }) as VentaSqlRow | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    updateCaso(db, input.casoId, {
+      estado: "pendiente_aprobacion_humana",
+      updatedAt: input.ahora,
+    });
+
+    return rowToVenta(row);
+  });
+
+  return runInTransaction();
+}

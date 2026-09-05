@@ -11,11 +11,14 @@ import {
   SesionAgenteInvalidCasoError,
   VentaAlreadyExistsError,
   VentaTokenDuplicadoError,
+  aprobarReembolso,
+  confirmarVentaConComision,
   createActividad,
   createCaso,
   createCasoConActividad,
   createSesionAgente,
   createVentaConCaso,
+  escalarReembolso,
   findActividadPorReferencia,
   findVentaByToken,
   getActividadById,
@@ -23,6 +26,7 @@ import {
   getLatestSesionAgente,
   getProyectoById,
   getVentaById,
+  rechazarVenta,
   updateActividad,
   updateCaso,
   upsertProyecto,
@@ -825,6 +829,261 @@ describe("repository", () => {
       db = openDatabase(":memory:");
 
       expect(getVentaById(db, "no-existe")).toBeUndefined();
+    });
+  });
+
+  describe("confirmarVentaConComision", () => {
+    it("updates venta a confirmada, inserta la comision, y vendedorId de la comision sale de la fila que RETURNING acaba de devolver", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const resultado = confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(resultado?.venta.estado).toBe("confirmada");
+      expect(resultado?.venta.confirmedAt).toBe("2026-08-26T01:00:00.000Z");
+      expect(resultado?.comision).toEqual({
+        id: "comision-1",
+        ventaId: "venta-1",
+        vendedorId: "vendedor-1",
+        monto: 15,
+        periodo: "2026-08",
+        createdAt: "2026-08-26T01:00:00.000Z",
+      });
+    });
+
+    it("dos llamadas seguidas sobre el mismo token: la segunda devuelve undefined y SELECT count(*) FROM comisiones es 1 (cierra R4 sin createKeyedQueue())", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      const input = {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      };
+
+      const primera = confirmarVentaConComision(db, input);
+      const segunda = confirmarVentaConComision(db, { ...input, comisionId: "comision-2" });
+
+      expect(primera).not.toBeUndefined();
+      expect(segunda).toBeUndefined();
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(1);
+    });
+
+    it("token vencido: devuelve undefined sin escribir nada (ni venta ni comision)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-26T00:30:00.000Z",
+          },
+        }),
+      );
+
+      const resultado = confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(resultado).toBeUndefined();
+      const venta = getVentaById(db, "venta-1");
+      expect(venta?.estado).toBe("pendiente_confirmacion");
+      expect(venta).not.toHaveProperty("confirmedAt");
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(0);
+    });
+
+    it("confirma correctamente cuando expires_at esta en el futuro respecto a ahora (rama '> @ahora' del guard)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-27T00:00:00.000Z",
+          },
+        }),
+      );
+
+      const resultado = confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(resultado?.venta.estado).toBe("confirmada");
+    });
+  });
+
+  describe("rechazarVenta", () => {
+    it("actualiza estado a rechazada y nunca toca comisiones", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = rechazarVenta(db, { ventaId: "venta-1", ahora: "2026-08-26T01:00:00.000Z" });
+
+      expect(venta?.estado).toBe("rechazada");
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(0);
+    });
+
+    it("devuelve undefined cuando la venta ya no esta pendiente_confirmacion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      rechazarVenta(db, { ventaId: "venta-1", ahora: "2026-08-26T01:00:00.000Z" });
+
+      const segundo = rechazarVenta(db, { ventaId: "venta-1", ahora: "2026-08-26T01:05:00.000Z" });
+
+      expect(segundo).toBeUndefined();
+    });
+  });
+
+  describe("aprobarReembolso", () => {
+    it("CAS a reembolsada desde confirmada, sin modificar la comision ya pagada", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      const venta = aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      expect(venta?.estado).toBe("reembolsada");
+      const comision = db.prepare("SELECT monto FROM comisiones WHERE id = ?").get("comision-1") as {
+        monto: number;
+      };
+      expect(comision.monto).toBe(15);
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(1);
+    });
+
+    it("devuelve undefined cuando la venta no esta confirmada", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-08-26T01:00:00.000Z" });
+
+      expect(venta).toBeUndefined();
+    });
+
+    it("aplica el CAS sin guarda de expiracion aunque expires_at ya haya vencido (ADR 19, punto 2)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-26T00:30:00.000Z",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T00:10:00.000Z",
+      });
+
+      // "ahora" muy posterior a expires_at, que ya no importa post-confirmacion.
+      const venta = aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-09-01T00:00:00.000Z" });
+
+      expect(venta?.estado).toBe("reembolsada");
+    });
+  });
+
+  describe("escalarReembolso", () => {
+    it("CAS a reembolso_pendiente Y mueve el caso a pendiente_aprobacion_humana en la MISMA transaccion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      const venta = escalarReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        ahora: "2026-08-27T00:00:00.000Z",
+      });
+
+      expect(venta?.estado).toBe("reembolso_pendiente");
+      expect(getCasoById(db, "caso-1")?.estado).toBe("pendiente_aprobacion_humana");
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(1);
+    });
+
+    it("si la venta no esta confirmada, devuelve undefined y el caso NO se toca", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      // La venta sigue en pendiente_confirmacion (nunca se confirmo).
+
+      const venta = escalarReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        ahora: "2026-08-27T00:00:00.000Z",
+      });
+
+      expect(venta).toBeUndefined();
+      expect(getCasoById(db, "caso-1")?.estado).toBe("pendiente_confirmacion");
+    });
+
+    it("si el caso no existe, la actualizacion de la venta tambien se revierte (misma transaccion)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(() =>
+        escalarReembolso(db!, {
+          ventaId: "venta-1",
+          casoId: "no-existe",
+          ahora: "2026-08-27T00:00:00.000Z",
+        }),
+      ).toThrow(CasoNotFoundError);
+
+      expect(getVentaById(db, "venta-1")?.estado).toBe("confirmada");
     });
   });
 });
