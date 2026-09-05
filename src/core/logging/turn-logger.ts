@@ -71,6 +71,41 @@
  * de `fields`, así una línea de `data/harness.log` permite saltar de un
  * espacio al otro.
  *
+ * Design decision — desde Hito 4, `logTurnEvent` también lo consumen el
+ * Adaptador Web (`src/adapters/web/`), el Adaptador de Notificaciones
+ * (`src/adapters/notificaciones/`) y los dos módulos de wiring
+ * `build-on-venta.ts`/`build-on-soporte.ts` — mismo criterio que Hito 3:
+ * "no gana código; a lo sumo una línea en su module doc" (`design.md` §9 de
+ * Hito 4). El mismo patrón de DOS espacios de correlación de la nota de
+ * arriba se repite acá, con otra forma (`design.md` §9.1 de Hito 4):
+ * `requestId` (generado por el adaptador web, `randomUUID` en producción,
+ * y devuelto en el header `X-Request-Id` de toda respuesta) reemplaza al
+ * `deliveryId` de Webhooks para los eventos de transporte ANTES de que
+ * exista `caso` (`web-no-autorizado`, `web-rechazado-tamano`,
+ * `web-payload-invalido`, `web-handler-fallido`, `token-invalido`,
+ * `venta-confirmacion-ignorada`), y `WEB_LOG_CORRELATION_ID =
+ * "web-adapter"` (`adapters/web/config.ts`) reemplaza a
+ * `WEBHOOK_LOG_CORRELATION_ID` para los eventos de ciclo de vida del
+ * proceso sin request (`web-escuchando`, `web-deshabilitado`,
+ * `web-arranque-fallido`, `web-cierre-con-turnos-en-vuelo`). El puente
+ * entre ambos espacios son `venta-creada`, `venta-confirmada` y
+ * `soporte-caso-creado`: se loguean con `casoId` como primer parámetro,
+ * pero llevan además `requestId` dentro de `fields`.
+ *
+ * Caso particular — `token-invalido` no tiene `casoId` (por definición: el
+ * token no resolvió a ninguna venta, o resolvió a una que no debe
+ * revelarse) y **nunca** lleva el token en `fields` — el token ES una
+ * credencial, y `data/harness.log` no tiene rotación ni control de acceso.
+ * Se correlaciona por `requestId` y lleva solo `{ motivo, tokenLength }`
+ * (riesgo residual R14 de `design.md`, Hito 4).
+ *
+ * Ejemplos representativos de los eventos nuevos de Hito 4 (tabla completa
+ * en `design.md` §9.2): `web-escuchando`, `venta-creada`,
+ * `venta-confirmada`, `comision-calculada`, `reembolso-aprobado`,
+ * `reembolso-escalado`, `soporte-caso-creado`, `email-enviado`,
+ * `email-omitido`. El contrato de esta función NO cambió para soportarlos
+ * — mismo criterio que la nota de Hito 3 de arriba.
+ *
  * Design decision — default `write` escribe a un archivo (`data/harness.log`
  * vía `createFileLogWriter`), no a ningún stream del proceso (hallazgo
  * post-Hito 1, mejora del Adaptador TUI): esta tarea se implementó antes de
