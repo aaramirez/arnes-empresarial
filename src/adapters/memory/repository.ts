@@ -595,3 +595,246 @@ export function createCasoConActividad(
 
   return runInTransaction();
 }
+
+/**
+ * A person who sells plan changes (Hito 4). `id` and `nombre` come from
+ * whatever identity the caller already has for the seller; this adapter
+ * does not mint one.
+ */
+export interface Vendedor {
+  readonly id: string;
+  readonly nombre: string;
+  readonly createdAt: string;
+}
+
+/**
+ * Public shape of a `venta`, camelCase — field-for-field the same as `Venta`
+ * in `src/core/ventas/ventas-contract.ts`. This module never imports that
+ * contract (`src/core/` never imports from `src/adapters/*`, and this
+ * adapter has no reason to depend on the core either — the shapes line up
+ * by convention, not by a shared type), but they must match 1:1 so the
+ * composition root can wire this adapter behind `VentaStorePort` without a
+ * translation layer.
+ */
+export interface VentaRow {
+  readonly id: string;
+  readonly vendedorId: string;
+  readonly clienteId: string;
+  readonly planAnterior?: string;
+  readonly planNuevo: string;
+  readonly monto: number;
+  readonly estado: string;
+  readonly casoId: string;
+  readonly tokenConfirmacion: string;
+  readonly createdAt: string;
+  readonly confirmedAt?: string;
+  readonly expiresAt?: string;
+}
+
+export class VentaNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Venta not found: ${id}`);
+    this.name = "VentaNotFoundError";
+  }
+}
+
+export class VentaAlreadyExistsError extends Error {
+  constructor(id: string) {
+    super(`Venta already exists: ${id}`);
+    this.name = "VentaAlreadyExistsError";
+  }
+}
+
+/**
+ * `vendedor_id` o `caso_id` de `ventas` no existen. Molde de
+ * `ActividadInvalidReferenceError`. `createVentaConCaso` upsertea el
+ * vendedor y crea el caso ANTES de este INSERT, en la misma transacción, así
+ * que por construcción ambas referencias siempre existen para ese INSERT —
+ * este catch es defensivo, para cualquier otro caller que inserte una
+ * `venta` sin pasar por esa función.
+ */
+export class VentaInvalidReferenceError extends Error {
+  constructor(ventaId: string) {
+    super(`Cannot create venta: invalid reference: ${ventaId}`);
+    this.name = "VentaInvalidReferenceError";
+  }
+}
+
+/**
+ * Colisión de `token_confirmacion` (`SQLITE_CONSTRAINT_UNIQUE`). Con
+ * `randomUUID` es astronómicamente improbable, pero un `UNIQUE` que se
+ * viola en silencio sería peor que uno que se nombra.
+ */
+export class VentaTokenDuplicadoError extends Error {
+  constructor(token: string) {
+    super(`Venta token_confirmacion already exists: ${token}`);
+    this.name = "VentaTokenDuplicadoError";
+  }
+}
+
+interface VendedorRow {
+  id: string;
+  nombre: string;
+  created_at: string;
+}
+
+function rowToVendedor(row: VendedorRow): Vendedor {
+  return {
+    id: row.id,
+    nombre: row.nombre,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Inserts a `vendedor` row, or updates `nombre` in place if `id` already
+ * exists — idempotent by design, molde de `upsertProyecto`: sin `COALESCE`,
+ * porque `nombre` es `NOT NULL` y el caller siempre tiene valor.
+ */
+export function upsertVendedor(
+  db: Database.Database,
+  input: { readonly id: string; readonly nombre: string; readonly createdAt: string },
+): Vendedor {
+  const row = db
+    .prepare(
+      `INSERT INTO vendedores (id, nombre, created_at)
+       VALUES (@id, @nombre, @createdAt)
+       ON CONFLICT(id) DO UPDATE SET nombre = excluded.nombre
+       RETURNING id, nombre, created_at`,
+    )
+    .get(input) as VendedorRow;
+  return rowToVendedor(row);
+}
+
+interface VentaSqlRow {
+  id: string;
+  vendedor_id: string;
+  cliente_id: string;
+  plan_anterior: string | null;
+  plan_nuevo: string;
+  monto: number;
+  estado: string;
+  caso_id: string;
+  token_confirmacion: string;
+  created_at: string;
+  confirmed_at: string | null;
+  expires_at: string | null;
+}
+
+const VENTA_SELECT_COLUMNS =
+  "id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at";
+
+function rowToVenta(row: VentaSqlRow): VentaRow {
+  return {
+    id: row.id,
+    vendedorId: row.vendedor_id,
+    clienteId: row.cliente_id,
+    ...(row.plan_anterior !== null ? { planAnterior: row.plan_anterior } : {}),
+    planNuevo: row.plan_nuevo,
+    monto: row.monto,
+    estado: row.estado,
+    casoId: row.caso_id,
+    tokenConfirmacion: row.token_confirmacion,
+    createdAt: row.created_at,
+    ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
+    ...(row.expires_at !== null ? { expiresAt: row.expires_at } : {}),
+  };
+}
+
+export interface CreateVentaConCasoInput {
+  readonly vendedor: { readonly id: string; readonly nombre: string };
+  readonly caso: CreateCasoInput;
+  readonly venta: {
+    readonly id: string;
+    readonly clienteId: string;
+    readonly planAnterior?: string;
+    readonly planNuevo: string;
+    readonly monto: number;
+    readonly estado: string;
+    readonly tokenConfirmacion: string;
+    readonly expiresAt?: string;
+  };
+  /** Un único timestamp para `created_at` de las tres filas. */
+  readonly timestamp: string;
+}
+
+/**
+ * `upsertVendedor` + `createCaso` + `INSERT ventas` en UNA transacción,
+ * molde EXACTO de `createCasoConActividad`: si cualquiera de los tres pasos
+ * lanza, SQLite revierte los anteriores — no queda un `vendedor` nuevo ni un
+ * `caso` huérfano.
+ *
+ * `planAnterior`/`expiresAt` ausentes se bindean como `null` explícito
+ * (`better-sqlite3` se niega a bindear un `undefined` de JS). `confirmedAt`
+ * no forma parte del input: una venta recién creada nunca está confirmada
+ * todavía.
+ */
+export function createVentaConCaso(db: Database.Database, input: CreateVentaConCasoInput): VentaRow {
+  const runInTransaction = db.transaction((): VentaRow => {
+    upsertVendedor(db, {
+      id: input.vendedor.id,
+      nombre: input.vendedor.nombre,
+      createdAt: input.timestamp,
+    });
+    const caso = createCaso(db, input.caso);
+
+    let row: VentaSqlRow;
+    try {
+      row = db
+        .prepare(
+          `INSERT INTO ventas
+             (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at)
+           VALUES (@id, @vendedorId, @clienteId, @planAnterior, @planNuevo, @monto, @estado, @casoId, @tokenConfirmacion, @createdAt, @confirmedAt, @expiresAt)
+           RETURNING ${VENTA_SELECT_COLUMNS}`,
+        )
+        .get({
+          id: input.venta.id,
+          vendedorId: input.vendedor.id,
+          clienteId: input.venta.clienteId,
+          planAnterior: input.venta.planAnterior ?? null,
+          planNuevo: input.venta.planNuevo,
+          monto: input.venta.monto,
+          estado: input.venta.estado,
+          casoId: caso.id,
+          tokenConfirmacion: input.venta.tokenConfirmacion,
+          createdAt: input.timestamp,
+          confirmedAt: null,
+          expiresAt: input.venta.expiresAt ?? null,
+        }) as VentaSqlRow;
+    } catch (error) {
+      if (isSqliteConstraintError(error, "SQLITE_CONSTRAINT_PRIMARYKEY")) {
+        throw new VentaAlreadyExistsError(input.venta.id);
+      }
+      if (isSqliteConstraintError(error, "SQLITE_CONSTRAINT_FOREIGNKEY")) {
+        throw new VentaInvalidReferenceError(input.venta.id);
+      }
+      if (isSqliteConstraintError(error, "SQLITE_CONSTRAINT_UNIQUE")) {
+        throw new VentaTokenDuplicadoError(input.venta.tokenConfirmacion);
+      }
+      throw error;
+    }
+
+    return rowToVenta(row);
+  });
+
+  return runInTransaction();
+}
+
+/**
+ * Reads a `venta` by its `token_confirmacion`. Indexada por el `UNIQUE` de
+ * la columna. `undefined` si no existe.
+ */
+export function findVentaByToken(db: Database.Database, token: string): VentaRow | undefined {
+  const row = db
+    .prepare(`SELECT ${VENTA_SELECT_COLUMNS} FROM ventas WHERE token_confirmacion = ?`)
+    .get(token) as VentaSqlRow | undefined;
+  return row ? rowToVenta(row) : undefined;
+}
+
+/** Reads a `venta` by id. Returns `undefined` if it does not exist. */
+export function getVentaById(db: Database.Database, id: string): VentaRow | undefined {
+  const row = db.prepare(`SELECT ${VENTA_SELECT_COLUMNS} FROM ventas WHERE id = ?`).get(id) as
+    | VentaSqlRow
+    | undefined;
+  return row ? rowToVenta(row) : undefined;
+}

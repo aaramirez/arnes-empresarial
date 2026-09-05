@@ -9,23 +9,30 @@ import {
   CasoNotFoundError,
   SesionAgenteAlreadyExistsError,
   SesionAgenteInvalidCasoError,
+  VentaAlreadyExistsError,
+  VentaTokenDuplicadoError,
   createActividad,
   createCaso,
   createCasoConActividad,
   createSesionAgente,
+  createVentaConCaso,
   findActividadPorReferencia,
+  findVentaByToken,
   getActividadById,
   getCasoById,
   getLatestSesionAgente,
   getProyectoById,
+  getVentaById,
   updateActividad,
   updateCaso,
   upsertProyecto,
   upsertResponsable,
+  upsertVendedor,
   type CreateActividadInput,
   type CreateCasoConActividadInput,
   type CreateCasoInput,
   type CreateSesionAgenteInput,
+  type CreateVentaConCasoInput,
 } from "./repository.js";
 
 /** Test factories — a single place to change the base fixture if the shape evolves. */
@@ -84,6 +91,36 @@ function buildActividadInput(overrides: Partial<CreateActividadInput> = {}): Cre
     estado: "abierto",
     createdAt: "2026-08-26T00:00:02.000Z",
     updatedAt: "2026-08-26T00:00:02.000Z",
+    ...overrides,
+  };
+}
+
+function buildVendedorInput(
+  overrides: Partial<{ id: string; nombre: string; createdAt: string }> = {},
+) {
+  return {
+    id: "vendedor-1",
+    nombre: "Ana Vendedora",
+    createdAt: "2026-08-26T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function buildVentaConCasoInput(
+  overrides: Partial<CreateVentaConCasoInput> = {},
+): CreateVentaConCasoInput {
+  return {
+    vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+    caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+    venta: {
+      id: "venta-1",
+      clienteId: "cliente-1",
+      planNuevo: "premium",
+      monto: 100,
+      estado: "pendiente_confirmacion",
+      tokenConfirmacion: "token-1",
+    },
+    timestamp: "2026-08-26T00:00:03.000Z",
     ...overrides,
   };
 }
@@ -594,6 +631,200 @@ describe("repository", () => {
       // The first, successful call's rows are untouched by the rollback.
       expect(getProyectoById(db, "owner/repo")).not.toBeUndefined();
       expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+    });
+  });
+
+  describe("vendedores", () => {
+    it("inserts a vendedor and returns it as stored", () => {
+      db = openDatabase(":memory:");
+
+      const vendedor = upsertVendedor(db, buildVendedorInput());
+
+      expect(vendedor).toEqual({
+        id: "vendedor-1",
+        nombre: "Ana Vendedora",
+        createdAt: "2026-08-26T00:00:00.000Z",
+      });
+    });
+
+    it("is idempotent: upserting the same id updates nombre instead of failing", () => {
+      db = openDatabase(":memory:");
+      upsertVendedor(db, buildVendedorInput());
+
+      const updated = upsertVendedor(db, buildVendedorInput({ nombre: "Ana Renombrada" }));
+
+      expect(updated).toEqual({
+        id: "vendedor-1",
+        nombre: "Ana Renombrada",
+        createdAt: "2026-08-26T00:00:00.000Z",
+      });
+    });
+  });
+
+  describe("createVentaConCaso", () => {
+    it("creates vendedor, caso and venta in one transaction", () => {
+      db = openDatabase(":memory:");
+
+      const venta = createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(venta.id).toBe("venta-1");
+      expect(venta.vendedorId).toBe("vendedor-1");
+      expect(venta.casoId).toBe("caso-1");
+      expect(venta.clienteId).toBe("cliente-1");
+      expect(venta.planNuevo).toBe("premium");
+      expect(venta.monto).toBe(100);
+      expect(venta.estado).toBe("pendiente_confirmacion");
+      expect(venta.tokenConfirmacion).toBe("token-1");
+      expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+    });
+
+    it("binds planAnterior and expiresAt as explicit null when the input omits them", () => {
+      db = openDatabase(":memory:");
+
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = getVentaById(db, "venta-1");
+      expect(venta).not.toBeUndefined();
+      expect(venta).not.toHaveProperty("planAnterior");
+      expect(venta).not.toHaveProperty("expiresAt");
+    });
+
+    it("keeps planAnterior and expiresAt when the input provides them", () => {
+      db = openDatabase(":memory:");
+
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planAnterior: "basico",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-27T00:00:00.000Z",
+          },
+        }),
+      );
+
+      const venta = getVentaById(db, "venta-1");
+      expect(venta?.planAnterior).toBe("basico");
+      expect(venta?.expiresAt).toBe("2026-08-27T00:00:00.000Z");
+    });
+
+    it("is atomic: when the INSERT of ventas fails, no orphan vendedor or caso is left behind", () => {
+      db = openDatabase(":memory:");
+      // Prime an existing venta id by succeeding once.
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(() =>
+        createVentaConCaso(
+          db!,
+          buildVentaConCasoInput({
+            vendedor: { id: "vendedor-2", nombre: "Beto Vendedor" },
+            caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+            // Same venta id as the first call above -> PK violation inside the tx.
+            venta: {
+              id: "venta-1",
+              clienteId: "cliente-2",
+              planNuevo: "premium",
+              monto: 200,
+              estado: "pendiente_confirmacion",
+              tokenConfirmacion: "token-2",
+            },
+          }),
+        ),
+      ).toThrow(VentaAlreadyExistsError);
+
+      expect(getCasoById(db, "caso-2")).toBeUndefined();
+      expect(db.prepare("SELECT 1 FROM vendedores WHERE id = ?").get("vendedor-2")).toBeUndefined();
+      // The first, successful call's rows are untouched by the rollback.
+      expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+      expect(getVentaById(db, "venta-1")?.clienteId).toBe("cliente-1");
+    });
+
+    it("throws VentaTokenDuplicadoError when token_confirmacion collides with an existing venta", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(() =>
+        createVentaConCaso(
+          db!,
+          buildVentaConCasoInput({
+            caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+            venta: {
+              id: "venta-2",
+              clienteId: "cliente-2",
+              planNuevo: "premium",
+              monto: 200,
+              estado: "pendiente_confirmacion",
+              tokenConfirmacion: "token-1",
+            },
+          }),
+        ),
+      ).toThrow(VentaTokenDuplicadoError);
+
+      expect(getCasoById(db, "caso-2")).toBeUndefined();
+      expect(getVentaById(db, "venta-2")).toBeUndefined();
+    });
+
+    // `createVentaConCaso` upserts el vendedor y crea el caso ANTES del INSERT
+    // de `ventas`, en la misma transacción — por construcción, `vendedor_id`
+    // y `caso_id` siempre existen para ese INSERT, así que el catch de
+    // `VentaInvalidReferenceError` (molde de `ActividadInvalidReferenceError`)
+    // es defensivo: no hay hoy un caller público que lo dispare. Este test no
+    // pasa por `createVentaConCaso` — verifica, al nivel de la tabla real,
+    // que el `FOREIGN KEY` que ese catch está preparado para traducir
+    // efectivamente existe y se dispara, para que la traducción no quede sin
+    // ninguna base real detrás.
+    it("rejects at the schema level a ventas row whose vendedor_id does not reference an existing vendedor", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }));
+
+      expect(() =>
+        db!
+          .prepare(
+            `INSERT INTO ventas (id, vendedor_id, cliente_id, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at)
+             VALUES (@id, @vendedorId, @clienteId, @planNuevo, @monto, @estado, @casoId, @tokenConfirmacion, @createdAt)`,
+          )
+          .run({
+            id: "venta-x",
+            vendedorId: "no-existe",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 10,
+            estado: "pendiente_confirmacion",
+            casoId: "caso-1",
+            tokenConfirmacion: "token-x",
+            createdAt: "2026-08-26T00:00:00.000Z",
+          }),
+      ).toThrowError(/FOREIGN KEY/i);
+    });
+  });
+
+  describe("findVentaByToken", () => {
+    it("finds a venta by its token_confirmacion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = findVentaByToken(db, "token-1");
+
+      expect(venta?.id).toBe("venta-1");
+    });
+
+    it("returns undefined when no venta matches the token", () => {
+      db = openDatabase(":memory:");
+
+      expect(findVentaByToken(db, "no-existe")).toBeUndefined();
+    });
+  });
+
+  describe("getVentaById", () => {
+    it("returns undefined when the venta does not exist", () => {
+      db = openDatabase(":memory:");
+
+      expect(getVentaById(db, "no-existe")).toBeUndefined();
     });
   });
 });
