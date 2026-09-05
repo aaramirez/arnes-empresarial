@@ -84,6 +84,12 @@ import { resolveBoardConfig } from "./adapters/board/config.js";
 import { startWebhookServer, type WebhookAdapter } from "./adapters/webhooks/index.js";
 import { WEBHOOK_LOG_CORRELATION_ID } from "./adapters/webhooks/config.js";
 import { createKeyedQueue } from "./core/concurrency/keyed-queue.js";
+import { resolveVentasConfig, type VentasConfig } from "./core/ventas/ventas-config.js";
+import { createNotificadorAdapter } from "./adapters/notificaciones/index.js";
+import { resolveWebConfig, WEB_LOG_CORRELATION_ID } from "./adapters/web/config.js";
+import { buildOnVenta } from "./build-on-venta.js";
+import { buildOnSoporte } from "./build-on-soporte.js";
+import { startWebServer, type WebAdapter } from "./adapters/web/index.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -107,6 +113,14 @@ interface StartupResult {
    * resuelve.
    */
   readonly createKnowledge: (casoId: string) => KnowledgeAdapter;
+  /**
+   * Configuración de reglas de negocio de ventas (Hito 4, tarea 2,
+   * `resolveVentasConfig`), validada dentro de `startHarness()`'s propio
+   * `try` — un error acá aborta el arranque ANTES de que exista
+   * `startWebServer` (Hito 4, tarea 28). Propagada fuera de `startHarness()`
+   * para que el wiring de la tercera fuente (más abajo) la use.
+   */
+  readonly ventasConfig: VentasConfig;
 }
 
 /**
@@ -126,6 +140,20 @@ function startHarness(): StartupResult {
   //    raíz del proyecto (`process.cwd()`). `openDatabase` crea el
   //    directorio padre si hace falta y aplica las migraciones.
   const db = openDatabase("data/harness.db");
+
+  // 2b. Configuración de reglas de negocio de ventas (Hito 4, tarea 2,
+  //     ADR 17b): TODOS los errores juntos, no uno por uno. Un valor
+  //     inválido aborta el arranque ACÁ, dentro de este `try` — antes de que
+  //     exista `startWebServer` más abajo (Hito 4, tarea 28): la validación
+  //     de config de negocio es un paso de arranque, no un fallback en
+  //     runtime.
+  const ventasConfigResult = resolveVentasConfig(process.env);
+  if (!ventasConfigResult.ok) {
+    throw new HarnessBootstrapError(
+      `Configuración de ventas inválida:\n  - ${ventasConfigResult.errores.join("\n  - ")}`,
+    );
+  }
+  const ventasConfig = ventasConfigResult.config;
 
   // `MemoryPort` (`handle-turn.ts`) es la unión de `MemoryContextPort`
   // (tarea 8) y `MemoryWritePort` (tarea 10) — un closure de una línea por
@@ -171,7 +199,7 @@ function startHarness(): StartupResult {
       logEvent: (event, fields) => logTurnEvent(casoId, event, fields),
     });
 
-  return { agents, hooks, memory, caso, db, createKnowledge };
+  return { agents, hooks, memory, caso, db, createKnowledge, ventasConfig };
 }
 
 let startup: StartupResult;
@@ -184,7 +212,7 @@ try {
   process.exit(1);
 }
 
-const { agents, hooks, memory, caso, db, createKnowledge } = startup;
+const { agents, hooks, memory, caso, db, createKnowledge, ventasConfig } = startup;
 
 // 4. `onSubmit` (I1, `SubmitPromptHandler`) cierra sobre `caso.id`/`memory`/
 //    `hooks`/`agents` y delega la secuencia completa del turno al
@@ -258,17 +286,57 @@ try {
   webhook = undefined;
 }
 
+// 5b. Tercera fuente de turnos (Hito 4, tarea 28, design.md §6.5): el
+//     Adaptador Web (tarea 18), opt-in por `WEB_PORT` (`resolveWebConfig`,
+//     `isWebEnabled`). Comparte `db`/`memory`/`hooks`/`agents`/`createKnowledge`
+//     con la TUI y los webhooks (la MISMA fábrica por `casoId` — R1 de
+//     Hito 3 no reintroducido) y agrega su propio `notifier`
+//     (`createNotificadorAdapter`, tarea 21) para el camino de ventas
+//     (`buildOnVenta`, tarea 26). `buildOnSoporte` (tarea 27) arma el único
+//     handler de este hito que invoca al modelo. Mismo criterio que el
+//     wiring de webhooks de arriba: PROPIO `try`/`catch`, un rechazo de
+//     `startWebServer` (p. ej. `EADDRINUSE`) se loguea como
+//     `web-arranque-fallido` y el proceso sigue con `web = undefined` — un
+//     puerto ocupado no puede impedir que el empleado use la TUI ni que los
+//     webhooks sigan andando.
+const notifier = createNotificadorAdapter({
+  logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
+});
+
+const webConfig = resolveWebConfig();
+
+const ventaHandlers = buildOnVenta({
+  db,
+  notifier,
+  ventasConfig,
+  baseUrlPublica: webConfig.publicUrl,
+});
+
+const onSoporte = buildOnSoporte({ db, memory, hooks, agents, createKnowledge });
+
+let web: WebAdapter | undefined;
+try {
+  web = await startWebServer({
+    ...ventaHandlers,
+    onSoporte,
+    logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
+  });
+} catch (error) {
+  logTurnEvent(WEB_LOG_CORRELATION_ID, "web-arranque-fallido", { message: toErrorMessage(error) });
+  web = undefined;
+}
+
 // 6. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
-//    defecto) y recién ahí cierra el servidor de webhooks (si arrancó) y el
-//    handle de SQLite abierto en el paso 2. Un cierre prolijo del proceso,
-//    no una salida abrupta con el archivo de la base de datos todavía
-//    abierto. `startTui(onSubmit)` en sí va DENTRO del `try` (Reviewer
-//    finding, WARNING, post-primera versión de este fix) — no solo el
-//    `await` de `waitUntilExit()`: `startTui`/`renderTui` puede tirar
-//    sincrónicamente si falla el mount de Ink (ver `start-tui.tsx`), y si
-//    eso pasara antes de que `tui` se asignara, el `finally` de abajo
-//    nunca correría.
+//    defecto) y recién ahí cierra el servidor web (si arrancó), el servidor
+//    de webhooks (si arrancó) y el handle de SQLite abierto en el paso 2. Un
+//    cierre prolijo del proceso, no una salida abrupta con el archivo de la
+//    base de datos todavía abierto. `startTui(onSubmit)` en sí va DENTRO
+//    del `try` (Reviewer finding, WARNING, post-primera versión de este
+//    fix) — no solo el `await` de `waitUntilExit()`: `startTui`/`renderTui`
+//    puede tirar sincrónicamente si falla el mount de Ink (ver
+//    `start-tui.tsx`), y si eso pasara antes de que `tui` se asignara, el
+//    `finally` de abajo nunca correría.
 try {
   const tui = startTui(onSubmit);
   await tui.waitUntilExit();
@@ -280,6 +348,18 @@ try {
   // que este cierre tiene que correr acá para no perderse ese camino de
   // salida también.
   //
+  // Hito 4, tarea 28: `web.close()` corre PRIMERO, antes del cierre de
+  // webhooks y de `db.close()` — mismo criterio del ADR 10 de abajo, ahora
+  // con una tercera fuente: dejar de aceptar y drenar los turnos web en
+  // vuelo (`WebAdapter.close()`, ADR 14 punto 4) antes de tocar cualquier
+  // otro recurso compartido.
+  if (web !== undefined) {
+    try {
+      await web.close();
+    } catch (error) {
+      console.error(`No se pudo cerrar el servidor web: ${toErrorMessage(error)}`);
+    }
+  }
   // ADR 10: primero se deja de aceptar y se drenan los turnos de webhook en
   // vuelo (`webhook.close()`), DESPUÉS se cierra el handle de SQLite. Al
   // revés, un turno de webhook a mitad de camino escribiría contra una base
