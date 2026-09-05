@@ -1042,3 +1042,147 @@ export function escalarReembolso(
 
   return runInTransaction();
 }
+
+/**
+ * Fila de `comisiones` cruzada con `ventas`/`vendedores`, tal como
+ * `listComisionesPorPeriodo` la entrega (design.md §6.2). Misma forma,
+ * campo por campo, que `ComisionConVenta` en `src/core/ventas/reporte.ts` —
+ * este módulo NO importa esa interfaz (`src/adapters/*` no depende de
+ * `src/core/*` acá, mismo criterio que `VentaRow`/`ComisionRow` arriba), los
+ * shapes se alinean por convención para que el composition root pueda pasar
+ * esta lectura directo a `agruparReporteMensual` sin capa de traducción.
+ */
+export interface ComisionConVentaRow {
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly vendedorNombre: string;
+  readonly comisionMonto: number;
+  readonly ventaMonto: number;
+  readonly ventaEstado: string;
+  readonly periodo: string;
+}
+
+interface ComisionConVentaSqlRow {
+  venta_id: string;
+  vendedor_id: string;
+  vendedor_nombre: string;
+  comision_monto: number;
+  venta_monto: number;
+  venta_estado: string;
+  periodo: string;
+}
+
+function rowToComisionConVenta(row: ComisionConVentaSqlRow): ComisionConVentaRow {
+  return {
+    ventaId: row.venta_id,
+    vendedorId: row.vendedor_id,
+    vendedorNombre: row.vendedor_nombre,
+    comisionMonto: row.comision_monto,
+    ventaMonto: row.venta_monto,
+    ventaEstado: row.venta_estado,
+    periodo: row.periodo,
+  };
+}
+
+/**
+ * `SELECT` con `JOIN ventas` y `JOIN vendedores`, `WHERE c.periodo = ?`,
+ * `ORDER BY c.vendedor_id, c.created_at` (design.md §6.2). Devuelve el
+ * estado ACTUAL de la venta (`v.estado`), no el que tenía al momento de
+ * generarse la comisión — eso es lo que hace visible R5 (una venta
+ * reembolsada con una comisión viva) en vez de esconderla.
+ *
+ * SIN `GROUP BY`: toda la agrupación por vendedor vive en
+ * `agruparReporteMensual` (PURA, `src/core/ventas/reporte.ts`, §3.5), no
+ * acá — el spec exige que esa agregación sea testeable sin base de datos, y
+ * eso solo es cierto si esta función se limita a leer.
+ */
+export function listComisionesPorPeriodo(
+  db: Database.Database,
+  periodo: string,
+): readonly ComisionConVentaRow[] {
+  const rows = db
+    .prepare(
+      `SELECT c.venta_id AS venta_id,
+              c.vendedor_id AS vendedor_id,
+              ve.nombre AS vendedor_nombre,
+              c.monto AS comision_monto,
+              v.monto AS venta_monto,
+              v.estado AS venta_estado,
+              c.periodo AS periodo
+         FROM comisiones c
+         JOIN ventas v ON v.id = c.venta_id
+         JOIN vendedores ve ON ve.id = c.vendedor_id
+        WHERE c.periodo = @periodo
+        ORDER BY c.vendedor_id, c.created_at`,
+    )
+    .all({ periodo }) as ComisionConVentaSqlRow[];
+  return rows.map(rowToComisionConVenta);
+}
+
+/**
+ * Fila de `ventas` en `'reembolso_pendiente'` cruzada con `vendedores`, tal
+ * como `listVentasEnReembolsoPendiente` la entrega. Misma forma que
+ * `VentaPendienteReembolso` en `src/core/ventas/reporte.ts`, mismo criterio
+ * de no-importación que `ComisionConVentaRow` arriba.
+ */
+export interface VentaPendienteReembolsoRow {
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly vendedorNombre: string;
+  readonly clienteId: string;
+  readonly monto: number;
+  readonly casoId: string;
+  readonly confirmedAt?: string;
+}
+
+interface VentaPendienteReembolsoSqlRow {
+  venta_id: string;
+  vendedor_id: string;
+  vendedor_nombre: string;
+  cliente_id: string;
+  monto: number;
+  caso_id: string;
+  confirmed_at: string | null;
+}
+
+function rowToVentaPendienteReembolso(row: VentaPendienteReembolsoSqlRow): VentaPendienteReembolsoRow {
+  return {
+    ventaId: row.venta_id,
+    vendedorId: row.vendedor_id,
+    vendedorNombre: row.vendedor_nombre,
+    clienteId: row.cliente_id,
+    monto: row.monto,
+    casoId: row.caso_id,
+    ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
+  };
+}
+
+/**
+ * `SELECT ... FROM ventas JOIN vendedores WHERE ventas.estado =
+ * 'reembolso_pendiente' ORDER BY confirmed_at` (design.md §6.2). SIN filtro
+ * de período — el spec lo pide explícitamente: una escalación de reembolso
+ * no caduca al cambiar de mes. El literal `'reembolso_pendiente'` en el SQL
+ * sigue el mismo criterio que las funciones CAS de arriba
+ * (`escalarReembolso`, `aprobarReembolso`, `rechazarVenta`): este módulo no
+ * importa el vocabulario de estados de `core/ventas/ventas-contract.ts`.
+ */
+export function listVentasEnReembolsoPendiente(
+  db: Database.Database,
+): readonly VentaPendienteReembolsoRow[] {
+  const rows = db
+    .prepare(
+      `SELECT v.id AS venta_id,
+              v.vendedor_id AS vendedor_id,
+              ve.nombre AS vendedor_nombre,
+              v.cliente_id AS cliente_id,
+              v.monto AS monto,
+              v.caso_id AS caso_id,
+              v.confirmed_at AS confirmed_at
+         FROM ventas v
+         JOIN vendedores ve ON ve.id = v.vendedor_id
+        WHERE v.estado = 'reembolso_pendiente'
+        ORDER BY v.confirmed_at`,
+    )
+    .all() as VentaPendienteReembolsoSqlRow[];
+  return rows.map(rowToVentaPendienteReembolso);
+}
