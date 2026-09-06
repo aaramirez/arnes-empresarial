@@ -81,6 +81,7 @@ function fakeQueryFn(messages: readonly SDKMessage[]) {
 function makeAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
     id: "agente-conversacional",
+    description: "agente de prueba",
     systemPrompt: "system prompt",
     allowedTools: [],
     model: DEFAULT_AGENT_MODEL,

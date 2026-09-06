@@ -28,6 +28,14 @@ import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.j
 export interface AgentDefinition {
   /** Stable identifier used across the harness (e.g. `sesiones_agente.agent_id`). */
   readonly id: string;
+  /**
+   * Human-readable summary of the agent's role, forwarded verbatim into the
+   * SDK's `options.agents[id].description` (Invocador del Modelo, Hito 5
+   * tarea 9) so the model can route delegations by role. Mandatory —
+   * required for both the first-level agent and every subagent (Hito 5,
+   * design.md §5.2).
+   */
+  readonly description: string;
   /** Instructions that define the agent's role and behavior for the model. */
   readonly systemPrompt: string;
   /**
@@ -82,6 +90,9 @@ export const CONVERSATIONAL_AGENT_ID = "agente-conversacional";
  */
 const CONVERSATIONAL_AGENT: AgentDefinition = {
   id: CONVERSATIONAL_AGENT_ID,
+  description:
+    "Agente conversacional del arnés: sostiene el diálogo con el empleado y " +
+    "consulta la base de conocimiento interna.",
   systemPrompt:
     "Sos el agente conversacional de un arnés empresarial. Tu rol es sostener " +
     "una conversación clara y coherente con el empleado, manteniendo el " +

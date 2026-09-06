@@ -57,4 +57,19 @@ describe("agent registry", () => {
 
     expect(agent?.systemPrompt).toMatch(/no tenés delegación a otros agentes/);
   });
+
+  it("requires a non-empty description on the conversational agent (Hito 5, tarea 4)", () => {
+    const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
+
+    expect(agent?.description).toBe(
+      "Agente conversacional del arnés: sostiene el diálogo con el empleado y consulta la base de conocimiento interna.",
+    );
+  });
+
+  it("keeps systemPrompt and allowedTools unchanged after adding description", () => {
+    const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
+
+    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME]);
+    expect(agent?.systemPrompt).toMatch(/no tenés delegación a otros agentes/);
+  });
 });
