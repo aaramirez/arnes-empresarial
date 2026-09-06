@@ -69,11 +69,17 @@ Nota: `design.md` §11 ya recomienda este corte — los comandos privilegiados n
 
 ## Phase 6: Store y dispatcher
 
-- [ ] 6.1 `src/build-on-venta.ts` — amplía `createVentaStore` con los 5 closures nuevos; `buildOnVenta` no cambia (ADR 41).
-- [ ] 6.2 `src/build-on-comando-empleado.ts` — dispatcher, 2 ranuras de closure, ruteo de 8 comandos. TDD con dobles. Cubre `comando-empleado-tui`, `autenticacion`, `reembolso-resolucion-escalacion`, `registro-acciones-empleado` (todos los req.). Depende de todo lo anterior salvo 5.1.
+- [x] 6.1 `src/build-on-venta.ts` — amplía `createVentaStore` con los 5 closures nuevos; `buildOnVenta` no cambia (ADR 41).
+- [x] 6.2 `src/build-on-comando-empleado.ts` — dispatcher, 2 ranuras de closure, ruteo de 8 comandos. TDD con dobles. Cubre `comando-empleado-tui`, `autenticacion`, `reembolso-resolucion-escalacion`, `registro-acciones-empleado` (todos los req.). Depende de todo lo anterior salvo 5.1.
 
 ## Phase 7: Wiring y cierre
 
-- [ ] 7.1 `src/main.ts` — 5 cambios de wiring (§8 diseño): `authConfig`, `onSoporte` compartido, `buildOnComandoEmpleado`, mount de `startTui`.
-- [ ] 7.2 `tui-port.ts` (comentario), `turn-logger.ts` (doc de 13 eventos), `core/config/env.ts` (doc `SESION_TTL_MINUTOS`).
-- [ ] 7.3 `reporte.ts` + `reporte.test.ts` — actualiza `NOTA_ESCALACION_FUERA_DE_BANDA` y caso borde de `reembolso_rechazado`. Cubre `reporte-comisiones-mensual` req. 1-2.
+- [x] 7.1 `src/main.ts` — 5 cambios de wiring (§8 diseño): `authConfig`, `onSoporte` compartido, `buildOnComandoEmpleado`, mount de `startTui`.
+- [x] 7.2 `tui-port.ts` (comentario), `turn-logger.ts` (doc de 13 eventos), `core/config/env.ts` (doc `SESION_TTL_MINUTOS`).
+- [x] 7.3 `reporte.ts` + `reporte.test.ts` — actualiza `NOTA_ESCALACION_FUERA_DE_BANDA` y caso borde de `reembolso_rechazado`. Cubre `reporte-comisiones-mensual` req. 1-2.
+
+> **Estado (Work Unit 2, PR2 — feature-branch-chain)**: tareas 13-17
+> completas en la rama `hito/v1.4-tui-canal-empleado`. `npm run typecheck`
+> y `npx vitest run` quedan en 0 errores / 954 tests verdes (72 archivos).
+> Esto cierra el change `tui-canal-empleado` (v1.4.0): los 17 ítems de este
+> documento están `[x]`.
