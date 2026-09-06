@@ -106,6 +106,31 @@
  * `email-omitido`. El contrato de esta función NO cambió para soportarlos
  * — mismo criterio que la nota de Hito 3 de arriba.
  *
+ * Design decision — desde `tui-canal-empleado` (Hito 5), `logTurnEvent`
+ * también lo consumen `src/build-on-comando-empleado.ts` (el dispatcher de
+ * los ocho comandos) y `src/core/auth/login.ts`. Trece eventos nuevos
+ * (tabla completa en `design.md` §9), todos correlacionados por
+ * `COMANDO_LOG_CORRELATION_ID = "tui-comando"` (`core/commands/comando-empleado.ts`)
+ * salvo donde se anota lo contrario — mismo criterio que Hitos 3 y 4: "no
+ * gana código; a lo sumo una línea en su module doc":
+ * `comando-empleado-recibido` (`tipo`), `comando-desconocido` (`comando` —
+ * SOLO el primer token, nunca el resto de la línea), `login-exitoso`/
+ * `login-fallido` (correlación `AUTH_LOG_CORRELATION_ID = "auth"`,
+ * `core/auth/login.ts`), `logout`, `sesion-expirada`,
+ * `comando-privilegiado-sin-sesion`, `accion-empleado-sin-sesion`,
+ * `accion-empleado-registrada`/`accion-empleado-registro-fallido` (ADR 40:
+ * la fila de auditoría NO transaccional puede fallar sin tumbar el
+ * comando — este evento es lo que hace ese hueco detectable),
+ * `reembolso-listado`, `reembolso-resolucion-solicitada`,
+ * `reembolso-escalacion-aprobada`/`-rechazada`/`-reabierta` y
+ * `reembolso-resolucion-no-aplicable` (correlacionados por el `casoId` de
+ * la venta, no por `"tui-comando"`, salvo cuando la venta no se encontró),
+ * y `comando-soporte-fallido`. **Invariante negativo, con test propio**:
+ * ninguno de estos trece eventos lleva la contraseña de `/login`, ni un
+ * prefijo ni su longitud, ni el `token_confirmacion` de `/devolucion`, ni
+ * el texto de una consulta de `/soporte` — el único campo que se le parece
+ * es `empleadoId`, que es un identificador, no un secreto.
+ *
  * Design decision — default `write` escribe a un archivo (`data/harness.log`
  * vía `createFileLogWriter`), no a ningún stream del proceso (hallazgo
  * post-Hito 1, mejora del Adaptador TUI): esta tarea se implementó antes de

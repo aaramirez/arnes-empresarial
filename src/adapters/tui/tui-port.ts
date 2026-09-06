@@ -21,6 +21,20 @@
  * response alone would lose which agent answered, which is the piece of
  * state this adapter's pending indicator and rendered history are meant to
  * surface (see `App.tsx`'s module doc).
+ *
+ * Design decision — since `tui-canal-empleado` (Hito 5), `agentLabel` also
+ * carries two values no model ever produces: `"sistema"` (the eight
+ * deterministic employee commands routed by `build-on-comando-empleado.ts`
+ * — `/login`, `/logout`, `/devolucion`, the three escalation-resolution
+ * commands, and `/ayuda`, including every malformed input) and `"soporte"`
+ * (the one command, `/soporte`, that still reaches the model — same
+ * `SoporteResult` `buildOnSoporte` already returns to `POST /soporte`, ADR
+ * 21). This contract's TYPE did not change to add them: `agentLabel` was
+ * always a plain `string`, precisely so a new source of turns could name
+ * itself without widening a union here (same reasoning `TuiTurnResult`
+ * already applied when Hito 3/4 added activity- and support-sourced
+ * turns). `startTui`/`App.tsx` render whatever string arrives; neither
+ * needed a change for this.
  */
 
 /**
