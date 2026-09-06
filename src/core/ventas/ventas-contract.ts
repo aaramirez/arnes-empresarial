@@ -26,6 +26,10 @@ export const VENTA_ESTADO_RECHAZADA = "rechazada";
 export const VENTA_ESTADO_REEMBOLSADA = "reembolsada";
 /** Quinto valor, ADR 11 de la propuesta: escalación humana detectada y persistida, sin transición automática. */
 export const VENTA_ESTADO_REEMBOLSO_PENDIENTE = "reembolso_pendiente";
+/** SEXTO valor (`tui-canal-empleado`, ADR 23): venta confirmada, reembolso escalado y DENEGADO por un
+ *  empleado autenticado. Terminal SALVO reapertura explícita (ADR 29).
+ *  NO es `rechazada`: esa significa "el cliente declinó ANTES de confirmar". */
+export const VENTA_ESTADO_REEMBOLSO_RECHAZADO = "reembolso_rechazado";
 
 export const VENTA_ESTADOS = [
   VENTA_ESTADO_PENDIENTE_CONFIRMACION,
@@ -33,6 +37,7 @@ export const VENTA_ESTADOS = [
   VENTA_ESTADO_RECHAZADA,
   VENTA_ESTADO_REEMBOLSADA,
   VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  VENTA_ESTADO_REEMBOLSO_RECHAZADO,
 ] as const;
 export type VentaEstado = (typeof VENTA_ESTADOS)[number];
 
@@ -49,6 +54,18 @@ export const CASO_TIPO_SOPORTE = "soporte";
  * vocabulario de ventas.
  */
 export const CASO_ESTADO_PENDIENTE_APROBACION_HUMANA = "pendiente_aprobacion_humana";
+/**
+ * Un solo valor para los TRES desenlaces de una escalación (`tui-canal-empleado`,
+ * ADR 24): el `caso` solo responde "¿sigue esperando a un humano?". Una
+ * reapertura lo devuelve a `CASO_ESTADO_PENDIENTE_APROBACION_HUMANA` — el
+ * ciclo es CÍCLICO, no lineal.
+ */
+export const CASO_ESTADO_RESUELTO = "resuelto";
+
+/** Tope del listado sin argumento (ADR 29 punto 1). Los rechazados se
+ *  acumulan para siempre; los pendientes no, pero se acota igual por
+ *  uniformidad. */
+export const LIMITE_LISTADO_ESCALACIONES = 20;
 
 /* ── Entidades tal como el núcleo las maneja ── */
 
@@ -135,6 +152,69 @@ export interface VentaStorePort {
     readonly casoId: string;
     readonly ahora: string;
   }): Venta | undefined;
+
+  /* ── Los CINCO métodos nuevos de `tui-canal-empleado` (ADR 23, 24, 27, 29, 38, 39) ──
+   * `aprobarReembolso`/`escalarReembolso` NO SE TOCAN (R2): ensanchar el
+   * `WHERE estado='confirmada'` de `aprobarReembolso` a
+   * `IN ('confirmada','reembolso_pendiente')` dejaría que `procesarDevolucion`
+   * se salte la escalación sin que nadie apruebe nada. PROHIBIDO explícitamente.
+   */
+
+  /** `reembolso_pendiente`, ordenadas por `confirmed_at` ASC. Solo lectura. */
+  listarReembolsosPendientes(filtro?: FiltroEscalaciones): readonly EscalacionListada[];
+
+  /** `reembolso_rechazado`, ordenadas por fecha del rechazo DESC (ADR 29 punto 1). */
+  listarReembolsosRechazados(filtro?: FiltroEscalaciones): readonly EscalacionListada[];
+
+  /** UNA transacción: CAS `reembolso_pendiente → reembolsada` + `updateCaso(resuelto)`
+   *  + fila de registro (`comando='/aprobar-reembolso'`, `resultado='aprobada'`).
+   *  `undefined` = el CAS no matcheó ⇒ NADA se escribió: ni caso, ni fila. */
+  aprobarEscalacionReembolso(input: ResolucionEscalacionInput): Venta | undefined;
+
+  /** Idéntico, CAS `reembolso_pendiente → reembolso_rechazado`, `resultado='rechazada'`. */
+  rechazarEscalacionReembolso(input: ResolucionEscalacionInput): Venta | undefined;
+
+  /** CAS `reembolso_rechazado → reembolso_pendiente` + `updateCaso(pendiente_aprobacion_humana)`
+   *  + fila `resultado='reabierta'`. El `caso` es EL MISMO de siempre (ADR 29).
+   *  Una venta `reembolsada` NO matchea este CAS: `no_aplicable` sin código especial. */
+  reabrirEscalacionReembolso(input: ResolucionEscalacionInput): Venta | undefined;
+}
+
+/** Una venta escalada, con lo que el eco de confirmación necesita mostrar.
+ *  Misma forma, campo por campo, que `EscalacionReembolsoRow` de
+ *  `repository.ts` (que NO importa este archivo — se alinean por
+ *  convención, igual que `VentaRow`/`Venta` hoy). */
+export interface EscalacionListada {
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly vendedorNombre: string;
+  readonly clienteId: string;
+  readonly monto: number;
+  readonly casoId: string;
+  readonly confirmedAt?: string;
+  /** Del registro (ADR 27): último `/rechazar-reembolso` con `resultado='rechazada'`. */
+  readonly rechazadaPor?: string;
+  readonly rechazadaAt?: string;
+  /** Del registro: cantidad de `/reabrir-reembolso` con `resultado='reabierta'`. */
+  readonly reaperturasPrevias: number;
+}
+
+export interface ResolucionEscalacionInput {
+  readonly ventaId: string;
+  readonly casoId: string;
+  /** SIEMPRE de una sesión vigente (ADR 27 enmienda, ADR 37). */
+  readonly empleadoId: string;
+  /** `id` de la fila de registro, generado por el núcleo (ADR 39). */
+  readonly accionId: string;
+  /** `updated_at` del caso Y `ocurrido_at` de la fila. UNO solo, a propósito. */
+  readonly ahora: string;
+}
+
+export interface FiltroEscalaciones {
+  /** Presente ⇒ 0 o 1 resultado, sin importar `limite` (ADR 38). */
+  readonly ventaId?: string;
+  /** Default `LIMITE_LISTADO_ESCALACIONES`. */
+  readonly limite?: number;
 }
 
 export interface CrearVentaConCasoInput {

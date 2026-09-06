@@ -50,6 +50,15 @@ function makeStore(overrides: Partial<VentaStorePort> = {}): VentaStorePort {
     rechazarVenta: vi.fn(() => undefined),
     aprobarReembolso: vi.fn(() => undefined),
     escalarReembolso: vi.fn(() => undefined),
+    // `tui-canal-empleado`: los 5 métodos nuevos del puerto no se ejercitan
+    // en este archivo (alta de venta no toca escalaciones), solo satisfacen
+    // el contrato ampliado (ADR 41 — la implementación real llega en la
+    // Unidad 2 de ese change, `build-on-venta.ts`).
+    listarReembolsosPendientes: vi.fn(() => []),
+    listarReembolsosRechazados: vi.fn(() => []),
+    aprobarEscalacionReembolso: vi.fn(() => undefined),
+    rechazarEscalacionReembolso: vi.fn(() => undefined),
+    reabrirEscalacionReembolso: vi.fn(() => undefined),
     ...overrides,
   };
 }
