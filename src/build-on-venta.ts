@@ -36,6 +36,8 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import {
+  VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  VENTA_ESTADO_REEMBOLSO_RECHAZADO,
   VENTA_ESTADOS,
   type Comision,
   type ConfirmacionAplicada,
@@ -56,11 +58,15 @@ import { validarTokenConfirmacion } from "./core/ventas/token-confirmacion.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import {
+  aprobarEscalacionReembolso,
   aprobarReembolso,
   confirmarVentaConComision,
   createVentaConCaso,
   escalarReembolso,
   findVentaByToken,
+  listEscalacionesReembolso,
+  reabrirEscalacionReembolso,
+  rechazarEscalacionReembolso,
   rechazarVenta,
   type VentaRow,
 } from "./adapters/memory/repository.js";
@@ -133,6 +139,22 @@ function toPortVenta(row: VentaRow): Venta {
  * de `confirmarVentaConComision` ya es camelCase plano (`ComisionRow` de
  * `repository.ts` coincide campo a campo con `Comision` del contrato) y no
  * necesita traducción.
+ *
+ * Los CINCO métodos nuevos de `tui-canal-empleado` (ADR 41 — corrección a
+ * la tabla de archivos de la propuesta, que no listaba este módulo). Dos
+ * lecturas y tres CAS transaccionales:
+ *  - `listarReembolsosPendientes`/`listarReembolsosRechazados` delegan a
+ *    `listEscalacionesReembolso` con el `estado` fijo correspondiente. Su
+ *    fila (`EscalacionReembolsoRow`) coincide campo a campo con
+ *    `EscalacionListada` del contrato — mismo criterio que `ComisionRow` de
+ *    arriba, sin función de traducción propia.
+ *  - `aprobarEscalacionReembolso`/`rechazarEscalacionReembolso`/
+ *    `reabrirEscalacionReembolso` delegan a los tres CAS transaccionales de
+ *    `repository.ts` (que ya insertan la fila de auditoría DENTRO de su
+ *    propia transacción — ADR 27, 40) y traducen el `VentaRow` resultante
+ *    con `toPortVenta`, igual que `aprobarReembolso`/`escalarReembolso`.
+ *  `buildOnVenta` y los cuatro handlers web NO cambian: siguen usando los
+ *  mismos seis métodos de Hito 4.
  */
 export function createVentaStore(db: Database.Database): VentaStorePort {
   return {
@@ -187,6 +209,29 @@ export function createVentaStore(db: Database.Database): VentaStorePort {
 
     escalarReembolso(input) {
       const row = escalarReembolso(db, input);
+      return row ? toPortVenta(row) : undefined;
+    },
+
+    listarReembolsosPendientes(filtro) {
+      return listEscalacionesReembolso(db, { estado: VENTA_ESTADO_REEMBOLSO_PENDIENTE, ...filtro });
+    },
+
+    listarReembolsosRechazados(filtro) {
+      return listEscalacionesReembolso(db, { estado: VENTA_ESTADO_REEMBOLSO_RECHAZADO, ...filtro });
+    },
+
+    aprobarEscalacionReembolso(input) {
+      const row = aprobarEscalacionReembolso(db, input);
+      return row ? toPortVenta(row) : undefined;
+    },
+
+    rechazarEscalacionReembolso(input) {
+      const row = rechazarEscalacionReembolso(db, input);
+      return row ? toPortVenta(row) : undefined;
+    },
+
+    reabrirEscalacionReembolso(input) {
+      const row = reabrirEscalacionReembolso(db, input);
       return row ? toPortVenta(row) : undefined;
     },
   };

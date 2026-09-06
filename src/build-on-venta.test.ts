@@ -16,8 +16,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { buildOnVenta, createVentaStore, type BuildOnVentaDeps } from "./build-on-venta.js";
 import {
+  CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
   CASO_TIPO_VENTA,
   VENTA_ESTADO_PENDIENTE_CONFIRMACION,
+  VENTA_ESTADO_REEMBOLSADA,
+  VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  VENTA_ESTADO_REEMBOLSO_RECHAZADO,
   type CrearVentaConCasoInput,
   type NotificacionResultado,
   type Venta,
@@ -56,6 +60,14 @@ function makeStore(overrides: Partial<VentaStorePort> = {}): VentaStorePort {
     rechazarVenta: vi.fn(() => undefined),
     aprobarReembolso: vi.fn(() => undefined),
     escalarReembolso: vi.fn(() => undefined),
+    // Los 5 métodos de `tui-canal-empleado` (ADR 41) — nunca ejercitados por
+    // los tests de wiring de `buildOnVenta` de más abajo, pero necesarios
+    // para que el doble satisfaga `VentaStorePort` completo.
+    listarReembolsosPendientes: vi.fn(() => []),
+    listarReembolsosRechazados: vi.fn(() => []),
+    aprobarEscalacionReembolso: vi.fn(() => undefined),
+    rechazarEscalacionReembolso: vi.fn(() => undefined),
+    reabrirEscalacionReembolso: vi.fn(() => undefined),
     ...overrides,
   };
 }
@@ -306,6 +318,162 @@ describe("createVentaStore — closures sobre repository.ts (molde de createActi
       db.prepare("UPDATE ventas SET estado = ? WHERE id = ?").run("estado_invalido", "venta-1");
 
       expect(() => store.buscarVentaPorToken("token-1")).toThrowError(/venta-1.*estado_invalido/s);
+    });
+  });
+
+  /**
+   * Los 5 closures nuevos de `tui-canal-empleado` (ADR 41): `createVentaStore`
+   * delega a `listEscalacionesReembolso`/los tres CAS de
+   * `repository.ts`, sin reimplementar SQL acá. La atomicidad y los bordes
+   * del CAS ya están cubiertos por `repository.test.ts` (tarea 4.1); estos
+   * tests solo verifican el WIRING: que el store arma el filtro correcto y
+   * traduce `VentaRow` a `Venta` (estado literal) igual que los seis
+   * métodos de Hito 4.
+   */
+  describe("createVentaStore — los 5 closures de tui-canal-empleado (ADR 41)", () => {
+    it("listarReembolsosPendientes: devuelve las escalaciones en reembolso_pendiente", () => {
+      withDb((db) => {
+        const store = createVentaStore(db);
+        store.crearVentaConCaso({
+          vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+          caso: { id: "caso-1", tipo: CASO_TIPO_VENTA, estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "plan-x",
+            monto: 1000,
+            estado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+            tokenConfirmacion: "token-1",
+          },
+          timestamp: TIMESTAMP,
+        });
+
+        const items = store.listarReembolsosPendientes();
+
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({ ventaId: "venta-1", casoId: "caso-1", monto: 1000 });
+      });
+    });
+
+    it("listarReembolsosRechazados: devuelve las escalaciones en reembolso_rechazado", () => {
+      withDb((db) => {
+        const store = createVentaStore(db);
+        store.crearVentaConCaso({
+          vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+          caso: { id: "caso-1", tipo: CASO_TIPO_VENTA, estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "plan-x",
+            monto: 1000,
+            estado: VENTA_ESTADO_REEMBOLSO_RECHAZADO,
+            tokenConfirmacion: "token-1",
+          },
+          timestamp: TIMESTAMP,
+        });
+
+        const items = store.listarReembolsosRechazados();
+
+        expect(items).toHaveLength(1);
+        expect(items[0]?.ventaId).toBe("venta-1");
+      });
+    });
+
+    it("aprobarEscalacionReembolso: CAS reembolso_pendiente -> reembolsada, traduce el estado a VentaEstado", () => {
+      withDb((db) => {
+        const store = createVentaStore(db);
+        store.crearVentaConCaso({
+          vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+          caso: { id: "caso-1", tipo: CASO_TIPO_VENTA, estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "plan-x",
+            monto: 1000,
+            estado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+            tokenConfirmacion: "token-1",
+          },
+          timestamp: TIMESTAMP,
+        });
+
+        const resultado = store.aprobarEscalacionReembolso({
+          ventaId: "venta-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: TIMESTAMP,
+        });
+
+        expect(resultado?.estado).toBe(VENTA_ESTADO_REEMBOLSADA);
+
+        // El CAS ya no matchea: segunda llamada devuelve undefined, sin lanzar.
+        const segunda = store.aprobarEscalacionReembolso({
+          ventaId: "venta-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-2",
+          ahora: TIMESTAMP,
+        });
+        expect(segunda).toBeUndefined();
+      });
+    });
+
+    it("rechazarEscalacionReembolso: CAS reembolso_pendiente -> reembolso_rechazado", () => {
+      withDb((db) => {
+        const store = createVentaStore(db);
+        store.crearVentaConCaso({
+          vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+          caso: { id: "caso-1", tipo: CASO_TIPO_VENTA, estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "plan-x",
+            monto: 1000,
+            estado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+            tokenConfirmacion: "token-1",
+          },
+          timestamp: TIMESTAMP,
+        });
+
+        const resultado = store.rechazarEscalacionReembolso({
+          ventaId: "venta-1",
+          casoId: "caso-1",
+          empleadoId: "beto",
+          accionId: "accion-1",
+          ahora: TIMESTAMP,
+        });
+
+        expect(resultado?.estado).toBe(VENTA_ESTADO_REEMBOLSO_RECHAZADO);
+      });
+    });
+
+    it("reabrirEscalacionReembolso: CAS reembolso_rechazado -> reembolso_pendiente", () => {
+      withDb((db) => {
+        const store = createVentaStore(db);
+        store.crearVentaConCaso({
+          vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+          caso: { id: "caso-1", tipo: CASO_TIPO_VENTA, estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "plan-x",
+            monto: 1000,
+            estado: VENTA_ESTADO_REEMBOLSO_RECHAZADO,
+            tokenConfirmacion: "token-1",
+          },
+          timestamp: TIMESTAMP,
+        });
+
+        const resultado = store.reabrirEscalacionReembolso({
+          ventaId: "venta-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: TIMESTAMP,
+        });
+
+        expect(resultado?.estado).toBe(VENTA_ESTADO_REEMBOLSO_PENDIENTE);
+      });
     });
   });
 });
