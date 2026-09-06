@@ -90,6 +90,9 @@ import { resolveWebConfig, WEB_LOG_CORRELATION_ID } from "./adapters/web/config.
 import { buildOnVenta } from "./build-on-venta.js";
 import { buildOnSoporte } from "./build-on-soporte.js";
 import { startWebServer, type WebAdapter } from "./adapters/web/index.js";
+import { resolveAuthConfig, type AuthConfig } from "./core/auth/auth-config.js";
+import { verificarPassword } from "./adapters/crypto/password.js";
+import { buildOnComandoEmpleado } from "./build-on-comando-empleado.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -121,6 +124,15 @@ interface StartupResult {
    * para que el wiring de la tercera fuente (más abajo) la use.
    */
   readonly ventasConfig: VentasConfig;
+  /**
+   * Configuración de autenticación de empleado (`tui-canal-empleado`, ADR
+   * 31, design.md §8 punto 1), validada dentro de `startHarness()`'s propio
+   * `try` — mismo criterio que `ventasConfig`: un `SESION_TTL_MINUTOS`
+   * inválido aborta el arranque ACÁ, antes de que exista ningún servidor.
+   * Propagada fuera de `startHarness()` para que `buildOnComandoEmpleado`
+   * (bloque 5c, más abajo) la use.
+   */
+  readonly authConfig: AuthConfig;
 }
 
 /**
@@ -154,6 +166,19 @@ function startHarness(): StartupResult {
     );
   }
   const ventasConfig = ventasConfigResult.config;
+
+  // 2c. Configuración de autenticación de empleado (`tui-canal-empleado`,
+  //     ADR 31, design.md §8 punto 1): MISMA clase "aborta" que `ventasConfig`
+  //     de arriba — un `SESION_TTL_MINUTOS` mal escrito es una sesión que
+  //     dura otra cosa que la que el operador cree, y eso se detecta acá, no
+  //     en runtime.
+  const authConfigResult = resolveAuthConfig(process.env);
+  if (!authConfigResult.ok) {
+    throw new HarnessBootstrapError(
+      `Configuración de autenticación inválida:\n  - ${authConfigResult.errores.join("\n  - ")}`,
+    );
+  }
+  const authConfig = authConfigResult.config;
 
   // `MemoryPort` (`handle-turn.ts`) es la unión de `MemoryContextPort`
   // (tarea 8) y `MemoryWritePort` (tarea 10) — un closure de una línea por
@@ -199,7 +224,7 @@ function startHarness(): StartupResult {
       logEvent: (event, fields) => logTurnEvent(casoId, event, fields),
     });
 
-  return { agents, hooks, memory, caso, db, createKnowledge, ventasConfig };
+  return { agents, hooks, memory, caso, db, createKnowledge, ventasConfig, authConfig };
 }
 
 let startup: StartupResult;
@@ -212,7 +237,7 @@ try {
   process.exit(1);
 }
 
-const { agents, hooks, memory, caso, db, createKnowledge, ventasConfig } = startup;
+const { agents, hooks, memory, caso, db, createKnowledge, ventasConfig, authConfig } = startup;
 
 // 4. `onSubmit` (I1, `SubmitPromptHandler`) cierra sobre `caso.id`/`memory`/
 //    `hooks`/`agents` y delega la secuencia completa del turno al
@@ -312,6 +337,10 @@ const ventaHandlers = buildOnVenta({
   baseUrlPublica: webConfig.publicUrl,
 });
 
+// `onSoporte` (Hito 4, tarea 27) se arma UNA sola vez acá y se COMPARTE
+// (design.md §8 punto 3): la misma constante alimenta a `startWebServer`
+// (más abajo, para `POST /soporte`) y al bloque 5c (para `/soporte` de la
+// TUI) — `buildOnSoporte` no se toca y `createKnowledge` no se duplica.
 const onSoporte = buildOnSoporte({ db, memory, hooks, agents, createKnowledge });
 
 let web: WebAdapter | undefined;
@@ -326,19 +355,37 @@ try {
   web = undefined;
 }
 
-// 6. Monta la TUI (I1) con `onSubmit` como su handler del Núcleo, espera a
+// 5c. Dispatcher de comandos de empleado (Hito 5, tarea 14, design.md §8
+//     punto 4): envuelve `onSubmit` (camino conversacional, intacto) y
+//     reusa el MISMO `onSoporte` de arriba. Único import nuevo de un
+//     adaptador en `main.ts` — `verificarPassword`, de
+//     `adapters/crypto/password.ts` (ADR 30): el núcleo no lo importa, el
+//     composition root los une, igual que ya hace con `randomUUID` como
+//     `newId` en `buildOnVenta`.
+const onComandoEmpleado = buildOnComandoEmpleado({
+  onSubmit,
+  onSoporte,
+  db,
+  ventasConfig,
+  authConfig,
+  verificarPassword,
+});
+
+// 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
 //    defecto) y recién ahí cierra el servidor web (si arrancó), el servidor
 //    de webhooks (si arrancó) y el handle de SQLite abierto en el paso 2. Un
 //    cierre prolijo del proceso, no una salida abrupta con el archivo de la
-//    base de datos todavía abierto. `startTui(onSubmit)` en sí va DENTRO
-//    del `try` (Reviewer finding, WARNING, post-primera versión de este
-//    fix) — no solo el `await` de `waitUntilExit()`: `startTui`/`renderTui`
-//    puede tirar sincrónicamente si falla el mount de Ink (ver
+//    base de datos todavía abierto. `startTui(onComandoEmpleado)` en sí va
+//    DENTRO del `try` (Reviewer finding, WARNING, post-primera versión de
+//    este fix) — no solo el `await` de `waitUntilExit()`: `startTui`/
+//    `renderTui` puede tirar sincrónicamente si falla el mount de Ink (ver
 //    `start-tui.tsx`), y si eso pasara antes de que `tui` se asignara, el
-//    `finally` de abajo nunca correría.
+//    `finally` de abajo nunca correría. `startTui` sigue recibiendo un
+//    `SubmitPromptHandler` — I1 no cambia (design.md §8 punto 5): rollback
+//    en caliente es volver a `startTui(onSubmit)`, una sola línea.
 try {
-  const tui = startTui(onSubmit);
+  const tui = startTui(onComandoEmpleado);
   await tui.waitUntilExit();
 } finally {
   // `finally`, no solo el camino feliz de Ctrl+C: si `App.tsx` tira un error
