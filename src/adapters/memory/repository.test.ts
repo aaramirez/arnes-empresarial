@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "./db.js";
+import { runMigrations } from "./migrate.js";
 import {
   ActividadAlreadyExistsError,
   ActividadInvalidReferenceError,
@@ -2038,6 +2039,94 @@ describe("repository", () => {
       });
 
       expect(resultado).toBeUndefined();
+    });
+  });
+
+  describe("delegaciones (migración 0007)", () => {
+    it("crea la tabla delegaciones y el índice idx_delegaciones_caso", () => {
+      db = openDatabase(":memory:");
+
+      const tableNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      const indexNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(tableNames).toContain("delegaciones");
+      expect(indexNames).toContain("idx_delegaciones_caso");
+    });
+
+    it("correr las migraciones dos veces no falla (IF NOT EXISTS)", () => {
+      db = openDatabase(":memory:");
+
+      expect(() => runMigrations(db!)).not.toThrow();
+    });
+
+    it("permite insertar una fila con sesion_padre_id y sesion_subagente_id ambos NULL (ADR 48)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      db!
+        .prepare(
+          "INSERT INTO delegaciones (id, caso_id, agent_id, sesion_padre_id, sesion_subagente_id, tarea_delegada, resultado, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "delegacion-1",
+          "caso-1",
+          "planner",
+          null,
+          null,
+          "revisar el PR #1",
+          null,
+          "2026-09-06T00:00:00.000Z",
+        );
+
+      const fila = db!
+        .prepare(
+          "SELECT sesion_padre_id, sesion_subagente_id FROM delegaciones WHERE id = ?",
+        )
+        .get("delegacion-1") as {
+        sesion_padre_id: string | null;
+        sesion_subagente_id: string | null;
+      };
+      expect(fila.sesion_padre_id).toBeNull();
+      expect(fila.sesion_subagente_id).toBeNull();
+    });
+
+    it("rechaza insertar una delegacion con un caso_id inexistente", () => {
+      db = openDatabase(":memory:");
+
+      expect(() =>
+        db!
+          .prepare(
+            "INSERT INTO delegaciones (id, caso_id, agent_id, tarea_delegada, created_at) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run(
+            "delegacion-1",
+            "caso-inexistente",
+            "planner",
+            "revisar el PR #1",
+            "2026-09-06T00:00:00.000Z",
+          ),
+      ).toThrow(/FOREIGN KEY/);
+    });
+
+    it("rechaza insertar una delegacion sin agent_id", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      expect(() =>
+        db!
+          .prepare(
+            "INSERT INTO delegaciones (id, caso_id, tarea_delegada, created_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("delegacion-1", "caso-1", "revisar el PR #1", "2026-09-06T00:00:00.000Z"),
+      ).toThrow(/NOT NULL/);
     });
   });
 });
