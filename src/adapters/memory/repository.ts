@@ -1186,3 +1186,407 @@ export function listVentasEnReembolsoPendiente(
     .all() as VentaPendienteReembolsoSqlRow[];
   return rows.map(rowToVentaPendienteReembolso);
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * `tui-canal-empleado` (ADR 27, 38, 39, 40) — nueve funciones nuevas,
+ * ninguna existente modificada. Mismo estilo del archivo: `*SqlRow` privada
+ * + `rowTo*` privada + función exportada, literales de estado en el SQL
+ * (este módulo no importa el vocabulario del núcleo).
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** Fila de una escalación de reembolso, tal como `listEscalacionesReembolso` la entrega (design.md §5.3a). */
+export interface EscalacionReembolsoRow {
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly vendedorNombre: string;
+  readonly clienteId: string;
+  readonly monto: number;
+  readonly casoId: string;
+  readonly confirmedAt?: string;
+  /** Del registro (ADR 27): último `/rechazar-reembolso` con `resultado='rechazada'`. */
+  readonly rechazadaPor?: string;
+  readonly rechazadaAt?: string;
+  /** Del registro: cantidad de `/reabrir-reembolso` con `resultado='reabierta'`. */
+  readonly reaperturasPrevias: number;
+}
+
+interface EscalacionReembolsoSqlRow {
+  venta_id: string;
+  vendedor_id: string;
+  vendedor_nombre: string;
+  cliente_id: string;
+  monto: number;
+  caso_id: string;
+  confirmed_at: string | null;
+  rechazada_por: string | null;
+  rechazada_at: string | null;
+  reaperturas_previas: number;
+}
+
+function rowToEscalacionReembolso(row: EscalacionReembolsoSqlRow): EscalacionReembolsoRow {
+  return {
+    ventaId: row.venta_id,
+    vendedorId: row.vendedor_id,
+    vendedorNombre: row.vendedor_nombre,
+    clienteId: row.cliente_id,
+    monto: row.monto,
+    casoId: row.caso_id,
+    ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
+    ...(row.rechazada_por !== null ? { rechazadaPor: row.rechazada_por } : {}),
+    ...(row.rechazada_at !== null ? { rechazadaAt: row.rechazada_at } : {}),
+    reaperturasPrevias: row.reaperturas_previas,
+  };
+}
+
+/** Tope del listado sin filtro por id — molde de `LIMITE_LISTADO_ESCALACIONES` (ADR 29 punto 1). */
+const LIMITE_LISTADO_ESCALACIONES_DEFAULT = 20;
+
+/**
+ * Un solo lector, cuatro usos (listar pendientes, listar rechazados,
+ * resolver un id pendiente, resolver un id rechazado — ADR 38). Con
+ * `ventaId` presente, el `LIMIT` es irrelevante y el resultado es 0 o 1
+ * fila; `estado` es obligatorio y solo acepta `reembolso_pendiente` o
+ * `reembolso_rechazado` — esta función NUNCA puede devolver una venta
+ * `confirmada`.
+ */
+export function listEscalacionesReembolso(
+  db: Database.Database,
+  filtro: { readonly estado: string; readonly ventaId?: string; readonly limite?: number },
+): readonly EscalacionReembolsoRow[] {
+  const orden =
+    filtro.estado === "reembolso_rechazado" ? "rechazada_at DESC, v.confirmed_at DESC" : "v.confirmed_at ASC";
+
+  const rows = db
+    .prepare(
+      `SELECT v.id            AS venta_id,
+              v.vendedor_id   AS vendedor_id,
+              ve.nombre       AS vendedor_nombre,
+              v.cliente_id    AS cliente_id,
+              v.monto         AS monto,
+              v.caso_id       AS caso_id,
+              v.confirmed_at  AS confirmed_at,
+              (SELECT r.empleado_id
+                 FROM registro_acciones_empleado r
+                WHERE r.venta_id = v.id
+                  AND r.comando = '/rechazar-reembolso'
+                  AND r.resultado = 'rechazada'
+                ORDER BY r.ocurrido_at DESC
+                LIMIT 1)                                   AS rechazada_por,
+              (SELECT r.ocurrido_at
+                 FROM registro_acciones_empleado r
+                WHERE r.venta_id = v.id
+                  AND r.comando = '/rechazar-reembolso'
+                  AND r.resultado = 'rechazada'
+                ORDER BY r.ocurrido_at DESC
+                LIMIT 1)                                   AS rechazada_at,
+              (SELECT COUNT(*)
+                 FROM registro_acciones_empleado r
+                WHERE r.venta_id = v.id
+                  AND r.comando = '/reabrir-reembolso'
+                  AND r.resultado = 'reabierta')           AS reaperturas_previas
+         FROM ventas v
+         JOIN vendedores ve ON ve.id = v.vendedor_id
+        WHERE v.estado = @estado
+          AND (@ventaId IS NULL OR v.id = @ventaId)
+        ORDER BY ${orden}
+        LIMIT @limite`,
+    )
+    .all({
+      estado: filtro.estado,
+      ventaId: filtro.ventaId ?? null,
+      limite: filtro.limite ?? LIMITE_LISTADO_ESCALACIONES_DEFAULT,
+    }) as EscalacionReembolsoSqlRow[];
+
+  return rows.map(rowToEscalacionReembolso);
+}
+
+/** Una fila de `registro_acciones_empleado` (ADR 27, 39). */
+export interface AccionEmpleadoInput {
+  readonly id: string;
+  readonly empleadoId: string;
+  readonly comando: string;
+  readonly ventaId?: string;
+  readonly casoId?: string;
+  readonly resultado: string;
+  readonly ocurridoAt: string;
+}
+
+export interface AccionEmpleadoRow {
+  readonly id: string;
+  readonly empleadoId: string;
+  readonly comando: string;
+  readonly ventaId?: string;
+  readonly casoId?: string;
+  readonly resultado: string;
+  readonly ocurridoAt: string;
+}
+
+interface AccionEmpleadoSqlRow {
+  id: string;
+  empleado_id: string;
+  comando: string;
+  venta_id: string | null;
+  caso_id: string | null;
+  resultado: string;
+  ocurrido_at: string;
+}
+
+function rowToAccionEmpleado(row: AccionEmpleadoSqlRow): AccionEmpleadoRow {
+  return {
+    id: row.id,
+    empleadoId: row.empleado_id,
+    comando: row.comando,
+    ...(row.venta_id !== null ? { ventaId: row.venta_id } : {}),
+    ...(row.caso_id !== null ? { casoId: row.caso_id } : {}),
+    resultado: row.resultado,
+    ocurridoAt: row.ocurrido_at,
+  };
+}
+
+/**
+ * UN solo lugar que sabe el layout de la fila. Las DOS rutas del ADR 27
+ * (dentro de la transacción del CAS, y `registrarAccion` fuera) terminan
+ * acá. `ventaId`/`casoId` se normalizan a `null`.
+ */
+export function insertAccionEmpleado(db: Database.Database, input: AccionEmpleadoInput): void {
+  db.prepare(
+    `INSERT INTO registro_acciones_empleado
+       (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at)
+     VALUES (@id, @empleadoId, @comando, @ventaId, @casoId, @resultado, @ocurridoAt)`,
+  ).run({
+    id: input.id,
+    empleadoId: input.empleadoId,
+    comando: input.comando,
+    ventaId: input.ventaId ?? null,
+    casoId: input.casoId ?? null,
+    resultado: input.resultado,
+    ocurridoAt: input.ocurridoAt,
+  });
+}
+
+/**
+ * Lectura que el test de "el ciclo completo deja cuatro filas legibles en
+ * orden" necesita. NINGÚN camino de producción la usa — se declara así para
+ * que no se lea como código muerto (design.md §5.3b).
+ */
+export function listAccionesEmpleadoPorVenta(
+  db: Database.Database,
+  ventaId: string,
+): readonly AccionEmpleadoRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at
+         FROM registro_acciones_empleado
+        WHERE venta_id = @ventaId
+        ORDER BY ocurrido_at`,
+    )
+    .all({ ventaId }) as AccionEmpleadoSqlRow[];
+  return rows.map(rowToAccionEmpleado);
+}
+
+/**
+ * Los tres CAS transaccionales de resolución de escalación — molde EXACTO
+ * de `escalarReembolso`, con un `insertAccionEmpleado` más adentro de la
+ * misma `db.transaction` (ADR 27, 39, 40). El `return undefined` antes de
+ * tocar el caso es lo que impide el estado intermedio "caso resuelto, venta
+ * no": no existe una transición exitosa sin su fila, ni una fila sin su
+ * transición.
+ */
+function resolverEscalacionTransaccional(
+  db: Database.Database,
+  input: {
+    readonly ventaId: string;
+    readonly casoId: string;
+    readonly empleadoId: string;
+    readonly accionId: string;
+    readonly ahora: string;
+  },
+  config: {
+    readonly estadoOrigen: string;
+    readonly estadoDestino: string;
+    readonly estadoCaso: string;
+    readonly comando: string;
+    readonly resultado: string;
+  },
+): VentaRow | undefined {
+  const runInTransaction = db.transaction((): VentaRow | undefined => {
+    const row = db
+      .prepare(
+        `UPDATE ventas
+            SET estado = @estadoDestino
+          WHERE id = @ventaId
+            AND estado = @estadoOrigen
+         RETURNING ${VENTA_SELECT_COLUMNS}`,
+      )
+      .get({
+        ventaId: input.ventaId,
+        estadoOrigen: config.estadoOrigen,
+        estadoDestino: config.estadoDestino,
+      }) as VentaSqlRow | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    updateCaso(db, input.casoId, { estado: config.estadoCaso, updatedAt: input.ahora });
+
+    insertAccionEmpleado(db, {
+      id: input.accionId,
+      empleadoId: input.empleadoId,
+      comando: config.comando,
+      ventaId: input.ventaId,
+      casoId: input.casoId,
+      resultado: config.resultado,
+      ocurridoAt: input.ahora,
+    });
+
+    return rowToVenta(row);
+  });
+
+  return runInTransaction();
+}
+
+export interface ResolucionEscalacionDbInput {
+  readonly ventaId: string;
+  readonly casoId: string;
+  readonly empleadoId: string;
+  readonly accionId: string;
+  readonly ahora: string;
+}
+
+/** CAS `reembolso_pendiente → reembolsada` + `casos.estado → resuelto` + fila `aprobada`. */
+export function aprobarEscalacionReembolso(
+  db: Database.Database,
+  input: ResolucionEscalacionDbInput,
+): VentaRow | undefined {
+  return resolverEscalacionTransaccional(db, input, {
+    estadoOrigen: "reembolso_pendiente",
+    estadoDestino: "reembolsada",
+    estadoCaso: "resuelto",
+    comando: "/aprobar-reembolso",
+    resultado: "aprobada",
+  });
+}
+
+/** CAS `reembolso_pendiente → reembolso_rechazado` + `casos.estado → resuelto` + fila `rechazada`. */
+export function rechazarEscalacionReembolso(
+  db: Database.Database,
+  input: ResolucionEscalacionDbInput,
+): VentaRow | undefined {
+  return resolverEscalacionTransaccional(db, input, {
+    estadoOrigen: "reembolso_pendiente",
+    estadoDestino: "reembolso_rechazado",
+    estadoCaso: "resuelto",
+    comando: "/rechazar-reembolso",
+    resultado: "rechazada",
+  });
+}
+
+/** CAS `reembolso_rechazado → reembolso_pendiente` + `casos.estado → pendiente_aprobacion_humana` (MISMO caso_id) + fila `reabierta`. */
+export function reabrirEscalacionReembolso(
+  db: Database.Database,
+  input: ResolucionEscalacionDbInput,
+): VentaRow | undefined {
+  return resolverEscalacionTransaccional(db, input, {
+    estadoOrigen: "reembolso_rechazado",
+    estadoDestino: "reembolso_pendiente",
+    estadoCaso: "pendiente_aprobacion_humana",
+    comando: "/reabrir-reembolso",
+    resultado: "reabierta",
+  });
+}
+
+/**
+ * Colisión de `credenciales_empleado.empleado_id` (`SQLITE_CONSTRAINT_PRIMARYKEY`).
+ * Un alta que pisa un hash existente es un reseteo disfrazado de alta (ADR
+ * 33 punto 1) — molde EXACTO de `CasoAlreadyExistsError`.
+ */
+export class CredencialEmpleadoDuplicadaError extends Error {
+  constructor(empleadoId: string) {
+    super(`Credencial de empleado ya existe: ${empleadoId}`);
+    this.name = "CredencialEmpleadoDuplicadaError";
+  }
+}
+
+export interface CredencialEmpleadoRow {
+  readonly empleadoId: string;
+  readonly passwordHash: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface CredencialEmpleadoSqlRow {
+  empleado_id: string;
+  password_hash: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToCredencialEmpleado(row: CredencialEmpleadoSqlRow): CredencialEmpleadoRow {
+  return {
+    empleadoId: row.empleado_id,
+    passwordHash: row.password_hash,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** `SELECT ... WHERE empleado_id = ?`. `undefined` si no existe. */
+export function buscarCredencialEmpleado(
+  db: Database.Database,
+  empleadoId: string,
+): CredencialEmpleadoRow | undefined {
+  const row = db
+    .prepare("SELECT empleado_id, password_hash, created_at, updated_at FROM credenciales_empleado WHERE empleado_id = ?")
+    .get(empleadoId) as CredencialEmpleadoSqlRow | undefined;
+  return row ? rowToCredencialEmpleado(row) : undefined;
+}
+
+/**
+ * `INSERT`. Lanza `CredencialEmpleadoDuplicadaError` ante
+ * `SQLITE_CONSTRAINT_PRIMARYKEY`. `created_at = updated_at = ahora`.
+ */
+export function insertCredencialEmpleado(
+  db: Database.Database,
+  input: { readonly empleadoId: string; readonly passwordHash: string; readonly ahora: string },
+): CredencialEmpleadoRow {
+  try {
+    db.prepare(
+      `INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at)
+       VALUES (@empleadoId, @passwordHash, @ahora, @ahora)`,
+    ).run(input);
+  } catch (error) {
+    if (isSqliteConstraintError(error, "SQLITE_CONSTRAINT_PRIMARYKEY")) {
+      throw new CredencialEmpleadoDuplicadaError(input.empleadoId);
+    }
+    throw error;
+  }
+  return {
+    empleadoId: input.empleadoId,
+    passwordHash: input.passwordHash,
+    createdAt: input.ahora,
+    updatedAt: input.ahora,
+  };
+}
+
+/**
+ * `UPDATE password_hash, updated_at ... WHERE empleado_id = @empleadoId
+ * RETURNING ...`. `undefined` = no existe. `created_at` NO se toca: es la
+ * huella de R16 (un alta nueva se ve en `created_at`, una impersonación por
+ * rotación se ve en `updated_at`).
+ */
+export function updateCredencialEmpleado(
+  db: Database.Database,
+  input: { readonly empleadoId: string; readonly passwordHash: string; readonly ahora: string },
+): CredencialEmpleadoRow | undefined {
+  const row = db
+    .prepare(
+      `UPDATE credenciales_empleado
+          SET password_hash = @passwordHash,
+              updated_at = @ahora
+        WHERE empleado_id = @empleadoId
+       RETURNING empleado_id, password_hash, created_at, updated_at`,
+    )
+    .get(input) as CredencialEmpleadoSqlRow | undefined;
+  return row ? rowToCredencialEmpleado(row) : undefined;
+}
