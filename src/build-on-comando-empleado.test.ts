@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { buildOnComandoEmpleado, type BuildOnComandoEmpleadoDeps } from "./build-on-comando-empleado.js";
+import { COMANDOS } from "./core/commands/comando-empleado.js";
 import {
   VENTA_ESTADO_CONFIRMADA,
   VENTA_ESTADO_REEMBOLSADA,
@@ -480,5 +481,43 @@ describe("buildOnComandoEmpleado — ADR 40 (fila no transaccional no tumba el c
 
     expect(resultado.responseText).toContain("reembolsada");
     expect(JSON.stringify(writes)).toContain("accion-empleado-registro-fallido");
+  });
+});
+
+describe("buildOnComandoEmpleado — el guard de privilegio tiene UNA sola fuente de verdad", () => {
+  /**
+   * Reproduce el hallazgo: hoy el guard compara contra un `Set` hardcodeado
+   * (`TIPOS_PRIVILEGIADOS`) en lugar de leer el campo `privilegiado` que
+   * cada descriptor de `DESCRIPTORES` (comando-empleado.ts) ya expone. Si
+   * un comando se marca `privilegiado: true` en `DESCRIPTORES` pero el
+   * `Set` paralelo no se actualiza, el guard NO lo protege — "CERO
+   * escrituras sin sesión" se rompe en silencio.
+   *
+   * Este test NO agrega un comando nuevo (el tipo `ComandoEmpleado["tipo"]`
+   * es una unión cerrada): en cambio, muta en caliente el descriptor real
+   * de `/logout` (hoy `privilegiado: false`) a `true` — el MISMO objeto que
+   * usa el parser, porque `COMANDOS` es la misma referencia que
+   * `DESCRIPTORES` puertas adentro. Si el guard consulta ese campo
+   * directamente, un comando que pasa a ser privilegiado queda protegido
+   * sin tocar `build-on-comando-empleado.ts`. Si el guard usa una lista
+   * paralela, la mutación no tiene ningún efecto — RED.
+   */
+  it("si /logout pasara a privilegiado: true en DESCRIPTORES, el guard lo bloquearía sin tocar el guard", async () => {
+    const descriptorLogout = COMANDOS.find((d) => d.nombre === "/logout");
+    expect(descriptorLogout).toBeDefined();
+    const original = descriptorLogout!.privilegiado;
+    (descriptorLogout as { privilegiado: boolean }).privilegiado = true;
+
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeDeps(reloj);
+      const handler = buildOnComandoEmpleado(deps);
+
+      const resultado = await handler("/logout");
+
+      expect(resultado.responseText).toContain("sesión activa");
+    } finally {
+      (descriptorLogout as { privilegiado: boolean }).privilegiado = original;
+    }
   });
 });

@@ -103,6 +103,28 @@ describe("parsearComando", () => {
     expect(parsearComando(prefijo)).toEqual({ tipo });
   });
 
+  describe("forma id_opcional — el tipo se lee del descriptor, no de una cadena de nombres", () => {
+    // Recorre DESCRIPTORES dinámicamente (vía COMANDOS, que es el mismo array
+    // en runtime aunque el tipo público DescriptorComando no declare `forma`
+    // ni `tipo`): así el test cubre cualquier comando de forma "id_opcional"
+    // que exista hoy o se agregue mañana, sin hardcodear los tres nombres.
+    type DescriptorConTipo = { readonly nombre: string; readonly tipo: string; readonly forma: string };
+    const descriptoresIdOpcional = (COMANDOS as unknown as readonly DescriptorConTipo[]).filter(
+      (d) => d.forma === "id_opcional",
+    );
+
+    it("hay al menos un descriptor de forma id_opcional (no testear un array vacío)", () => {
+      expect(descriptoresIdOpcional.length).toBeGreaterThan(0);
+    });
+
+    it.each(descriptoresIdOpcional.map((d) => [d.nombre, d.tipo] as const))(
+      "%s sin ventaId → tipo devuelto == descriptor.tipo declarado (%s)",
+      (nombre, tipoDeclarado) => {
+        expect(parsearComando(nombre)).toEqual({ tipo: tipoDeclarado });
+      },
+    );
+  });
+
   it("/aprobar-reembolso <ventaId> → ventaId presente", () => {
     expect(parsearComando("/aprobar-reembolso venta-1")).toEqual({
       tipo: "aprobar_reembolso",

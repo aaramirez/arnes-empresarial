@@ -29,6 +29,7 @@ import Database from "better-sqlite3";
 import {
   COMANDOS,
   COMANDO_LOG_CORRELATION_ID,
+  esComandoPrivilegiado,
   formatearAyuda,
   parsearComando,
   type ComandoEmpleado,
@@ -69,6 +70,7 @@ import {
   type VentaStorePort,
 } from "./core/ventas/ventas-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
+import { formatMoney } from "./core/ventas/reporte.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import { createVentaStore } from "./build-on-venta.js";
 import type { SoporteResult } from "./build-on-soporte.js";
@@ -82,12 +84,6 @@ import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port
  * menor que el TTL de sesión.
  */
 const CONFIRMACION_TTL_MINUTOS = 2;
-
-const TIPOS_PRIVILEGIADOS: ReadonlySet<ComandoEmpleado["tipo"]> = new Set([
-  "aprobar_reembolso",
-  "rechazar_reembolso",
-  "reabrir_reembolso",
-]);
 
 interface ConfirmacionPendiente {
   readonly accion: AccionEscalacion;
@@ -126,10 +122,6 @@ function sistema(texto: string): TuiTurnResult {
   return { responseText: texto, agentLabel: "sistema" };
 }
 
-function formatMoney(monto: number): string {
-  return monto.toFixed(2);
-}
-
 /** Una línea por venta — MISMO formato de línea que `reporte.ts` (§6.4-5/6/7). */
 function formatearLineaEscalacion(v: EscalacionListada): string {
   const base = `- venta ${v.ventaId} | vendedor ${v.vendedorNombre} | cliente ${v.clienteId} | monto ${formatMoney(
@@ -156,19 +148,27 @@ function formatearEco(accion: AccionEscalacion, venta: EscalacionListada): strin
   return `${base} rechazada por ${rechazadaPor} el ${rechazadaAt} · reaperturas previas: ${venta.reaperturasPrevias}.`;
 }
 
-function estadoOrigenTexto(accion: AccionEscalacion): string {
-  return accion === ACCION_REABRIR ? VENTA_ESTADO_REEMBOLSO_RECHAZADO : VENTA_ESTADO_REEMBOLSO_PENDIENTE;
-}
-
-function estadoCasoTexto(accion: AccionEscalacion): string {
-  return accion === ACCION_REABRIR ? CASO_ESTADO_PENDIENTE_APROBACION_HUMANA : CASO_ESTADO_RESUELTO;
-}
-
-function comandoDeAccion(accion: AccionEscalacion): string {
-  if (accion === ACCION_APROBAR) return COMANDO_APROBAR_REEMBOLSO;
-  if (accion === ACCION_RECHAZAR) return COMANDO_RECHAZAR_REEMBOLSO;
-  return COMANDO_REABRIR_REEMBOLSO;
-}
+/** Los tres textos que varían por `AccionEscalacion` — unificados para no branchear tres veces sobre el mismo valor. */
+const ACCION_ESCALACION_INFO: Record<
+  AccionEscalacion,
+  { readonly estadoOrigen: string; readonly estadoCaso: string; readonly comando: string }
+> = {
+  [ACCION_APROBAR]: {
+    estadoOrigen: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+    estadoCaso: CASO_ESTADO_RESUELTO,
+    comando: COMANDO_APROBAR_REEMBOLSO,
+  },
+  [ACCION_RECHAZAR]: {
+    estadoOrigen: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+    estadoCaso: CASO_ESTADO_RESUELTO,
+    comando: COMANDO_RECHAZAR_REEMBOLSO,
+  },
+  [ACCION_REABRIR]: {
+    estadoOrigen: VENTA_ESTADO_REEMBOLSO_RECHAZADO,
+    estadoCaso: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+    comando: COMANDO_REABRIR_REEMBOLSO,
+  },
+};
 
 function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
   if (resultado === "reembolsada") return RESULTADO_REEMBOLSADA;
@@ -335,7 +335,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       );
 
       if (resultado.resultado === "no_aplicable") {
-        return sistema(`No hay ninguna venta ${ventaIdInput} en estado ${estadoOrigenTexto(accion)}.`);
+        return sistema(`No hay ninguna venta ${ventaIdInput} en estado ${ACCION_ESCALACION_INFO[accion].estadoOrigen}.`);
       }
       if (resultado.resultado !== "requiere_confirmacion") {
         return sistema("No se pudo procesar ese comando.");
@@ -361,7 +361,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
 
     if (resultado.resultado === "aplicada") {
       return sistema(
-        `Listo: la venta ${ventaIdInput} quedó en ${resultado.estadoFinal} y el caso ${resultado.venta.casoId} en ${estadoCasoTexto(accion)}.`,
+        `Listo: la venta ${ventaIdInput} quedó en ${resultado.estadoFinal} y el caso ${resultado.venta.casoId} en ${ACCION_ESCALACION_INFO[accion].estadoCaso}.`,
       );
     }
 
@@ -371,11 +371,16 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         // matcheaba (ADR 27); acá no hubo transacción, así que se escribe
         // FUERA — único caso en que este comando privilegiado pasa por `registrar`.
         registrar(
-          { comando: comandoDeAccion(accion), ventaId: ventaIdInput, casoId: resultado.casoId, resultado: RESULTADO_NO_APLICABLE },
+          {
+            comando: ACCION_ESCALACION_INFO[accion].comando,
+            ventaId: ventaIdInput,
+            casoId: resultado.casoId,
+            resultado: RESULTADO_NO_APLICABLE,
+          },
           ahora,
         );
       }
-      return sistema(`Esa venta ya no está en ${estadoOrigenTexto(accion)}: no se aplicó nada.`);
+      return sistema(`Esa venta ya no está en ${ACCION_ESCALACION_INFO[accion].estadoOrigen}: no se aplicó nada.`);
     }
 
     return sistema("No se pudo procesar ese comando.");
@@ -420,7 +425,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     logEvent(COMANDO_LOG_CORRELATION_ID, "comando-empleado-recibido", { tipo: comando.tipo });
 
     // 6. Guarda de privilegio — CERO escrituras si no hay sesión vigente.
-    if (TIPOS_PRIVILEGIADOS.has(comando.tipo) && !sesionVigente(sesion, ahora)) {
+    if (esComandoPrivilegiado(comando.tipo) && !sesionVigente(sesion, ahora)) {
       logEvent(COMANDO_LOG_CORRELATION_ID, "comando-privilegiado-sin-sesion", { tipo: comando.tipo });
       return sistema("Ese comando necesita una sesión activa. Usá /login <empleadoId> <password>.");
     }

@@ -39,15 +39,34 @@ function makeDeps(overrides: Partial<LoginDeps> = {}): LoginDeps {
 }
 
 describe("resolverLogin", () => {
-  it("credencial inexistente → invalida, verificarPassword NO se llamó", () => {
+  it("credencial inexistente → invalida, y verificarPassword SÍ se llama contra un hash dummy (mitigación de timing attack: sin esto, un atacante puede enumerar empleadoId existentes midiendo latencia)", () => {
     const store = makeStore({ buscarCredencial: vi.fn(() => undefined) });
+    // Devuelve `true` a propósito: el resultado de esta llamada dummy nunca
+    // puede convertir el camino "no existe" en un login exitoso.
     const verificarPassword = vi.fn(() => true);
     const deps = makeDeps({ store, verificarPassword });
 
     const resultado = resolverLogin({ empleadoId: "zzz", password: "cualquiera" }, deps);
 
     expect(resultado).toEqual({ resultado: "invalida" });
-    expect(verificarPassword).not.toHaveBeenCalled();
+    expect(verificarPassword).toHaveBeenCalledTimes(1);
+  });
+
+  it("★ mitigación de timing attack ★: verificarPassword se llama la MISMA cantidad de veces (1) tanto si el empleadoId no existe como si existe con password incorrecta — mismo costo computacional en los dos caminos de fallo", () => {
+    const verificarPasswordInexistente = vi.fn(() => true);
+    resolverLogin(
+      { empleadoId: "zzz", password: "cualquiera" },
+      makeDeps({
+        store: makeStore({ buscarCredencial: vi.fn(() => undefined) }),
+        verificarPassword: verificarPasswordInexistente,
+      }),
+    );
+
+    const verificarPasswordIncorrecta = vi.fn(() => false);
+    resolverLogin({ empleadoId: "ana", password: "incorrecta" }, makeDeps({ verificarPassword: verificarPasswordIncorrecta }));
+
+    expect(verificarPasswordInexistente).toHaveBeenCalledTimes(1);
+    expect(verificarPasswordIncorrecta).toHaveBeenCalledTimes(1);
   });
 
   it("credencial inexistente → logEvent login-fallido con motivo inexistente", () => {

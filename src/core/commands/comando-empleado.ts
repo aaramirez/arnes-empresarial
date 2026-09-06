@@ -54,10 +54,12 @@ type Forma = "sin_argumentos" | "id_opcional" | "id_mas_resto";
 
 interface DescriptorInterno extends DescriptorComando {
   readonly forma: Forma;
+  /** Tipo de `ComandoEmpleado` al que corresponde este descriptor — única fuente de verdad para el guard de privilegio (ADR 28, 32). */
+  readonly tipo: ComandoEmpleado["tipo"];
 }
 
 /** Los ocho descriptores, en el orden en que `/ayuda` los imprime. */
-const DESCRIPTORES: readonly DescriptorInterno[] = [
+const DESCRIPTORES = [
   {
     nombre: "/login",
     uso: "/login <empleadoId> <password>",
@@ -65,6 +67,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: false,
     secreto: true,
     forma: "id_mas_resto",
+    tipo: "login",
   },
   {
     nombre: "/logout",
@@ -73,6 +76,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: false,
     secreto: false,
     forma: "sin_argumentos",
+    tipo: "logout",
   },
   {
     nombre: "/soporte",
@@ -81,6 +85,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: false,
     secreto: false,
     forma: "id_mas_resto",
+    tipo: "soporte",
   },
   {
     nombre: "/devolucion",
@@ -89,6 +94,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: false,
     secreto: false,
     forma: "id_mas_resto",
+    tipo: "devolucion",
   },
   {
     nombre: "/aprobar-reembolso",
@@ -97,6 +103,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: true,
     secreto: false,
     forma: "id_opcional",
+    tipo: "aprobar_reembolso",
   },
   {
     nombre: "/rechazar-reembolso",
@@ -105,6 +112,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: true,
     secreto: false,
     forma: "id_opcional",
+    tipo: "rechazar_reembolso",
   },
   {
     nombre: "/reabrir-reembolso",
@@ -113,6 +121,7 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: true,
     secreto: false,
     forma: "id_opcional",
+    tipo: "reabrir_reembolso",
   },
   {
     nombre: "/ayuda",
@@ -121,11 +130,24 @@ const DESCRIPTORES: readonly DescriptorInterno[] = [
     privilegiado: false,
     secreto: false,
     forma: "sin_argumentos",
+    tipo: "ayuda",
   },
-];
+] as const satisfies readonly DescriptorInterno[];
 
 /** Los ocho descriptores, en el orden en que `/ayuda` los imprime. */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
+
+/**
+ * ÚNICA fuente de verdad de qué comandos exigen sesión vigente (ADR 28, 32):
+ * lee el campo `privilegiado` del descriptor correspondiente en
+ * `DESCRIPTORES`, en vez de mantener una lista paralela. El dispatcher
+ * (`build-on-comando-empleado.ts`) consulta esta función en el guard de
+ * sesión — así un comando nuevo marcado `privilegiado: true` queda
+ * protegido automáticamente, sin tocar el guard.
+ */
+export function esComandoPrivilegiado(tipo: ComandoEmpleado["tipo"]): boolean {
+  return DESCRIPTORES.find((d) => d.tipo === tipo)?.privilegiado ?? false;
+}
 
 /** Texto de `/ayuda`: encabezado + una línea `uso — ayuda` por descriptor. PURA. */
 export function formatearAyuda(comandos: readonly DescriptorComando[] = COMANDOS): string {
@@ -192,12 +214,17 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
 
   if (descriptor.forma === "id_opcional") {
     const ventaId = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
-    const tipo =
-      descriptor.nombre === "/aprobar-reembolso"
-        ? "aprobar_reembolso"
-        : descriptor.nombre === "/rechazar-reembolso"
-          ? "rechazar_reembolso"
-          : "reabrir_reembolso";
+    // `descriptor.tipo` es la ÚNICA fuente de verdad (viene de DESCRIPTORES,
+    // igual que `esComandoPrivilegiado`) — no se reconstruye comparando
+    // `descriptor.nombre` contra una cadena de literales. Gracias a que
+    // `DESCRIPTORES` está tipado como `as const satisfies readonly
+    // DescriptorInterno[]`, TypeScript narrowea `descriptor.tipo` a los
+    // literales reales de los comandos con `forma: "id_opcional"`
+    // ("aprobar_reembolso" | "rechazar_reembolso" | "reabrir_reembolso") sin
+    // necesitar ningún cast — si un descriptor `id_opcional` nuevo tuviera
+    // una forma incompatible con `ComandoEmpleado`, el compilador lo
+    // rechaza acá mismo, en vez de dejarlo pasar silenciosamente.
+    const tipo = descriptor.tipo;
     return ventaId === undefined ? { tipo } : { tipo, ventaId };
   }
 

@@ -42,6 +42,15 @@ export function sesionVigente(sesion: SesionEmpleado | undefined, ahora: string)
  * `iniciadaEn + ttlMinutos`, o `undefined` si `ttlMinutos === 0`.
  * Molde EXACTO de `calcularExpiresAt` (`token-confirmacion.ts`):
  * `new Date(Date.parse(iniciadaEn) + ttlMinutos * 60_000).toISOString()`.
+ *
+ * DUPLICACIÓN INTENCIONAL (fix de review, hallazgo de duplicación): extraer
+ * el algoritmo a un helper compartido rompería el invariante testeado de
+ * este módulo — cero dependencias cargadas desde otro archivo (ver test
+ * `sesion.ts source` abajo) — `sesion.ts` no puede depender de
+ * `token-confirmacion.ts` ni de un tercer archivo sin dejar de ser un
+ * módulo puro sin dependencias. Se acepta la duplicación en vez de reabrir
+ * ese invariante en un cleanup no bloqueante; si algún día cambia, es una
+ * decisión de diseño, no de Implementer.
  */
 export function calcularExpiraEn(iniciadaEn: string, ttlMinutos: number): string | undefined {
   if (ttlMinutos === 0) {

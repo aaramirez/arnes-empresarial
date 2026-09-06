@@ -61,6 +61,11 @@ export function validarTokenConfirmacion(venta: Venta | undefined, ahora: string
  * `createdAt + ttlHoras` como ISO-8601 UTC, o `undefined` si `ttlHoras === 0`
  * (sin vencimiento — el interruptor de configuración del ADR 10 de la
  * propuesta, que evita tener que migrar para desactivar la guarda).
+ *
+ * Mismo algoritmo que `calcularExpiraEn` (`../auth/sesion.ts`), con
+ * duplicación INTENCIONAL: `sesion.ts` tiene el invariante testeado de no
+ * tener ninguna declaración `import`, así que no puede consumir un helper
+ * compartido. Ver la nota en `calcularExpiraEn` para el detalle.
  */
 export function calcularExpiresAt(createdAt: string, ttlHoras: number): string | undefined {
   if (ttlHoras === 0) {

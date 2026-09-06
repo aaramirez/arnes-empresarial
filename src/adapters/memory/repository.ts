@@ -1258,27 +1258,15 @@ export function listEscalacionesReembolso(
 
   const rows = db
     .prepare(
-      `SELECT v.id            AS venta_id,
-              v.vendedor_id   AS vendedor_id,
-              ve.nombre       AS vendedor_nombre,
-              v.cliente_id    AS cliente_id,
-              v.monto         AS monto,
-              v.caso_id       AS caso_id,
-              v.confirmed_at  AS confirmed_at,
-              (SELECT r.empleado_id
-                 FROM registro_acciones_empleado r
-                WHERE r.venta_id = v.id
-                  AND r.comando = '/rechazar-reembolso'
-                  AND r.resultado = 'rechazada'
-                ORDER BY r.ocurrido_at DESC
-                LIMIT 1)                                   AS rechazada_por,
-              (SELECT r.ocurrido_at
-                 FROM registro_acciones_empleado r
-                WHERE r.venta_id = v.id
-                  AND r.comando = '/rechazar-reembolso'
-                  AND r.resultado = 'rechazada'
-                ORDER BY r.ocurrido_at DESC
-                LIMIT 1)                                   AS rechazada_at,
+      `SELECT v.id               AS venta_id,
+              v.vendedor_id      AS vendedor_id,
+              ve.nombre          AS vendedor_nombre,
+              v.cliente_id       AS cliente_id,
+              v.monto            AS monto,
+              v.caso_id          AS caso_id,
+              v.confirmed_at     AS confirmed_at,
+              ultimo_rechazo.empleado_id AS rechazada_por,
+              ultimo_rechazo.ocurrido_at AS rechazada_at,
               (SELECT COUNT(*)
                  FROM registro_acciones_empleado r
                 WHERE r.venta_id = v.id
@@ -1286,6 +1274,15 @@ export function listEscalacionesReembolso(
                   AND r.resultado = 'reabierta')           AS reaperturas_previas
          FROM ventas v
          JOIN vendedores ve ON ve.id = v.vendedor_id
+         LEFT JOIN (
+              SELECT r.venta_id            AS venta_id,
+                     r.empleado_id         AS empleado_id,
+                     MAX(r.ocurrido_at)    AS ocurrido_at
+                FROM registro_acciones_empleado r
+               WHERE r.comando = '/rechazar-reembolso'
+                 AND r.resultado = 'rechazada'
+               GROUP BY r.venta_id
+         ) ultimo_rechazo ON ultimo_rechazo.venta_id = v.id
         WHERE v.estado = @estado
           AND (@ventaId IS NULL OR v.id = @ventaId)
         ORDER BY ${orden}

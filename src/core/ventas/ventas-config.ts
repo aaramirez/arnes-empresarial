@@ -40,7 +40,7 @@ export type ResolveVentasConfigResult =
  * el valor recibido, y devuelve `defaultValue` (ignorado por el llamador
  * porque `ok` ya quedó en `false`).
  */
-function resolveNumeroValidado(
+export function resolveNumeroValidado(
   nombreVar: string,
   raw: string | undefined,
   defaultValue: number,

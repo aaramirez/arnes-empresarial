@@ -1,7 +1,9 @@
+import { randomBytes, scryptSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   SCRYPT_ALGORITMO,
   SCRYPT_KEY_BYTES,
+  SCRYPT_MAX_MEM_BYTES,
   SCRYPT_N,
   SCRYPT_P,
   SCRYPT_R,
@@ -91,6 +93,44 @@ describe("hashPassword / verificarPassword", () => {
 
     expect(() => verificarPassword("otra-contraseña", hashTruncado)).not.toThrow();
     expect(verificarPassword("otra-contraseña", hashTruncado)).toBe(false);
+  });
+
+  it("hash con costo entre 32 MiB (maxmem default de Node) y 64 MiB (SCRYPT_MAX_MEM_BYTES) verifica con la contraseña correcta", () => {
+    // El guard de verificarPassword acepta cualquier N/r con
+    // `128 * N * r <= SCRYPT_MAX_MEM_BYTES` (64 MiB). Pero si scryptSync no
+    // recibe `maxmem` explícito, Node aplica su propio default de 32 MiB y
+    // tira `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` para cualquier costo por
+    // encima de eso — excepción que el catch de verificarPassword traga
+    // como `false`, bloqueando para siempre a un empleado con la
+    // contraseña CORRECTA. N=16384, r=17 cae justo en esa ventana rota.
+    const n = 16_384;
+    const r = 17;
+    const p = SCRYPT_P;
+    const costoBytes = 128 * n * r;
+    expect(costoBytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(costoBytes).toBeLessThanOrEqual(SCRYPT_MAX_MEM_BYTES);
+
+    const password = "clave-de-costo-alto";
+    const salt = randomBytes(SCRYPT_SALT_BYTES);
+    // Deriva la clave "de referencia" con maxmem explícito — así el hash de
+    // prueba es válido y consistente, sin depender del bug bajo prueba.
+    const clave = scryptSync(password, salt, SCRYPT_KEY_BYTES, {
+      N: n,
+      r,
+      p,
+      maxmem: SCRYPT_MAX_MEM_BYTES,
+    });
+    const hash = [
+      SCRYPT_ALGORITMO,
+      String(n),
+      String(r),
+      String(p),
+      salt.toString("base64"),
+      clave.toString("base64"),
+    ].join("$");
+
+    expect(() => verificarPassword(password, hash)).not.toThrow();
+    expect(verificarPassword(password, hash)).toBe(true);
   });
 
   it("contraseña vacía y contraseña de 1 KB no lanzan en ninguna de las dos funciones", () => {

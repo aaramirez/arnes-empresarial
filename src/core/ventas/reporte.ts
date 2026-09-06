@@ -170,7 +170,7 @@ const SEPARADOR_WIDTH = NOMBRE_WIDTH + 1 + VENTAS_WIDTH + 1 + MONTO_WIDTH + 1 + 
 const NOTA_ESCALACION_FUERA_DE_BANDA =
   "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
 
-function formatMoney(monto: number): string {
+export function formatMoney(monto: number): string {
   return monto.toFixed(2);
 }
 

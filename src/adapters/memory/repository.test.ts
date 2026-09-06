@@ -1472,6 +1472,99 @@ describe("repository", () => {
       );
     });
 
+    it("captura la forma EXACTA del row: sin rechazo previo omite rechazadaPor/rechazadaAt; con un solo rechazo los incluye", () => {
+      db = openDatabase(":memory:");
+
+      // Escenario 1: sin rechazo previo (queda pendiente).
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      const pendientes = listEscalacionesReembolso(db, { estado: "reembolso_pendiente" });
+
+      expect(pendientes).toEqual([
+        {
+          ventaId: "venta-1",
+          vendedorId: "vendedor-1",
+          vendedorNombre: "Ana Vendedora",
+          clienteId: "cliente-1",
+          monto: 100,
+          casoId: "caso-1",
+          confirmedAt: "2026-08-26T01:00:00.000Z",
+          reaperturasPrevias: 0,
+        },
+      ]);
+      expect(pendientes[0]).not.toHaveProperty("rechazadaPor");
+      expect(pendientes[0]).not.toHaveProperty("rechazadaAt");
+
+      // Escenario 2: con un solo rechazo previo.
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-2",
+            clienteId: "cliente-2",
+            planNuevo: "premium",
+            monto: 200,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-2",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-2",
+        comisionId: "comision-2",
+        comisionMonto: 20,
+        periodo: "2026-08",
+        ahora: "2026-08-26T02:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-2", casoId: "caso-2", ahora: "2026-08-27T02:00:00.000Z" });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-2",
+        casoId: "caso-2",
+        empleadoId: "carla",
+        accionId: "accion-x",
+        ahora: "2026-08-28T02:00:00.000Z",
+      });
+
+      const rechazados = listEscalacionesReembolso(db, { estado: "reembolso_rechazado" });
+
+      expect(rechazados).toEqual([
+        {
+          ventaId: "venta-2",
+          vendedorId: "vendedor-1",
+          vendedorNombre: "Ana Vendedora",
+          clienteId: "cliente-2",
+          monto: 200,
+          casoId: "caso-2",
+          confirmedAt: "2026-08-26T02:00:00.000Z",
+          rechazadaPor: "carla",
+          rechazadaAt: "2026-08-28T02:00:00.000Z",
+          reaperturasPrevias: 0,
+        },
+      ]);
+    });
+
     it("ordena rechazados por rechazada_at DESC (mas reciente primero)", () => {
       db = openDatabase(":memory:");
       createVentaConCaso(

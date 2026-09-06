@@ -12,6 +12,29 @@ import { calcularExpiraEn, type SesionEmpleado } from "./sesion.js";
 
 export const AUTH_LOG_CORRELATION_ID = "auth";
 
+/**
+ * Hash "dummy" FIJO — mitigación de timing attack (hallazgo de seguridad,
+ * fuera de tarea numerada). Antes de este fix, `resolverLogin` retornaba
+ * casi instantáneo cuando `empleadoId` no existía, pero corría la
+ * verificación scrypt completa (`verificarPassword`, N=16384/r=8,
+ * computacionalmente cara) cuando el `empleadoId` SÍ existía y la
+ * contraseña era incorrecta. El mensaje final es idéntico en los dos
+ * casos, pero el TIEMPO no — un atacante puede enumerar qué `empleadoId`
+ * existen mandando intentos con password fija y midiendo latencia.
+ *
+ * El VALOR es arbitrario y constante: nunca se compara contra ninguna
+ * contraseña real, y el resultado de `verificarPassword` contra este hash
+ * se IGNORA siempre (ver `resolverLogin`) — jamás puede convertir el
+ * camino "no existe" en un login exitoso. Solo existe para forzar el
+ * mismo costo computacional que el camino "existe, password incorrecta".
+ * Formato idéntico al que produce `hashPassword` de
+ * `adapters/crypto/password.ts` (mismos N/r/p) — el núcleo sigue sin
+ * importar ese módulo ni saber que existe scrypt (ADR 30): esto es un
+ * literal opaco, igual que `credencial.passwordHash`.
+ */
+const DUMMY_PASSWORD_HASH =
+  "scrypt$16384$8$1$DEEysi65jqMSC+KdD/fPDA==$Si6PgB6msIv/hdJwbQ8bo8SoDvh7wUws94EJFLkZXls=";
+
 export interface LoginDeps {
   readonly store: CredencialesEmpleadoPort;
   /** INYECTADO (ADR 30): en producción es `verificarPassword` de
@@ -33,20 +56,24 @@ export type LoginResult =
   | { readonly resultado: "invalida" };
 
 /**
- * PURA y SÍNCRONA. Secuencia exacta (design.md §3.6):
+ * PURA y SÍNCRONA. Secuencia exacta (design.md §3.6), con la mitigación de
+ * timing attack de `DUMMY_PASSWORD_HASH` sumada al paso 2:
  *  1. `credencial = store.buscarCredencial(empleadoId)`.
- *  2. `credencial === undefined` → `login-fallido` con `{ empleadoId, motivo: "inexistente" }`
- *     → `{ resultado: "invalida" }`.
+ *  2. `credencial === undefined` → igual corre `verificarPassword(password,
+ *     DUMMY_PASSWORD_HASH)` e IGNORA el resultado (mismo costo
+ *     computacional que el paso 3) → `login-fallido` con `{ empleadoId,
+ *     motivo: "inexistente" }` → `{ resultado: "invalida" }`.
  *  3. `verificarPassword(password, credencial.passwordHash) === false`
  *     → `login-fallido` con `{ empleadoId, motivo: "password" }` → `invalida`.
  *  4. `iniciadaEn = now()`; `expiraEn = calcularExpiraEn(iniciadaEn, ttlMinutos)`
  *     → `login-exitoso` con `{ empleadoId, expiraEn }` → `{ exitosa, sesion }`.
  *
- * ★ `password` aparece EXACTAMENTE UNA VEZ en el cuerpo: como argumento de
- *   `verificarPassword`. No entra en ningún `logEvent`, ni en el resultado,
- *   ni en la sesión. El `motivo` distingue los dos fracasos SOLO en el log
- *   local (útil para diagnóstico); el MENSAJE que el dispatcher le muestra
- *   al usuario es el mismo genérico en los dos casos (ADR 30). ★
+ * ★ `password` aparece como argumento de `verificarPassword` en los DOS
+ *   caminos de fallo (real o dummy) y en NINGÚN otro lado: no entra en
+ *   ningún `logEvent`, ni en el resultado, ni en la sesión. El `motivo`
+ *   distingue los dos fracasos SOLO en el log local (útil para
+ *   diagnóstico); el MENSAJE que el dispatcher le muestra al usuario es el
+ *   mismo genérico en los dos casos (ADR 30). ★
  *
  * NO escribe fila de registro: eso lo hace el dispatcher, y SOLO en el
  * camino exitoso (ADR 33 punto 4).
@@ -61,6 +88,11 @@ export function resolverLogin(
   const credencial = store.buscarCredencial(empleadoId);
 
   if (credencial === undefined) {
+    // Mitigación de timing attack: corre la MISMA verificación cara contra
+    // un hash dummy fijo, para que este camino cueste lo mismo que el de
+    // "existe, password incorrecta" — el resultado se IGNORA siempre, jamás
+    // puede convertir esto en un login exitoso.
+    verificarPassword(password, DUMMY_PASSWORD_HASH);
     logEvent(AUTH_LOG_CORRELATION_ID, "login-fallido", { empleadoId, motivo: "inexistente" });
     return { resultado: "invalida" };
   }

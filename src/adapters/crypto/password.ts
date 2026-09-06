@@ -37,6 +37,7 @@ export function hashPassword(password: string, salt: Buffer = randomBytes(SCRYPT
     N: SCRYPT_N,
     r: SCRYPT_R,
     p: SCRYPT_P,
+    maxmem: SCRYPT_MAX_MEM_BYTES,
   });
   return [
     SCRYPT_ALGORITMO,
@@ -107,7 +108,7 @@ export function verificarPassword(password: string, hash: string): boolean {
 
   let derivada: Buffer;
   try {
-    derivada = scryptSync(password, salt, clave.length, { N: n, r, p });
+    derivada = scryptSync(password, salt, clave.length, { N: n, r, p, maxmem: SCRYPT_MAX_MEM_BYTES });
   } catch {
     return false;
   }
