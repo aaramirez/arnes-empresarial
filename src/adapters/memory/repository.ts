@@ -1248,6 +1248,16 @@ const LIMITE_LISTADO_ESCALACIONES_DEFAULT = 20;
  * fila; `estado` es obligatorio y solo acepta `reembolso_pendiente` o
  * `reembolso_rechazado` — esta función NUNCA puede devolver una venta
  * `confirmada`.
+ *
+ * `ultimo_rechazo` (Reviewer finding, fix de eficiencia): el `LEFT JOIN` va
+ * contra `registro_acciones_empleado` filtrando por su CLAVE PRIMARIA
+ * (`id`), calculada con un ÚNICO subquery correlacionado por `venta_id` —
+ * NO contra un `LEFT JOIN` a una tabla derivada con `GROUP BY` (esa forma,
+ * probada y descartada acá, obliga a SQLite a materializar el `GROUP BY`
+ * sobre TODA la tabla de auditoría en cada llamada, en vez de acotar por
+ * `venta_id` vía `idx_registro_acciones_venta`). El plan resultante hace
+ * `SEARCH` por índice en las dos partes — verificado con
+ * `EXPLAIN QUERY PLAN` en el test de este archivo.
  */
 export function listEscalacionesReembolso(
   db: Database.Database,
@@ -1274,15 +1284,16 @@ export function listEscalacionesReembolso(
                   AND r.resultado = 'reabierta')           AS reaperturas_previas
          FROM ventas v
          JOIN vendedores ve ON ve.id = v.vendedor_id
-         LEFT JOIN (
-              SELECT r.venta_id            AS venta_id,
-                     r.empleado_id         AS empleado_id,
-                     MAX(r.ocurrido_at)    AS ocurrido_at
-                FROM registro_acciones_empleado r
-               WHERE r.comando = '/rechazar-reembolso'
-                 AND r.resultado = 'rechazada'
-               GROUP BY r.venta_id
-         ) ultimo_rechazo ON ultimo_rechazo.venta_id = v.id
+         LEFT JOIN registro_acciones_empleado ultimo_rechazo
+           ON ultimo_rechazo.id = (
+                SELECT r.id
+                  FROM registro_acciones_empleado r
+                 WHERE r.venta_id = v.id
+                   AND r.comando = '/rechazar-reembolso'
+                   AND r.resultado = 'rechazada'
+                 ORDER BY r.ocurrido_at DESC
+                 LIMIT 1
+              )
         WHERE v.estado = @estado
           AND (@ventaId IS NULL OR v.id = @ventaId)
         ORDER BY ${orden}

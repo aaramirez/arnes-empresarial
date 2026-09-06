@@ -28,6 +28,19 @@ export interface LoginDeps {
    * `empleadoId` existen mandando intentos con password fija y midiendo
    * latencia.
    *
+   * TRADE-OFF ACEPTADO, no un efecto secundario pasado por alto (Reviewer
+   * finding, hallazgo de eficiencia): esta mitigación cambia un login contra
+   * un `empleadoId` inexistente de "casi instantáneo" a "mismo costo scrypt
+   * que un intento con password incorrecta contra una cuenta real". Eso
+   * habilita a un atacante sin ninguna credencial válida a forzar trabajo
+   * scrypt sostenido contra el proceso (amplificación de CPU) a cambio de
+   * cerrar la enumeración de `empleadoId` por timing. Este repo no tiene
+   * ninguna capa de rate-limiting (ni acá ni en ningún otro comando
+   * privilegiado) — acotar esa amplificación es una decisión de diseño
+   * nueva (dónde vive el límite, por IP/empleadoId/proceso, qué política),
+   * no algo que el Implementer deba resolver unilateralmente en un cleanup
+   * de Reviewer: le corresponde a un Spec Author si se decide priorizarlo.
+   *
    * INYECTADO, no un literal fijo adentro de este módulo (fix de review,
    * hallazgo de duplicación/drift): si el valor viviera hardcodeado acá con
    * un costo N/r/p propio, una rotación futura de `SCRYPT_N/R/P` en

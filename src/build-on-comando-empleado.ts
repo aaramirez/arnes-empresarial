@@ -156,21 +156,27 @@ function formatearEco(accion: AccionEscalacion, venta: EscalacionListada): strin
   return `${base} rechazada por ${rechazadaPor} el ${rechazadaAt} · reaperturas previas: ${venta.reaperturasPrevias}.`;
 }
 
+/**
+ * `aprobar` y `rechazar` comparten la MISMA transición de estado (venta
+ * `reembolso_pendiente` → resuelta, caso → `resuelto`) — solo `reabrir`
+ * difiere (mismo binario que `formatearEco` arriba, `accion !==
+ * ACCION_REABRIR`). Factorizado en una constante en vez de repetido en las
+ * dos entradas de `ACCION_ESCALACION_INFO` (Reviewer finding, hallazgo de
+ * duplicación): así un cambio a esta transición se edita en un solo lugar
+ * y no puede dejar una de las dos entradas desactualizada.
+ */
+const ESTADOS_APROBAR_O_RECHAZAR = {
+  estadoOrigen: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  estadoCaso: CASO_ESTADO_RESUELTO,
+} as const;
+
 /** Los tres textos que varían por `AccionEscalacion` — unificados para no branchear tres veces sobre el mismo valor. */
 const ACCION_ESCALACION_INFO: Record<
   AccionEscalacion,
   { readonly estadoOrigen: string; readonly estadoCaso: string; readonly comando: string }
 > = {
-  [ACCION_APROBAR]: {
-    estadoOrigen: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
-    estadoCaso: CASO_ESTADO_RESUELTO,
-    comando: COMANDO_APROBAR_REEMBOLSO,
-  },
-  [ACCION_RECHAZAR]: {
-    estadoOrigen: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
-    estadoCaso: CASO_ESTADO_RESUELTO,
-    comando: COMANDO_RECHAZAR_REEMBOLSO,
-  },
+  [ACCION_APROBAR]: { ...ESTADOS_APROBAR_O_RECHAZAR, comando: COMANDO_APROBAR_REEMBOLSO },
+  [ACCION_RECHAZAR]: { ...ESTADOS_APROBAR_O_RECHAZAR, comando: COMANDO_RECHAZAR_REEMBOLSO },
   [ACCION_REABRIR]: {
     estadoOrigen: VENTA_ESTADO_REEMBOLSO_RECHAZADO,
     estadoCaso: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,

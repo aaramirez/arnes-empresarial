@@ -1472,6 +1472,47 @@ describe("repository", () => {
       );
     });
 
+    it("no hace table scan de registro_acciones_empleado al resolver rechazadaPor/rechazadaAt (Reviewer finding: regresión de eficiencia — la versión con LEFT JOIN + GROUP BY escaneaba TODA la tabla de auditoría en cada llamada, en vez de usar el índice por venta_id)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      let sqlCapturado: string | undefined;
+      const prepareOriginal = db.prepare.bind(db);
+      // Monkeypatch temporal solo para capturar el SQL exacto que arma listEscalacionesReembolso.
+      db.prepare = (sql: string) => {
+        sqlCapturado = sql;
+        return prepareOriginal(sql);
+      };
+      listEscalacionesReembolso(db, { estado: "reembolso_rechazado" });
+      db.prepare = prepareOriginal;
+
+      expect(sqlCapturado).toBeDefined();
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN ${sqlCapturado}`)
+        .all({ estado: "reembolso_rechazado", ventaId: null, limite: 20 }) as Array<{ detail: string }>;
+      const detalle = plan.map((p) => p.detail).join("\n");
+
+      // Cualquier acceso a `registro_acciones_empleado` (alias `r` o `ultimo_rechazo`) tiene
+      // que ser un SEARCH acotado por venta_id (o por su clave primaria), nunca un SCAN de
+      // toda la tabla — eso es justamente lo que crece sin límite con el log append-only.
+      expect(detalle).not.toMatch(/SCAN (r|ultimo_rechazo)\b/);
+    });
+
     it("captura la forma EXACTA del row: sin rechazo previo omite rechazadaPor/rechazadaAt; con un solo rechazo los incluye", () => {
       db = openDatabase(":memory:");
 

@@ -125,6 +125,26 @@ describe("parsearComando", () => {
     );
   });
 
+  describe("invariante nombre ↔ tipo (Reviewer finding: `tipo` es un campo escrito a mano en cada descriptor, sin nada del compilador que lo ate a `nombre` — un copy-paste puede dejarlos desincronizados)", () => {
+    // No alcanza con probar que `parsearComando` propaga `descriptor.tipo` tal
+    // cual (eso es tautológico: compara el descriptor contra sí mismo). Este
+    // test verifica la convención REAL que los ocho descriptores siguen hoy
+    // -- `nombre` sin la barra inicial, con `-` por `_`, es exactamente
+    // `tipo` -- de forma INDEPENDIENTE de cómo el dispatcher lee `tipo`. Si
+    // un futuro descriptor rompe la convención (nombre y tipo editados por
+    // separado y quedan desincronizados), este test lo agarra sin necesidad
+    // de ejercitar `parsearComando`.
+    type DescriptorConTipo = { readonly nombre: string; readonly tipo: string };
+    const descriptores = COMANDOS as unknown as readonly DescriptorConTipo[];
+
+    it.each(descriptores.map((d) => [d.nombre, d.tipo] as const))(
+      "%s → tipo declarado (%s) coincide con la convención nombre-sin-barra-con-guiones-bajos",
+      (nombre, tipoDeclarado) => {
+        expect(tipoDeclarado).toBe(nombre.slice(1).replace(/-/g, "_"));
+      },
+    );
+  });
+
   it("/aprobar-reembolso <ventaId> → ventaId presente", () => {
     expect(parsearComando("/aprobar-reembolso venta-1")).toEqual({
       tipo: "aprobar_reembolso",
