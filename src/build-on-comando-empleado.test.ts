@@ -116,6 +116,7 @@ function makeDeps(
     ventasConfig: makeConfig(),
     authConfig: makeAuthConfig(),
     verificarPassword: vi.fn(() => true),
+    dummyPasswordHash: "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     store: makeStore(),
     credenciales: makeCredenciales(),
     registro: makeRegistro(),

@@ -27,6 +27,8 @@ function makeStore(overrides: Partial<CredencialesEmpleadoPort> = {}): Credencia
   };
 }
 
+const DUMMY_PASSWORD_HASH_TEST = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
 function makeDeps(overrides: Partial<LoginDeps> = {}): LoginDeps {
   return {
     store: makeStore(),
@@ -34,12 +36,13 @@ function makeDeps(overrides: Partial<LoginDeps> = {}): LoginDeps {
     now: vi.fn(() => AHORA),
     ttlMinutos: 30,
     logEvent: vi.fn(),
+    dummyPasswordHash: DUMMY_PASSWORD_HASH_TEST,
     ...overrides,
   };
 }
 
 describe("resolverLogin", () => {
-  it("credencial inexistente → invalida, y verificarPassword SÍ se llama contra un hash dummy (mitigación de timing attack: sin esto, un atacante puede enumerar empleadoId existentes midiendo latencia)", () => {
+  it("credencial inexistente → invalida, y verificarPassword SÍ se llama contra deps.dummyPasswordHash (mitigación de timing attack: sin esto, un atacante puede enumerar empleadoId existentes midiendo latencia)", () => {
     const store = makeStore({ buscarCredencial: vi.fn(() => undefined) });
     // Devuelve `true` a propósito: el resultado de esta llamada dummy nunca
     // puede convertir el camino "no existe" en un login exitoso.
@@ -50,6 +53,20 @@ describe("resolverLogin", () => {
 
     expect(resultado).toEqual({ resultado: "invalida" });
     expect(verificarPassword).toHaveBeenCalledTimes(1);
+    expect(verificarPassword).toHaveBeenCalledWith("cualquiera", DUMMY_PASSWORD_HASH_TEST);
+  });
+
+  it("usa el dummyPasswordHash INYECTADO, no un valor fijo interno (fix de review: un literal interno puede desincronizarse de los parámetros de costo vivos de scrypt)", () => {
+    const store = makeStore({ buscarCredencial: vi.fn(() => undefined) });
+    const verificarPassword = vi.fn(() => true);
+    const otroDummyHash = "scrypt$32768$8$1$BBBBBBBBBBBBBBBBBBBBBB==$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+
+    resolverLogin(
+      { empleadoId: "zzz", password: "cualquiera" },
+      makeDeps({ store, verificarPassword, dummyPasswordHash: otroDummyHash }),
+    );
+
+    expect(verificarPassword).toHaveBeenCalledWith("cualquiera", otroDummyHash);
   });
 
   it("★ mitigación de timing attack ★: verificarPassword se llama la MISMA cantidad de veces (1) tanto si el empleadoId no existe como si existe con password incorrecta — mismo costo computacional en los dos caminos de fallo", () => {

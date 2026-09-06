@@ -105,6 +105,14 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly authConfig: AuthConfig;
   /** De `src/adapters/crypto/password.ts`. Inyectado (ADR 30): el núcleo no sabe que existe scrypt. */
   readonly verificarPassword: (password: string, hash: string) => boolean;
+  /**
+   * Hash dummy para la mitigación de timing attack de `resolverLogin`
+   * (`core/auth/login.ts`). Generado en `main.ts` con `hashPassword(...)` —
+   * la MISMA función que genera los hashes reales — para que herede siempre
+   * los parámetros de costo vivos de scrypt y nunca pueda desincronizarse
+   * (fix de review, hallazgo de duplicación/drift).
+   */
+  readonly dummyPasswordHash: string;
   readonly newId?: () => string; // default: randomUUID
   readonly now?: () => string; // default: () => new Date().toISOString()
   readonly logDeps?: LogTurnEventDeps;
@@ -178,7 +186,7 @@ function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
 
 /** Devuelve un `SubmitPromptHandler` — MISMO tipo, MISMA firma. I1 no cambia. */
 export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): SubmitPromptHandler {
-  const { onSubmit, onSoporte, db, ventasConfig, authConfig, verificarPassword, logDeps } = deps;
+  const { onSubmit, onSoporte, db, ventasConfig, authConfig, verificarPassword, dummyPasswordHash, logDeps } = deps;
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
   const store: VentaStorePort = deps.store ?? createVentaStore(db);
@@ -228,7 +236,14 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
 
     const resultado = resolverLogin(
       { empleadoId: comando.empleadoId, password: comando.password },
-      { store: credenciales, verificarPassword, now, ttlMinutos: authConfig.sesionTtlMinutos, logEvent },
+      {
+        store: credenciales,
+        verificarPassword,
+        dummyPasswordHash,
+        now,
+        ttlMinutos: authConfig.sesionTtlMinutos,
+        logEvent,
+      },
     );
 
     if (resultado.resultado === "invalida") {

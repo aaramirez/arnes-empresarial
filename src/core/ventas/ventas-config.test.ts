@@ -5,6 +5,7 @@ import {
   DEFAULT_COMISION_PORCENTAJE,
   DEFAULT_REEMBOLSO_UMBRAL,
   DEFAULT_VENTA_TOKEN_TTL_HORAS,
+  MAX_VENTA_TOKEN_TTL_HORAS,
   resolveVentasConfig,
 } from "./ventas-config.js";
 
@@ -142,6 +143,40 @@ describe("resolveVentasConfig — VENTA_TOKEN_TTL_HORAS", () => {
 
   it("valor decimal (no entero) es inválido", () => {
     const result = resolveVentasConfig({ VENTA_TOKEN_TTL_HORAS: "1.5" });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it(`tope exacto (${MAX_VENTA_TOKEN_TTL_HORAS}) → ok:true`, () => {
+    const result = resolveVentasConfig({ VENTA_TOKEN_TTL_HORAS: String(MAX_VENTA_TOKEN_TTL_HORAS) });
+
+    expect(result).toEqual({
+      ok: true,
+      config: {
+        comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
+        reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
+        tokenTtlHoras: MAX_VENTA_TOKEN_TTL_HORAS,
+      },
+    });
+  });
+
+  it("por encima del tope → ok:false sin lanzar, en vez de dejar que calcularExpiresAt reviente en tiempo de request con un RangeError de Date fuera de rango (Reviewer finding: mismo bug que SESION_TTL_MINUTOS ya tenía tapado)", () => {
+    const raw = String(MAX_VENTA_TOKEN_TTL_HORAS + 1);
+    let resultado: ReturnType<typeof resolveVentasConfig> | undefined;
+
+    expect(() => {
+      resultado = resolveVentasConfig({ VENTA_TOKEN_TTL_HORAS: raw });
+    }).not.toThrow();
+
+    expect(resultado?.ok).toBe(false);
+    if (resultado && !resultado.ok) {
+      expect(resultado.errores.join(" ")).toContain("VENTA_TOKEN_TTL_HORAS");
+      expect(resultado.errores.join(" ")).toContain(raw);
+    }
+  });
+
+  it("astronómico (excede el rango válido de Date) → ok:false, nunca ok:true con un valor que rompería calcularExpiresAt", () => {
+    const result = resolveVentasConfig({ VENTA_TOKEN_TTL_HORAS: "999999999999" });
 
     expect(result.ok).toBe(false);
   });

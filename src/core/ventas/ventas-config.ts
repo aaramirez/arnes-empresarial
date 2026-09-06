@@ -28,6 +28,19 @@ export const DEFAULT_COMISION_PORCENTAJE = 0.1;
 export const DEFAULT_REEMBOLSO_UMBRAL = 500;
 /** Seguro por defecto: sin configurar, el link vence en 3 días (R6). `0` desactiva la guarda explícitamente. */
 export const DEFAULT_VENTA_TOKEN_TTL_HORAS = 72;
+/**
+ * Tope superior de `VENTA_TOKEN_TTL_HORAS` (Reviewer finding, hallazgo de
+ * duplicación fuera de tarea numerada: `resolveVentasConfig` tenía el MISMO
+ * bug de `Date` sin techo que `resolveAuthConfig` ya había tapado con
+ * `MAX_SESION_TTL_MINUTOS` para `SESION_TTL_MINUTOS`). Sin este tope,
+ * `ttlHoras * 3_600_000` puede exceder el rango válido de `Date` (~±8.64e15
+ * ms desde epoch) y `calcularExpiresAt` (`token-confirmacion.ts`) lanza un
+ * `RangeError` sin capturar en tiempo de request (`registrarVenta`), en vez
+ * de fallar acá, en el arranque. 10 años en horas (365 días/año × 24h) ×
+ * 3_600_000 ms ≈ 3.15e14 ms, el mismo margen (~27x por debajo del límite)
+ * que `MAX_SESION_TTL_MINUTOS` usa para minutos.
+ */
+export const MAX_VENTA_TOKEN_TTL_HORAS = 87_600;
 
 export type ResolveVentasConfigResult =
   | { readonly ok: true; readonly config: VentasConfig }
@@ -64,7 +77,7 @@ export function resolveNumeroValidado(
  * |---|---|---|---|---|
  * | `COMISION_PORCENTAJE` | `comisionPorcentaje` | `0.1` | finito, `> 0`, `<= 1` | **ABORTA** |
  * | `REEMBOLSO_UMBRAL` | `reembolsoUmbral` | `500` | finito, `> 0` | **ABORTA** |
- * | `VENTA_TOKEN_TTL_HORAS` | `tokenTtlHoras` | `72` | entero finito, `>= 0` | **ABORTA** |
+ * | `VENTA_TOKEN_TTL_HORAS` | `tokenTtlHoras` | `72` | entero finito, `>= 0`, `<= MAX_VENTA_TOKEN_TTL_HORAS` | **ABORTA** |
  *
  * Ausente o cadena vacía → default (no es un error: no configurar es un modo
  * válido). Presente pero inválido → error, con el nombre de la variable y el
@@ -97,8 +110,8 @@ export function resolveVentasConfig(
     "VENTA_TOKEN_TTL_HORAS",
     env.VENTA_TOKEN_TTL_HORAS,
     DEFAULT_VENTA_TOKEN_TTL_HORAS,
-    (parsed) => Number.isInteger(parsed) && parsed >= 0,
-    "un entero finito >= 0",
+    (parsed) => Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_VENTA_TOKEN_TTL_HORAS,
+    `un entero finito entre 0 y ${MAX_VENTA_TOKEN_TTL_HORAS}`,
     errores,
   );
 

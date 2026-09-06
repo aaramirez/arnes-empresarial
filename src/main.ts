@@ -91,7 +91,7 @@ import { buildOnVenta } from "./build-on-venta.js";
 import { buildOnSoporte } from "./build-on-soporte.js";
 import { startWebServer, type WebAdapter } from "./adapters/web/index.js";
 import { resolveAuthConfig, type AuthConfig } from "./core/auth/auth-config.js";
-import { verificarPassword } from "./adapters/crypto/password.js";
+import { hashPassword, verificarPassword } from "./adapters/crypto/password.js";
 import { buildOnComandoEmpleado } from "./build-on-comando-empleado.js";
 
 function toErrorMessage(error: unknown): string {
@@ -362,6 +362,16 @@ try {
 //     `adapters/crypto/password.ts` (ADR 30): el núcleo no lo importa, el
 //     composition root los une, igual que ya hace con `randomUUID` como
 //     `newId` en `buildOnVenta`.
+//
+// `dummyPasswordHash` (fix de review sobre `resolverLogin`, hallazgo de
+// duplicación/drift): se genera acá con `hashPassword(...)` — la MISMA
+// función que produce los hashes reales de `credenciales_empleado` — para
+// que la mitigación de timing attack de `resolverLogin` SIEMPRE use el
+// costo scrypt vigente, sin importar qué tan viejo sea un literal
+// hardcodeado. La contraseña de entrada es arbitraria: este hash nunca se
+// compara contra ninguna contraseña real, solo fuerza el mismo costo
+// computacional.
+const dummyPasswordHash = hashPassword("dummy-timing-mitigation");
 const onComandoEmpleado = buildOnComandoEmpleado({
   onSubmit,
   onSoporte,
@@ -369,6 +379,7 @@ const onComandoEmpleado = buildOnComandoEmpleado({
   ventasConfig,
   authConfig,
   verificarPassword,
+  dummyPasswordHash,
 });
 
 // 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
