@@ -36,10 +36,17 @@ export interface ProcesarDevolucionDeps {
   ) => void;
 }
 
+/**
+ * `ventaId`/`casoId` ganan los dos caminos exitosos y los `no_aplicable`
+ * posteriores a encontrar la venta (`tui-canal-empleado`, ADR 27,
+ * design.md §3.9). El `no_aplicable` de token inexistente queda SIN ids a
+ * propósito: la fila del registro no tiene qué correlacionar y no debe
+ * quedar rastro del token.
+ */
 export type DevolucionResult =
-  | { readonly resultado: "reembolsada" }
-  | { readonly resultado: "escalada" }
-  | { readonly resultado: "no_aplicable" };
+  | { readonly resultado: "reembolsada"; readonly ventaId: string; readonly casoId: string }
+  | { readonly resultado: "escalada"; readonly ventaId: string; readonly casoId: string }
+  | { readonly resultado: "no_aplicable"; readonly ventaId?: string; readonly casoId?: string };
 
 /**
  * Secuencia exacta (design.md §3.4):
@@ -86,7 +93,7 @@ export function procesarDevolucion(
       motivo: "estado",
       estadoActual: venta.estado,
     });
-    return { resultado: "no_aplicable" };
+    return { resultado: "no_aplicable", ventaId: venta.id, casoId: venta.casoId };
   }
 
   const ahora = now();
@@ -96,7 +103,7 @@ export function procesarDevolucion(
     const ventaReembolsada = store.aprobarReembolso({ ventaId: venta.id, ahora });
 
     if (ventaReembolsada === undefined) {
-      return { resultado: "no_aplicable" };
+      return { resultado: "no_aplicable", ventaId: venta.id, casoId: venta.casoId };
     }
 
     logEvent(venta.casoId, "reembolso-aprobado", {
@@ -104,7 +111,7 @@ export function procesarDevolucion(
       monto: venta.monto,
       umbral: config.reembolsoUmbral,
     });
-    return { resultado: "reembolsada" };
+    return { resultado: "reembolsada", ventaId: venta.id, casoId: venta.casoId };
   }
 
   const ventaEscalada = store.escalarReembolso({
@@ -114,7 +121,7 @@ export function procesarDevolucion(
   });
 
   if (ventaEscalada === undefined) {
-    return { resultado: "no_aplicable" };
+    return { resultado: "no_aplicable", ventaId: venta.id, casoId: venta.casoId };
   }
 
   logEvent(venta.casoId, "reembolso-escalado", {
@@ -122,5 +129,5 @@ export function procesarDevolucion(
     monto: venta.monto,
     umbral: config.reembolsoUmbral,
   });
-  return { resultado: "escalada" };
+  return { resultado: "escalada", ventaId: venta.id, casoId: venta.casoId };
 }

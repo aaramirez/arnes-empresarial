@@ -48,6 +48,15 @@ function makeStore(overrides: Partial<VentaStorePort> = {}): VentaStorePort {
     rechazarVenta: vi.fn(() => undefined),
     aprobarReembolso: vi.fn(() => undefined),
     escalarReembolso: vi.fn(() => undefined),
+    // `tui-canal-empleado`: los 5 métodos nuevos del puerto no se ejercitan
+    // en este archivo (la devolución no toca escalaciones ya abiertas),
+    // solo satisfacen el contrato ampliado (ADR 41 — la implementación real
+    // llega en la Unidad 2 de ese change, `build-on-venta.ts`).
+    listarReembolsosPendientes: vi.fn(() => []),
+    listarReembolsosRechazados: vi.fn(() => []),
+    aprobarEscalacionReembolso: vi.fn(() => undefined),
+    rechazarEscalacionReembolso: vi.fn(() => undefined),
+    reabrirEscalacionReembolso: vi.fn(() => undefined),
     ...overrides,
   };
 }
@@ -69,7 +78,11 @@ describe("procesarDevolucion", () => {
 
     const resultado = procesarDevolucion({ token: "token-x" }, deps);
 
+    // Token no matchea: SIN ids (design.md §3.9) — la fila queda con
+    // `venta_id NULL` y sin rastro del token.
     expect(resultado).toEqual({ resultado: "no_aplicable" });
+    expect(resultado).not.toHaveProperty("ventaId");
+    expect(resultado).not.toHaveProperty("casoId");
     expect(store.aprobarReembolso).not.toHaveBeenCalled();
     expect(store.escalarReembolso).not.toHaveBeenCalled();
   });
@@ -86,7 +99,7 @@ describe("procesarDevolucion", () => {
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
-    expect(resultado).toEqual({ resultado: "no_aplicable" });
+    expect(resultado).toEqual({ resultado: "no_aplicable", ventaId: venta.id, casoId: venta.casoId });
     expect(store.aprobarReembolso).not.toHaveBeenCalled();
     expect(store.escalarReembolso).not.toHaveBeenCalled();
   });
@@ -101,7 +114,7 @@ describe("procesarDevolucion", () => {
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
-    expect(resultado).toEqual({ resultado: "reembolsada" });
+    expect(resultado).toEqual({ resultado: "reembolsada", ventaId: venta.id, casoId: venta.casoId });
     expect(store.aprobarReembolso).toHaveBeenCalledWith({ ventaId: venta.id, ahora: AHORA });
     expect(store.escalarReembolso).not.toHaveBeenCalled();
   });
@@ -116,7 +129,7 @@ describe("procesarDevolucion", () => {
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
-    expect(resultado).toEqual({ resultado: "escalada" });
+    expect(resultado).toEqual({ resultado: "escalada", ventaId: venta.id, casoId: "caso-9" });
     expect(store.escalarReembolso).toHaveBeenCalledWith({
       ventaId: venta.id,
       casoId: "caso-9",
@@ -135,7 +148,7 @@ describe("procesarDevolucion", () => {
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
-    expect(resultado).toEqual({ resultado: "escalada" });
+    expect(resultado).toEqual({ resultado: "escalada", ventaId: venta.id, casoId: "caso-9" });
     expect(store.escalarReembolso).toHaveBeenCalledWith({
       ventaId: venta.id,
       casoId: "caso-9",
@@ -143,7 +156,7 @@ describe("procesarDevolucion", () => {
     });
   });
 
-  it("store.aprobarReembolso devuelve undefined (carrera CAS) → no_aplicable, sin lanzar excepción", () => {
+  it("store.aprobarReembolso devuelve undefined (carrera CAS) → no_aplicable con ids, sin lanzar excepción", () => {
     const venta = buildVenta({ monto: 100 });
     const store = makeStore({
       buscarVentaPorToken: vi.fn(() => venta),
@@ -156,10 +169,10 @@ describe("procesarDevolucion", () => {
       resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
     }).not.toThrow();
 
-    expect(resultado).toEqual({ resultado: "no_aplicable" });
+    expect(resultado).toEqual({ resultado: "no_aplicable", ventaId: venta.id, casoId: venta.casoId });
   });
 
-  it("store.escalarReembolso devuelve undefined (carrera CAS) → no_aplicable, sin lanzar excepción", () => {
+  it("store.escalarReembolso devuelve undefined (carrera CAS) → no_aplicable con ids, sin lanzar excepción", () => {
     const venta = buildVenta({ monto: 1000 });
     const store = makeStore({
       buscarVentaPorToken: vi.fn(() => venta),
@@ -172,7 +185,7 @@ describe("procesarDevolucion", () => {
       resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
     }).not.toThrow();
 
-    expect(resultado).toEqual({ resultado: "no_aplicable" });
+    expect(resultado).toEqual({ resultado: "no_aplicable", ventaId: venta.id, casoId: venta.casoId });
   });
 
   it("ningún camino de este archivo llama a store.confirmarVentaConComision ni store.rechazarVenta (nada de comisiones)", () => {
@@ -210,7 +223,7 @@ describe("procesarDevolucion", () => {
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
-    expect(resultado).toEqual({ resultado: "reembolsada" });
+    expect(resultado).toEqual({ resultado: "reembolsada", ventaId: venta.id, casoId: venta.casoId });
     expect(store.aprobarReembolso).toHaveBeenCalledWith({ ventaId: venta.id, ahora: AHORA });
   });
 
@@ -227,7 +240,7 @@ describe("procesarDevolucion", () => {
       deps,
     );
 
-    expect(resultado).toEqual({ resultado: "reembolsada" });
+    expect(resultado).toEqual({ resultado: "reembolsada", ventaId: venta.id, casoId: venta.casoId });
   });
 
   it("es SÍNCRONA: no devuelve una Promise ni un objeto thenable", () => {
