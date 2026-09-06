@@ -7,25 +7,48 @@ import {
   ActividadNotFoundError,
   CasoAlreadyExistsError,
   CasoNotFoundError,
+  CredencialEmpleadoDuplicadaError,
   SesionAgenteAlreadyExistsError,
   SesionAgenteInvalidCasoError,
+  VentaAlreadyExistsError,
+  VentaTokenDuplicadoError,
+  aprobarEscalacionReembolso,
+  aprobarReembolso,
+  buscarCredencialEmpleado,
+  confirmarVentaConComision,
   createActividad,
   createCaso,
   createCasoConActividad,
   createSesionAgente,
+  createVentaConCaso,
+  escalarReembolso,
   findActividadPorReferencia,
+  findVentaByToken,
   getActividadById,
   getCasoById,
   getLatestSesionAgente,
   getProyectoById,
+  getVentaById,
+  insertAccionEmpleado,
+  insertCredencialEmpleado,
+  listAccionesEmpleadoPorVenta,
+  listComisionesPorPeriodo,
+  listEscalacionesReembolso,
+  listVentasEnReembolsoPendiente,
+  reabrirEscalacionReembolso,
+  rechazarEscalacionReembolso,
+  rechazarVenta,
   updateActividad,
   updateCaso,
+  updateCredencialEmpleado,
   upsertProyecto,
   upsertResponsable,
+  upsertVendedor,
   type CreateActividadInput,
   type CreateCasoConActividadInput,
   type CreateCasoInput,
   type CreateSesionAgenteInput,
+  type CreateVentaConCasoInput,
 } from "./repository.js";
 
 /** Test factories — a single place to change the base fixture if the shape evolves. */
@@ -84,6 +107,36 @@ function buildActividadInput(overrides: Partial<CreateActividadInput> = {}): Cre
     estado: "abierto",
     createdAt: "2026-08-26T00:00:02.000Z",
     updatedAt: "2026-08-26T00:00:02.000Z",
+    ...overrides,
+  };
+}
+
+function buildVendedorInput(
+  overrides: Partial<{ id: string; nombre: string; createdAt: string }> = {},
+) {
+  return {
+    id: "vendedor-1",
+    nombre: "Ana Vendedora",
+    createdAt: "2026-08-26T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function buildVentaConCasoInput(
+  overrides: Partial<CreateVentaConCasoInput> = {},
+): CreateVentaConCasoInput {
+  return {
+    vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+    caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+    venta: {
+      id: "venta-1",
+      clienteId: "cliente-1",
+      planNuevo: "premium",
+      monto: 100,
+      estado: "pendiente_confirmacion",
+      tokenConfirmacion: "token-1",
+    },
+    timestamp: "2026-08-26T00:00:03.000Z",
     ...overrides,
   };
 }
@@ -594,6 +647,1397 @@ describe("repository", () => {
       // The first, successful call's rows are untouched by the rollback.
       expect(getProyectoById(db, "owner/repo")).not.toBeUndefined();
       expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+    });
+  });
+
+  describe("vendedores", () => {
+    it("inserts a vendedor and returns it as stored", () => {
+      db = openDatabase(":memory:");
+
+      const vendedor = upsertVendedor(db, buildVendedorInput());
+
+      expect(vendedor).toEqual({
+        id: "vendedor-1",
+        nombre: "Ana Vendedora",
+        createdAt: "2026-08-26T00:00:00.000Z",
+      });
+    });
+
+    it("is idempotent: upserting the same id updates nombre instead of failing", () => {
+      db = openDatabase(":memory:");
+      upsertVendedor(db, buildVendedorInput());
+
+      const updated = upsertVendedor(db, buildVendedorInput({ nombre: "Ana Renombrada" }));
+
+      expect(updated).toEqual({
+        id: "vendedor-1",
+        nombre: "Ana Renombrada",
+        createdAt: "2026-08-26T00:00:00.000Z",
+      });
+    });
+  });
+
+  describe("createVentaConCaso", () => {
+    it("creates vendedor, caso and venta in one transaction", () => {
+      db = openDatabase(":memory:");
+
+      const venta = createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(venta.id).toBe("venta-1");
+      expect(venta.vendedorId).toBe("vendedor-1");
+      expect(venta.casoId).toBe("caso-1");
+      expect(venta.clienteId).toBe("cliente-1");
+      expect(venta.planNuevo).toBe("premium");
+      expect(venta.monto).toBe(100);
+      expect(venta.estado).toBe("pendiente_confirmacion");
+      expect(venta.tokenConfirmacion).toBe("token-1");
+      expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+    });
+
+    it("binds planAnterior and expiresAt as explicit null when the input omits them", () => {
+      db = openDatabase(":memory:");
+
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = getVentaById(db, "venta-1");
+      expect(venta).not.toBeUndefined();
+      expect(venta).not.toHaveProperty("planAnterior");
+      expect(venta).not.toHaveProperty("expiresAt");
+    });
+
+    it("keeps planAnterior and expiresAt when the input provides them", () => {
+      db = openDatabase(":memory:");
+
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planAnterior: "basico",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-27T00:00:00.000Z",
+          },
+        }),
+      );
+
+      const venta = getVentaById(db, "venta-1");
+      expect(venta?.planAnterior).toBe("basico");
+      expect(venta?.expiresAt).toBe("2026-08-27T00:00:00.000Z");
+    });
+
+    it("is atomic: when the INSERT of ventas fails, no orphan vendedor or caso is left behind", () => {
+      db = openDatabase(":memory:");
+      // Prime an existing venta id by succeeding once.
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(() =>
+        createVentaConCaso(
+          db!,
+          buildVentaConCasoInput({
+            vendedor: { id: "vendedor-2", nombre: "Beto Vendedor" },
+            caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+            // Same venta id as the first call above -> PK violation inside the tx.
+            venta: {
+              id: "venta-1",
+              clienteId: "cliente-2",
+              planNuevo: "premium",
+              monto: 200,
+              estado: "pendiente_confirmacion",
+              tokenConfirmacion: "token-2",
+            },
+          }),
+        ),
+      ).toThrow(VentaAlreadyExistsError);
+
+      expect(getCasoById(db, "caso-2")).toBeUndefined();
+      expect(db.prepare("SELECT 1 FROM vendedores WHERE id = ?").get("vendedor-2")).toBeUndefined();
+      // The first, successful call's rows are untouched by the rollback.
+      expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+      expect(getVentaById(db, "venta-1")?.clienteId).toBe("cliente-1");
+    });
+
+    it("throws VentaTokenDuplicadoError when token_confirmacion collides with an existing venta", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(() =>
+        createVentaConCaso(
+          db!,
+          buildVentaConCasoInput({
+            caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+            venta: {
+              id: "venta-2",
+              clienteId: "cliente-2",
+              planNuevo: "premium",
+              monto: 200,
+              estado: "pendiente_confirmacion",
+              tokenConfirmacion: "token-1",
+            },
+          }),
+        ),
+      ).toThrow(VentaTokenDuplicadoError);
+
+      expect(getCasoById(db, "caso-2")).toBeUndefined();
+      expect(getVentaById(db, "venta-2")).toBeUndefined();
+    });
+
+    // `createVentaConCaso` upserts el vendedor y crea el caso ANTES del INSERT
+    // de `ventas`, en la misma transacción — por construcción, `vendedor_id`
+    // y `caso_id` siempre existen para ese INSERT, así que el catch de
+    // `VentaInvalidReferenceError` (molde de `ActividadInvalidReferenceError`)
+    // es defensivo: no hay hoy un caller público que lo dispare. Este test no
+    // pasa por `createVentaConCaso` — verifica, al nivel de la tabla real,
+    // que el `FOREIGN KEY` que ese catch está preparado para traducir
+    // efectivamente existe y se dispara, para que la traducción no quede sin
+    // ninguna base real detrás.
+    it("rejects at the schema level a ventas row whose vendedor_id does not reference an existing vendedor", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }));
+
+      expect(() =>
+        db!
+          .prepare(
+            `INSERT INTO ventas (id, vendedor_id, cliente_id, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at)
+             VALUES (@id, @vendedorId, @clienteId, @planNuevo, @monto, @estado, @casoId, @tokenConfirmacion, @createdAt)`,
+          )
+          .run({
+            id: "venta-x",
+            vendedorId: "no-existe",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 10,
+            estado: "pendiente_confirmacion",
+            casoId: "caso-1",
+            tokenConfirmacion: "token-x",
+            createdAt: "2026-08-26T00:00:00.000Z",
+          }),
+      ).toThrowError(/FOREIGN KEY/i);
+    });
+  });
+
+  describe("findVentaByToken", () => {
+    it("finds a venta by its token_confirmacion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = findVentaByToken(db, "token-1");
+
+      expect(venta?.id).toBe("venta-1");
+    });
+
+    it("returns undefined when no venta matches the token", () => {
+      db = openDatabase(":memory:");
+
+      expect(findVentaByToken(db, "no-existe")).toBeUndefined();
+    });
+  });
+
+  describe("getVentaById", () => {
+    it("returns undefined when the venta does not exist", () => {
+      db = openDatabase(":memory:");
+
+      expect(getVentaById(db, "no-existe")).toBeUndefined();
+    });
+  });
+
+  describe("confirmarVentaConComision", () => {
+    it("updates venta a confirmada, inserta la comision, y vendedorId de la comision sale de la fila que RETURNING acaba de devolver", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const resultado = confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(resultado?.venta.estado).toBe("confirmada");
+      expect(resultado?.venta.confirmedAt).toBe("2026-08-26T01:00:00.000Z");
+      expect(resultado?.comision).toEqual({
+        id: "comision-1",
+        ventaId: "venta-1",
+        vendedorId: "vendedor-1",
+        monto: 15,
+        periodo: "2026-08",
+        createdAt: "2026-08-26T01:00:00.000Z",
+      });
+    });
+
+    it("dos llamadas seguidas sobre el mismo token: la segunda devuelve undefined y SELECT count(*) FROM comisiones es 1 (cierra R4 sin createKeyedQueue())", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      const input = {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      };
+
+      const primera = confirmarVentaConComision(db, input);
+      const segunda = confirmarVentaConComision(db, { ...input, comisionId: "comision-2" });
+
+      expect(primera).not.toBeUndefined();
+      expect(segunda).toBeUndefined();
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(1);
+    });
+
+    it("token vencido: devuelve undefined sin escribir nada (ni venta ni comision)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-26T00:30:00.000Z",
+          },
+        }),
+      );
+
+      const resultado = confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(resultado).toBeUndefined();
+      const venta = getVentaById(db, "venta-1");
+      expect(venta?.estado).toBe("pendiente_confirmacion");
+      expect(venta).not.toHaveProperty("confirmedAt");
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(0);
+    });
+
+    it("confirma correctamente cuando expires_at esta en el futuro respecto a ahora (rama '> @ahora' del guard)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-27T00:00:00.000Z",
+          },
+        }),
+      );
+
+      const resultado = confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(resultado?.venta.estado).toBe("confirmada");
+    });
+  });
+
+  describe("rechazarVenta", () => {
+    it("actualiza estado a rechazada y nunca toca comisiones", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = rechazarVenta(db, { ventaId: "venta-1", ahora: "2026-08-26T01:00:00.000Z" });
+
+      expect(venta?.estado).toBe("rechazada");
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(0);
+    });
+
+    it("devuelve undefined cuando la venta ya no esta pendiente_confirmacion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      rechazarVenta(db, { ventaId: "venta-1", ahora: "2026-08-26T01:00:00.000Z" });
+
+      const segundo = rechazarVenta(db, { ventaId: "venta-1", ahora: "2026-08-26T01:05:00.000Z" });
+
+      expect(segundo).toBeUndefined();
+    });
+  });
+
+  describe("aprobarReembolso", () => {
+    it("CAS a reembolsada desde confirmada, sin modificar la comision ya pagada", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      const venta = aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      expect(venta?.estado).toBe("reembolsada");
+      const comision = db.prepare("SELECT monto FROM comisiones WHERE id = ?").get("comision-1") as {
+        monto: number;
+      };
+      expect(comision.monto).toBe(15);
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(1);
+    });
+
+    it("devuelve undefined cuando la venta no esta confirmada", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-08-26T01:00:00.000Z" });
+
+      expect(venta).toBeUndefined();
+    });
+
+    it("aplica el CAS sin guarda de expiracion aunque expires_at ya haya vencido (ADR 19, punto 2)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-26T00:30:00.000Z",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T00:10:00.000Z",
+      });
+
+      // "ahora" muy posterior a expires_at, que ya no importa post-confirmacion.
+      const venta = aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-09-01T00:00:00.000Z" });
+
+      expect(venta?.estado).toBe("reembolsada");
+    });
+  });
+
+  describe("escalarReembolso", () => {
+    it("CAS a reembolso_pendiente Y mueve el caso a pendiente_aprobacion_humana en la MISMA transaccion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      const venta = escalarReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        ahora: "2026-08-27T00:00:00.000Z",
+      });
+
+      expect(venta?.estado).toBe("reembolso_pendiente");
+      expect(getCasoById(db, "caso-1")?.estado).toBe("pendiente_aprobacion_humana");
+      const count = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+      expect(count.total).toBe(1);
+    });
+
+    it("si la venta no esta confirmada, devuelve undefined y el caso NO se toca", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      // La venta sigue en pendiente_confirmacion (nunca se confirmo).
+
+      const venta = escalarReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        ahora: "2026-08-27T00:00:00.000Z",
+      });
+
+      expect(venta).toBeUndefined();
+      expect(getCasoById(db, "caso-1")?.estado).toBe("pendiente_confirmacion");
+    });
+
+    it("si el caso no existe, la actualizacion de la venta tambien se revierte (misma transaccion)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(() =>
+        escalarReembolso(db!, {
+          ventaId: "venta-1",
+          casoId: "no-existe",
+          ahora: "2026-08-27T00:00:00.000Z",
+        }),
+      ).toThrow(CasoNotFoundError);
+
+      expect(getVentaById(db, "venta-1")?.estado).toBe("confirmada");
+    });
+  });
+
+  describe("listComisionesPorPeriodo", () => {
+    it("joins comision con venta y vendedor, devolviendo el estado ACTUAL de la venta", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      const filas = listComisionesPorPeriodo(db, "2026-08");
+
+      expect(filas).toEqual([
+        {
+          ventaId: "venta-1",
+          vendedorId: "vendedor-1",
+          vendedorNombre: "Ana Vendedora",
+          comisionMonto: 15,
+          ventaMonto: 100,
+          ventaEstado: "confirmada",
+          periodo: "2026-08",
+        },
+      ]);
+    });
+
+    it("filtra por periodo: excluye comisiones de otros periodos", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      expect(listComisionesPorPeriodo(db, "2026-09")).toEqual([]);
+    });
+
+    it("refleja el estado ACTUAL de la venta, no el estado al momento de la comision (hace visible R5)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      aprobarReembolso(db, { ventaId: "venta-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      const filas = listComisionesPorPeriodo(db, "2026-08");
+
+      expect(filas).toEqual([
+        expect.objectContaining({ ventaId: "venta-1", ventaEstado: "reembolsada", comisionMonto: 15 }),
+      ]);
+    });
+
+    it("ordena por vendedor_id, luego por created_at de la comision, sin GROUP BY", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          vendedor: { id: "vendedor-2", nombre: "Beto Vendedor" },
+          caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+          },
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          vendedor: { id: "vendedor-1", nombre: "Ana Vendedora" },
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-2",
+            clienteId: "cliente-2",
+            planNuevo: "premium",
+            monto: 200,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-2",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      confirmarVentaConComision(db, {
+        ventaId: "venta-2",
+        comisionId: "comision-2",
+        comisionMonto: 20,
+        periodo: "2026-08",
+        ahora: "2026-08-26T02:00:00.000Z",
+      });
+
+      const filas = listComisionesPorPeriodo(db, "2026-08");
+
+      expect(filas.map((f) => f.vendedorId)).toEqual(["vendedor-1", "vendedor-2"]);
+    });
+  });
+
+  describe("listVentasEnReembolsoPendiente", () => {
+    it("devuelve ventas en reembolso_pendiente joineadas con el nombre del vendedor, sin filtro de periodo", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      const filas = listVentasEnReembolsoPendiente(db);
+
+      expect(filas).toEqual([
+        {
+          ventaId: "venta-1",
+          vendedorId: "vendedor-1",
+          vendedorNombre: "Ana Vendedora",
+          clienteId: "cliente-1",
+          monto: 100,
+          casoId: "caso-1",
+          confirmedAt: "2026-08-26T01:00:00.000Z",
+        },
+      ]);
+    });
+
+    it("excluye ventas que no estan en reembolso_pendiente", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      expect(listVentasEnReembolsoPendiente(db)).toEqual([]);
+    });
+
+    it("ordena por confirmed_at ascendente, sin importar el orden de escalacion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+          },
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-2",
+            clienteId: "cliente-2",
+            planNuevo: "premium",
+            monto: 200,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-2",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-2",
+        comisionId: "comision-2",
+        comisionMonto: 20,
+        periodo: "2026-08",
+        ahora: "2026-08-26T02:00:00.000Z",
+      });
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-2", casoId: "caso-2", ahora: "2026-08-27T00:00:00.000Z" });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T01:00:00.000Z" });
+
+      const filas = listVentasEnReembolsoPendiente(db);
+
+      expect(filas.map((f) => f.ventaId)).toEqual(["venta-1", "venta-2"]);
+    });
+  });
+
+  describe("listEscalacionesReembolso", () => {
+    it("lista reembolso_pendiente ordenadas por confirmed_at ASC", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+          },
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-2",
+            clienteId: "cliente-2",
+            planNuevo: "premium",
+            monto: 200,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-2",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-2",
+        comisionId: "comision-2",
+        comisionMonto: 20,
+        periodo: "2026-08",
+        ahora: "2026-08-26T02:00:00.000Z",
+      });
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-2", casoId: "caso-2", ahora: "2026-08-27T00:00:00.000Z" });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T01:00:00.000Z" });
+
+      const filas = listEscalacionesReembolso(db, { estado: "reembolso_pendiente" });
+
+      expect(filas.map((f) => f.ventaId)).toEqual(["venta-1", "venta-2"]);
+      expect(filas[0]).toEqual(
+        expect.objectContaining({ vendedorNombre: "Ana Vendedora", reaperturasPrevias: 0 }),
+      );
+    });
+
+    it("respeta el limite en el listado sin filtro por id", () => {
+      db = openDatabase(":memory:");
+      for (let i = 1; i <= 3; i += 1) {
+        createVentaConCaso(
+          db,
+          buildVentaConCasoInput({
+            caso: buildCaso({ id: `caso-${i}`, tipo: "venta", estado: "pendiente_confirmacion" }),
+            venta: {
+              id: `venta-${i}`,
+              clienteId: "cliente-1",
+              planNuevo: "premium",
+              monto: 100,
+              estado: "pendiente_confirmacion",
+              tokenConfirmacion: `token-${i}`,
+            },
+          }),
+        );
+        confirmarVentaConComision(db, {
+          ventaId: `venta-${i}`,
+          comisionId: `comision-${i}`,
+          comisionMonto: 15,
+          periodo: "2026-08",
+          ahora: `2026-08-26T0${i}:00:00.000Z`,
+        });
+        escalarReembolso(db, { ventaId: `venta-${i}`, casoId: `caso-${i}`, ahora: "2026-08-27T00:00:00.000Z" });
+      }
+
+      const filas = listEscalacionesReembolso(db, { estado: "reembolso_pendiente", limite: 2 });
+
+      expect(filas).toHaveLength(2);
+    });
+
+    it("filtro por ventaId encuentra la fila 21 de 25, sin importar el limite (ADR 38)", () => {
+      db = openDatabase(":memory:");
+      for (let i = 1; i <= 25; i += 1) {
+        createVentaConCaso(
+          db,
+          buildVentaConCasoInput({
+            caso: buildCaso({ id: `caso-${i}`, tipo: "venta", estado: "pendiente_confirmacion" }),
+            venta: {
+              id: `venta-${i}`,
+              clienteId: "cliente-1",
+              planNuevo: "premium",
+              monto: 100,
+              estado: "pendiente_confirmacion",
+              tokenConfirmacion: `token-${i}`,
+            },
+          }),
+        );
+        confirmarVentaConComision(db, {
+          ventaId: `venta-${i}`,
+          comisionId: `comision-${i}`,
+          comisionMonto: 15,
+          periodo: "2026-08",
+          ahora: `2026-08-26T00:00:${String(i).padStart(2, "0")}.000Z`,
+        });
+        escalarReembolso(db, { ventaId: `venta-${i}`, casoId: `caso-${i}`, ahora: "2026-08-27T00:00:00.000Z" });
+      }
+
+      // Sin filtro, el listado sin limite explicito se acota al default (20):
+      // la fila 21 no aparecería en ese listado, pero SÍ se encuentra por id.
+      const listado = listEscalacionesReembolso(db, { estado: "reembolso_pendiente" });
+      expect(listado.some((f) => f.ventaId === "venta-21")).toBe(false);
+
+      const porId = listEscalacionesReembolso(db, { estado: "reembolso_pendiente", ventaId: "venta-21" });
+      expect(porId).toHaveLength(1);
+      expect(porId[0]?.ventaId).toBe("venta-21");
+    });
+
+    it("reaperturasPrevias cuenta exactamente las filas 'reabierta'; rechazadaPor/rechazadaAt son las del ULTIMO rechazo", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+      reabrirEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "beto",
+        accionId: "accion-2",
+        ahora: "2026-08-29T00:00:00.000Z",
+      });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "beto",
+        accionId: "accion-3",
+        ahora: "2026-08-30T00:00:00.000Z",
+      });
+
+      const filas = listEscalacionesReembolso(db, { estado: "reembolso_rechazado" });
+
+      expect(filas).toHaveLength(1);
+      expect(filas[0]).toEqual(
+        expect.objectContaining({
+          ventaId: "venta-1",
+          rechazadaPor: "beto",
+          rechazadaAt: "2026-08-30T00:00:00.000Z",
+          reaperturasPrevias: 1,
+        }),
+      );
+    });
+
+    it("no hace table scan de registro_acciones_empleado al resolver rechazadaPor/rechazadaAt (Reviewer finding: regresión de eficiencia — la versión con LEFT JOIN + GROUP BY escaneaba TODA la tabla de auditoría en cada llamada, en vez de usar el índice por venta_id)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      let sqlCapturado: string | undefined;
+      const prepareOriginal = db.prepare.bind(db);
+      // Monkeypatch temporal solo para capturar el SQL exacto que arma listEscalacionesReembolso.
+      db.prepare = (sql: string) => {
+        sqlCapturado = sql;
+        return prepareOriginal(sql);
+      };
+      listEscalacionesReembolso(db, { estado: "reembolso_rechazado" });
+      db.prepare = prepareOriginal;
+
+      expect(sqlCapturado).toBeDefined();
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN ${sqlCapturado}`)
+        .all({ estado: "reembolso_rechazado", ventaId: null, limite: 20 }) as Array<{ detail: string }>;
+      const detalle = plan.map((p) => p.detail).join("\n");
+
+      // Cualquier acceso a `registro_acciones_empleado` (alias `r` o `ultimo_rechazo`) tiene
+      // que ser un SEARCH acotado por venta_id (o por su clave primaria), nunca un SCAN de
+      // toda la tabla — eso es justamente lo que crece sin límite con el log append-only.
+      expect(detalle).not.toMatch(/SCAN (r|ultimo_rechazo)\b/);
+    });
+
+    it("captura la forma EXACTA del row: sin rechazo previo omite rechazadaPor/rechazadaAt; con un solo rechazo los incluye", () => {
+      db = openDatabase(":memory:");
+
+      // Escenario 1: sin rechazo previo (queda pendiente).
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+
+      const pendientes = listEscalacionesReembolso(db, { estado: "reembolso_pendiente" });
+
+      expect(pendientes).toEqual([
+        {
+          ventaId: "venta-1",
+          vendedorId: "vendedor-1",
+          vendedorNombre: "Ana Vendedora",
+          clienteId: "cliente-1",
+          monto: 100,
+          casoId: "caso-1",
+          confirmedAt: "2026-08-26T01:00:00.000Z",
+          reaperturasPrevias: 0,
+        },
+      ]);
+      expect(pendientes[0]).not.toHaveProperty("rechazadaPor");
+      expect(pendientes[0]).not.toHaveProperty("rechazadaAt");
+
+      // Escenario 2: con un solo rechazo previo.
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-2",
+            clienteId: "cliente-2",
+            planNuevo: "premium",
+            monto: 200,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-2",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-2",
+        comisionId: "comision-2",
+        comisionMonto: 20,
+        periodo: "2026-08",
+        ahora: "2026-08-26T02:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-2", casoId: "caso-2", ahora: "2026-08-27T02:00:00.000Z" });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-2",
+        casoId: "caso-2",
+        empleadoId: "carla",
+        accionId: "accion-x",
+        ahora: "2026-08-28T02:00:00.000Z",
+      });
+
+      const rechazados = listEscalacionesReembolso(db, { estado: "reembolso_rechazado" });
+
+      expect(rechazados).toEqual([
+        {
+          ventaId: "venta-2",
+          vendedorId: "vendedor-1",
+          vendedorNombre: "Ana Vendedora",
+          clienteId: "cliente-2",
+          monto: 200,
+          casoId: "caso-2",
+          confirmedAt: "2026-08-26T02:00:00.000Z",
+          rechazadaPor: "carla",
+          rechazadaAt: "2026-08-28T02:00:00.000Z",
+          reaperturasPrevias: 0,
+        },
+      ]);
+    });
+
+    it("ordena rechazados por rechazada_at DESC (mas reciente primero)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-1", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+          },
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: {
+            id: "venta-2",
+            clienteId: "cliente-2",
+            planNuevo: "premium",
+            monto: 200,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-2",
+          },
+        }),
+      );
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      confirmarVentaConComision(db, {
+        ventaId: "venta-2",
+        comisionId: "comision-2",
+        comisionMonto: 20,
+        periodo: "2026-08",
+        ahora: "2026-08-26T02:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+      escalarReembolso(db, { ventaId: "venta-2", casoId: "caso-2", ahora: "2026-08-27T01:00:00.000Z" });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-2",
+        casoId: "caso-2",
+        empleadoId: "ana",
+        accionId: "accion-2",
+        ahora: "2026-08-29T00:00:00.000Z",
+      });
+
+      const filas = listEscalacionesReembolso(db, { estado: "reembolso_rechazado" });
+
+      expect(filas.map((f) => f.ventaId)).toEqual(["venta-2", "venta-1"]);
+    });
+  });
+
+  describe("insertAccionEmpleado / listAccionesEmpleadoPorVenta", () => {
+    it("inserta una fila y la lee de vuelta con venta_id/caso_id normalizados a NULL cuando estan ausentes", () => {
+      db = openDatabase(":memory:");
+
+      insertAccionEmpleado(db, {
+        id: "accion-1",
+        empleadoId: "ana",
+        comando: "/soporte",
+        resultado: "atendida",
+        ocurridoAt: "2026-09-01T00:00:00.000Z",
+      });
+
+      const filas = listAccionesEmpleadoPorVenta(db, "venta-inexistente");
+      expect(filas).toEqual([]);
+
+      const fila = db
+        .prepare("SELECT empleado_id, venta_id, caso_id FROM registro_acciones_empleado WHERE id = ?")
+        .get("accion-1") as { empleado_id: string; venta_id: string | null; caso_id: string | null };
+      expect(fila.empleado_id).toBe("ana");
+      expect(fila.venta_id).toBeNull();
+      expect(fila.caso_id).toBeNull();
+    });
+
+    it("listAccionesEmpleadoPorVenta devuelve las filas de una venta en orden de insercion", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      insertAccionEmpleado(db, {
+        id: "accion-1",
+        empleadoId: "ana",
+        comando: "/devolucion",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        resultado: "escalada",
+        ocurridoAt: "2026-09-01T00:00:00.000Z",
+      });
+      insertAccionEmpleado(db, {
+        id: "accion-2",
+        empleadoId: "beto",
+        comando: "/rechazar-reembolso",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        resultado: "rechazada",
+        ocurridoAt: "2026-09-02T00:00:00.000Z",
+      });
+
+      const filas = listAccionesEmpleadoPorVenta(db, "venta-1");
+
+      expect(filas.map((f) => f.id)).toEqual(["accion-1", "accion-2"]);
+    });
+  });
+
+  describe("aprobarEscalacionReembolso / rechazarEscalacionReembolso / reabrirEscalacionReembolso", () => {
+    function escalarVentaDePrueba() {
+      createVentaConCaso(db!, buildVentaConCasoInput());
+      confirmarVentaConComision(db!, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+      escalarReembolso(db!, { ventaId: "venta-1", casoId: "caso-1", ahora: "2026-08-27T00:00:00.000Z" });
+    }
+
+    it("aprobarEscalacionReembolso: CAS a reembolsada + caso resuelto + UNA fila, en una sola transaccion", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+
+      const venta = aprobarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      expect(venta?.estado).toBe("reembolsada");
+      expect(getCasoById(db, "caso-1")?.estado).toBe("resuelto");
+      const filas = listAccionesEmpleadoPorVenta(db, "venta-1");
+      expect(filas).toHaveLength(1);
+      expect(filas[0]).toEqual(
+        expect.objectContaining({
+          id: "accion-1",
+          empleadoId: "ana",
+          comando: "/aprobar-reembolso",
+          resultado: "aprobada",
+        }),
+      );
+    });
+
+    it("aprobarEscalacionReembolso: si el caso no existe, la transaccion completa revierte (ni venta ni fila)", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+
+      expect(() =>
+        aprobarEscalacionReembolso(db!, {
+          ventaId: "venta-1",
+          casoId: "caso-inexistente",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: "2026-08-28T00:00:00.000Z",
+        }),
+      ).toThrow(CasoNotFoundError);
+
+      expect(getVentaById(db, "venta-1")?.estado).toBe("reembolso_pendiente");
+      expect(listAccionesEmpleadoPorVenta(db, "venta-1")).toEqual([]);
+    });
+
+    it("los tres CAS devuelven undefined sobre una venta 'confirmada' (no escalada) y no escriben nada", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 15,
+        periodo: "2026-08",
+        ahora: "2026-08-26T01:00:00.000Z",
+      });
+
+      const input = {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      };
+      expect(aprobarEscalacionReembolso(db, input)).toBeUndefined();
+      expect(rechazarEscalacionReembolso(db, input)).toBeUndefined();
+      expect(reabrirEscalacionReembolso(db, input)).toBeUndefined();
+      expect(getVentaById(db, "venta-1")?.estado).toBe("confirmada");
+      expect(listAccionesEmpleadoPorVenta(db, "venta-1")).toEqual([]);
+    });
+
+    it("rechazarEscalacionReembolso: CAS a reembolso_rechazado + caso resuelto + fila 'rechazada'", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+
+      const venta = rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      expect(venta?.estado).toBe("reembolso_rechazado");
+      expect(getCasoById(db, "caso-1")?.estado).toBe("resuelto");
+    });
+
+    it("reabrirEscalacionReembolso: CAS reembolso_rechazado -> reembolso_pendiente, MISMO caso_id, vuelve a pendiente_aprobacion_humana", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      const venta = reabrirEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "beto",
+        accionId: "accion-2",
+        ahora: "2026-08-29T00:00:00.000Z",
+      });
+
+      expect(venta?.estado).toBe("reembolso_pendiente");
+      expect(venta?.casoId).toBe("caso-1");
+      expect(getCasoById(db, "caso-1")?.estado).toBe("pendiente_aprobacion_humana");
+      const pendientes = listEscalacionesReembolso(db, { estado: "reembolso_pendiente" });
+      expect(pendientes.map((f) => f.ventaId)).toContain("venta-1");
+    });
+
+    it("una venta 'reembolsada' es terminal: reabrirEscalacionReembolso devuelve undefined, sin fila", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+      aprobarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      const resultado = reabrirEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "beto",
+        accionId: "accion-2",
+        ahora: "2026-08-29T00:00:00.000Z",
+      });
+
+      expect(resultado).toBeUndefined();
+      expect(listAccionesEmpleadoPorVenta(db, "venta-1")).toHaveLength(1);
+    });
+
+    it("doble aprobacion: la segunda devuelve undefined, sin segunda fila desde el CAS", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+      aprobarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      const segunda = aprobarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "beto",
+        accionId: "accion-2",
+        ahora: "2026-08-29T00:00:00.000Z",
+      });
+
+      expect(segunda).toBeUndefined();
+      expect(listAccionesEmpleadoPorVenta(db, "venta-1")).toHaveLength(1);
+    });
+
+    it("ninguna fila de registro_acciones_empleado contiene un token_confirmacion, password, consulta ni motivo (garantia estructural)", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+      aprobarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-1",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+
+      const filas = db.prepare("SELECT * FROM registro_acciones_empleado").all();
+      const serializado = JSON.stringify(filas);
+      expect(serializado).not.toContain("token-1");
+      expect(serializado.toLowerCase()).not.toContain("password");
+      expect(serializado).not.toContain("motivo");
+      expect(serializado).not.toContain("consulta");
+    });
+
+    it("ciclo end-to-end: escalada -> rechazada(ana) -> reabierta(beto) -> aprobada(ana) deja 4 filas en orden, venta termina reembolsada", () => {
+      db = openDatabase(":memory:");
+      escalarVentaDePrueba();
+
+      insertAccionEmpleado(db, {
+        id: "accion-escalada",
+        empleadoId: "cliente-anonimo",
+        comando: "/devolucion",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        resultado: "escalada",
+        ocurridoAt: "2026-08-27T00:00:01.000Z",
+      });
+      rechazarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-rechazada",
+        ahora: "2026-08-28T00:00:00.000Z",
+      });
+      reabrirEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "beto",
+        accionId: "accion-reabierta",
+        ahora: "2026-08-29T00:00:00.000Z",
+      });
+      aprobarEscalacionReembolso(db, {
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        empleadoId: "ana",
+        accionId: "accion-aprobada",
+        ahora: "2026-08-30T00:00:00.000Z",
+      });
+
+      const filas = listAccionesEmpleadoPorVenta(db, "venta-1");
+
+      expect(filas.map((f) => f.resultado)).toEqual(["escalada", "rechazada", "reabierta", "aprobada"]);
+      expect(filas.map((f) => f.empleadoId)).toEqual(["cliente-anonimo", "ana", "beto", "ana"]);
+      expect(getVentaById(db, "venta-1")?.estado).toBe("reembolsada");
+    });
+  });
+
+  describe("credenciales de empleado", () => {
+    it("insertCredencialEmpleado crea una fila con created_at === updated_at", () => {
+      db = openDatabase(":memory:");
+
+      const credencial = insertCredencialEmpleado(db, {
+        empleadoId: "ana",
+        passwordHash: "scrypt$16384$8$1$c2FsdA==$Y2xhdmU=",
+        ahora: "2026-09-01T00:00:00.000Z",
+      });
+
+      expect(credencial).toEqual({
+        empleadoId: "ana",
+        passwordHash: "scrypt$16384$8$1$c2FsdA==$Y2xhdmU=",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-01T00:00:00.000Z",
+      });
+    });
+
+    it("buscarCredencialEmpleado lee la fila insertada; undefined si no existe", () => {
+      db = openDatabase(":memory:");
+      insertCredencialEmpleado(db, {
+        empleadoId: "ana",
+        passwordHash: "hash-1",
+        ahora: "2026-09-01T00:00:00.000Z",
+      });
+
+      expect(buscarCredencialEmpleado(db, "ana")?.passwordHash).toBe("hash-1");
+      expect(buscarCredencialEmpleado(db, "inexistente")).toBeUndefined();
+    });
+
+    it("alta repetida lanza CredencialEmpleadoDuplicadaError y NO pisa el hash existente", () => {
+      db = openDatabase(":memory:");
+      insertCredencialEmpleado(db, {
+        empleadoId: "ana",
+        passwordHash: "hash-original",
+        ahora: "2026-09-01T00:00:00.000Z",
+      });
+
+      expect(() =>
+        insertCredencialEmpleado(db!, {
+          empleadoId: "ana",
+          passwordHash: "hash-nuevo",
+          ahora: "2026-09-02T00:00:00.000Z",
+        }),
+      ).toThrow(CredencialEmpleadoDuplicadaError);
+
+      expect(buscarCredencialEmpleado(db, "ana")?.passwordHash).toBe("hash-original");
+    });
+
+    it("updateCredencialEmpleado rota password_hash y updated_at, dejando created_at intacto", () => {
+      db = openDatabase(":memory:");
+      insertCredencialEmpleado(db, {
+        empleadoId: "ana",
+        passwordHash: "hash-viejo",
+        ahora: "2026-09-01T00:00:00.000Z",
+      });
+
+      const rotada = updateCredencialEmpleado(db, {
+        empleadoId: "ana",
+        passwordHash: "hash-nuevo",
+        ahora: "2026-09-05T00:00:00.000Z",
+      });
+
+      expect(rotada).toEqual({
+        empleadoId: "ana",
+        passwordHash: "hash-nuevo",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-05T00:00:00.000Z",
+      });
+    });
+
+    it("updateCredencialEmpleado sobre un id inexistente devuelve undefined", () => {
+      db = openDatabase(":memory:");
+
+      const resultado = updateCredencialEmpleado(db, {
+        empleadoId: "inexistente",
+        passwordHash: "hash-nuevo",
+        ahora: "2026-09-05T00:00:00.000Z",
+      });
+
+      expect(resultado).toBeUndefined();
     });
   });
 });

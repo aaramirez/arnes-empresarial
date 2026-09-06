@@ -1,6 +1,9 @@
 import { migration0001CasosSesionesAgente } from "./0001_casos_sesiones_agente.js";
 import { migration0002IdxSesionesCasoAgente } from "./0002_idx_sesiones_caso_agente.js";
 import { migration0003ProyectosResponsablesActividades } from "./0003_proyectos_responsables_actividades.js";
+import { migration0004VendedoresVentasComisiones } from "./0004_vendedores_ventas_comisiones.js";
+import { migration0005RegistroAccionesEmpleado } from "./0005_registro_acciones_empleado.js";
+import { migration0006CredencialesEmpleado } from "./0006_credenciales_empleado.js";
 
 /**
  * A single schema migration: a stable `id` (used to track whether it has
@@ -22,4 +25,7 @@ export const migrations: readonly Migration[] = [
   migration0001CasosSesionesAgente,
   migration0002IdxSesionesCasoAgente,
   migration0003ProyectosResponsablesActividades,
+  migration0004VendedoresVentasComisiones,
+  migration0005RegistroAccionesEmpleado,
+  migration0006CredencialesEmpleado,
 ];

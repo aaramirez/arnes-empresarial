@@ -1,0 +1,64 @@
+/**
+ * Contrato del registro de acciones de empleado (`tui-canal-empleado`, ADR
+ * 27, 39, 40). Sin imports — mismo criterio que `ventas-contract.ts`:
+ * `src/core/` nunca importa de `src/adapters/*`, ni del SDK, ni de Node.
+ */
+
+/* ── Vocabulario de `registro_acciones_empleado.comando` ── */
+export const COMANDO_LOGIN = "/login";
+export const COMANDO_SOPORTE = "/soporte";
+export const COMANDO_DEVOLUCION = "/devolucion";
+export const COMANDO_APROBAR_REEMBOLSO = "/aprobar-reembolso";
+export const COMANDO_RECHAZAR_REEMBOLSO = "/rechazar-reembolso";
+export const COMANDO_REABRIR_REEMBOLSO = "/reabrir-reembolso";
+
+/* ── Vocabulario de `registro_acciones_empleado.resultado` (tabla del ADR 27) ── */
+export const RESULTADO_EXITOSA = "exitosa"; // /login
+export const RESULTADO_ATENDIDA = "atendida"; // /soporte
+export const RESULTADO_FALLIDA = "fallida"; // /soporte
+export const RESULTADO_REEMBOLSADA = "reembolsada"; // /devolucion
+export const RESULTADO_ESCALADA = "escalada"; // /devolucion
+export const RESULTADO_APROBADA = "aprobada"; // /aprobar-reembolso
+export const RESULTADO_RECHAZADA = "rechazada"; // /rechazar-reembolso
+export const RESULTADO_REABIERTA = "reabierta"; // /reabrir-reembolso
+export const RESULTADO_NO_APLICABLE = "no_aplicable";
+
+/**
+ * Una fila del registro. `ventaId`/`casoId` son OPCIONALES (columnas
+ * nullable): una consulta de soporte no tiene venta; una devolución con
+ * token inválido no tiene ninguna de las dos.
+ *
+ * ★ LO QUE ESTE TIPO NO TIENE, Y NO PUEDE TENER (ADR 27) ★
+ *   token_confirmacion · password · texto de la consulta · motivo del
+ *   cliente. No hay campo donde meterlos. La garantía es estructural, no de
+ *   disciplina.
+ */
+export interface AccionEmpleado {
+  readonly id: string;
+  /** SIEMPRE de una `SesionEmpleado` vigente (ADR 27 enmienda rev. 3, ADR 37). */
+  readonly empleadoId: string;
+  readonly comando: string;
+  readonly ventaId?: string;
+  readonly casoId?: string;
+  readonly resultado: string;
+  readonly ocurridoAt: string;
+}
+
+/**
+ * Escritura de las acciones que NO ocurren dentro de una transacción de
+ * venta: `/login` exitoso, `/soporte`, `/devolucion` y los intentos
+ * `no_aplicable`.
+ *
+ * CONTRATO DE FALLAS — asimétrico con `VentaNotifierPort` a propósito (ADR
+ * 40): este puerto SÍ puede lanzar (es un `INSERT` síncrono de
+ * `better-sqlite3`), y es el LLAMADOR (el dispatcher) el que envuelve la
+ * llamada y degrada a un evento `accion-empleado-registro-fallido`. El
+ * efecto de negocio ya ocurrió; perder la fila es R10, mentir sobre el
+ * efecto no lo es.
+ *
+ * Las filas de los TRES comandos de resolución NO pasan por acá: viajan
+ * dentro de la transacción del CAS (`VentaStorePort`, ADR 27).
+ */
+export interface RegistroAccionesEmpleadoPort {
+  registrarAccion(accion: AccionEmpleado): void;
+}

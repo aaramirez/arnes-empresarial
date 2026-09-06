@@ -71,6 +71,66 @@
  * de `fields`, así una línea de `data/harness.log` permite saltar de un
  * espacio al otro.
  *
+ * Design decision — desde Hito 4, `logTurnEvent` también lo consumen el
+ * Adaptador Web (`src/adapters/web/`), el Adaptador de Notificaciones
+ * (`src/adapters/notificaciones/`) y los dos módulos de wiring
+ * `build-on-venta.ts`/`build-on-soporte.ts` — mismo criterio que Hito 3:
+ * "no gana código; a lo sumo una línea en su module doc" (`design.md` §9 de
+ * Hito 4). El mismo patrón de DOS espacios de correlación de la nota de
+ * arriba se repite acá, con otra forma (`design.md` §9.1 de Hito 4):
+ * `requestId` (generado por el adaptador web, `randomUUID` en producción,
+ * y devuelto en el header `X-Request-Id` de toda respuesta) reemplaza al
+ * `deliveryId` de Webhooks para los eventos de transporte ANTES de que
+ * exista `caso` (`web-no-autorizado`, `web-rechazado-tamano`,
+ * `web-payload-invalido`, `web-handler-fallido`, `token-invalido`,
+ * `venta-confirmacion-ignorada`), y `WEB_LOG_CORRELATION_ID =
+ * "web-adapter"` (`adapters/web/config.ts`) reemplaza a
+ * `WEBHOOK_LOG_CORRELATION_ID` para los eventos de ciclo de vida del
+ * proceso sin request (`web-escuchando`, `web-deshabilitado`,
+ * `web-arranque-fallido`, `web-cierre-con-turnos-en-vuelo`). El puente
+ * entre ambos espacios son `venta-creada`, `venta-confirmada` y
+ * `soporte-caso-creado`: se loguean con `casoId` como primer parámetro,
+ * pero llevan además `requestId` dentro de `fields`.
+ *
+ * Caso particular — `token-invalido` no tiene `casoId` (por definición: el
+ * token no resolvió a ninguna venta, o resolvió a una que no debe
+ * revelarse) y **nunca** lleva el token en `fields` — el token ES una
+ * credencial, y `data/harness.log` no tiene rotación ni control de acceso.
+ * Se correlaciona por `requestId` y lleva solo `{ motivo, tokenLength }`
+ * (riesgo residual R14 de `design.md`, Hito 4).
+ *
+ * Ejemplos representativos de los eventos nuevos de Hito 4 (tabla completa
+ * en `design.md` §9.2): `web-escuchando`, `venta-creada`,
+ * `venta-confirmada`, `comision-calculada`, `reembolso-aprobado`,
+ * `reembolso-escalado`, `soporte-caso-creado`, `email-enviado`,
+ * `email-omitido`. El contrato de esta función NO cambió para soportarlos
+ * — mismo criterio que la nota de Hito 3 de arriba.
+ *
+ * Design decision — desde `tui-canal-empleado` (Hito 5), `logTurnEvent`
+ * también lo consumen `src/build-on-comando-empleado.ts` (el dispatcher de
+ * los ocho comandos) y `src/core/auth/login.ts`. Trece eventos nuevos
+ * (tabla completa en `design.md` §9), todos correlacionados por
+ * `COMANDO_LOG_CORRELATION_ID = "tui-comando"` (`core/commands/comando-empleado.ts`)
+ * salvo donde se anota lo contrario — mismo criterio que Hitos 3 y 4: "no
+ * gana código; a lo sumo una línea en su module doc":
+ * `comando-empleado-recibido` (`tipo`), `comando-desconocido` (`comando` —
+ * SOLO el primer token, nunca el resto de la línea), `login-exitoso`/
+ * `login-fallido` (correlación `AUTH_LOG_CORRELATION_ID = "auth"`,
+ * `core/auth/login.ts`), `logout`, `sesion-expirada`,
+ * `comando-privilegiado-sin-sesion`, `accion-empleado-sin-sesion`,
+ * `accion-empleado-registrada`/`accion-empleado-registro-fallido` (ADR 40:
+ * la fila de auditoría NO transaccional puede fallar sin tumbar el
+ * comando — este evento es lo que hace ese hueco detectable),
+ * `reembolso-listado`, `reembolso-resolucion-solicitada`,
+ * `reembolso-escalacion-aprobada`/`-rechazada`/`-reabierta` y
+ * `reembolso-resolucion-no-aplicable` (correlacionados por el `casoId` de
+ * la venta, no por `"tui-comando"`, salvo cuando la venta no se encontró),
+ * y `comando-soporte-fallido`. **Invariante negativo, con test propio**:
+ * ninguno de estos trece eventos lleva la contraseña de `/login`, ni un
+ * prefijo ni su longitud, ni el `token_confirmacion` de `/devolucion`, ni
+ * el texto de una consulta de `/soporte` — el único campo que se le parece
+ * es `empleadoId`, que es un identificador, no un secreto.
+ *
  * Design decision — default `write` escribe a un archivo (`data/harness.log`
  * vía `createFileLogWriter`), no a ningún stream del proceso (hallazgo
  * post-Hito 1, mejora del Adaptador TUI): esta tarea se implementó antes de

@@ -197,4 +197,204 @@ describe("runMigrations", () => {
     expect(row.proyecto_id).toBe("proyecto-1");
     expect(row.caso_id).toBe("caso-1");
   });
+
+  it("creates vendedores, ventas, comisiones and idx_ventas_vendedor, idx_comisiones_periodo on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    const names = tableNames(db);
+    expect(names).toContain("vendedores");
+    expect(names).toContain("ventas");
+    expect(names).toContain("comisiones");
+    expect(indexNames(db)).toContain("idx_ventas_vendedor");
+    expect(indexNames(db)).toContain("idx_comisiones_periodo");
+  });
+
+  it("rejects inserting a venta with a non-existent vendedor_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "abierto", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "venta-1",
+          "vendedor-inexistente",
+          "cliente-1",
+          null,
+          "plan-pro",
+          100,
+          "pendiente_confirmacion",
+          "caso-1",
+          "token-1",
+          "2026-08-26T00:00:00.000Z",
+          null,
+          null,
+        ),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("rejects inserting a venta with a non-existent caso_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO vendedores (id, nombre, created_at) VALUES (?, ?, ?)",
+    ).run("vendedor-1", "Jimmy Fung", "2026-08-26T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "venta-1",
+          "vendedor-1",
+          "cliente-1",
+          null,
+          "plan-pro",
+          100,
+          "pendiente_confirmacion",
+          "caso-inexistente",
+          "token-1",
+          "2026-08-26T00:00:00.000Z",
+          null,
+          null,
+        ),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("rejects inserting two ventas with the same token_confirmacion", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO vendedores (id, nombre, created_at) VALUES (?, ?, ?)",
+    ).run("vendedor-1", "Jimmy Fung", "2026-08-26T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "abierto", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      "venta-1",
+      "vendedor-1",
+      "cliente-1",
+      null,
+      "plan-pro",
+      100,
+      "pendiente_confirmacion",
+      "caso-1",
+      "token-duplicado",
+      "2026-08-26T00:00:00.000Z",
+      null,
+      null,
+    );
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "venta-2",
+          "vendedor-1",
+          "cliente-2",
+          null,
+          "plan-pro",
+          200,
+          "pendiente_confirmacion",
+          "caso-1",
+          "token-duplicado",
+          "2026-08-26T00:00:00.000Z",
+          null,
+          null,
+        ),
+    ).toThrow(/UNIQUE/);
+  });
+
+  it("creates registro_acciones_empleado and idx_registro_acciones_venta on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    const names = tableNames(db);
+    expect(names).toContain("registro_acciones_empleado");
+    expect(indexNames(db)).toContain("idx_registro_acciones_venta");
+  });
+
+  it("rejects inserting a registro_acciones_empleado row with a non-existent venta_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO registro_acciones_empleado (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run("accion-1", "ana", "/aprobar-reembolso", "venta-inexistente", null, "aprobada", "2026-08-26T00:00:00.000Z"),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("allows inserting a registro_acciones_empleado row with venta_id and caso_id NULL (consulta de soporte)", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO registro_acciones_empleado (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run("accion-1", "ana", "/soporte", null, null, "atendida", "2026-08-26T00:00:00.000Z");
+
+    const row = db
+      .prepare("SELECT empleado_id, venta_id, caso_id FROM registro_acciones_empleado WHERE id = ?")
+      .get("accion-1") as { empleado_id: string; venta_id: string | null; caso_id: string | null };
+    expect(row.empleado_id).toBe("ana");
+    expect(row.venta_id).toBeNull();
+    expect(row.caso_id).toBeNull();
+  });
+
+  it("creates credenciales_empleado on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    expect(tableNames(db)).toContain("credenciales_empleado");
+  });
+
+  it("allows inserting a credenciales_empleado row keyed by empleado_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ana", "scrypt$16384$8$1$c2FsdA==$Y2xhdmU=", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    const row = db
+      .prepare("SELECT password_hash FROM credenciales_empleado WHERE empleado_id = ?")
+      .get("ana") as { password_hash: string };
+    expect(row.password_hash).toBe("scrypt$16384$8$1$c2FsdA==$Y2xhdmU=");
+  });
+
+  it("rejects inserting two credenciales_empleado rows with the same empleado_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ana", "hash-1", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("ana", "hash-2", "2026-08-26T01:00:00.000Z", "2026-08-26T01:00:00.000Z"),
+    ).toThrow(/UNIQUE|PRIMARY KEY/);
+  });
 });

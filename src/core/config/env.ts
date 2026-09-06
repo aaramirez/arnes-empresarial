@@ -27,6 +27,35 @@ import { config as loadDotenv } from "dotenv";
  * (`adapters/webhooks/config.ts`) and `resolveBoardConfig`
  * (`adapters/board/config.ts`), not here — this module only guarantees
  * `.env` has been loaded before those adapters read `process.env` directly.
+ *
+ * `WEB_PORT`, `WEB_PUBLIC_URL`, `VENTAS_API_TOKEN`, and `WEB_MAX_BODY_BYTES`
+ * are also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveWebConfig`
+ * (`adapters/web/config.ts`), not here — this module only guarantees `.env`
+ * has been loaded before that adapter reads `process.env` directly.
+ *
+ * `COMISION_PORCENTAJE`, `REEMBOLSO_UMBRAL`, and `VENTA_TOKEN_TTL_HORAS` are
+ * also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveVentasConfig`
+ * (`core/ventas/ventas-config.ts`), not here — this module only guarantees
+ * `.env` has been loaded before that resolver reads `process.env` directly.
+ *
+ * `EMAIL_API_KEY`, `EMAIL_FROM`, `EMAIL_API_URL`, and `EMAIL_TIMEOUT_MS` are
+ * also read from `process.env` after this module is imported. Their
+ * parsing, validation, and defaults live in `resolveNotificacionesConfig`
+ * (`adapters/notificaciones/config.ts`), not here — this module only
+ * guarantees `.env` has been loaded before that adapter reads
+ * `process.env` directly.
+ *
+ * `SESION_TTL_MINUTOS` (`tui-canal-empleado`, ADR 31) is also read from
+ * `process.env` after this module is imported. Its parsing, validation
+ * (entero finito `>= 0`, default 30, `0` = sin expiración), and abort-on-
+ * invalid behavior live in `resolveAuthConfig` (`core/auth/auth-config.ts`),
+ * not here — same criterion as `COMISION_PORCENTAJE` above. **`EMPLEADO_ID`
+ * does NOT exist as an env var**: employee identity comes exclusively from
+ * an authenticated `/login` against `credenciales_empleado` (ADR 37), never
+ * from configuration or from anything the process starts up already
+ * knowing.
  */
 loadDotenv();
 

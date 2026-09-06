@@ -29,6 +29,13 @@ export const MCP_TIMEOUT_MARGIN_MS = 5_000;
  * raw value is missing, blank, not a number, or not strictly greater than
  * zero. Never throws — this adapter's configuration is best-effort by
  * design (see design.md §8).
+ *
+ * DELIBERATELY duplicated across 5 adapter config files (Reviewer finding,
+ * reuse): not hoisted to `src/core/` because this is env-var parsing
+ * infrastructure, not business logic — `src/core/` shouldn't gain a
+ * dependency just to serve adapter convenience — and AGENTS.md's
+ * non-negotiable rule forbids one adapter importing from another. Same
+ * accepted-duplication call as `sesion.ts`/`token-confirmacion.ts`.
  */
 function resolvePositiveNumber(raw: string | undefined, defaultValue: number): number {
   if (raw === undefined || raw.trim() === "") {
