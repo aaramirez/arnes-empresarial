@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  CASO_ESTADO_PENDIENTE_APROBACION_HUMANA as HITL_CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+  CASO_ESTADO_RESUELTO as HITL_CASO_ESTADO_RESUELTO,
+} from "../hitl/hitl-contract.js";
+import {
   CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
   CASO_ESTADO_RESUELTO,
   CASO_TIPO_SOPORTE,
@@ -535,5 +539,28 @@ describe("ventas-contract.ts source", () => {
     const source = readFileSync(sourcePath, "utf-8");
 
     expect(source).not.toMatch(/\bimport\b/);
+  });
+});
+
+describe("CASO_ESTADO_PENDIENTE_APROBACION_HUMANA y CASO_ESTADO_RESUELTO re-exportados desde hitl-contract.ts (Hito 5, tarea 2)", () => {
+  it("CASO_ESTADO_RESUELTO importado desde ventas-contract.ts resuelve al mismo string que el de hitl-contract.ts", () => {
+    expect(CASO_ESTADO_RESUELTO).toBe(HITL_CASO_ESTADO_RESUELTO);
+    expect(CASO_ESTADO_RESUELTO).toBe("resuelto");
+  });
+
+  it("CASO_ESTADO_PENDIENTE_APROBACION_HUMANA importado desde ventas-contract.ts resuelve al mismo string que el de hitl-contract.ts", () => {
+    expect(CASO_ESTADO_PENDIENTE_APROBACION_HUMANA).toBe(HITL_CASO_ESTADO_PENDIENTE_APROBACION_HUMANA);
+    expect(CASO_ESTADO_PENDIENTE_APROBACION_HUMANA).toBe("pendiente_aprobacion_humana");
+  });
+
+  it("ventas-contract.ts no vuelve a declarar el literal — solo re-exporta desde hitl-contract.ts", () => {
+    const sourcePath = fileURLToPath(new URL("./ventas-contract.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).toMatch(
+      /export\s*\{\s*CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,\s*CASO_ESTADO_RESUELTO\s*\}\s*from\s*"\.\.\/hitl\/hitl-contract\.js"/,
+    );
+    expect(source).not.toMatch(/=\s*"pendiente_aprobacion_humana"/);
+    expect(source).not.toMatch(/=\s*"resuelto"/);
   });
 });
