@@ -7,6 +7,7 @@ import {
   VENTA_ESTADO_RECHAZADA,
   VENTA_ESTADO_REEMBOLSADA,
   VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  VENTA_ESTADO_REEMBOLSO_RECHAZADO,
   VENTA_ESTADOS,
   type Venta,
   type VentaEstado,
@@ -58,12 +59,13 @@ describe("validarTokenConfirmacion", () => {
     },
   );
 
-  it("cubre los 4 estados distintos de pendiente_confirmacion (guarda contra listas incompletas)", () => {
+  it("cubre los 5 estados distintos de pendiente_confirmacion (guarda contra listas incompletas)", () => {
     expect(otrosEstados).toEqual([
       VENTA_ESTADO_CONFIRMADA,
       VENTA_ESTADO_RECHAZADA,
       VENTA_ESTADO_REEMBOLSADA,
       VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+      VENTA_ESTADO_REEMBOLSO_RECHAZADO,
     ]);
   });
 
