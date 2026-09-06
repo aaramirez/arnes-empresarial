@@ -3,6 +3,7 @@ import {
   VENTA_ESTADO_CONFIRMADA,
   VENTA_ESTADO_REEMBOLSADA,
   VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  VENTA_ESTADO_REEMBOLSO_RECHAZADO,
 } from "./ventas-contract.js";
 import {
   agruparReporteMensual,
@@ -143,6 +144,26 @@ describe("agruparReporteMensual", () => {
     expect(reporte.reembolsosPendientes).toEqual(pendientes);
   });
 
+  it("una venta reembolso_rechazado NO suma a ventasConReembolso (ADR 23, tui-canal-empleado)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_CONFIRMADA }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_REEMBOLSADA }),
+        comision({ ventaId: "v3", ventaEstado: VENTA_ESTADO_REEMBOLSO_PENDIENTE }),
+        comision({ ventaId: "v4", ventaEstado: VENTA_ESTADO_REEMBOLSO_RECHAZADO }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    // Cuatro comisiones del mismo vendedor (`comision()` default `vend-1`):
+    // solo REEMBOLSADA y REEMBOLSO_PENDIENTE cuentan — REEMBOLSO_RECHAZADO
+    // NO, porque el reembolso fue DENEGADO (la venta sigue `confirmada` en
+    // los hechos de negocio, no hay dinero devuelto).
+    expect(reporte.filas).toHaveLength(1);
+    expect(reporte.filas[0]).toMatchObject({ ventasConfirmadas: 4, ventasConReembolso: 2 });
+  });
+
   it("un periodo sin comisiones produce filas vacías", () => {
     const reporte = agruparReporteMensual({
       periodo: "2020-01",
@@ -205,7 +226,7 @@ describe("formatearReporteMensual", () => {
         "",
         "Reembolsos pendientes de aprobación",
         "",
-        "Nota: este hito no ofrece ninguna vía de producto (endpoint, pantalla o notificación) para aprobar o rechazar estas escalaciones. La resolución es fuera de banda (SQL manual) hasta que el Hito 5 implemente el cierre (ADR 11 punto 5).",
+        "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
         "",
         "- venta venta-11 | vendedor Juan Perez | cliente cliente-11 | monto 1000.00 | caso caso-11 | confirmada 2024-02-10T10:00:00.000Z",
       ].join("\n"),
@@ -230,14 +251,14 @@ describe("formatearReporteMensual", () => {
         "",
         "Reembolsos pendientes de aprobación",
         "",
-        "Nota: este hito no ofrece ninguna vía de producto (endpoint, pantalla o notificación) para aprobar o rechazar estas escalaciones. La resolución es fuera de banda (SQL manual) hasta que el Hito 5 implemente el cierre (ADR 11 punto 5).",
+        "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
         "",
         "(sin reembolsos pendientes)",
       ].join("\n"),
     );
   });
 
-  it("la seccion de reembolsos pendientes sigue apareciendo aunque no haya comisiones en el periodo, y sin ninguna accion de aprobacion ofrecida", () => {
+  it("la seccion de reembolsos pendientes sigue apareciendo aunque no haya comisiones en el periodo", () => {
     const reporte = agruparReporteMensual({
       periodo: "2020-01",
       comisiones: [],
@@ -247,9 +268,31 @@ describe("formatearReporteMensual", () => {
     const texto = formatearReporteMensual(reporte);
 
     expect(texto).toContain("Reembolsos pendientes de aprobación");
-    expect(texto).toContain("fuera de banda");
-    // El reporte solo lista — no ofrece ninguna ruta ni acción para aprobar/rechazar (ADR 11 punto 5).
-    expect(texto).not.toMatch(/\/aprobar-reembolso|POST\s/);
     expect(texto).toContain("venta venta-9");
+  });
+
+  it("la nota nueva (ADR 26, enmienda rev. 3) menciona los tres comandos de resolucion y la TUI local, sin las frases prohibidas", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2020-01",
+      comisiones: [],
+      reembolsosPendientes: [pendiente()],
+    });
+
+    const texto = formatearReporteMensual(reporte);
+
+    // Menciona qué comando cierra estas escalaciones (ya no hay que resolverlas "fuera de banda").
+    expect(texto).toContain("/aprobar-reembolso");
+    expect(texto).toContain("/rechazar-reembolso");
+    expect(texto).toContain("/reabrir-reembolso");
+    // Salvedad del canal: TUI local con login por empleado (no un portal autenticado).
+    expect(texto).toContain("TUI local");
+    expect(texto).toContain("/login");
+    // Prohibido por el ADR: "SQL manual", rechazo descrito como irreversible,
+    // identidad tomada de la configuración, tabla de auditoría, roles/permisos.
+    expect(texto).not.toMatch(/SQL manual/i);
+    expect(texto).not.toMatch(/irreversible/i);
+    expect(texto).not.toMatch(/configuraci[oó]n/i);
+    expect(texto).not.toMatch(/registro_acciones_empleado|auditor[ií]a/i);
+    expect(texto).not.toMatch(/\brol(es)?\b|permisos?/i);
   });
 });

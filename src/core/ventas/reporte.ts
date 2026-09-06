@@ -155,8 +155,20 @@ const COMISION_WIDTH = 17;
 const REEMBOLSO_WIDTH = 13;
 const SEPARADOR_WIDTH = NOMBRE_WIDTH + 1 + VENTAS_WIDTH + 1 + MONTO_WIDTH + 1 + COMISION_WIDTH + 1 + REEMBOLSO_WIDTH;
 
+/**
+ * Actualizada por `tui-canal-empleado` (ADR 26, enmiendas rev. 2 y 3): ya
+ * NO es cierto que no exista una vía de producto para estas escalaciones
+ * (`/aprobar-reembolso`/`/rechazar-reembolso`/`/reabrir-reembolso` desde la
+ * TUI, ADR 21), ni que el rechazo sea irreversible (ADR 29 lo hizo
+ * reabrible). Lo que sigue siendo cierto, y esta nota lo dice, es la
+ * salvedad del canal: es una TUI LOCAL con login por empleado, no un portal
+ * autenticado — la contraseña se verifica localmente contra la misma base
+ * que este proceso escribe (R16). Lo que esta nota NO menciona, a
+ * propósito: la tabla de auditoría (`registro_acciones_empleado`, que este
+ * reporte no lee) y cualquier noción de roles o permisos (que no existen).
+ */
 const NOTA_ESCALACION_FUERA_DE_BANDA =
-  "Nota: este hito no ofrece ninguna vía de producto (endpoint, pantalla o notificación) para aprobar o rechazar estas escalaciones. La resolución es fuera de banda (SQL manual) hasta que el Hito 5 implemente el cierre (ADR 11 punto 5).";
+  "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
 
 function formatMoney(monto: number): string {
   return monto.toFixed(2);
