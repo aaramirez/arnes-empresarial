@@ -20,12 +20,12 @@ Capability nueva. Cubre el reconocimiento de texto con prefijo `/` en la TUI, `p
 - THEN el turno se resuelve con el mismo `casoId`, el mismo `handleTurn` y el mismo `agentLabel` que en `v1.3.0`
 - AND `parsearComando` no altera el texto antes de delegarlo
 
-### Requirement: Reconocimiento y ruteo de los siete comandos
+### Requirement: Reconocimiento y ruteo de los ocho comandos
 
 `parsearComando` SHALL reconocer `/login`, `/logout`, `/soporte`, `/devolucion`, `/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso` y `/ayuda`, devolviendo una unión discriminada tipada con sus argumentos posicionales. El dispatcher SHALL rutear cada resultado reconocido al manejador correspondiente.
 
 #### Scenario: Cada prefijo reconocido rutea a su manejador
-- GIVEN un texto que empieza con uno de los siete prefijos
+- GIVEN un texto que empieza con uno de los ocho prefijos
 - WHEN `parsearComando` lo procesa
 - THEN devuelve el tipo discriminado correspondiente con sus argumentos
 - AND el dispatcher invoca el manejador de ese comando, no el conversacional
@@ -44,5 +44,5 @@ Un texto que empieza con `/` pero no matchea ningún comando conocido, o que mat
 
 - GIVEN cualquier estado de sesión
 - WHEN se ejecuta `/ayuda`
-- THEN se listan los siete comandos con su descripción de una línea
+- THEN se listan los ocho comandos con su descripción de una línea
 - AND no se escribe ninguna fila de registro
