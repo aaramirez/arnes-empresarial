@@ -246,3 +246,26 @@ Coincide exactamente con lo reportado por `verify-report.md` (72 archivos, 954 t
 ## Limpieza
 
 El driver (`scratch-demo/driver.tsx`), el DB temporal, el log temporal y el archivo de frames capturados vivieron en `.../Temp/.../scratchpad/demo-tui-canal-empleado/` y en `scratch-demo/` dentro del repo — ambos borrados al cerrar esta verificación. `git status` confirma cero cambios en `data/harness.db`/`data/harness.log` reales del repo.
+
+## Adenda (2026-09-06) — code review posterior al cierre + reverificación manual
+
+Después del cierre de arriba, una pasada de Reviewer (`/code-review`, nivel `high`, 8 ángulos + verificación) sobre el commit de cierre encontró **10 hallazgos no bloqueantes** (duplicación, eficiencia, y dos de seguridad) — ninguno invalida la aprobación de `sdd-verify` ni el entregable funcional ya demostrado arriba, pero se cerraron todos con el mismo ciclo Implementer → Reviewer antes de dar por definitivo este hito. Tres commits, todos sobre `hito/v1.4-tui-canal-empleado`:
+
+| Commit | Contenido |
+|---|---|
+| `948e605` | Fixes #1-10 originales: `esComandoPrivilegiado` (única fuente de verdad del guard de privilegio), timing attack mitigado en `/login` (hash dummy), `maxmem` explícito en `scryptSync`, `MAX_SESION_TTL_MINUTOS`, `LEFT JOIN` en `listEscalacionesReembolso` (reemplaza dos subqueries correlacionadas), `Record<AccionEscalacion,...>` en `build-on-comando-empleado.ts`, reuso de `resolveNumeroValidado`, duplicación documentada `calcularExpiraEn`/`calcularExpiresAt`, reuso de `formatMoney`. |
+| `45235b9` | Reviewer encontró 2 hallazgos **CONFIRMED** sobre ese mismo commit: `DUMMY_PASSWORD_HASH` tenía el costo scrypt hardcodeado (podía desincronizarse de `SCRYPT_N/R/P` si rotan) y `VENTA_TOKEN_TTL_HORAS` se había quedado sin el mismo techo que `SESION_TTL_MINUTOS` ya tenía. Ambos corregidos con TDD (rojo confirmado antes de implementar). |
+| `bdc1350` | Los 6 hallazgos **PLAUSIBLE** restantes: `listEscalacionesReembolso` seguía haciendo table scan completo pese al `LEFT JOIN` (verificado con `EXPLAIN QUERY PLAN`, corregido con un único subquery correlacionado + `JOIN` por clave primaria — cero duplicación y `SEARCH` por índice en las dos partes), invariante `tipo`↔`nombre` de `comando-empleado.ts` sin atar (agregado test de convención), duplicación en `ACCION_ESCALACION_INFO` (factorizada), y dos hallazgos documentados como trade-off/duplicación aceptada en vez de forzar un cambio de diseño fuera de alcance de un cleanup de Reviewer (amplificación de CPU en el timing-attack fix; `resolvePositiveNumber` duplicado en 5 adaptadores — no se sube a `src/core/` porque violaría la regla no negociable de `AGENTS.md` de que un adaptador no importa a otro). |
+
+**Reverificación manual del entregable, después de los tres commits** (no solo `npm test` — correr la app real): sin `tmux` ni TTY en este entorno para manejar Ink interactivamente, se armó un driver in-process (`manual-test-hito4.ts`, borrado al terminar) que usa **las mismas funciones de composición reales que `main.ts`** — `buildOnVenta`, `buildOnComandoEmpleado`, `openDatabase`, `hashPassword`/`verificarPassword` reales — contra una SQLite real (no `:memory:` de test), sin ningún mock. Cubre Hito 4 (`v1.3.0`, ventas y comisiones) end-to-end además del canal de este hito:
+
+1. `POST /ventas` (dos ventas reales, $100 y $500) → confirmación → cálculo de comisión.
+2. `POST /devolucion`: la de $100 (bajo `REEMBOLSO_UMBRAL`) se auto-aprueba; la de $500 escala a un humano.
+3. Reporte mensual (`agruparReporteMensual`/`formatearReporteMensual`) formatea el monto correctamente.
+4. Canal TUI de empleado, sesión completa: `/login` con empleado inexistente (camino del `dummyPasswordHash` inyectado, fix #1) → inválida; `/login` con password incorrecta → inválida; `/login` real → sesión abierta; `/aprobar-reembolso` (listar) → aparece la venta escalada; `/rechazar-reembolso` (eco + confirmar); `/reabrir-reembolso` (listar rechazados, eco + confirmar) — el eco mostró **"rechazada por ana.qa el ... · reaperturas previas: 0"**, confirmando en vivo que el `JOIN` reescrito de `bdc1350` sigue trayendo `rechazadaPor`/`rechazadaAt` correctamente; `/aprobar-reembolso` (eco + confirmar) → venta `reembolsada`, caso `resuelto`; `/logout`.
+
+**Resultado: 22/22 verificaciones en verde.** Un fallo en la primera corrida fue un bug del script de prueba (esperaba `rechazadaPor` en el *listado*, cuando por diseño `formatearLineaEscalacion` solo lo muestra en el *eco de confirmación*) — corregido y reconfirmado, no era un defecto de la app.
+
+`npx tsc --noEmit` sin salida (cero errores) y `npx vitest run` — `72 archivos, 978 tests` (954 del cierre original + 24 tests nuevos de los tres commits del Reviewer) — todos en verde al momento de esta adenda.
+
+**Limpieza**: `manual-test-hito4.ts` y su base SQLite temporal (`manual-test-hito4.db`, en la raíz del repo) se borraron al terminar; `git status` confirma árbol de trabajo limpio.
