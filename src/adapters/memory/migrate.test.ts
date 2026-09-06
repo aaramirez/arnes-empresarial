@@ -319,4 +319,82 @@ describe("runMigrations", () => {
         ),
     ).toThrow(/UNIQUE/);
   });
+
+  it("creates registro_acciones_empleado and idx_registro_acciones_venta on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    const names = tableNames(db);
+    expect(names).toContain("registro_acciones_empleado");
+    expect(indexNames(db)).toContain("idx_registro_acciones_venta");
+  });
+
+  it("rejects inserting a registro_acciones_empleado row with a non-existent venta_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO registro_acciones_empleado (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run("accion-1", "ana", "/aprobar-reembolso", "venta-inexistente", null, "aprobada", "2026-08-26T00:00:00.000Z"),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
+  it("allows inserting a registro_acciones_empleado row with venta_id and caso_id NULL (consulta de soporte)", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO registro_acciones_empleado (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run("accion-1", "ana", "/soporte", null, null, "atendida", "2026-08-26T00:00:00.000Z");
+
+    const row = db
+      .prepare("SELECT empleado_id, venta_id, caso_id FROM registro_acciones_empleado WHERE id = ?")
+      .get("accion-1") as { empleado_id: string; venta_id: string | null; caso_id: string | null };
+    expect(row.empleado_id).toBe("ana");
+    expect(row.venta_id).toBeNull();
+    expect(row.caso_id).toBeNull();
+  });
+
+  it("creates credenciales_empleado on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    expect(tableNames(db)).toContain("credenciales_empleado");
+  });
+
+  it("allows inserting a credenciales_empleado row keyed by empleado_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ana", "scrypt$16384$8$1$c2FsdA==$Y2xhdmU=", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    const row = db
+      .prepare("SELECT password_hash FROM credenciales_empleado WHERE empleado_id = ?")
+      .get("ana") as { password_hash: string };
+    expect(row.password_hash).toBe("scrypt$16384$8$1$c2FsdA==$Y2xhdmU=");
+  });
+
+  it("rejects inserting two credenciales_empleado rows with the same empleado_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ana", "hash-1", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("ana", "hash-2", "2026-08-26T01:00:00.000Z", "2026-08-26T01:00:00.000Z"),
+    ).toThrow(/UNIQUE|PRIMARY KEY/);
+  });
 });
