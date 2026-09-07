@@ -2,7 +2,7 @@
 
 Arnés (harness) básico con memoria compartida para correr agentes de IA multi-turno en un ambiente empresarial, construido sobre el **Claude Agent SDK**. Proyecto de pasantía corta — diseño primero, versionado incremental, arquitectura de puertos y adaptadores.
 
-> **Estado actual:** fase de diseño. Este repositorio contiene la documentación de arquitectura (arc42) y el plan de implementación por hitos; el código todavía no se ha escrito.
+> **Estado actual:** hitos v1.0.0, v1.1.0, v1.2.0 y v1.4.0 cerrados y tageados (`v1.3.0` no tiene tag — ver la tabla de Hoja de ruta). v2.0.0 (delegación a subagentes) está en curso: las tareas de implementación ya están commiteadas en la rama `hito/v2.0-delegacion-subagentes`, pero el hito todavía no cierra — falta el pase de Reviewer sobre el hito completo, el checklist de cierre de `AGENTS.md` y el tag `v2.0.0`. Ver la sección [Hoja de ruta](#hoja-de-ruta) para el detalle por versión.
 
 ## Objetivo
 
@@ -55,19 +55,41 @@ Detalle completo de bloques, interfaces, escenarios de ejecución, decisiones de
 | Comunicación entre agentes | Protocolo A2A (JSON-RPC) |
 | Persistencia | SQLite embebido, sin servidor |
 
+## Configuración
+
+### Roles de subagentes (`SUBAGENT_REGISTRY`)
+
+Desde Hito 5 (v2.0.0), el arnés registra cuatro subagentes delegables (`src/core/agents/definitions.ts`), cada uno con su propio `allowedTools` acotado por rol. Ninguno incluye `Agent`/`Task`/`Write`/`Edit`/`Bash` — eso es lo que hace estructuralmente imposible que un subagente delegue a su vez (un solo nivel de profundidad de delegación).
+
+| Rol (`id`) | Responsabilidad | `allowedTools` |
+| --- | --- | --- |
+| `planner` | Analiza el cambio de un PR y produce el plan de revisión: qué revisar, en qué archivos y con qué criterio. No emite veredicto. | `Read`, `Glob` |
+| `developer` | Ejecuta el plan de revisión sobre el código: rastrea impacto y produce hallazgos concretos. No emite veredicto. | `Read`, `Glob`, `Grep` |
+| `reviewer` | Emite el veredicto final de una revisión de PR en una única línea `VEREDICTO: aprobado\|observado\|resuelto`. | `Read` |
+| `validador-solicitudes` | Evalúa si una solicitud interna (vacaciones o gasto) está completa y cumple las reglas conocidas, y emite un dictamen. No aprueba ni rechaza. | (ninguna — `[]`) |
+
+### Interruptor `HARNESS_DELEGACION_ROLES`
+
+Variable de entorno que controla si el bot de revisión de PRs delega en los tres roles (`planner` → `developer` → `reviewer`, Hito 5) o usa el agente único de `v1.4.0` (`src/build-on-activity.ts`):
+
+| Valor | Comportamiento |
+| --- | --- |
+| `"off"` | Comportamiento de `v1.4.0`: un único agente resuelve la revisión completa, sin delegación por roles. |
+| Cualquier otro valor, o ausente | Delegación por roles activa (default): cadena determinista Planner → Developer → Reviewer. |
+
 ## Hoja de ruta
 
-Entrega incremental en tres hitos mayores, cada uno cerrando con un tag semántico y una carpeta `docs/progreso/vX.Y-nombre/`:
+Entrega incremental en tres hitos mayores, cada uno cerrando con un tag semántico y una carpeta `docs/progreso/vX.Y-nombre/`. La columna **Estado** refleja únicamente los tags reales del repositorio (`git tag --list`) — un hito solo se marca cerrado si tiene su tag semántico correspondiente:
 
-| Versión | Hito | Caso(s) de uso | Entregable |
-| --- | --- | --- | --- |
-| v1.0.0 | Esqueleto conversacional | — (fundación) | El agente conversa por TUI y recuerda el historial de la sesión |
-| v1.1.0 | Consulta de conocimiento | Consulta de política interna, onboarding | Responde con fuente citada del vault |
-| v1.2.0 | Bot de revisión de PRs | Revisión de PRs, incidentes de IT | Un PR real dispara revisión automática; el tablero se actualiza solo |
-| v1.3.0 | Ventas y comisiones | Confirmación de venta, soporte, reembolsos | Cliente confirma por web; reporte comparativo mensual |
-| v2.0.0 | Delegación a subagentes | Bot de PRs con roles separados, HITL | Delegación interna entre roles |
-| v2.1.0 | Comunicación A2A saliente | Incidente coordinado, KPIs, riesgo/crédito | El agente delega en un agente externo |
-| v3.0.0 | Comunicación A2A entrante | Arnés invocable desde otras áreas | Cierra el objetivo específico 7 por completo |
+| Versión | Estado | Hito | Caso(s) de uso | Entregable |
+| --- | --- | --- | --- | --- |
+| v1.0.0 | ✅ cerrado | Esqueleto conversacional | — (fundación) | El agente conversa por TUI y recuerda el historial de la sesión |
+| v1.1.0 | ✅ cerrado | Consulta de conocimiento | Consulta de política interna, onboarding | Responde con fuente citada del vault |
+| v1.2.0 | ✅ cerrado | Bot de revisión de PRs | Revisión de PRs, incidentes de IT | Un PR real dispara revisión automática; el tablero se actualiza solo |
+| v1.3.0 | — | Ventas y comisiones | Confirmación de venta, soporte, reembolsos | Cliente confirma por web; reporte comparativo mensual |
+| v2.0.0 | 🔄 en curso | Delegación a subagentes | Bot de PRs con roles separados, HITL | Delegación interna entre roles |
+| v2.1.0 | — | Comunicación A2A saliente | Incidente coordinado, KPIs, riesgo/crédito | El agente delega en un agente externo |
+| v3.0.0 | — | Comunicación A2A entrante | Arnés invocable desde otras áreas | Cierra el objetivo específico 7 por completo |
 
 Plan detallado hito por hito, con estructura de datos, integraciones concretas y conceptos transversales: [`docs/Plan_Implementacion_Harness_Empresarial.md`](docs/Plan_Implementacion_Harness_Empresarial.md).
 

@@ -28,6 +28,14 @@ import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.j
 export interface AgentDefinition {
   /** Stable identifier used across the harness (e.g. `sesiones_agente.agent_id`). */
   readonly id: string;
+  /**
+   * Human-readable summary of the agent's role, forwarded verbatim into the
+   * SDK's `options.agents[id].description` (Invocador del Modelo, Hito 5
+   * tarea 9) so the model can route delegations by role. Mandatory —
+   * required for both the first-level agent and every subagent (Hito 5,
+   * design.md §5.2).
+   */
+  readonly description: string;
   /** Instructions that define the agent's role and behavior for the model. */
   readonly systemPrompt: string;
   /**
@@ -82,6 +90,9 @@ export const CONVERSATIONAL_AGENT_ID = "agente-conversacional";
  */
 const CONVERSATIONAL_AGENT: AgentDefinition = {
   id: CONVERSATIONAL_AGENT_ID,
+  description:
+    "Agente conversacional del arnés: sostiene el diálogo con el empleado y " +
+    "consulta la base de conocimiento interna.",
   systemPrompt:
     "Sos el agente conversacional de un arnés empresarial. Tu rol es sostener " +
     "una conversación clara y coherente con el empleado, manteniendo el " +
@@ -123,4 +134,113 @@ export function getAgentDefinition(agentId: string): AgentDefinition | undefined
  */
 export function listAgentDefinitions(): readonly AgentDefinition[] {
   return Array.from(AGENT_REGISTRY.values());
+}
+
+// ---------------------------------------------------------------------------
+// Subagentes (Hito 5, §5.2, ADR 44/51/52).
+// ---------------------------------------------------------------------------
+
+/** Id del subagente que arma el plan de revisión de un PR (bloque 2.1). */
+export const PLANNER_AGENT_ID = "planner";
+/** Id del subagente que rastrea impacto y produce hallazgos concretos. */
+export const DEVELOPER_AGENT_ID = "developer";
+/** Id del subagente que emite el veredicto final de una revisión de PR. */
+export const REVIEWER_AGENT_ID = "reviewer";
+/** Id del subagente que dictamina sobre una solicitud interna (ADR 52). */
+export const VALIDADOR_SOLICITUDES_AGENT_ID = "validador-solicitudes";
+
+const PLANNER_AGENT: AgentDefinition = {
+  id: PLANNER_AGENT_ID,
+  description:
+    "Analiza el cambio de un PR y produce el plan de revisión: qué revisar, " +
+    "en qué archivos y con qué criterio. No emite veredicto.",
+  systemPrompt:
+    "Sos el Planner de una cadena de revisión de PRs. Analizás el cambio de " +
+    "un PR y producís el plan de revisión: qué revisar, en qué archivos y " +
+    "con qué criterio. No emitís veredicto — esa es tarea exclusiva del " +
+    "Reviewer, más adelante en la cadena.",
+  allowedTools: ["Read", "Glob"],
+  model: DEFAULT_AGENT_MODEL,
+};
+
+const DEVELOPER_AGENT: AgentDefinition = {
+  id: DEVELOPER_AGENT_ID,
+  description:
+    "Ejecuta el plan de revisión sobre el código: rastrea impacto y " +
+    "produce hallazgos concretos. No emite veredicto.",
+  systemPrompt:
+    "Sos el Developer de una cadena de revisión de PRs. Ejecutás el plan de " +
+    "revisión que te llega sobre el código: rastreás el impacto de cada " +
+    "ítem del plan (call sites, propagación) y producís hallazgos " +
+    "concretos. No emitís veredicto — esa es tarea exclusiva del Reviewer, " +
+    "más adelante en la cadena.",
+  allowedTools: ["Read", "Glob", "Grep"],
+  model: DEFAULT_AGENT_MODEL,
+};
+
+const REVIEWER_AGENT: AgentDefinition = {
+  id: REVIEWER_AGENT_ID,
+  description:
+    "Emite el veredicto final de una revisión de PR en una única línea " +
+    "VEREDICTO: aprobado|observado|resuelto.",
+  systemPrompt:
+    "Sos el Reviewer de una cadena de revisión de PRs. Juzgás los hallazgos " +
+    "que te llegan del Developer y emitís el veredicto final de la " +
+    "revisión en una única línea `VEREDICTO: aprobado|observado|resuelto`. " +
+    "No re-investigás el código por tu cuenta — tu rol es emitir el " +
+    "veredicto sobre lo que ya te llegó en la cadena, no sustituirla.",
+  allowedTools: ["Read"],
+  model: DEFAULT_AGENT_MODEL,
+};
+
+const VALIDADOR_SOLICITUDES_AGENT: AgentDefinition = {
+  id: VALIDADOR_SOLICITUDES_AGENT_ID,
+  description:
+    "Evalúa si una solicitud interna (vacaciones o gasto) está completa y " +
+    "cumple las reglas conocidas, y emite un dictamen. No aprueba ni " +
+    "rechaza.",
+  systemPrompt:
+    "Sos el validador de solicitudes internas del arnés. Evaluás si una " +
+    "solicitud interna (vacaciones o gasto) está completa y cumple las " +
+    "reglas conocidas, y emitís un dictamen sobre eso. No aprobás ni " +
+    "rechazás la solicitud — esa decisión la toma un empleado autenticado " +
+    "mediante `/aprobar-solicitud` o `/rechazar-solicitud`.",
+  allowedTools: [],
+  model: DEFAULT_AGENT_MODEL,
+};
+
+/**
+ * Registro de los cuatro subagentes delegables (ADR 51, ADR 52). Deliberadamente
+ * un `Map` separado de `AGENT_REGISTRY`, no una fusión con un campo
+ * `delegable: boolean`: `resolveTurn`/`bootstrapHarness` recorren
+ * `listAgentDefinitions()` y toman `candidates[0]` para el turno
+ * conversacional (`resolve-turn.ts:93`), así que agregar estos cuatro roles
+ * ahí haría depender ese camino del orden de inserción de un `Map` — el
+ * arnés le contestaría al empleado con el system prompt de un rol de PR si
+ * ese orden cambiara. Ninguno de los cuatro roles agrega `Agent`/`Task` a su
+ * `allowedTools`: es lo que hace estructuralmente imposible que un
+ * subagente delegue a su vez (un solo nivel de profundidad de delegación).
+ */
+const SUBAGENT_REGISTRY: ReadonlyMap<string, AgentDefinition> = new Map([
+  [PLANNER_AGENT.id, PLANNER_AGENT],
+  [DEVELOPER_AGENT.id, DEVELOPER_AGENT],
+  [REVIEWER_AGENT.id, REVIEWER_AGENT],
+  [VALIDADOR_SOLICITUDES_AGENT.id, VALIDADOR_SOLICITUDES_AGENT],
+]);
+
+/**
+ * Resuelve un subagente por id. Misma forma pública que `getAgentDefinition`,
+ * pero contra `SUBAGENT_REGISTRY` — nunca contra `AGENT_REGISTRY` (ADR 51).
+ */
+export function getSubagentDefinition(agentId: string): AgentDefinition | undefined {
+  return SUBAGENT_REGISTRY.get(agentId);
+}
+
+/**
+ * Lista los cuatro subagentes delegables. Consumido por `toQueryOptions`
+ * (Hito 5, tarea 9) para registrar cada rol en `options.agents` junto al
+ * agente que corre el turno, sin tocar `AGENT_REGISTRY`.
+ */
+export function listSubagentDefinitions(): readonly AgentDefinition[] {
+  return Array.from(SUBAGENT_REGISTRY.values());
 }

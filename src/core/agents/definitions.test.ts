@@ -3,8 +3,14 @@ import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.j
 import {
   CONVERSATIONAL_AGENT_ID,
   DEFAULT_AGENT_MODEL,
+  DEVELOPER_AGENT_ID,
   getAgentDefinition,
+  getSubagentDefinition,
   listAgentDefinitions,
+  listSubagentDefinitions,
+  PLANNER_AGENT_ID,
+  REVIEWER_AGENT_ID,
+  VALIDADOR_SOLICITUDES_AGENT_ID,
 } from "./definitions.js";
 
 describe("agent registry", () => {
@@ -56,5 +62,72 @@ describe("agent registry", () => {
     const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
 
     expect(agent?.systemPrompt).toMatch(/no tenés delegación a otros agentes/);
+  });
+
+  it("requires a non-empty description on the conversational agent (Hito 5, tarea 4)", () => {
+    const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
+
+    expect(agent?.description).toBe(
+      "Agente conversacional del arnés: sostiene el diálogo con el empleado y consulta la base de conocimiento interna.",
+    );
+  });
+
+  it("keeps systemPrompt and allowedTools unchanged after adding description", () => {
+    const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
+
+    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME]);
+    expect(agent?.systemPrompt).toMatch(/no tenés delegación a otros agentes/);
+  });
+});
+
+describe("SUBAGENT_REGISTRY (Hito 5, tarea 5, ADR 44/51/52)", () => {
+  const SUBAGENT_IDS = [
+    PLANNER_AGENT_ID,
+    DEVELOPER_AGENT_ID,
+    REVIEWER_AGENT_ID,
+    VALIDADOR_SOLICITUDES_AGENT_ID,
+  ];
+  const FORBIDDEN_TOOLS = ["Agent", "Task", "Write", "Edit", "Bash"];
+
+  it("registers exactly the four subagent roles, each with a non-empty description", () => {
+    for (const id of SUBAGENT_IDS) {
+      const subagent = getSubagentDefinition(id);
+
+      expect(subagent).toBeDefined();
+      expect(subagent?.id).toBe(id);
+      expect(subagent?.description.length).toBeGreaterThan(0);
+    }
+
+    expect(listSubagentDefinitions()).toHaveLength(4);
+  });
+
+  it("gives the reviewer a different allowedTools set than the developer (ADR 44 punto 2)", () => {
+    const developer = getSubagentDefinition(DEVELOPER_AGENT_ID);
+    const reviewer = getSubagentDefinition(REVIEWER_AGENT_ID);
+
+    expect(reviewer?.allowedTools).not.toEqual(developer?.allowedTools);
+  });
+
+  it("never grants Agent/Task/Write/Edit/Bash to any of the four roles (un solo nivel de profundidad, sin escritura)", () => {
+    for (const id of SUBAGENT_IDS) {
+      const subagent = getSubagentDefinition(id);
+
+      for (const forbidden of FORBIDDEN_TOOLS) {
+        expect(subagent?.allowedTools).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it("grants the validador-solicitudes role zero tools (§5.2)", () => {
+    const validador = getSubagentDefinition(VALIDADOR_SOLICITUDES_AGENT_ID);
+
+    expect(validador?.allowedTools).toEqual([]);
+  });
+
+  it("keeps AGENT_REGISTRY (first-level agents) at exactly one entry — regresión de RD-2 / ADR 51", () => {
+    const agents = listAgentDefinitions();
+
+    expect(agents).toHaveLength(1);
+    expect(agents[0]?.id).toBe(CONVERSATIONAL_AGENT_ID);
   });
 });

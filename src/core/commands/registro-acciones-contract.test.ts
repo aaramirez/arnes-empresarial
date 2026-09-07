@@ -3,13 +3,17 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   COMANDO_APROBAR_REEMBOLSO,
+  COMANDO_APROBAR_SOLICITUD,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
   COMANDO_REABRIR_REEMBOLSO,
   COMANDO_RECHAZAR_REEMBOLSO,
+  COMANDO_RECHAZAR_SOLICITUD,
+  COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
   RESULTADO_APROBADA,
   RESULTADO_ATENDIDA,
+  RESULTADO_CREADA,
   RESULTADO_EXITOSA,
   RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
@@ -31,6 +35,9 @@ describe("vocabulario de comando", () => {
     expect(COMANDO_APROBAR_REEMBOLSO).toBe("/aprobar-reembolso");
     expect(COMANDO_RECHAZAR_REEMBOLSO).toBe("/rechazar-reembolso");
     expect(COMANDO_REABRIR_REEMBOLSO).toBe("/reabrir-reembolso");
+    expect(COMANDO_SOLICITAR).toBe("/solicitar");
+    expect(COMANDO_APROBAR_SOLICITUD).toBe("/aprobar-solicitud");
+    expect(COMANDO_RECHAZAR_SOLICITUD).toBe("/rechazar-solicitud");
   });
 });
 
@@ -45,6 +52,7 @@ describe("vocabulario de resultado", () => {
     expect(RESULTADO_RECHAZADA).toBe("rechazada");
     expect(RESULTADO_REABIERTA).toBe("reabierta");
     expect(RESULTADO_NO_APLICABLE).toBe("no_aplicable");
+    expect(RESULTADO_CREADA).toBe("creada");
   });
 });
 

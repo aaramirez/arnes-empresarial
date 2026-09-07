@@ -63,6 +63,7 @@ function seedCaso(db: Database.Database) {
 function makeAgent(id: string): AgentDefinition {
   return {
     id,
+    description: "agente de prueba",
     systemPrompt: `system prompt for ${id}`,
     allowedTools: [],
     model: DEFAULT_AGENT_MODEL,

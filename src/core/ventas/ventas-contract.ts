@@ -9,9 +9,11 @@
  * `procesar-devolucion.ts`) usan. La implementación real vive del otro lado
  * de estos puertos e importa de este módulo, nunca al revés: la regla no
  * negociable de `AGENTS.md` es que `src/core/` no importa de
- * `src/adapters/*`, ni del SDK, ni de Node. Este archivo no importa nada —
- * mismo criterio que `src/core/knowledge/knowledge-contract.ts` (Hito 2,
- * tarea 1) y `src/core/activity/activity-contract.ts` (Hito 3, tarea 1).
+ * `src/adapters/*`, ni del SDK, ni de Node. Este archivo tiene UNA única
+ * excepción (Hito 5, ADR 46): re-exporta `CASO_ESTADO_PENDIENTE_APROBACION_HUMANA`
+ * y `CASO_ESTADO_RESUELTO` desde `../hitl/hitl-contract.ts`, que sí no
+ * importa nada — mismo criterio que `src/core/knowledge/knowledge-contract.ts`
+ * (Hito 2, tarea 1) y `src/core/activity/activity-contract.ts` (Hito 3, tarea 1).
  */
 
 /* ── Estados canónicos de `ventas.estado` ── */
@@ -47,20 +49,12 @@ export type VentaEstado = (typeof VENTA_ESTADOS)[number];
 export const CASO_TIPO_VENTA = "venta";
 export const CASO_TIPO_SOPORTE = "soporte";
 /**
- * Estado al que transiciona el `caso` de una venta cuando el reembolso se
- * escala (ADR 11, punto 2). Vive acá y no en `handle-turn.ts` (donde vive
- * `CASO_ESTADO_ACTIVO`) porque hoy tiene UN dueño semántico: ventas. Cuando
- * Hito 5 generalice el HITL, se muda — con más de un dueño, deja de ser
- * vocabulario de ventas.
+ * Estos dos valores YA NO viven acá (Hito 5, ADR 42): con dos dueños semánticos
+ * — ventas y solicitud interna — dejaron de ser vocabulario de ventas y se
+ * mudaron a `src/core/hitl/hitl-contract.ts`. Se re-exportan para que ningún
+ * call site de `v1.4.0` cambie; NO se redeclaran acá.
  */
-export const CASO_ESTADO_PENDIENTE_APROBACION_HUMANA = "pendiente_aprobacion_humana";
-/**
- * Un solo valor para los TRES desenlaces de una escalación (`tui-canal-empleado`,
- * ADR 24): el `caso` solo responde "¿sigue esperando a un humano?". Una
- * reapertura lo devuelve a `CASO_ESTADO_PENDIENTE_APROBACION_HUMANA` — el
- * ciclo es CÍCLICO, no lineal.
- */
-export const CASO_ESTADO_RESUELTO = "resuelto";
+export { CASO_ESTADO_PENDIENTE_APROBACION_HUMANA, CASO_ESTADO_RESUELTO } from "../hitl/hitl-contract.js";
 
 /** Tope del listado sin argumento (ADR 29 punto 1). Los rechazados se
  *  acumulan para siempre; los pendientes no, pero se acota igual por

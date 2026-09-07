@@ -11,6 +11,9 @@ export const COMANDO_DEVOLUCION = "/devolucion";
 export const COMANDO_APROBAR_REEMBOLSO = "/aprobar-reembolso";
 export const COMANDO_RECHAZAR_REEMBOLSO = "/rechazar-reembolso";
 export const COMANDO_REABRIR_REEMBOLSO = "/reabrir-reembolso";
+export const COMANDO_SOLICITAR = "/solicitar";
+export const COMANDO_APROBAR_SOLICITUD = "/aprobar-solicitud";
+export const COMANDO_RECHAZAR_SOLICITUD = "/rechazar-solicitud";
 
 /* ── Vocabulario de `registro_acciones_empleado.resultado` (tabla del ADR 27) ── */
 export const RESULTADO_EXITOSA = "exitosa"; // /login
@@ -21,6 +24,7 @@ export const RESULTADO_ESCALADA = "escalada"; // /devolucion
 export const RESULTADO_APROBADA = "aprobada"; // /aprobar-reembolso
 export const RESULTADO_RECHAZADA = "rechazada"; // /rechazar-reembolso
 export const RESULTADO_REABIERTA = "reabierta"; // /reabrir-reembolso
+export const RESULTADO_CREADA = "creada"; // /solicitar
 export const RESULTADO_NO_APLICABLE = "no_aplicable";
 
 /**

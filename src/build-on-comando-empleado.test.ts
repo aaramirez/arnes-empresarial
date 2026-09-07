@@ -22,6 +22,15 @@ import type { VentasConfig } from "./core/ventas/ventas-config.js";
 import type { AuthConfig } from "./core/auth/auth-config.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import type { RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
+import {
+  SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_PENDIENTE,
+  type SolicitudInterna,
+  type SolicitudStorePort,
+} from "./core/solicitudes/solicitudes-contract.js";
+import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
+import { getSubagentDefinition } from "./core/agents/definitions.js";
+import { createHookEngine } from "./core/hooks/hook-engine.js";
 import type { SoporteResult } from "./build-on-soporte.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
 
@@ -99,6 +108,43 @@ function makeAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig {
   return { sesionTtlMinutos: 30, ...overrides };
 }
 
+function makeSolicitudCreada(overrides: Partial<SolicitudInterna> = {}): SolicitudInterna {
+  return {
+    id: "sol-1",
+    casoId: "caso-sol-1",
+    solicitanteId: "ana",
+    tipo: "vacaciones",
+    detalle: "una semana en marzo",
+    estado: SOLICITUD_ESTADO_PENDIENTE,
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP,
+    ...overrides,
+  };
+}
+
+function makeSolicitudStore(overrides: Partial<SolicitudStorePort> = {}): SolicitudStorePort {
+  return {
+    crearSolicitudConCaso: vi.fn(() => makeSolicitudCreada()),
+    adjuntarDictamen: vi.fn(() => undefined),
+    listarSolicitudesPendientes: vi.fn(() => []),
+    aprobarSolicitud: vi.fn(() => undefined),
+    rechazarSolicitud: vi.fn(() => undefined),
+    ...overrides,
+  };
+}
+
+function makeDespacharDeps(overrides: Partial<DespacharDelegacionDeps> = {}): DespacharDelegacionDeps {
+  return {
+    store: { crearDelegacion: vi.fn(), completarDelegacion: vi.fn() },
+    invocar: vi.fn(async () => ({ responseText: "cumple las reglas", sdkSessionId: "sdk-validador" })),
+    getSubagente: getSubagentDefinition,
+    newId: () => "id-generado",
+    now: () => TIMESTAMP,
+    logEvent: vi.fn(),
+    ...overrides,
+  };
+}
+
 interface Reloj {
   ahora: string;
 }
@@ -120,6 +166,9 @@ function makeDeps(
     store: makeStore(),
     credenciales: makeCredenciales(),
     registro: makeRegistro(),
+    solicitudStore: makeSolicitudStore(),
+    despacharDeps: makeDespacharDeps(),
+    hooks: createHookEngine(),
     now: () => reloj.ahora,
     logDeps,
     ...rest,
@@ -520,5 +569,305 @@ describe("buildOnComandoEmpleado — el guard de privilegio tiene UNA sola fuent
     } finally {
       (descriptorLogout as { privilegiado: boolean }).privilegiado = original;
     }
+  });
+});
+
+describe("buildOnComandoEmpleado — /solicitar (alta de solicitud interna, Hito 5 tarea 22)", () => {
+  it("sin sesión vigente se rechaza sin tocar solicitudStore ni despacharDeps.invocar", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitudStore = makeSolicitudStore();
+    const despacharDeps = makeDespacharDeps();
+    const deps = makeDeps(reloj, { solicitudStore, despacharDeps });
+    const handler = buildOnComandoEmpleado(deps);
+
+    const resultado = await handler('/solicitar vacaciones "una semana en marzo"');
+
+    expect(resultado.agentLabel).toBe("sistema");
+    expect(resultado.responseText).toContain("/login");
+    expect(solicitudStore.crearSolicitudConCaso).not.toHaveBeenCalled();
+    expect(despacharDeps.invocar).not.toHaveBeenCalled();
+  });
+
+  it("tipo desconocido: responde el aviso, sin crear nada, sin delegar y sin dejar fila de registro", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitudStore = makeSolicitudStore();
+    const despacharDeps = makeDespacharDeps();
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, {
+      solicitudStore,
+      despacharDeps,
+      registro,
+      verificarPassword: vi.fn(() => true),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login del `login(handler)` de arriba
+
+    const resultado = await handler('/solicitar reembolso-inventado "algo"');
+
+    expect(resultado.agentLabel).toBe("sistema");
+    expect(resultado.responseText).toContain("reembolso-inventado");
+    expect(solicitudStore.crearSolicitudConCaso).not.toHaveBeenCalled();
+    expect(despacharDeps.invocar).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("alta válida con dictamen exitoso: crea la solicitud, delega al validador y deja fila ('/solicitar','creada') con el caso_id real", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitudConDictamen = makeSolicitudCreada({ dictamen: "cumple las reglas" });
+    const solicitudStore = makeSolicitudStore({
+      crearSolicitudConCaso: vi.fn(() => makeSolicitudCreada()),
+      adjuntarDictamen: vi.fn(() => solicitudConDictamen),
+    });
+    const invocar = vi.fn(async () => ({ responseText: "cumple las reglas", sdkSessionId: "sdk-validador" }));
+    const despacharDeps = makeDespacharDeps({ invocar });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, {
+      solicitudStore,
+      despacharDeps,
+      registro,
+      verificarPassword: vi.fn(() => true),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler('/solicitar vacaciones "una semana en marzo"');
+
+    expect(solicitudStore.crearSolicitudConCaso).toHaveBeenCalledTimes(1);
+    expect(invocar).toHaveBeenCalledTimes(1);
+    expect(resultado.agentLabel).toBe("sistema");
+    expect(resultado.responseText).toContain("sol-1");
+    expect(resultado.responseText).toContain("cumple las reglas");
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "/solicitar",
+      resultado: "creada",
+      casoId: "caso-sol-1",
+      empleadoId: "ana",
+    });
+  });
+
+  it("delegación al validador fallida: degrada a evento (ADR 40), igual responde 'creada' sin dictamen y deja fila", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitudStore = makeSolicitudStore();
+    const despacharDeps = makeDespacharDeps({
+      invocar: vi.fn(async () => {
+        throw new Error("el validador no respondió");
+      }),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, {
+      solicitudStore,
+      despacharDeps,
+      registro,
+      verificarPassword: vi.fn(() => true),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler('/solicitar vacaciones "una semana en marzo"');
+
+    expect(resultado.agentLabel).toBe("sistema");
+    expect(resultado.responseText).toContain("sol-1");
+    expect(resultado.responseText).toContain("Sin dictamen");
+    expect(solicitudStore.adjuntarDictamen).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({ comando: "/solicitar", resultado: "creada", casoId: "caso-sol-1" });
+  });
+});
+
+describe("buildOnComandoEmpleado — ADR 55 (ConfirmacionPendiente ensanchada por dominio, ranura única)", () => {
+  /**
+   * Nota de alcance declarada (tarea 22, mismo criterio que la tarea 12
+   * diferido a la tarea 14 y la tarea 20 diferido el error de typecheck):
+   * el texto de `tasks.md` tarea 22 pide "armar una confirmación de
+   * reembolso y después una de `/solicitar` pisa la ranura única (test
+   * explícito del ADR 55)". Verificado contra design.md §4.2: `/solicitar`
+   * es de UN SOLO PASO (sesión vigente exigida, sin eco/confirmación) y
+   * NUNCA construye ni compara `confirmacionPendiente` — a diferencia de
+   * `/devolucion`, que tampoco la toca. La rama `dominio: "solicitud"` de
+   * la unión (ADR 55) la escriben `/aprobar-solicitud`/`/rechazar-solicitud`
+   * (tarea 23, todavía sin implementar); no hay forma de construir un
+   * `confirmacionPendiente` real con `dominio: "solicitud"` sin ese caso de
+   * uso. Por eso este test verifica lo que el código REALMENTE hace hoy:
+   * una confirmación de reembolso pendiente SOBREVIVE intacta a un
+   * `/solicitar` de por medio (dominios distintos, `/solicitar` no toca la
+   * ranura) — y de paso confirma que el ensanchamiento del tipo no
+   * regresionó el camino `dominio: "reembolso"`. El test cruzado real
+   * ("armar un reembolso y después una SOLICITUD pisa la ranura") queda
+   * para la tarea 23, cuando `dominio: "solicitud"` tenga un escritor real.
+   */
+  it("una confirmación de reembolso pendiente sobrevive a un /solicitar exitoso de por medio", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const solicitudStore = makeSolicitudStore();
+    const despacharDeps = makeDespacharDeps();
+    const deps = makeDeps(reloj, { store, solicitudStore, despacharDeps, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const eco = await handler("/aprobar-reembolso v-1");
+    expect(eco.responseText.toLowerCase()).toContain("confirm");
+
+    await handler('/solicitar vacaciones "una semana en marzo"');
+
+    const confirmacion = await handler("/aprobar-reembolso v-1");
+    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
+    expect(confirmacion.responseText).toContain("v-1");
+  });
+});
+
+describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hito 5, tarea 23)", () => {
+  function depsConSolicitudPendiente(reloj: Reloj, overrides: Partial<BuildOnComandoEmpleadoDeps> = {}) {
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      aprobarSolicitud: vi.fn(() => makeSolicitudCreada({ id: "sol-1", estado: SOLICITUD_ESTADO_APROBADA })),
+      rechazarSolicitud: vi.fn(() => makeSolicitudCreada({ id: "sol-1", estado: "rechazada" })),
+    });
+    return {
+      deps: makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true), ...overrides }),
+      solicitudStore,
+      registro,
+    };
+  }
+
+  it("primer /aprobar-solicitud sol-1: eco y CERO escrituras; segundo: aplica el CAS sin registrar desde este archivo", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const { deps, solicitudStore, registro } = depsConSolicitudPendiente(reloj);
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const primero = await handler("/aprobar-solicitud sol-1");
+    expect(primero.responseText.toLowerCase()).toContain("confirm");
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+
+    const segundo = await handler("/aprobar-solicitud sol-1");
+    expect(solicitudStore.aprobarSolicitud).toHaveBeenCalledTimes(1);
+    expect(segundo.responseText).toContain("sol-1");
+    expect(segundo.responseText).toContain("aprobada");
+    // La fila ya viajó DENTRO de la transacción del repository (tarea 19) —
+    // este archivo NO debe emitir una escritura extra.
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+
+    const tercero = await handler("/aprobar-solicitud sol-1");
+    expect(tercero.responseText.toLowerCase()).toContain("confirm");
+    expect(solicitudStore.aprobarSolicitud).toHaveBeenCalledTimes(1);
+  });
+
+  it("sin sesión vigente, /aprobar-solicitud y /rechazar-solicitud se rechazan sin tocar solicitudStore", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitudStore = makeSolicitudStore();
+    const deps = makeDeps(reloj, { solicitudStore });
+    const handler = buildOnComandoEmpleado(deps);
+
+    for (const texto of ["/aprobar-solicitud", "/rechazar-solicitud sol-1"]) {
+      const resultado = await handler(texto);
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+    }
+
+    expect(solicitudStore.listarSolicitudesPendientes).not.toHaveBeenCalled();
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(solicitudStore.rechazarSolicitud).not.toHaveBeenCalled();
+  });
+
+  it("CAS no matcheado (la solicitud ya no está pendiente): responde no_aplicable y registra la fila FUERA de la transacción", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      rechazarSolicitud: vi.fn(() => undefined), // el CAS no matcheó
+    });
+    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    await handler("/rechazar-solicitud sol-1"); // eco
+    const resultado = await handler("/rechazar-solicitud sol-1"); // confirma -> el CAS pierde
+
+    expect(resultado.responseText.toLowerCase()).toContain("no se aplicó");
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "/rechazar-solicitud",
+      resultado: "no_aplicable",
+      casoId: "caso-sol-9",
+      empleadoId: "ana",
+    });
+  });
+
+  it("/aprobar-solicitud sin id lista las pendientes, sin escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitud = makeSolicitudCreada({ id: "sol-2", detalle: "gasto de viaje" });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler("/aprobar-solicitud");
+
+    expect(resultado.responseText).toContain("sol-2");
+    expect(resultado.responseText).toContain("gasto de viaje");
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("solicitudId inexistente responde que no hay ninguna solicitud, sin escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
+    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler("/aprobar-solicitud fantasma");
+
+    expect(resultado.responseText).toContain("fantasma");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("una confirmación de reembolso pendiente es PISADA por una de /aprobar-solicitud de por medio (ADR 55, deferred de la tarea 22)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const deps = makeDeps(reloj, { store, solicitudStore, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const ecoReembolso = await handler("/aprobar-reembolso v-1");
+    expect(ecoReembolso.responseText.toLowerCase()).toContain("confirm");
+
+    const ecoSolicitud = await handler("/aprobar-solicitud sol-1");
+    expect(ecoSolicitud.responseText.toLowerCase()).toContain("confirm");
+
+    // La ranura única quedó con dominio "solicitud": repetir el reembolso
+    // vuelve a pedir eco (no coincide), no ejecuta.
+    const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
+    expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
   });
 });

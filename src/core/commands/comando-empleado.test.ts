@@ -1,13 +1,20 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { COMANDOS, formatearAyuda, parsearComando } from "./comando-empleado.js";
+import { COMANDOS, esComandoPrivilegiado, formatearAyuda, parsearComando } from "./comando-empleado.js";
 
 /**
  * Spec `comando-empleado-tui`, requirements "Texto sin prefijo `/` se
  * delega intacto", "Reconocimiento y ruteo de los siete comandos",
  * "Comando desconocido o con argumentos faltantes responde con ayuda, sin
  * efecto" (ADR 21, 34 de la propuesta/diseño de `tui-canal-empleado`).
+ *
+ * Los tres comandos `/solicitar`, `/aprobar-solicitud`, `/rechazar-solicitud`
+ * (Hito 5, tarea 20, §5.7, ADR 56) cubren un prerrequisito de puro parseo
+ * de la spec `solicitud-interna-hitl` — la resolución real (validación,
+ * escritura, confirmación en dos pasos) vive en
+ * `resolver-solicitud-interna.ts` (tarea 18) y en el dispatcher
+ * (`build-on-comando-empleado.ts`, tareas 22-23), no acá.
  */
 
 describe("parsearComando", () => {
@@ -166,6 +173,73 @@ describe("parsearComando", () => {
     });
   });
 
+  it("/solicitar <tipo> <detalle> → tipo solicitar con tipoSolicitud y detalle (ADR 56)", () => {
+    expect(parsearComando("/solicitar vacaciones una semana en marzo")).toEqual({
+      tipo: "solicitar",
+      tipoSolicitud: "vacaciones",
+      detalle: "una semana en marzo",
+    });
+  });
+
+  it("/solicitar sin detalle (solo tipo) → ayuda/argumentos", () => {
+    expect(parsearComando("/solicitar vacaciones")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/solicitar",
+    });
+  });
+
+  it("/solicitar sin ningún argumento → ayuda/argumentos", () => {
+    expect(parsearComando("/solicitar")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/solicitar",
+    });
+  });
+
+  it.each<["aprobar_solicitud" | "rechazar_solicitud", string]>([
+    ["aprobar_solicitud", "/aprobar-solicitud"],
+    ["rechazar_solicitud", "/rechazar-solicitud"],
+  ])("%s sin id → solicitudId ausente", (tipo, prefijo) => {
+    expect(parsearComando(prefijo)).toEqual({ tipo });
+  });
+
+  describe("forma id_opcional_solicitud — el tipo se lee del descriptor, no de una cadena de nombres (ADR 56)", () => {
+    // Mismo criterio que el describe de "forma id_opcional" de arriba: recorre
+    // DESCRIPTORES dinámicamente vía COMANDOS, así el test cubre cualquier
+    // comando de forma "id_opcional_solicitud" que exista hoy o se agregue
+    // mañana, sin hardcodear los nombres.
+    type DescriptorConTipo = { readonly nombre: string; readonly tipo: string; readonly forma: string };
+    const descriptoresIdOpcionalSolicitud = (COMANDOS as unknown as readonly DescriptorConTipo[]).filter(
+      (d) => d.forma === "id_opcional_solicitud",
+    );
+
+    it("hay al menos un descriptor de forma id_opcional_solicitud (no testear un array vacío)", () => {
+      expect(descriptoresIdOpcionalSolicitud.length).toBeGreaterThan(0);
+    });
+
+    it.each(descriptoresIdOpcionalSolicitud.map((d) => [d.nombre, d.tipo] as const))(
+      "%s sin solicitudId → tipo devuelto == descriptor.tipo declarado (%s)",
+      (nombre, tipoDeclarado) => {
+        expect(parsearComando(nombre)).toEqual({ tipo: tipoDeclarado });
+      },
+    );
+  });
+
+  it("/aprobar-solicitud <solicitudId> → solicitudId presente", () => {
+    expect(parsearComando("/aprobar-solicitud sol-1")).toEqual({
+      tipo: "aprobar_solicitud",
+      solicitudId: "sol-1",
+    });
+  });
+
+  it("/rechazar-solicitud <solicitudId> → solicitudId presente", () => {
+    expect(parsearComando("/rechazar-solicitud sol-9")).toEqual({
+      tipo: "rechazar_solicitud",
+      solicitudId: "sol-9",
+    });
+  });
+
   it("/ayuda explícito → motivo 'solicitada', sin campo comando", () => {
     expect(parsearComando("/ayuda")).toEqual({ tipo: "ayuda", motivo: "solicitada" });
   });
@@ -186,12 +260,58 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los ocho descriptores (siete comandos + ayuda)", () => {
+  it("lista los once descriptores (diez comandos + ayuda) — ocho de v1.4.0 + los tres de la tarea 20", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(8);
+    expect(COMANDOS).toHaveLength(11);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
+  });
+});
+
+describe("esComandoPrivilegiado", () => {
+  it.each(["solicitar", "aprobar_solicitud", "rechazar_solicitud"] as const)(
+    "%s es privilegiado (ADR 56, exige sesión vigente)",
+    (tipo) => {
+      expect(esComandoPrivilegiado(tipo)).toBe(true);
+    },
+  );
+});
+
+describe("regresión — los ocho descriptores de v1.4.0 no cambian de orden ni de forma (tarea 20)", () => {
+  // Los tres nuevos van ANTES de /ayuda, que "sigue último" (design.md §5.7):
+  // los primeros siete originales conservan su índice, /ayuda pasa del
+  // índice 7 al 10, y los tres nuevos ocupan los índices 7-9 en el orden en
+  // que design.md §5.7 los tabula.
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("hay once descriptores en total", () => {
+    expect(descriptores).toHaveLength(11);
+  });
+
+  it("los primeros siete (todo lo anterior a /ayuda en v1.4.0) conservan nombre y forma", () => {
+    expect(descriptores.slice(0, 7).map((d) => [d.nombre, d.forma] as const)).toEqual([
+      ["/login", "id_mas_resto"],
+      ["/logout", "sin_argumentos"],
+      ["/soporte", "id_mas_resto"],
+      ["/devolucion", "id_mas_resto"],
+      ["/aprobar-reembolso", "id_opcional"],
+      ["/rechazar-reembolso", "id_opcional"],
+      ["/reabrir-reembolso", "id_opcional"],
+    ]);
+  });
+
+  it("los tres descriptores nuevos van en los índices 7-9, en el orden de design.md §5.7", () => {
+    expect(descriptores.slice(7, 10).map((d) => [d.nombre, d.forma] as const)).toEqual([
+      ["/solicitar", "id_mas_resto"],
+      ["/aprobar-solicitud", "id_opcional_solicitud"],
+      ["/rechazar-solicitud", "id_opcional_solicitud"],
+    ]);
+  });
+
+  it("/ayuda sigue último (índice 10)", () => {
+    expect(descriptores[10]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
   });
 });
 

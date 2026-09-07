@@ -20,13 +20,15 @@ import {
  * Spec `activity-webhook-turn`, requirements "Creación transaccional de caso
  * y actividad" y "Fallo de persistencia propaga":
  * - "Fallo de persistencia propaga": el `ActivityStorePort` que lanza al
- *   crear la actividad propaga el error como fallo del turno, y `handleTurn`
- *   (acá, el `runTurn` inyectado) NO se invoca.
+ *   crear la actividad propaga el error como fallo del turno, y el paso 5
+ *   (acá, el `despacharRevision` inyectado — Hito 5, tarea 12: renombre de
+ *   `runTurn`, mismo tipo, ADR 54) NO se invoca.
  *
- * Dobles planos de `ActivityStorePort`/`ActivityBoardPort`/`runTurn` — nunca
- * SQLite ni red real. `run-activity-turn.ts` envuelve `handleTurn` sin
- * importarlo (design.md §3.2); estos tests no importan `handle-turn.ts`
- * tampoco, por la misma razón.
+ * Dobles planos de `ActivityStorePort`/`ActivityBoardPort`/`despacharRevision`
+ * — nunca SQLite ni red real. `run-activity-turn.ts` envuelve el paso 5 sin
+ * importar `cadena-revision.ts` (el composition root lo cierra, design.md
+ * §5.5); estos tests no importan `cadena-revision.ts` tampoco, por la misma
+ * razón (mismo criterio que `handle-turn.ts` en Hito 3).
  */
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
@@ -114,7 +116,7 @@ function makeDeps(overrides: Partial<RunActivityTurnDeps> = {}): RunActivityTurn
   return {
     store: makeStore(),
     board: makeBoard(),
-    runTurn: vi.fn(async () => outcomeAprobado),
+    despacharRevision: vi.fn(async () => outcomeAprobado),
     newId: vi.fn(() => `id-${++contador}`),
     now: vi.fn(() => TIMESTAMP),
     logEvent: vi.fn(),
@@ -167,7 +169,7 @@ describe("runActivityTurn", () => {
     );
   });
 
-  it("propaga si findActividadPorReferencia lanza, y NO invoca runTurn", async () => {
+  it("propaga si findActividadPorReferencia lanza, y NO invoca despacharRevision", async () => {
     const evento = makeEvento();
     const error = new Error("fallo de lectura de actividad");
     const store = makeStore({
@@ -178,10 +180,10 @@ describe("runActivityTurn", () => {
     const deps = makeDeps({ store });
 
     await expect(runActivityTurn(evento, deps)).rejects.toThrow(error);
-    expect(deps.runTurn).not.toHaveBeenCalled();
+    expect(deps.despacharRevision).not.toHaveBeenCalled();
   });
 
-  it("propaga si createCasoConActividad lanza, y NO invoca runTurn", async () => {
+  it("propaga si createCasoConActividad lanza, y NO invoca despacharRevision", async () => {
     const evento = makeEvento();
     const error = new Error("fallo de persistencia al crear actividad");
     const store = makeStore({
@@ -192,20 +194,57 @@ describe("runActivityTurn", () => {
     const deps = makeDeps({ store });
 
     await expect(runActivityTurn(evento, deps)).rejects.toThrow(error);
-    expect(deps.runTurn).not.toHaveBeenCalled();
+    expect(deps.despacharRevision).not.toHaveBeenCalled();
   });
 
-  it("propaga si runTurn rechaza, y NO invoca updateActividadEstado", async () => {
+  it("propaga si despacharRevision rechaza, y NO invoca updateActividadEstado", async () => {
     const evento = makeEvento();
     const error = new Error("el modelo fallo");
     const deps = makeDeps({
-      runTurn: vi.fn(async () => {
+      despacharRevision: vi.fn(async () => {
         throw error;
       }),
     });
 
     await expect(runActivityTurn(evento, deps)).rejects.toThrow(error);
     expect(deps.store.updateActividadEstado).not.toHaveBeenCalled();
+  });
+
+  it("falla del Developer (segundo rol de la cadena) no invoca ningun metodo de store ni de board tras el paso 5", async () => {
+    // El doble de `despacharRevision` simula lo que pasaria si `despacharCadena`
+    // (cadena-revision.ts, tarea 11) rechazara en el eslabon del Developer: la
+    // cadena entera propaga sin devolver ActivityTurnOutcome (design.md §5.5,
+    // "No captura: si un eslabon falla, el error de despacharCadena propaga
+    // tal cual"). Este test vive en run-activity-turn.ts porque acá es donde
+    // se verifica el contrato de propagacion del paso 5 (module doc de
+    // arriba): nada de store/board corre despues de una falla de la cadena.
+    const evento = makeEvento();
+    const error = new Error("Developer fallo: no se pudo rastrear el impacto del plan");
+    const board = makeBoard({
+      publicarRevision: vi.fn(async () => undefined),
+      mirrorEstado: vi.fn(async () => undefined),
+    });
+    const store = makeStore({
+      updateActividadEstado: vi.fn((input) => ({
+        ...makeActividad(),
+        id: input.actividadId,
+        estado: input.estado,
+        updatedAt: input.updatedAt,
+      })),
+    });
+    const deps = makeDeps({
+      store,
+      board,
+      despacharRevision: vi.fn(async () => {
+        throw error;
+      }),
+    });
+
+    await expect(runActivityTurn(evento, deps)).rejects.toThrow(error);
+
+    expect(deps.store.updateActividadEstado).not.toHaveBeenCalled();
+    expect(deps.board.publicarRevision).not.toHaveBeenCalled();
+    expect(deps.board.mirrorEstado).not.toHaveBeenCalled();
   });
 
   it("actualiza el estado canónico ANTES de publicar/espejar en el tablero (orden 7 antes de 8-9)", async () => {
@@ -266,7 +305,7 @@ describe("runActivityTurn", () => {
 
     await expect(runActivityTurn(evento, deps)).resolves.toBeDefined();
 
-    const promptUsado = vi.mocked(deps.runTurn).mock.calls[0]?.[1];
+    const promptUsado = vi.mocked(deps.despacharRevision).mock.calls[0]?.[1];
     expect(promptUsado).toContain("Titulo crudo del evento");
     expect(promptUsado).toContain("Cuerpo crudo del evento");
   });

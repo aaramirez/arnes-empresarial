@@ -1,12 +1,15 @@
 /**
  * Dispatcher de comandos de empleado en la TUI (`tui-canal-empleado`, ADR
- * 21, 34, 36, 37, 40; design.md §6). Hermano de `build-on-submit.ts` /
+ * 21, 34, 36, 37, 40, 55; design.md §6). Hermano de `build-on-submit.ts` /
  * `build-on-venta.ts` / `build-on-soporte.ts`: vive en `src/`, no dentro de
  * ningún adaptador ni de `core/`, porque importa TANTO de `src/core/*`
  * (`parsearComando`, `resolverLogin`, `resolverEscalacionReembolso`,
- * `procesarDevolucion`) COMO de `src/adapters/memory/repository.ts`
- * (`buscarCredencialEmpleado`, `insertAccionEmpleado`) y de
- * `src/build-on-venta.ts` (`createVentaStore`, ADR 41).
+ * `procesarDevolucion`, `crearSolicitudInterna`) COMO de
+ * `src/adapters/memory/repository.ts` (`buscarCredencialEmpleado`,
+ * `insertAccionEmpleado`, las cinco funciones de `solicitudes_internas`) y
+ * de `src/build-on-venta.ts` (`createVentaStore`, ADR 41) / de
+ * `src/build-on-activity.ts` (`createDelegacionStore`, mismo store que usa
+ * el Despachador de roles del Entregable A — reusado tal cual, ADR 55).
  *
  * `buildOnComandoEmpleado` ENVUELVE el `onSubmit` que `buildOnSubmit` ya
  * devuelve y el `onSoporte` que `buildOnSoporte` ya devuelve — ninguno de
@@ -20,9 +23,26 @@
  * confirmación vencida (silenciosa) → `parsearComando` → delegación si no
  * matchea `/` → log de recepción → guarda de privilegio → ruteo.
  *
- * `onAgentResolved` NO se invoca para ninguno de los ocho comandos (ADR 21
+ * `onAgentResolved` NO se invoca para ninguno de los comandos (ADR 21
  * punto 5): no hay agente que anunciar. Solo se reenvía, intacto, en el
  * camino de delegación a `onSubmit`.
+ *
+ * **Hito 5, tarea 22 (ADR 55)**: `ConfirmacionPendiente` se ENSANCHA a una
+ * unión discriminada por `dominio` (`"reembolso"` | `"solicitud"`) — sigue
+ * habiendo UNA sola ranura, ver el tipo más abajo. `/solicitar` (§4.2 del
+ * diseño) es de UN SOLO PASO — sesión vigente exigida, sin eco ni
+ * confirmación — así que NUNCA construye ni compara contra
+ * `confirmacionPendiente`; la rama `dominio: "solicitud"` de la unión
+ * existía para que el tipo compilara en la tarea 22, sin escritor todavía.
+ *
+ * **Hito 5, tarea 23 (§6.4 parte 2, ADR 36, ADR 55)**: `/aprobar-solicitud`
+ * y `/rechazar-solicitud` (`manejarResolucionSolicitud`) son el escritor y
+ * lector real de la rama `dominio: "solicitud"` — mismo molde en dos pasos
+ * (eco → confirmar) que `manejarEscalacion` para reembolsos, delegando la
+ * transición pura a `resolverSolicitudInterna` (tarea 18) y el CAS
+ * transaccional a `SolicitudStorePort.aprobarSolicitud`/`rechazarSolicitud`
+ * (tarea 19). Con esto el `switch (comando.tipo)` de más abajo vuelve a ser
+ * exhaustivo — cierra el `TS2322` diferido desde la tarea 20.
  */
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -36,12 +56,16 @@ import {
 } from "./core/commands/comando-empleado.js";
 import {
   COMANDO_APROBAR_REEMBOLSO,
+  COMANDO_APROBAR_SOLICITUD,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
   COMANDO_REABRIR_REEMBOLSO,
   COMANDO_RECHAZAR_REEMBOLSO,
+  COMANDO_RECHAZAR_SOLICITUD,
+  COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
   RESULTADO_ATENDIDA,
+  RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_EXITOSA,
   RESULTADO_NO_APLICABLE,
@@ -69,12 +93,46 @@ import {
   type EscalacionListada,
   type VentaStorePort,
 } from "./core/ventas/ventas-contract.js";
+import { MOTIVO_CAS } from "./core/hitl/hitl-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
 import { formatMoney } from "./core/ventas/reporte.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
+import { crearSolicitudInterna } from "./core/solicitudes/crear-solicitud-interna.js";
+import {
+  SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_PENDIENTE,
+  SOLICITUD_ESTADO_RECHAZADA,
+  SOLICITUD_TIPOS,
+  type SolicitudEstado,
+  type SolicitudInterna,
+  type SolicitudStorePort,
+  type SolicitudTipo,
+} from "./core/solicitudes/solicitudes-contract.js";
+import {
+  ACCION_APROBAR_SOLICITUD,
+  ACCION_RECHAZAR_SOLICITUD,
+  resolverSolicitudInterna,
+  type AccionSolicitud,
+} from "./core/solicitudes/resolver-solicitud-interna.js";
+import { getSubagentDefinition } from "./core/agents/definitions.js";
+import { invokeModel } from "./core/turn-selector/invoke-model.js";
+import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
+import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { createVentaStore } from "./build-on-venta.js";
+import { createDelegacionStore } from "./build-on-activity.js";
 import type { SoporteResult } from "./build-on-soporte.js";
-import { buscarCredencialEmpleado, insertAccionEmpleado } from "./adapters/memory/repository.js";
+import {
+  buscarCredencialEmpleado,
+  insertAccionEmpleado,
+  crearSolicitudConCaso as crearSolicitudConCasoRow,
+  adjuntarDictamenSolicitud,
+  listSolicitudesInternas,
+  aprobarSolicitudInterna,
+  rechazarSolicitudInterna,
+  getCasoById,
+  CasoNotFoundError,
+  type SolicitudRow,
+} from "./adapters/memory/repository.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
 
 /**
@@ -85,15 +143,32 @@ import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port
  */
 const CONFIRMACION_TTL_MINUTOS = 2;
 
-interface ConfirmacionPendiente {
-  readonly accion: AccionEscalacion;
-  readonly ventaId: string;
-  readonly casoId: string;
-  readonly monto: number;
-  /** ATADURA a la sesión que la creó (ADR 31 punto 5). */
-  readonly empleadoId: string;
-  readonly expiraEn: string;
-}
+/**
+ * Unión discriminada por `dominio` (Hito 5, tarea 22, ADR 55): sigue
+ * habiendo UNA sola ranura (`confirmacionPendiente` más abajo), ensanchada
+ * de tipo, no duplicada. `dominio: "solicitud"` la escriben
+ * `/aprobar-solicitud`/`/rechazar-solicitud` (tarea 23) — `/solicitar` es
+ * de un solo paso (§4.2) y nunca construye ni compara esta rama.
+ */
+type ConfirmacionPendiente =
+  | {
+      readonly dominio: "reembolso";
+      readonly accion: AccionEscalacion;
+      readonly ventaId: string;
+      readonly casoId: string;
+      readonly monto: number;
+      /** ATADURA a la sesión que la creó (ADR 31 punto 5). */
+      readonly empleadoId: string;
+      readonly expiraEn: string;
+    }
+  | {
+      readonly dominio: "solicitud";
+      readonly accion: AccionSolicitud;
+      readonly solicitudId: string;
+      readonly casoId: string;
+      readonly empleadoId: string;
+      readonly expiraEn: string;
+    };
 
 export interface BuildOnComandoEmpleadoDeps {
   /** El `SubmitPromptHandler` que `buildOnSubmit` ya devuelve. Se ENVUELVE, no se toca. */
@@ -113,6 +188,13 @@ export interface BuildOnComandoEmpleadoDeps {
    * (fix de review, hallazgo de duplicación/drift).
    */
   readonly dummyPasswordHash: string;
+  /**
+   * Hito 5, tarea 22: requerido (sin default), mismo tipo que
+   * `BuildOnActivityDeps.hooks` (`build-on-activity.ts`) — necesario para
+   * cerrar `despacharDeps.invocar` sobre `invokeModel` al delegar al
+   * `validador-solicitudes`.
+   */
+  readonly hooks: ReturnType<typeof bootstrapHarness>["hooks"];
   readonly newId?: () => string; // default: randomUUID
   readonly now?: () => string; // default: () => new Date().toISOString()
   readonly logDeps?: LogTurnEventDeps;
@@ -120,6 +202,10 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly store?: VentaStorePort;
   readonly credenciales?: CredencialesEmpleadoPort;
   readonly registro?: RegistroAccionesEmpleadoPort;
+  /** Tarea 22 — default: `createSolicitudStore(db)` (más abajo). */
+  readonly solicitudStore?: SolicitudStorePort;
+  /** Tarea 22 — default: closure sobre `invokeModel`, mismo molde que `build-on-activity.ts`. */
+  readonly despacharDeps?: DespacharDelegacionDeps;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -190,9 +276,128 @@ function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
   return RESULTADO_NO_APLICABLE;
 }
 
+/** Vocabulario de `estado` para validar contra la base — mismo criterio que `SOLICITUD_TIPOS`. */
+const SOLICITUD_ESTADOS = [SOLICITUD_ESTADO_PENDIENTE, SOLICITUD_ESTADO_APROBADA, SOLICITUD_ESTADO_RECHAZADA] as const;
+
+/**
+ * Lanzado por `toPortSolicitud` cuando una fila de `solicitudes_internas`
+ * trae un `tipo`/`estado` que no pertenece a `SOLICITUD_TIPOS`/
+ * `SOLICITUD_ESTADOS`. Mismo criterio que `ActividadTipoEstadoInvalidoError`
+ * (`build-on-activity.ts`): las columnas son TEXT sin `CHECK` a propósito
+ * (repository.ts, migración `0008`), pero el ÚNICO escritor de `tipo` es
+ * `crearSolicitudInterna` — que ya valida contra `SOLICITUD_TIPOS` ANTES de
+ * escribir (§5.6) — así que un valor inválido acá es corrupción de datos
+ * real, no una entrada externa esperable.
+ */
+export class SolicitudTipoEstadoInvalidoError extends Error {
+  constructor(solicitudId: string, tipo: string, estado: string) {
+    super(`Solicitud ${solicitudId} tiene tipo/estado inválido en la base: ${tipo}/${estado}`);
+    this.name = "SolicitudTipoEstadoInvalidoError";
+  }
+}
+
+/**
+ * Traduce un `SolicitudRow` de `repository.ts` (`tipo`/`estado` como
+ * `string` suelto) a la `SolicitudInterna` del puerto (`tipo: SolicitudTipo`,
+ * `estado: SolicitudEstado`, uniones literales) — mismo criterio que
+ * `toPortActividad` (`build-on-activity.ts`). El resto de los campos ya
+ * coincide 1:1 (documentado así en `repository.ts:1744-1751`).
+ */
+function toPortSolicitud(row: SolicitudRow): SolicitudInterna {
+  const tipoValido = (SOLICITUD_TIPOS as readonly string[]).includes(row.tipo);
+  const estadoValido = (SOLICITUD_ESTADOS as readonly string[]).includes(row.estado);
+  if (!tipoValido || !estadoValido) {
+    throw new SolicitudTipoEstadoInvalidoError(row.id, row.tipo, row.estado);
+  }
+  return { ...row, tipo: row.tipo as SolicitudTipo, estado: row.estado as SolicitudEstado };
+}
+
+/**
+ * `SolicitudStorePort` por closures sobre `repository.ts` (Hito 5, tarea 22,
+ * §5.6/§6.3) — mismo patrón que `createVentaStore`/`createDelegacionStore`:
+ * delegaciones directas sin lógica de negocio propia, solo traducción vía
+ * `toPortSolicitud` de arriba. `crearSolicitudConCasoRow` es el import
+ * ALIASEADO de `repository.crearSolicitudConCaso` — mismo nombre que el
+ * método del puerto (`SolicitudStorePort.crearSolicitudConCaso`), aliaseado
+ * únicamente para que no haya un identificador de módulo y una clave de
+ * método idénticos en el mismo bloque.
+ */
+export function createSolicitudStore(db: Database.Database): SolicitudStorePort {
+  return {
+    crearSolicitudConCaso(input) {
+      const { solicitud } = crearSolicitudConCasoRow(db, input);
+      return toPortSolicitud(solicitud);
+    },
+    adjuntarDictamen(input) {
+      const row = adjuntarDictamenSolicitud(db, input);
+      return row ? toPortSolicitud(row) : undefined;
+    },
+    listarSolicitudesPendientes(filtro) {
+      return listSolicitudesInternas(db, filtro).map(toPortSolicitud);
+    },
+    aprobarSolicitud(input) {
+      const row = aprobarSolicitudInterna(db, input);
+      return row ? toPortSolicitud(row) : undefined;
+    },
+    rechazarSolicitud(input) {
+      const row = rechazarSolicitudInterna(db, input);
+      return row ? toPortSolicitud(row) : undefined;
+    },
+  };
+}
+
+/**
+ * `comando` de `registro_acciones_empleado` para cada `AccionSolicitud`
+ * (Hito 5, tarea 23) — análoga a `ACCION_ESCALACION_INFO`, pero más chica:
+ * a diferencia de `aprobar`/`rechazar`/`reabrir` reembolso, acá NO hay
+ * `estadoOrigen`/`estadoCaso` que branchear en este archivo — esa transición
+ * la resuelve enteramente `resolverSolicitudTransaccional` del lado del
+ * store (`repository.ts`, tarea 19); este dispatcher solo necesita saber a
+ * qué `comando` corresponde cada acción para la escritura FUERA de
+ * transacción del motivo `MOTIVO_CAS` (ver `manejarResolucionSolicitud`).
+ */
+const ACCION_SOLICITUD_COMANDO: Record<AccionSolicitud, string> = {
+  [ACCION_APROBAR_SOLICITUD]: COMANDO_APROBAR_SOLICITUD,
+  [ACCION_RECHAZAR_SOLICITUD]: COMANDO_RECHAZAR_SOLICITUD,
+};
+
+/**
+ * Una línea por solicitud — mismo criterio que `formatearLineaEscalacion`.
+ * Formato elegido (sin texto literal fijado por el diseño, tarea 23):
+ * `id`, `solicitante`, `tipo`, `detalle`, `estado` y `caso` siempre; el
+ * `dictamen` se agrega solo si existe (mismo binario que `confirmedAt` en
+ * `formatearLineaEscalacion` — su ausencia es la traza de que el validador
+ * no corrió o falló, ADR 49, no algo que deba imprimirse como vacío).
+ */
+function formatearLineaSolicitud(s: SolicitudInterna): string {
+  const base = `- solicitud ${s.id} | solicitante ${s.solicitanteId} | tipo ${s.tipo} | detalle ${s.detalle} | estado ${s.estado} | caso ${s.casoId}`;
+  return s.dictamen === undefined ? base : `${base} | dictamen ${s.dictamen}`;
+}
+
+function formatearListadoSolicitudes(items: readonly SolicitudInterna[]): string {
+  if (items.length === 0) {
+    return "No hay solicitudes para listar.";
+  }
+  return items.map(formatearLineaSolicitud).join("\n");
+}
+
+/**
+ * Eco de confirmación de `/aprobar-solicitud`/`/rechazar-solicitud` (§6.4,
+ * parte 2). A diferencia de `formatearEco` (reembolsos), NO recibe la
+ * `accion`: no hay ninguna salvedad dominio-específica que dependa de ella
+ * (el único caso análogo en reembolsos es `reabrir`, que agrega el dato de
+ * quién rechazó antes) — `aprobar`/`rechazar` solicitud son simétricos en
+ * el texto del eco, la diferencia vive enteramente en qué transición aplica
+ * el CAS del lado del store.
+ */
+function formatearEcoSolicitud(solicitud: SolicitudInterna): string {
+  return `solicitud ${solicitud.id} · tipo ${solicitud.tipo} · detalle ${solicitud.detalle} · caso ${solicitud.casoId} — repetí el comando para confirmar.`;
+}
+
 /** Devuelve un `SubmitPromptHandler` — MISMO tipo, MISMA firma. I1 no cambia. */
 export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): SubmitPromptHandler {
-  const { onSubmit, onSoporte, db, ventasConfig, authConfig, verificarPassword, dummyPasswordHash, logDeps } = deps;
+  const { onSubmit, onSoporte, db, ventasConfig, authConfig, verificarPassword, dummyPasswordHash, logDeps, hooks } =
+    deps;
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
   const store: VentaStorePort = deps.store ?? createVentaStore(db);
@@ -208,6 +413,30 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     deps.registro ?? { registrarAccion: (accion) => insertAccionEmpleado(db, accion) };
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
+  const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
+  /**
+   * Mismo molde que `delegacionDeps` en `build-on-activity.ts` (§6.4):
+   * `invocar` resuelve el `caso` REAL (ya insertado transaccionalmente por
+   * `store.crearSolicitudConCaso` dentro de `crearSolicitudInterna`, ANTES
+   * de que este closure corra) — `CasoNotFoundError` si no existe, nunca un
+   * placeholder. `resumeSessionId: undefined` explícito (ADR 53).
+   */
+  const despacharDeps: DespacharDelegacionDeps =
+    deps.despacharDeps ??
+    {
+      store: createDelegacionStore(db),
+      invocar: async ({ agent, casoId, tareaDelegada }) => {
+        const caso = getCasoById(db, casoId);
+        if (caso === undefined) {
+          throw new CasoNotFoundError(casoId);
+        }
+        return invokeModel(agent, { caso, resumeSessionId: undefined }, tareaDelegada, hooks);
+      },
+      getSubagente: getSubagentDefinition,
+      newId,
+      now,
+      logEvent,
+    };
 
   // Las DOS ranuras del closure (ADR 31, 36) — privadas, mutables, nunca persistidas.
   let sesion: SesionEmpleado | undefined;
@@ -345,6 +574,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
 
     const coincide =
       confirmacionPendiente !== undefined &&
+      confirmacionPendiente.dominio === "reembolso" &&
       confirmacionPendiente.ventaId === ventaIdInput &&
       confirmacionPendiente.accion === accion &&
       confirmacionPendiente.empleadoId === sesionActual.empleadoId;
@@ -363,6 +593,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       }
 
       confirmacionPendiente = {
+        dominio: "reembolso",
         accion,
         ventaId: ventaIdInput,
         casoId: resultado.venta.casoId,
@@ -402,6 +633,156 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         );
       }
       return sistema(`Esa venta ya no está en ${ACCION_ESCALACION_INFO[accion].estadoOrigen}: no se aplicó nada.`);
+    }
+
+    return sistema("No se pudo procesar ese comando.");
+  }
+
+  /**
+   * Alta de solicitud interna (Hito 5, tarea 22, §4.2, ADR 55). UN SOLO
+   * PASO — sesión vigente ya la garantizó la guarda de privilegio (§6.3
+   * paso 6): a diferencia de `manejarEscalacion`, esta función NUNCA lee ni
+   * escribe `confirmacionPendiente`. Delega el flujo completo (transacción
+   * `caso`+`solicitud`, delegación al validador, degradación de fallo ADR
+   * 40) a `crearSolicitudInterna` (tarea 17, ya probado ahí) — acá solo se
+   * cablea y se traduce el resultado a `TuiTurnResult`.
+   *
+   * `registrar(...)`: `COMANDO_SOLICITAR`/`RESULTADO_CREADA` (tarea 21) se
+   * consumen acá — mismo molde que `manejarDevolucion`, escritura FUERA de
+   * la transacción de `crearSolicitudInterna` (que no toca
+   * `registro_acciones_empleado`). Se registra únicamente el alta
+   * `"creada"` (con o sin dictamen — ambos casos devuelven `resultado:
+   * "creada"` desde `crearSolicitudInterna`, ADR 40); `tipo_desconocido` NO
+   * registra fila, mismo criterio "cero escrituras" que
+   * `crearSolicitudInterna` ya declara para ese caso — no hay `caso`/
+   * `solicitud` que correlacionar, y ningún evento de log está definido
+   * para él en design.md §7.
+   */
+  async function manejarSolicitud(
+    comando: Extract<ComandoEmpleado, { tipo: "solicitar" }>,
+    ahora: string,
+  ): Promise<TuiTurnResult> {
+    const sesionActual = sesion as SesionEmpleado;
+
+    const resultado = await crearSolicitudInterna(
+      { tipo: comando.tipoSolicitud, detalle: comando.detalle, solicitanteId: sesionActual.empleadoId },
+      { store: solicitudStore, despacharDeps },
+    );
+
+    if (resultado.resultado === "tipo_desconocido") {
+      return sistema(
+        `No conozco el tipo de solicitud "${comando.tipoSolicitud}". Tipos válidos: ${SOLICITUD_TIPOS.join(", ")}.`,
+      );
+    }
+
+    const { solicitud } = resultado;
+    registrar({ comando: COMANDO_SOLICITAR, casoId: solicitud.casoId, resultado: RESULTADO_CREADA }, ahora);
+
+    const detalleDictamen =
+      solicitud.dictamen !== undefined
+        ? ` Dictamen: ${solicitud.dictamen}`
+        : " Sin dictamen: la validación automática no se pudo completar.";
+    return sistema(`Solicitud ${solicitud.id} creada (caso ${solicitud.casoId}).${detalleDictamen}`);
+  }
+
+  /**
+   * Resolución de `/aprobar-solicitud`/`/rechazar-solicitud` en dos pasos
+   * (Hito 5, tarea 23, §6.4 parte 2, ADR 36, ADR 55). Molde EXACTO de
+   * `manejarEscalacion`, adaptado al dominio solicitud: delega toda la
+   * lógica pura y síncrona a `resolverSolicitudInterna` (tarea 18) y al
+   * CAS transaccional de `SolicitudStorePort` (tarea 19) — acá solo se
+   * arma/compara/consume `confirmacionPendiente` (rama `dominio:
+   * "solicitud"` de la unión, ADR 55) y se traduce el resultado a
+   * `TuiTurnResult`.
+   *
+   * Escritura de `registrar(...)`: SOLO para `resultado: "no_aplicable"`
+   * con `motivo: MOTIVO_CAS` — si el CAS hubiese matcheado, la fila ya
+   * viajó DENTRO de la transacción SQL de `aprobarSolicitudInterna`/
+   * `rechazarSolicitudInterna` (`repository.ts`, tarea 19,
+   * `resolverSolicitudTransaccional`); si no hubo transacción (el CAS no
+   * matcheó), no hay otra fila posible, así que se escribe FUERA, igual
+   * que el molde de `manejarEscalacion` (líneas 389-403 de `v1.4.0`). Para
+   * `MOTIVO_NO_ENCONTRADA` NO se registra: no hay `casoId` que
+   * correlacionar (`resolver-solicitud-interna.ts`, ese branch no lo
+   * incluye) y `resolverSolicitudInterna` ya logueó el evento
+   * `solicitud-resolucion-no-aplicable` internamente — duplicarlo acá
+   * sería una segunda escritura del mismo hecho.
+   */
+  function manejarResolucionSolicitud(
+    accion: AccionSolicitud,
+    solicitudIdInput: string | undefined,
+    ahora: string,
+  ): TuiTurnResult {
+    const sesionActual = sesion as SesionEmpleado;
+
+    if (solicitudIdInput === undefined) {
+      const resultado = resolverSolicitudInterna(
+        { accion, confirmado: false, sesion: sesionActual },
+        { store: solicitudStore, newId, now, logEvent },
+      );
+      if (resultado.resultado !== "listado") {
+        return sistema("No se pudo listar las solicitudes.");
+      }
+      return sistema(formatearListadoSolicitudes(resultado.items));
+    }
+
+    const coincide =
+      confirmacionPendiente !== undefined &&
+      confirmacionPendiente.dominio === "solicitud" &&
+      confirmacionPendiente.solicitudId === solicitudIdInput &&
+      confirmacionPendiente.accion === accion &&
+      confirmacionPendiente.empleadoId === sesionActual.empleadoId;
+
+    if (!coincide) {
+      const resultado = resolverSolicitudInterna(
+        { accion, solicitudId: solicitudIdInput, confirmado: false, sesion: sesionActual },
+        { store: solicitudStore, newId, now, logEvent },
+      );
+
+      if (resultado.resultado === "no_aplicable") {
+        return sistema(`No hay ninguna solicitud ${solicitudIdInput} pendiente de resolución.`);
+      }
+      if (resultado.resultado !== "requiere_confirmacion") {
+        return sistema("No se pudo procesar ese comando.");
+      }
+
+      confirmacionPendiente = {
+        dominio: "solicitud",
+        accion,
+        solicitudId: solicitudIdInput,
+        casoId: resultado.item.casoId,
+        empleadoId: sesionActual.empleadoId,
+        expiraEn: new Date(Date.parse(ahora) + CONFIRMACION_TTL_MINUTOS * 60_000).toISOString(),
+      };
+      return sistema(formatearEcoSolicitud(resultado.item));
+    }
+
+    // Coincide: se CONSUME antes de ejecutar (ADR 36).
+    confirmacionPendiente = undefined;
+    const resultado = resolverSolicitudInterna(
+      { accion, solicitudId: solicitudIdInput, confirmado: true, sesion: sesionActual },
+      { store: solicitudStore, newId, now, logEvent },
+    );
+
+    if (resultado.resultado === "aplicada") {
+      return sistema(`Listo: la solicitud ${solicitudIdInput} quedó ${resultado.estadoFinal}.`);
+    }
+
+    if (resultado.resultado === "no_aplicable") {
+      if (resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
+        // La fila ya se hubiese escrito DENTRO de la transacción si el CAS
+        // matcheaba; acá no hubo transacción, así que se escribe FUERA —
+        // único caso en que este comando privilegiado pasa por `registrar`.
+        registrar(
+          {
+            comando: ACCION_SOLICITUD_COMANDO[accion],
+            casoId: resultado.casoId,
+            resultado: RESULTADO_NO_APLICABLE,
+          },
+          ahora,
+        );
+      }
+      return sistema("Esa solicitud ya no está pendiente: no se aplicó nada.");
     }
 
     return sistema("No se pudo procesar ese comando.");
@@ -467,6 +848,12 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarEscalacion(ACCION_RECHAZAR, comando.ventaId, ahora);
       case "reabrir_reembolso":
         return manejarEscalacion(ACCION_REABRIR, comando.ventaId, ahora);
+      case "solicitar":
+        return manejarSolicitud(comando, ahora);
+      case "aprobar_solicitud":
+        return manejarResolucionSolicitud(ACCION_APROBAR_SOLICITUD, comando.solicitudId, ahora);
+      case "rechazar_solicitud":
+        return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }

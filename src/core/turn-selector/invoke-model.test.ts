@@ -1,14 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "../agents/definitions.js";
-import { DEFAULT_AGENT_MODEL } from "../agents/definitions.js";
+import { DEFAULT_AGENT_MODEL, listSubagentDefinitions } from "../agents/definitions.js";
 import type { AssembledContext, CasoSnapshot } from "./assemble-context.js";
 import { createHookEngine } from "../hooks/hook-engine.js";
-import {
-  invokeModel,
-  ModelResponseIncompleteError,
-  toMainThreadAgentDescription,
-} from "./invoke-model.js";
+import { invokeModel, ModelResponseIncompleteError } from "./invoke-model.js";
 
 /**
  * Fake SDK message fixtures for `queryFn` — see `invoke-model.ts` module doc
@@ -33,11 +29,16 @@ function fakeSystemInitMessage(sessionId: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
-function fakeAssistantTextMessage(text: string, sessionId: string): SDKMessage {
+function fakeAssistantTextMessage(
+  text: string,
+  sessionId: string,
+  parentToolUseId: string | null = null,
+): SDKMessage {
   return {
     type: "assistant",
     message: { content: [{ type: "text", text }] },
     session_id: sessionId,
+    parent_tool_use_id: parentToolUseId,
   } as unknown as SDKMessage;
 }
 
@@ -81,6 +82,7 @@ function fakeQueryFn(messages: readonly SDKMessage[]) {
 function makeAgent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
     id: "agente-conversacional",
+    description: "agente de prueba",
     systemPrompt: "system prompt",
     allowedTools: [],
     model: DEFAULT_AGENT_MODEL,
@@ -129,6 +131,7 @@ describe("invokeModel", () => {
   it("registers the agent under options.agents[id] with real tool restriction (options.tools, not options.allowedTools) and selects it via options.agent for the main thread (Fix 1)", async () => {
     const agent = makeAgent({
       id: "agente-conversacional",
+      description: "descripcion de prueba, forwarded verbatim",
       systemPrompt: "sos un agente de prueba",
       allowedTools: ["Read", "Grep"],
       model: "sonnet",
@@ -140,7 +143,10 @@ describe("invokeModel", () => {
       fakeResultSuccessMessage("ok", "sdk-session-1"),
     ]);
 
-    await invokeModel(agent, context, "prompt de prueba", hookEngine, queryFn);
+    // subagentes: [] — isolates this test's exact-match assertion from the
+    // Hito 5 tarea 9 default (listSubagentDefinitions()), which is covered
+    // by its own dedicated tests below.
+    await invokeModel(agent, context, "prompt de prueba", hookEngine, queryFn, undefined, []);
 
     expect(queryFn).toHaveBeenCalledWith({
       prompt: "prompt de prueba",
@@ -148,7 +154,9 @@ describe("invokeModel", () => {
         agent: "agente-conversacional",
         agents: {
           "agente-conversacional": {
-            description: toMainThreadAgentDescription("agente-conversacional"),
+            // Hito 5, tarea 9: forwarded verbatim, no longer synthesized
+            // (toMainThreadAgentDescription was retired).
+            description: "descripcion de prueba, forwarded verbatim",
             prompt: "sos un agente de prueba",
             tools: ["Read", "Grep"],
             model: "sonnet",
@@ -357,5 +365,120 @@ describe("invokeModel", () => {
     // `not.toHaveProperty("allowedTools")` for an agent with
     // `allowedTools: []` — same criterion tasks.md tarea 8 asks for, so it
     // is not duplicated here.
+  });
+
+  // Hito 5, tarea 9 — toQueryOptions registers multiple agents
+  // (options.agents[parent] + options.agents[each subagent role]) and
+  // toMainThreadAgentDescription is retired. See design.md §5.8.
+  describe("subagentes en options.agents (Hito 5, tarea 9)", () => {
+    it("registers the parent agent and the four subagent roles in options.agents by default, each with its own description, and still selects the parent via options.agent", async () => {
+      const agent = makeAgent({
+        id: "agente-conversacional",
+        description: "descripcion del agente principal",
+      });
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-subagentes"),
+        fakeResultSuccessMessage("ok", "sdk-session-subagentes"),
+      ]);
+
+      // No subagentes argument — production omits it too (DI default,
+      // same pattern as `candidates` in resolve-turn.ts / `queryFn` here).
+      await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      const registeredAgents = callArgs?.options?.agents ?? {};
+
+      expect(callArgs?.options?.agent).toBe("agente-conversacional");
+      expect(Object.keys(registeredAgents)).toHaveLength(5);
+      expect(registeredAgents["agente-conversacional"]?.description).toBe(
+        "descripcion del agente principal",
+      );
+      for (const subagente of listSubagentDefinitions()) {
+        expect(registeredAgents[subagente.id]?.description).toBe(subagente.description);
+      }
+    });
+
+    it("forwards agent.description verbatim into options.agents[id].description, with no synthesis (toSdkAgentDefinition, toMainThreadAgentDescription retired)", async () => {
+      const agent = makeAgent({
+        id: "agente-conversacional",
+        description: "Descripción literal fijada por definitions.ts, sin sintetizar.",
+      });
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-desc"),
+        fakeResultSuccessMessage("ok", "sdk-session-desc"),
+      ]);
+
+      await invokeModel(agent, context, "hola", hookEngine, queryFn, undefined, []);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      const registeredAgent = callArgs?.options?.agents?.["agente-conversacional"];
+      expect(registeredAgent?.description).toBe(
+        "Descripción literal fijada por definitions.ts, sin sintetizar.",
+      );
+    });
+
+    it("does not widen options.allowedTools with a registered-but-not-invoked subagent's tools — CONVERSATIONAL_AGENT gains no delegation allowedTools", async () => {
+      const agent = makeAgent({ id: "agente-conversacional", allowedTools: [] });
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-noauto"),
+        fakeResultSuccessMessage("ok", "sdk-session-noauto"),
+      ]);
+
+      // Real subagentes DO have non-empty allowedTools (planner/developer
+      // have Read/Glob/Grep) — proves the assertion below isn't vacuous.
+      expect(listSubagentDefinitions().some((s) => s.allowedTools.length > 0)).toBe(true);
+
+      await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      expect(callArgs?.options).not.toHaveProperty("allowedTools");
+    });
+  });
+
+  // Hito 5, tarea 9 — InvokeModelResult.parentToolUseId, optional and
+  // additive: read off an assistant message's parent_tool_use_id when
+  // present, absent when no message carries one.
+  describe("parentToolUseId (Hito 5, tarea 9)", () => {
+    it("returns a result without parentToolUseId when no message carries one, without breaking the turn", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-sinparent"),
+        fakeAssistantTextMessage("respuesta", "sdk-session-sinparent", null),
+        fakeResultSuccessMessage("respuesta", "sdk-session-sinparent"),
+      ]);
+
+      const result = await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      expect(result.parentToolUseId).toBeUndefined();
+      // toEqual ignores undefined-valued keys, so this also confirms the
+      // shape stays backwards-compatible for every existing caller.
+      expect(result).toEqual({
+        responseText: "respuesta",
+        sdkSessionId: "sdk-session-sinparent",
+      });
+    });
+
+    it("captures parentToolUseId from an assistant message that carries one", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-conparent"),
+        fakeAssistantTextMessage("respuesta", "sdk-session-conparent", "tool-use-123"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-conparent"),
+      ]);
+
+      const result = await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      expect(result.parentToolUseId).toBe("tool-use-123");
+    });
   });
 });

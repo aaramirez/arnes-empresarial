@@ -118,6 +118,7 @@ function fakeMemory(): MemoryPort {
 function makeAgent(id: string): AgentDefinition {
   return {
     id,
+    description: "agente de prueba",
     systemPrompt: `system prompt de ${id}`,
     allowedTools: [],
     model: DEFAULT_AGENT_MODEL,
