@@ -14,6 +14,9 @@ export const COMANDO_REABRIR_REEMBOLSO = "/reabrir-reembolso";
 export const COMANDO_SOLICITAR = "/solicitar";
 export const COMANDO_APROBAR_SOLICITUD = "/aprobar-solicitud";
 export const COMANDO_RECHAZAR_SOLICITUD = "/rechazar-solicitud";
+export const COMANDO_VER_PROPUESTA = "/ver-propuesta";
+export const COMANDO_APLICAR_PROPUESTA = "/aplicar-propuesta";
+export const COMANDO_DESCARTAR_PROPUESTA = "/descartar-propuesta";
 
 /* ── Vocabulario de `registro_acciones_empleado.resultado` (tabla del ADR 27) ── */
 export const RESULTADO_EXITOSA = "exitosa"; // /login
@@ -25,12 +28,14 @@ export const RESULTADO_APROBADA = "aprobada"; // /aprobar-reembolso
 export const RESULTADO_RECHAZADA = "rechazada"; // /rechazar-reembolso
 export const RESULTADO_REABIERTA = "reabierta"; // /reabrir-reembolso
 export const RESULTADO_CREADA = "creada"; // /solicitar
+export const RESULTADO_APLICADA = "aplicada"; // /aplicar-propuesta
+export const RESULTADO_DESCARTADA = "descartada"; // /descartar-propuesta
 export const RESULTADO_NO_APLICABLE = "no_aplicable";
 
 /**
- * Una fila del registro. `ventaId`/`casoId` son OPCIONALES (columnas
- * nullable): una consulta de soporte no tiene venta; una devolución con
- * token inválido no tiene ninguna de las dos.
+ * Una fila del registro. `ventaId`/`casoId`/`propuestaId` son OPCIONALES
+ * (columnas nullable): una consulta de soporte no tiene venta; una
+ * devolución con token inválido no tiene ninguna de las tres.
  *
  * ★ LO QUE ESTE TIPO NO TIENE, Y NO PUEDE TENER (ADR 27) ★
  *   token_confirmacion · password · texto de la consulta · motivo del
@@ -44,6 +49,8 @@ export interface AccionEmpleado {
   readonly comando: string;
   readonly ventaId?: string;
   readonly casoId?: string;
+  /** Sólo para `/ver-propuesta`, `/aplicar-propuesta`, `/descartar-propuesta` (ADR 63). */
+  readonly propuestaId?: string;
   readonly resultado: string;
   readonly ocurridoAt: string;
 }

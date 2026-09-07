@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
   COMANDO_REABRIR_REEMBOLSO,
@@ -11,9 +13,12 @@ import {
   COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
+  COMANDO_VER_PROPUESTA,
+  RESULTADO_APLICADA,
   RESULTADO_APROBADA,
   RESULTADO_ATENDIDA,
   RESULTADO_CREADA,
+  RESULTADO_DESCARTADA,
   RESULTADO_EXITOSA,
   RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
@@ -38,6 +43,9 @@ describe("vocabulario de comando", () => {
     expect(COMANDO_SOLICITAR).toBe("/solicitar");
     expect(COMANDO_APROBAR_SOLICITUD).toBe("/aprobar-solicitud");
     expect(COMANDO_RECHAZAR_SOLICITUD).toBe("/rechazar-solicitud");
+    expect(COMANDO_VER_PROPUESTA).toBe("/ver-propuesta");
+    expect(COMANDO_APLICAR_PROPUESTA).toBe("/aplicar-propuesta");
+    expect(COMANDO_DESCARTAR_PROPUESTA).toBe("/descartar-propuesta");
   });
 });
 
@@ -53,6 +61,8 @@ describe("vocabulario de resultado", () => {
     expect(RESULTADO_REABIERTA).toBe("reabierta");
     expect(RESULTADO_NO_APLICABLE).toBe("no_aplicable");
     expect(RESULTADO_CREADA).toBe("creada");
+    expect(RESULTADO_APLICADA).toBe("aplicada");
+    expect(RESULTADO_DESCARTADA).toBe("descartada");
   });
 });
 
@@ -85,6 +95,20 @@ describe("AccionEmpleado", () => {
     expect(accion).not.toHaveProperty("tokenConfirmacion");
     expect(accion).not.toHaveProperty("consulta");
     expect(accion).not.toHaveProperty("motivo");
+  });
+
+  it("acepta propuestaId opcional (ADR 63), sin exigirlo en acciones que no son de propuestas", () => {
+    const accion: AccionEmpleado = {
+      id: "accion-1",
+      empleadoId: "ana",
+      comando: COMANDO_APLICAR_PROPUESTA,
+      propuestaId: "propuesta-1",
+      casoId: "caso-1",
+      resultado: RESULTADO_APLICADA,
+      ocurridoAt: "2026-09-01T00:00:00.000Z",
+    };
+
+    expect(accion.propuestaId).toBe("propuesta-1");
   });
 });
 
