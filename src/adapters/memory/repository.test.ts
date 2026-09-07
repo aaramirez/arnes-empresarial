@@ -2247,4 +2247,108 @@ describe("repository", () => {
       ]);
     });
   });
+
+  describe("solicitudes_internas (migración 0008)", () => {
+    function insertSolicitudDePrueba(
+      db: Database.Database,
+      overrides: Partial<{
+        id: string;
+        casoId: string;
+        solicitanteId: string;
+        tipo: string;
+        detalle: string;
+        estado: string;
+        resueltaPor: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }> = {},
+    ) {
+      const fila = {
+        id: "solicitud-1",
+        casoId: "caso-1",
+        solicitanteId: "empleado-arbitrario",
+        tipo: "vacaciones",
+        detalle: "una semana en marzo",
+        estado: "pendiente_aprobacion_humana",
+        resueltaPor: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+        updatedAt: "2026-09-07T00:00:00.000Z",
+        ...overrides,
+      };
+
+      db
+        .prepare(
+          "INSERT INTO solicitudes_internas (id, caso_id, solicitante_id, tipo, detalle, estado, resuelta_por, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          fila.id,
+          fila.casoId,
+          fila.solicitanteId,
+          fila.tipo,
+          fila.detalle,
+          fila.estado,
+          fila.resueltaPor,
+          fila.createdAt,
+          fila.updatedAt,
+        );
+    }
+
+    it("crea la tabla solicitudes_internas y los índices idx_solicitudes_caso (UNIQUE) e idx_solicitudes_estado", () => {
+      db = openDatabase(":memory:");
+
+      const tableNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      const indexNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(tableNames).toContain("solicitudes_internas");
+      expect(indexNames).toContain("idx_solicitudes_caso");
+      expect(indexNames).toContain("idx_solicitudes_estado");
+
+      const casoIndexInfo = (
+        db!.prepare("PRAGMA index_list(solicitudes_internas)").all() as {
+          name: string;
+          unique: number;
+        }[]
+      ).find((row) => row.name === "idx_solicitudes_caso");
+      expect(casoIndexInfo?.unique).toBe(1);
+    });
+
+    it("rechaza insertar dos solicitudes con el mismo caso_id (UNIQUE)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      insertSolicitudDePrueba(db, { id: "solicitud-1" });
+
+      expect(() =>
+        insertSolicitudDePrueba(db!, { id: "solicitud-2" }),
+      ).toThrow(/UNIQUE/);
+    });
+
+    it("permite insertar con solicitante_id y resuelta_por arbitrarios, sin FK (ADR 49)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      expect(() =>
+        insertSolicitudDePrueba(db!, {
+          solicitanteId: "empleado-que-no-existe-en-ninguna-tabla",
+          resueltaPor: "otro-empleado-inexistente",
+        }),
+      ).not.toThrow();
+    });
+
+    it("rechaza insertar una solicitud con un caso_id inexistente", () => {
+      db = openDatabase(":memory:");
+
+      expect(() =>
+        insertSolicitudDePrueba(db!, { casoId: "caso-inexistente" }),
+      ).toThrow(/FOREIGN KEY/);
+    });
+  });
 });
