@@ -2034,3 +2034,163 @@ export function rechazarSolicitudInterna(
     resultado: "rechazada",
   });
 }
+
+/**
+ * Public shape of `propuestas_cambio`, camelCase — field-for-field the same
+ * as `PropuestaCambio` in `src/core/propuestas/propuestas-contract.ts`
+ * (Hito 5.1, tarea 17, todavía no existe). Este adaptador nunca importa esa
+ * futura contract (`src/core/` es el único lado que importa a través del
+ * límite), pero las formas tienen que calzar 1:1 para que el composition
+ * root pueda cablear este módulo detrás de `PropuestaStorePort` sin capa de
+ * traducción — mismo criterio que `SolicitudRow`.
+ */
+export interface PropuestaRow {
+  readonly id: string;
+  readonly casoId: string;
+  readonly delegacionId?: string;
+  readonly baseCommit: string;
+  readonly ramaWorktree: string;
+  readonly patch: string;
+  readonly patchBytes: number;
+  readonly archivos: number;
+  readonly lineasAgregadas: number;
+  readonly lineasEliminadas: number;
+  readonly estado: string;
+  readonly motivo?: string;
+  readonly resueltaPor?: string;
+  readonly resueltaAt?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface PropuestaSqlRow {
+  id: string;
+  caso_id: string;
+  delegacion_id: string | null;
+  base_commit: string;
+  rama_worktree: string;
+  patch: string;
+  patch_bytes: number;
+  archivos: number;
+  lineas_agregadas: number;
+  lineas_eliminadas: number;
+  estado: string;
+  motivo: string | null;
+  resuelta_por: string | null;
+  resuelta_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const PROPUESTA_SELECT_COLUMNS =
+  "id, caso_id, delegacion_id, base_commit, rama_worktree, patch, patch_bytes, archivos, lineas_agregadas, lineas_eliminadas, estado, motivo, resuelta_por, resuelta_at, created_at, updated_at";
+
+function rowToPropuesta(row: PropuestaSqlRow): PropuestaRow {
+  return {
+    id: row.id,
+    casoId: row.caso_id,
+    ...(row.delegacion_id !== null ? { delegacionId: row.delegacion_id } : {}),
+    baseCommit: row.base_commit,
+    ramaWorktree: row.rama_worktree,
+    patch: row.patch,
+    patchBytes: row.patch_bytes,
+    archivos: row.archivos,
+    lineasAgregadas: row.lineas_agregadas,
+    lineasEliminadas: row.lineas_eliminadas,
+    estado: row.estado,
+    ...(row.motivo !== null ? { motivo: row.motivo } : {}),
+    ...(row.resuelta_por !== null ? { resueltaPor: row.resuelta_por } : {}),
+    ...(row.resuelta_at !== null ? { resueltaAt: row.resuelta_at } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export interface CrearPropuestaDbInput {
+  readonly id: string;
+  readonly casoId: string;
+  readonly delegacionId?: string;
+  readonly baseCommit: string;
+  readonly ramaWorktree: string;
+  readonly patch: string;
+  readonly patchBytes: number;
+  readonly archivos: number;
+  readonly lineasAgregadas: number;
+  readonly lineasEliminadas: number;
+  readonly ahora: string;
+}
+
+/**
+ * `INSERT` de una propuesta recién capturada (design.md §7.2, spec
+ * `propuesta-cambio-hitl` req. "Un diff capturado crea una fila en estado
+ * inicial"). `estado` NUNCA viaja como parámetro — esta función es el único
+ * escritor del estado inicial, y ese estado es siempre
+ * `pendiente_aprobacion_humana`; el literal va fijo en el SQL, mismo
+ * criterio que `listSolicitudesInternas`. `delegacionId` ausente ⇒
+ * `delegacion_id = NULL` (ADR 48: la evidencia no se pierde por una
+ * constraint). `created_at = updated_at = ahora`, molde de
+ * `insertCredencialEmpleado`.
+ */
+export function insertPropuestaCambio(db: Database.Database, input: CrearPropuestaDbInput): PropuestaRow {
+  const row = db
+    .prepare(
+      `INSERT INTO propuestas_cambio
+         (id, caso_id, delegacion_id, base_commit, rama_worktree, patch, patch_bytes, archivos, lineas_agregadas, lineas_eliminadas, estado, created_at, updated_at)
+       VALUES (@id, @casoId, @delegacionId, @baseCommit, @ramaWorktree, @patch, @patchBytes, @archivos, @lineasAgregadas, @lineasEliminadas, @estado, @ahora, @ahora)
+       RETURNING ${PROPUESTA_SELECT_COLUMNS}`,
+    )
+    .get({
+      id: input.id,
+      casoId: input.casoId,
+      delegacionId: input.delegacionId ?? null,
+      baseCommit: input.baseCommit,
+      ramaWorktree: input.ramaWorktree,
+      patch: input.patch,
+      patchBytes: input.patchBytes,
+      archivos: input.archivos,
+      lineasAgregadas: input.lineasAgregadas,
+      lineasEliminadas: input.lineasEliminadas,
+      estado: "pendiente_aprobacion_humana",
+      ahora: input.ahora,
+    }) as PropuestaSqlRow;
+  return rowToPropuesta(row);
+}
+
+/** `SELECT ... WHERE id = ?`. `undefined` si no existe — molde de `getCasoById`. */
+export function getPropuestaCambio(db: Database.Database, propuestaId: string): PropuestaRow | undefined {
+  const row = db
+    .prepare(`SELECT ${PROPUESTA_SELECT_COLUMNS} FROM propuestas_cambio WHERE id = ?`)
+    .get(propuestaId) as PropuestaSqlRow | undefined;
+  return row ? rowToPropuesta(row) : undefined;
+}
+
+/** Tope del listado sin filtro por id — molde de `LIMITE_LISTADO_SOLICITUDES_DEFAULT`. */
+const LIMITE_LISTADO_PROPUESTAS_DEFAULT = 20;
+
+/**
+ * Listado filtrable por `estado`/`propuestaId`, acotado por `limite` y
+ * ordenado por `created_at` — molde de `listEscalacionesReembolso`, pero con
+ * `estado` opcional (a diferencia de aquel): `/ver-propuesta` sin argumento
+ * filtra por `pendiente_aprobacion_humana`, pero la evidencia de
+ * `docs/progreso/` necesita poder leer cualquier estado.
+ */
+export function listPropuestasCambio(
+  db: Database.Database,
+  filtro: { readonly estado?: string; readonly propuestaId?: string; readonly limite?: number } = {},
+): readonly PropuestaRow[] {
+  const rows = db
+    .prepare(
+      `SELECT ${PROPUESTA_SELECT_COLUMNS}
+         FROM propuestas_cambio
+        WHERE (@estado IS NULL OR estado = @estado)
+          AND (@propuestaId IS NULL OR id = @propuestaId)
+        ORDER BY created_at
+        LIMIT @limite`,
+    )
+    .all({
+      estado: filtro.estado ?? null,
+      propuestaId: filtro.propuestaId ?? null,
+      limite: filtro.limite ?? LIMITE_LISTADO_PROPUESTAS_DEFAULT,
+    }) as PropuestaSqlRow[];
+  return rows.map(rowToPropuesta);
+}

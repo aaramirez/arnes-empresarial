@@ -34,15 +34,18 @@ import {
   getActividadById,
   getCasoById,
   getLatestSesionAgente,
+  getPropuestaCambio,
   getProyectoById,
   getVentaById,
   insertAccionEmpleado,
   insertCredencialEmpleado,
   insertDelegacion,
+  insertPropuestaCambio,
   listAccionesEmpleadoPorVenta,
   listComisionesPorPeriodo,
   listDelegacionesPorCaso,
   listEscalacionesReembolso,
+  listPropuestasCambio,
   listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
   reabrirEscalacionReembolso,
@@ -60,6 +63,7 @@ import {
   type CreateCasoInput,
   type CreateSesionAgenteInput,
   type CreateVentaConCasoInput,
+  type CrearPropuestaDbInput,
   type CrearSolicitudConCasoInput,
   type InsertDelegacionInput,
 } from "./repository.js";
@@ -2466,6 +2470,119 @@ describe("repository", () => {
       db = openDatabase(":memory:");
 
       expect(() => runMigrations(db!)).not.toThrow();
+    });
+  });
+
+  describe("insertPropuestaCambio / getPropuestaCambio / listPropuestasCambio (Hito 5.1, tarea 14)", () => {
+    function buildPropuestaInput(overrides: Partial<CrearPropuestaDbInput> = {}): CrearPropuestaDbInput {
+      return {
+        id: "propuesta-1",
+        casoId: "caso-1",
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-1-uuid",
+        patch: "diff --git a/x b/x\n+hola\n",
+        patchBytes: 28,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        ahora: "2026-09-07T00:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    describe("insertPropuestaCambio", () => {
+      it("crea una fila en estado pendiente_aprobacion_humana con los contadores exactos", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+
+        const propuesta = insertPropuestaCambio(db, buildPropuestaInput());
+
+        expect(propuesta).toEqual({
+          id: "propuesta-1",
+          casoId: "caso-1",
+          baseCommit: "abc123",
+          ramaWorktree: "harness/caso-caso-1-uuid",
+          patch: "diff --git a/x b/x\n+hola\n",
+          patchBytes: 28,
+          archivos: 1,
+          lineasAgregadas: 1,
+          lineasEliminadas: 0,
+          estado: "pendiente_aprobacion_humana",
+          createdAt: "2026-09-07T00:00:00.000Z",
+          updatedAt: "2026-09-07T00:00:00.000Z",
+        });
+      });
+
+      it("persiste igual sin delegacion_id (ADR 48): la fila queda sin delegacionId", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+
+        const propuesta = insertPropuestaCambio(db, buildPropuestaInput());
+
+        expect(propuesta.delegacionId).toBeUndefined();
+      });
+    });
+
+    describe("getPropuestaCambio", () => {
+      it("devuelve undefined para un id inexistente", () => {
+        db = openDatabase(":memory:");
+
+        expect(getPropuestaCambio(db, "propuesta-inexistente")).toBeUndefined();
+      });
+
+      it("devuelve la fila insertada por id", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+
+        expect(getPropuestaCambio(db, "propuesta-1")?.estado).toBe("pendiente_aprobacion_humana");
+      });
+    });
+
+    describe("listPropuestasCambio", () => {
+      function crearSegundaPropuesta(ahora: string) {
+        createCaso(db!, buildCaso({ id: "caso-2" }));
+        insertPropuestaCambio(db!, buildPropuestaInput({ id: "propuesta-2", casoId: "caso-2", ahora }));
+      }
+
+      it("filtra por estado", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+        crearSegundaPropuesta("2026-09-07T00:05:00.000Z");
+        db!.prepare("UPDATE propuestas_cambio SET estado = 'aplicada' WHERE id = ?").run("propuesta-2");
+
+        const pendientes = listPropuestasCambio(db, { estado: "pendiente_aprobacion_humana" });
+
+        expect(pendientes.map((p) => p.id)).toEqual(["propuesta-1"]);
+      });
+
+      it("filtra opcionalmente por propuestaId", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+        crearSegundaPropuesta("2026-09-07T00:05:00.000Z");
+
+        const filtradas = listPropuestasCambio(db, { propuestaId: "propuesta-2" });
+
+        expect(filtradas.map((p) => p.id)).toEqual(["propuesta-2"]);
+      });
+
+      it("ordena por created_at y respeta el limite", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        // Se inserta primero la que tiene el `created_at` MÁS TARDÍO, para que
+        // el orden del resultado sólo pueda explicarse por `ORDER BY
+        // created_at`, nunca por el orden de inserción.
+        insertPropuestaCambio(db, buildPropuestaInput({ ahora: "2026-09-07T00:10:00.000Z" }));
+        crearSegundaPropuesta("2026-09-07T00:05:00.000Z");
+
+        const listado = listPropuestasCambio(db);
+        expect(listado.map((p) => p.id)).toEqual(["propuesta-2", "propuesta-1"]);
+
+        const limitadas = listPropuestasCambio(db, { limite: 1 });
+        expect(limitadas.map((p) => p.id)).toEqual(["propuesta-2"]);
+      });
     });
   });
 
