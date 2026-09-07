@@ -59,7 +59,7 @@ function resolvePositiveNumber(raw: string | undefined, defaultValue: number): n
     return defaultValue;
   }
   const parsed = Number(raw);
-  if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
+  if (!Number.isFinite(parsed) || parsed <= 0) {
     return defaultValue;
   }
   return parsed;
@@ -77,10 +77,11 @@ function resolvePositiveNumber(raw: string | undefined, defaultValue: number): n
  * the repo root itself.
  */
 function resolveNonBlankString(raw: string | undefined, defaultValue: string): string {
-  if (raw === undefined || raw.trim() === "") {
+  if (raw === undefined) {
     return defaultValue;
   }
-  return raw;
+  const trimmed = raw.trim();
+  return trimmed === "" ? defaultValue : trimmed;
 }
 
 /**

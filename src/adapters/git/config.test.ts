@@ -31,6 +31,12 @@ describe("resolveGitConfig", () => {
     expect(config.bin).toBe(DEFAULT_GIT_BIN);
   });
 
+  it("trims leading/trailing whitespace from HARNESS_GIT_BIN", () => {
+    const config = resolveGitConfig({ HARNESS_GIT_BIN: " /usr/bin/git " });
+
+    expect(config.bin).toBe("/usr/bin/git");
+  });
+
   it("overrides only timeoutMs from HARNESS_GIT_TIMEOUT_MS", () => {
     const config = resolveGitConfig({ HARNESS_GIT_TIMEOUT_MS: "60000" });
 
@@ -81,6 +87,12 @@ describe("resolveWorktreeConfig", () => {
     const config = resolveWorktreeConfig({ HARNESS_WORKTREE_ROOT: "" });
 
     expect(config.worktreeRoot).toBe(DEFAULT_WORKTREE_ROOT);
+  });
+
+  it("trims leading/trailing whitespace from HARNESS_WORKTREE_ROOT", () => {
+    const config = resolveWorktreeConfig({ HARNESS_WORKTREE_ROOT: " tmp/worktrees " });
+
+    expect(config.worktreeRoot).toBe("tmp/worktrees");
   });
 
   it("overrides only ttlMs from HARNESS_WORKTREE_TTL_MS", () => {
