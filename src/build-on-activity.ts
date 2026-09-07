@@ -39,7 +39,8 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import type { KeyedQueue } from "./core/concurrency/keyed-queue.js";
-import { runActivityTurn } from "./core/activity/run-activity-turn.js";
+import { runActivityTurn, type ActivityTurnOutcome } from "./core/activity/run-activity-turn.js";
+import { despacharRevisionPorRoles } from "./core/activity/cadena-revision.js";
 import {
   ACTIVIDAD_ESTADOS,
   ACTIVIDAD_TIPOS,
@@ -51,6 +52,12 @@ import {
   type IncomingActivityEvent,
 } from "./core/activity/activity-contract.js";
 import { handleTurn, type MemoryPort } from "./core/turn-selector/handle-turn.js";
+import { invokeModel } from "./core/turn-selector/invoke-model.js";
+import {
+  type DelegacionStorePort,
+  type DespacharDelegacionDeps,
+} from "./core/turn-selector/dispatch-delegation.js";
+import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { TurnFailedError } from "./core/turn-selector/turn-error.js";
@@ -59,6 +66,10 @@ import {
   createCasoConActividad,
   findActividadPorReferencia,
   updateActividad,
+  insertDelegacion,
+  completarDelegacion,
+  getCasoById,
+  CasoNotFoundError,
   type Actividad as RepositoryActividad,
 } from "./adapters/memory/repository.js";
 
@@ -196,23 +207,137 @@ export function createActivityStore(db: Database.Database): ActivityStorePort {
 }
 
 /**
+ * `DelegacionStorePort` por closures sobre `repository.ts` (Hito 5, tarea
+ * 14, §6.4) — mismo patrón, y mismo lugar, que `createActivityStore` de
+ * arriba: dos delegaciones directas sin lógica propia sobre las funciones ya
+ * commiteadas de la tarea 10. `crearDelegacion` reenvía a `insertDelegacion`
+ * (nombre distinto del método del puerto, mismo input); `completarDelegacion`
+ * reenvía TAL CUAL — su forma ya coincide campo a campo con
+ * `CompletarDelegacionInput` de `repository.ts`, sin traducción necesaria
+ * (mismo criterio que `updateActividadEstado`/`completarDelegacion` no
+ * necesitan función de mapeo propia).
+ */
+export function createDelegacionStore(db: Database.Database): DelegacionStorePort {
+  return {
+    crearDelegacion(input) {
+      insertDelegacion(db, input);
+    },
+    completarDelegacion(input) {
+      completarDelegacion(db, input);
+    },
+  };
+}
+
+/**
  * Devuelve el callback `(evento) => Promise<void>` que el Adaptador de
  * Webhooks recibe inyectado (ADR 5, punto 2-3). Ver el module doc de arriba
  * para el contrato completo (nunca rechaza) y las tres decisiones del
  * cuerpo.
+ *
+ * Hito 5, tarea 14 (§6.4, ADR 53/54): el paso 5 de `runActivityTurn`
+ * (`despacharRevision`) se bindea acá, según `HARNESS_DELEGACION_ROLES`
+ * (interruptor de degradación, el núcleo no lo conoce — precedente ADR 17):
+ * `"off"` ⇒ el `handleTurn` único de `v1.4.0`/Hito 3; cualquier otro valor o
+ * AUSENTE ⇒ la cadena de delegación Planner → Developer → Reviewer
+ * (`despacharRevisionPorRoles`, default: la delegación está ACTIVA).
  */
 export function buildOnActivity(deps: BuildOnActivityDeps): ActivityEventHandler {
   const { db, memory, hooks, agents, board, queue, logDeps } = deps;
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
   const store = deps.store ?? createActivityStore(db);
-  const createKnowledge =
-    deps.createKnowledge ??
-    ((casoId: string) =>
-      createKnowledgeAdapter({
-        casoId,
-        logEvent: (e, f) => logTurnEvent(casoId, e, f, logDeps),
-      }));
+
+  /**
+   * Armado incondicional: definir estos closures no ejecuta nada por sí
+   * solo (ninguno toca la base ni el modelo hasta que
+   * `despacharRevisionPorRoles` los invoque más abajo), así que construirlos
+   * acá no compromete el criterio "con el interruptor activo no se
+   * construye `createKnowledge`" — ese sí es sobre una construcción real (un
+   * `CitedNodesRecorder` por caso), ver más abajo.
+   */
+  const delegacionDeps: DespacharDelegacionDeps = {
+    store: createDelegacionStore(db),
+    /**
+     * ADR 53 (cierra RD-5): `resumeSessionId: undefined` EXPLÍCITO — este
+     * closure NUNCA consulta `memory.getLatestSesionAgente`. Reusar
+     * `assembleContext` reintroduciría el historial de sesión del agente
+     * padre en la `tarea_delegada` del subagente — exactamente el riesgo
+     * documentado en RD-5.
+     *
+     * `caso` — fix de la condición del Reviewer sobre la tarea 14: el
+     * `casoId` que llega acá NO es sintético, es el `casoId` REAL del caso
+     * padre del turno de actividad (`actividad.casoId` que
+     * `runActivityTurn` pasa a `despacharRevision`, reusado tal cual por los
+     * tres eslabones Planner/Developer/Reviewer vía `despacharCadena`). Ese
+     * caso YA tiene una fila real en `casos`, insertada transaccionalmente
+     * por `createCasoConActividad` (`repository.ts`) ANTES de que
+     * `runActivityTurn` invoque `despacharRevision` — por lo tanto también
+     * antes de que este closure corra. Fabricar un placeholder con
+     * `estado: "activo"` era el problema: ese valor es idéntico a
+     * `CASO_ESTADO_ACTIVO`/`ESTADO_ACTIVO` que el resto del dominio usa como
+     * estado real, indistinguible de un caso genuinamente activo si algún
+     * código futuro llegara a leer `context.caso.estado` (hoy no lo hace).
+     * Se reemplaza por una lectura real: `getCasoById(db, casoId)`.
+     *
+     * Manejo de `undefined`: dado el invariante de arriba (la fila ya existe
+     * para todo `casoId` que llega hasta acá — tanto en el camino
+     * "actividad nueva" como en el de "actividad reusada", ver
+     * `run-activity-turn.ts`), un `undefined` acá es corrupción de estado,
+     * no una entrada externa esperable — se falla RUIDOSAMENTE con
+     * `CasoNotFoundError` (mismo criterio que `ActividadTipoEstadoInvalidoError`
+     * más arriba en este archivo), en vez de fabricar un segundo placeholder
+     * disfrazado de dato real.
+     */
+    invocar: async ({ agent, casoId, tareaDelegada }) => {
+      const caso = getCasoById(db, casoId);
+      if (caso === undefined) {
+        throw new CasoNotFoundError(casoId);
+      }
+      return invokeModel(
+        agent,
+        {
+          caso,
+          resumeSessionId: undefined,
+        },
+        tareaDelegada,
+        hooks,
+      );
+    },
+    getSubagente: getSubagentDefinition,
+    newId,
+    now,
+    logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields, logDeps),
+  };
+
+  const delegacionRolesActiva = process.env.HARNESS_DELEGACION_ROLES !== "off";
+
+  const despacharRevision: (casoId: string, prompt: string) => Promise<ActivityTurnOutcome> =
+    delegacionRolesActiva
+      ? (casoId, prompt) => despacharRevisionPorRoles(casoId, prompt, delegacionDeps)
+      : (casoId, prompt) => {
+          // Único camino que construye el Adaptador de Conocimiento (fix de
+          // R1, §6.4): ningún rol de la cadena de delegación trae el tool de
+          // conocimiento en su `allowedTools` (§5.2), así que montar el
+          // adaptador ahí sería infraestructura sin consumidor — por eso
+          // esta resolución vive DENTRO de la rama "off", nunca evaluada
+          // cuando el interruptor está activo.
+          const createKnowledge =
+            deps.createKnowledge ??
+            ((casoIdInterno: string) =>
+              createKnowledgeAdapter({
+                casoId: casoIdInterno,
+                logEvent: (e, f) => logTurnEvent(casoIdInterno, e, f, logDeps),
+              }));
+          const knowledge = createKnowledge(casoId);
+          return handleTurn(casoId, prompt, {
+            memory,
+            hooks,
+            candidateAgents: agents,
+            ...(logDeps ? { logDeps } : {}),
+            mcpServers: knowledge.mcpServers,
+            knowledgeFeedback: knowledge.feedback,
+          });
+        };
 
   return (evento) =>
     queue.run(evento.proyectoId, async () => {
@@ -220,17 +345,7 @@ export function buildOnActivity(deps: BuildOnActivityDeps): ActivityEventHandler
         await runActivityTurn(evento, {
           store,
           board,
-          runTurn: (casoId, prompt) => {
-            const knowledge = createKnowledge(casoId);
-            return handleTurn(casoId, prompt, {
-              memory,
-              hooks,
-              candidateAgents: agents,
-              ...(logDeps ? { logDeps } : {}),
-              mcpServers: knowledge.mcpServers,
-              knowledgeFeedback: knowledge.feedback,
-            });
-          },
+          despacharRevision,
           newId,
           now,
           logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields, logDeps),
