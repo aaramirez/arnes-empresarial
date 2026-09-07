@@ -16,6 +16,7 @@ import {
   VentaAlreadyExistsError,
   VentaTokenDuplicadoError,
   adjuntarDictamenSolicitud,
+  aplicarPropuestaCambio,
   aprobarEscalacionReembolso,
   aprobarReembolso,
   aprobarSolicitudInterna,
@@ -28,6 +29,7 @@ import {
   createCasoConActividad,
   createSesionAgente,
   createVentaConCaso,
+  descartarPropuestaCambio,
   escalarReembolso,
   findActividadPorReferencia,
   findVentaByToken,
@@ -66,6 +68,7 @@ import {
   type CrearPropuestaDbInput,
   type CrearSolicitudConCasoInput,
   type InsertDelegacionInput,
+  type ResolucionPropuestaDbInput,
 } from "./repository.js";
 
 /** Test factories — a single place to change the base fixture if the shape evolves. */
@@ -1740,6 +1743,40 @@ describe("repository", () => {
 
       expect(filas.map((f) => f.id)).toEqual(["accion-1", "accion-2"]);
     });
+
+    it("acepta propuestaId (columna nueva de la migracion 0009, ADR 63) y lo persiste sin tocar venta_id/caso_id", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertPropuestaCambio(db, {
+        id: "propuesta-1",
+        casoId: "caso-1",
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-1-uuid",
+        patch: "diff --git a/x b/x\n",
+        patchBytes: 20,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        ahora: "2026-09-07T00:00:00.000Z",
+      });
+
+      insertAccionEmpleado(db, {
+        id: "accion-1",
+        empleadoId: "ana",
+        comando: "/aplicar-propuesta",
+        propuestaId: "propuesta-1",
+        casoId: "caso-1",
+        resultado: "aplicada",
+        ocurridoAt: "2026-09-07T01:00:00.000Z",
+      });
+
+      const fila = db
+        .prepare("SELECT propuesta_id, venta_id, caso_id FROM registro_acciones_empleado WHERE id = ?")
+        .get("accion-1") as { propuesta_id: string | null; venta_id: string | null; caso_id: string | null };
+      expect(fila.propuesta_id).toBe("propuesta-1");
+      expect(fila.venta_id).toBeNull();
+      expect(fila.caso_id).toBe("caso-1");
+    });
   });
 
   describe("aprobarEscalacionReembolso / rechazarEscalacionReembolso / reabrirEscalacionReembolso", () => {
@@ -2582,6 +2619,128 @@ describe("repository", () => {
 
         const limitadas = listPropuestasCambio(db, { limite: 1 });
         expect(limitadas.map((p) => p.id)).toEqual(["propuesta-2"]);
+      });
+    });
+
+    describe("aplicarPropuestaCambio / descartarPropuestaCambio (Hito 5.1, tarea 15)", () => {
+      function buildResolucionInput(
+        overrides: Partial<ResolucionPropuestaDbInput> = {},
+      ): ResolucionPropuestaDbInput {
+        return {
+          propuestaId: "propuesta-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+          ...overrides,
+        };
+      }
+
+      it("aplicarPropuestaCambio: CAS a aplicada + updateCaso SOLO updatedAt (el estado del caso NO cambia, ADR 65) + UNA fila de auditoria con propuestaId, en una sola transaccion", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+        const casoAntes = getCasoById(db, "caso-1");
+
+        const propuesta = aplicarPropuestaCambio(db, buildResolucionInput());
+
+        expect(propuesta?.estado).toBe("aplicada");
+        expect(propuesta?.resueltaPor).toBe("ana");
+        expect(propuesta?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+
+        // ADR 65, assert explícito: el `estado` del caso NO cambia — sólo
+        // `updatedAt` se mueve. Aplicar una propuesta no es un canal de
+        // transición de estado del caso.
+        const casoDespues = getCasoById(db, "caso-1");
+        expect(casoDespues?.estado).toBe(casoAntes?.estado);
+        expect(casoDespues?.estado).toBe("abierto");
+        expect(casoDespues?.updatedAt).toBe("2026-09-07T01:00:00.000Z");
+
+        const fila = db!
+          .prepare(
+            "SELECT id, empleado_id, comando, resultado, caso_id, propuesta_id FROM registro_acciones_empleado WHERE id = ?",
+          )
+          .get("accion-1") as {
+          id: string;
+          empleado_id: string;
+          comando: string;
+          resultado: string;
+          caso_id: string;
+          propuesta_id: string;
+        };
+        expect(fila).toEqual({
+          id: "accion-1",
+          empleado_id: "ana",
+          comando: "/aplicar-propuesta",
+          resultado: "aplicada",
+          caso_id: "caso-1",
+          propuesta_id: "propuesta-1",
+        });
+      });
+
+      it("descartarPropuestaCambio: CAS a descartada con motivo + caso SOLO updatedAt (ADR 65) + fila 'descartada' con propuestaId, en una sola transaccion", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+
+        const propuesta = descartarPropuestaCambio(
+          db,
+          buildResolucionInput({ empleadoId: "beto", motivo: "base_commit desactualizado" }),
+        );
+
+        expect(propuesta?.estado).toBe("descartada");
+        expect(propuesta?.motivo).toBe("base_commit desactualizado");
+        expect(propuesta?.resueltaPor).toBe("beto");
+        expect(getCasoById(db, "caso-1")?.estado).toBe("abierto");
+
+        const fila = db!
+          .prepare("SELECT comando, resultado, propuesta_id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1") as { comando: string; resultado: string; propuesta_id: string };
+        expect(fila).toEqual({
+          comando: "/descartar-propuesta",
+          resultado: "descartada",
+          propuesta_id: "propuesta-1",
+        });
+      });
+
+      it("CAS que no matchea (propuesta ya no pendiente) devuelve undefined y NO escribe ni el caso ni la fila de auditoria (rollback verificable)", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto", updatedAt: "2026-09-07T00:00:00.000Z" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+        // Fuerza que el CAS de estado no matchee: la propuesta ya no esta pendiente.
+        db!.prepare("UPDATE propuestas_cambio SET estado = 'aplicada' WHERE id = ?").run("propuesta-1");
+
+        const resultado = aplicarPropuestaCambio(db, buildResolucionInput({ ahora: "2026-09-07T02:00:00.000Z" }));
+
+        expect(resultado).toBeUndefined();
+        // El caso NO se toca en absoluto (ni estado ni updatedAt) -- consulta
+        // directa, no solo el valor de retorno.
+        const caso = getCasoById(db, "caso-1");
+        expect(caso?.estado).toBe("abierto");
+        expect(caso?.updatedAt).toBe("2026-09-07T00:00:00.000Z");
+        // La fila de auditoria NUNCA se escribio -- consulta directa.
+        const filaAccion = db!
+          .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1");
+        expect(filaAccion).toBeUndefined();
+        // La propuesta persistida sigue intacta en 'aplicada' (el estado que
+        // ya tenía, forzado arriba) -- el CAS fallido no la mueve a otro lado.
+        expect(getPropuestaCambio(db, "propuesta-1")?.estado).toBe("aplicada");
+      });
+
+      it("descartarPropuestaCambio con CAS que no matchea tampoco escribe nada (rollback verificable)", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+        db!.prepare("UPDATE propuestas_cambio SET estado = 'descartada' WHERE id = ?").run("propuesta-1");
+
+        const resultado = descartarPropuestaCambio(db, buildResolucionInput({ motivo: "ya resuelta" }));
+
+        expect(resultado).toBeUndefined();
+        const filaAccion = db!
+          .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1");
+        expect(filaAccion).toBeUndefined();
       });
     });
   });

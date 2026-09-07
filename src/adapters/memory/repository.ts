@@ -1308,13 +1308,20 @@ export function listEscalacionesReembolso(
   return rows.map(rowToEscalacionReembolso);
 }
 
-/** Una fila de `registro_acciones_empleado` (ADR 27, 39). */
+/**
+ * Una fila de `registro_acciones_empleado` (ADR 27, 39). `propuestaId`
+ * (ADR 63, migración `0009`) es la tercera columna de correlación opcional,
+ * junto a `ventaId`/`casoId`: una fila de auditoría de `/aplicar-propuesta` o
+ * `/descartar-propuesta` no puede reusar `ventaId` (la FK a `ventas`
+ * fallaría) ni depender sólo de `casoId` (la relación caso↔propuesta es 1:N).
+ */
 export interface AccionEmpleadoInput {
   readonly id: string;
   readonly empleadoId: string;
   readonly comando: string;
   readonly ventaId?: string;
   readonly casoId?: string;
+  readonly propuestaId?: string;
   readonly resultado: string;
   readonly ocurridoAt: string;
 }
@@ -1325,6 +1332,7 @@ export interface AccionEmpleadoRow {
   readonly comando: string;
   readonly ventaId?: string;
   readonly casoId?: string;
+  readonly propuestaId?: string;
   readonly resultado: string;
   readonly ocurridoAt: string;
 }
@@ -1335,6 +1343,7 @@ interface AccionEmpleadoSqlRow {
   comando: string;
   venta_id: string | null;
   caso_id: string | null;
+  propuesta_id: string | null;
   resultado: string;
   ocurrido_at: string;
 }
@@ -1346,6 +1355,7 @@ function rowToAccionEmpleado(row: AccionEmpleadoSqlRow): AccionEmpleadoRow {
     comando: row.comando,
     ...(row.venta_id !== null ? { ventaId: row.venta_id } : {}),
     ...(row.caso_id !== null ? { casoId: row.caso_id } : {}),
+    ...(row.propuesta_id !== null ? { propuestaId: row.propuesta_id } : {}),
     resultado: row.resultado,
     ocurridoAt: row.ocurrido_at,
   };
@@ -1354,19 +1364,20 @@ function rowToAccionEmpleado(row: AccionEmpleadoSqlRow): AccionEmpleadoRow {
 /**
  * UN solo lugar que sabe el layout de la fila. Las DOS rutas del ADR 27
  * (dentro de la transacción del CAS, y `registrarAccion` fuera) terminan
- * acá. `ventaId`/`casoId` se normalizan a `null`.
+ * acá. `ventaId`/`casoId`/`propuestaId` se normalizan a `null`.
  */
 export function insertAccionEmpleado(db: Database.Database, input: AccionEmpleadoInput): void {
   db.prepare(
     `INSERT INTO registro_acciones_empleado
-       (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at)
-     VALUES (@id, @empleadoId, @comando, @ventaId, @casoId, @resultado, @ocurridoAt)`,
+       (id, empleado_id, comando, venta_id, caso_id, propuesta_id, resultado, ocurrido_at)
+     VALUES (@id, @empleadoId, @comando, @ventaId, @casoId, @propuestaId, @resultado, @ocurridoAt)`,
   ).run({
     id: input.id,
     empleadoId: input.empleadoId,
     comando: input.comando,
     ventaId: input.ventaId ?? null,
     casoId: input.casoId ?? null,
+    propuestaId: input.propuestaId ?? null,
     resultado: input.resultado,
     ocurridoAt: input.ocurridoAt,
   });
@@ -2193,4 +2204,113 @@ export function listPropuestasCambio(
       limite: filtro.limite ?? LIMITE_LISTADO_PROPUESTAS_DEFAULT,
     }) as PropuestaSqlRow[];
   return rows.map(rowToPropuesta);
+}
+
+export interface ResolucionPropuestaDbInput {
+  readonly propuestaId: string;
+  readonly casoId: string;
+  readonly empleadoId: string;
+  readonly accionId: string;
+  readonly ahora: string;
+  readonly motivo?: string;
+}
+
+/**
+ * `aplicarPropuestaCambio`/`descartarPropuestaCambio` comparten este privado
+ * — CAS `UPDATE` + `updateCaso` + `insertAccionEmpleado`, en UNA transacción,
+ * molde EXACTO de `resolverEscalacionTransaccional` (líneas 1403-1455) y de
+ * `resolverSolicitudTransaccional`. El `if (!row) return undefined;` ANTES
+ * de tocar el caso es lo que impide el estado intermedio "caso tocado,
+ * propuesta no": no existe una transición exitosa sin su fila de auditoría,
+ * ni una fila sin su transición.
+ *
+ * A diferencia de esos dos moldes, acá NO hay `estadoCaso` en `config`: por
+ * ADR 65 (confirmado en el checkpoint humano, ver design.md), el `caso` de
+ * una propuesta es el caso de la actividad de PR, cuyo `estado` lo maneja la
+ * máquina de `runActivityTurn` — la propuesta de cambio es un artefacto
+ * ADICIONAL, no un canal alternativo de transición de estado (ADR 59 pto 4).
+ * `updateCaso` se llama con `{ updatedAt }` **solamente**: `tipo`/`estado`
+ * quedan `undefined`, y `updateCaso` los deja intactos vía `COALESCE`
+ * (`repository.ts:131-153`). NO "arreglar" esta omisión — es la decisión ya
+ * tomada, no un olvido.
+ */
+function resolverPropuestaTransaccional(
+  db: Database.Database,
+  input: ResolucionPropuestaDbInput,
+  config: {
+    readonly estadoOrigen: string;
+    readonly estadoDestino: string;
+    readonly comando: string;
+    readonly resultado: string;
+  },
+): PropuestaRow | undefined {
+  const runInTransaction = db.transaction((): PropuestaRow | undefined => {
+    const row = db
+      .prepare(
+        `UPDATE propuestas_cambio
+            SET estado = @estadoDestino,
+                motivo = COALESCE(@motivo, motivo),
+                resuelta_por = @empleadoId,
+                resuelta_at = @ahora,
+                updated_at = @ahora
+          WHERE id = @propuestaId
+            AND estado = @estadoOrigen
+         RETURNING ${PROPUESTA_SELECT_COLUMNS}`,
+      )
+      .get({
+        propuestaId: input.propuestaId,
+        estadoOrigen: config.estadoOrigen,
+        estadoDestino: config.estadoDestino,
+        motivo: input.motivo ?? null,
+        empleadoId: input.empleadoId,
+        ahora: input.ahora,
+      }) as PropuestaSqlRow | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    // ADR 65: SÓLO `updatedAt` — el `estado` del caso NUNCA cambia acá.
+    updateCaso(db, input.casoId, { updatedAt: input.ahora });
+
+    insertAccionEmpleado(db, {
+      id: input.accionId,
+      empleadoId: input.empleadoId,
+      comando: config.comando,
+      propuestaId: input.propuestaId,
+      casoId: input.casoId,
+      resultado: config.resultado,
+      ocurridoAt: input.ahora,
+    });
+
+    return rowToPropuesta(row);
+  });
+
+  return runInTransaction();
+}
+
+/** CAS `pendiente_aprobacion_humana → aplicada` + `casos.updated_at` (SÓLO timestamp, ADR 65) + fila `aplicada`. */
+export function aplicarPropuestaCambio(
+  db: Database.Database,
+  input: ResolucionPropuestaDbInput,
+): PropuestaRow | undefined {
+  return resolverPropuestaTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "aplicada",
+    comando: "/aplicar-propuesta",
+    resultado: "aplicada",
+  });
+}
+
+/** CAS `pendiente_aprobacion_humana → descartada` con `motivo` + `casos.updated_at` (SÓLO timestamp, ADR 65) + fila `descartada`. */
+export function descartarPropuestaCambio(
+  db: Database.Database,
+  input: ResolucionPropuestaDbInput,
+): PropuestaRow | undefined {
+  return resolverPropuestaTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "descartada",
+    comando: "/descartar-propuesta",
+    resultado: "descartada",
+  });
 }
