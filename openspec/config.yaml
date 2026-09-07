@@ -18,7 +18,7 @@ testing:
   framework: vitest
   layers:
     unit: true
-    integration: false
+    integration: true
     e2e: false
   coverage:
     available: false
