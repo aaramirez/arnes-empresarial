@@ -3,10 +3,16 @@
  * (Hito 3, tarea 5) — el componente más importante de la Unidad 1
  * (design.md §3.2).
  *
- * Envuelve `handleTurn` SIN importarlo ni modificarlo: recibe un `runTurn`
- * inyectado (`RunActivityTurnDeps.runTurn`), que el composition root cierra
- * sobre `handleTurn(casoId, prompt, deps)` más `createKnowledgeAdapter({
- * casoId })` (fix de R1). Es "el punto clave del hito" tal como lo describe
+ * Envuelve `handleTurn` SIN importarlo ni modificarlo: recibe un
+ * `despacharRevision` inyectado (`RunActivityTurnDeps.despacharRevision`,
+ * renombrado en Hito 5 tarea 12 a partir del `runTurn` original — mismo
+ * tipo, ADR 54), que el composition root cierra sobre la cadena de
+ * delegación Planner → Developer → Reviewer (`despacharRevisionPorRoles`,
+ * `cadena-revision.ts`, §5.5) o, bajo el interruptor de degradación
+ * `HARNESS_DELEGACION_ROLES="off"` (ADR 54, cableado real pendiente en la
+ * tarea 14), sobre `handleTurn(casoId, prompt, deps)` más
+ * `createKnowledgeAdapter({ casoId })` (fix de R1). Es "el
+ * punto clave del hito" tal como lo describe
  * el diseño: el ciclo de actividad envuelve al Selector de Turno de Hito 1,
  * no lo invade.
  *

@@ -21,7 +21,14 @@ export const ACTIVIDAD_TIPO_PR_REVIEW = "pr_review";
 export const ACTIVIDAD_TIPO_SOLICITUD_INTERNA = "solicitud_interna";
 export const ACTIVIDAD_TIPO_INCIDENTE = "incidente";
 
-/** Los tres valores que el esquema acepta. Este hito solo ejercita el primero (ADR 5). */
+/**
+ * Los tres valores que el esquema acepta. Este hito solo ejercita
+ * `pr_review` (ADR 5). `solicitud_interna` sigue sin ejercitarse sobre
+ * `actividades`: `actividades.proyecto_id` es `NOT NULL REFERENCES
+ * proyectos(id)` (migración `0003`) y una solicitud de vacaciones no tiene
+ * proyecto — vive en su propia tabla, `solicitudes_internas` (migración
+ * `0008`, ADR 43). Comentario actualizado por ADR 46.
+ */
 export const ACTIVIDAD_TIPOS = [
   ACTIVIDAD_TIPO_PR_REVIEW,
   ACTIVIDAD_TIPO_SOLICITUD_INTERNA,
