@@ -1598,3 +1598,129 @@ export function updateCredencialEmpleado(
     .get(input) as CredencialEmpleadoSqlRow | undefined;
   return row ? rowToCredencialEmpleado(row) : undefined;
 }
+
+export class DelegacionNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Delegacion not found: ${id}`);
+    this.name = "DelegacionNotFoundError";
+  }
+}
+
+export interface InsertDelegacionInput {
+  readonly id: string;
+  readonly casoId: string;
+  readonly agentId: string;
+  readonly sesionPadreId?: string;
+  readonly tareaDelegada: string;
+  readonly createdAt: string;
+}
+
+/**
+ * Registra una delegación ANTES de invocar al subagente (Hito 5, ADR 48):
+ * `sesion_subagente_id` y `resultado` quedan en `NULL` — se completan en
+ * `completarDelegacion`, cuando el subagente ya respondió. `sesionPadreId`
+ * ausente significa "esta delegación la originó el arnés" (cabeza de la
+ * cadena determinista), no un turno del modelo.
+ */
+export function insertDelegacion(db: Database.Database, input: InsertDelegacionInput): void {
+  db.prepare(
+    `INSERT INTO delegaciones (id, caso_id, agent_id, sesion_padre_id, tarea_delegada, created_at)
+     VALUES (@id, @casoId, @agentId, @sesionPadreId, @tareaDelegada, @createdAt)`,
+  ).run({
+    id: input.id,
+    casoId: input.casoId,
+    agentId: input.agentId,
+    sesionPadreId: input.sesionPadreId ?? null,
+    tareaDelegada: input.tareaDelegada,
+    createdAt: input.createdAt,
+  });
+}
+
+export interface CompletarDelegacionInput {
+  readonly delegacionId: string;
+  readonly sesion: CreateSesionAgenteInput;
+  readonly resultado: string;
+}
+
+/**
+ * UNA transacción (Hito 5, ADR 48): `INSERT sesiones_agente` + `UPDATE
+ * delegaciones` — molde EXACTO de `resolverEscalacionTransaccional` (líneas
+ * 1403-1455). Una sesión huérfana sin su delegación completada no debe
+ * quedar posible: si `delegacionId` no matchea ninguna fila, la transacción
+ * entera revierte (incluida la fila de `sesiones_agente` recién insertada) y
+ * se lanza `DelegacionNotFoundError` — mismo criterio "no existe una
+ * transición exitosa sin su fila, ni una fila sin su transición" que el
+ * resto de este archivo aplica a los CAS de venta.
+ */
+export function completarDelegacion(db: Database.Database, input: CompletarDelegacionInput): void {
+  const runInTransaction = db.transaction((): void => {
+    createSesionAgente(db, input.sesion);
+
+    const { changes } = db
+      .prepare(
+        `UPDATE delegaciones
+            SET sesion_subagente_id = @sesionSubagenteId,
+                resultado = @resultado
+          WHERE id = @delegacionId`,
+      )
+      .run({
+        sesionSubagenteId: input.sesion.id,
+        resultado: input.resultado,
+        delegacionId: input.delegacionId,
+      });
+
+    if (changes === 0) {
+      throw new DelegacionNotFoundError(input.delegacionId);
+    }
+  });
+
+  runInTransaction();
+}
+
+export interface DelegacionRow {
+  readonly id: string;
+  readonly casoId: string;
+  readonly agentId: string;
+  readonly sesionPadreId?: string;
+  readonly sesionSubagenteId?: string;
+  readonly tareaDelegada: string;
+  readonly resultado?: string;
+  readonly createdAt: string;
+}
+
+interface DelegacionSqlRow {
+  id: string;
+  caso_id: string;
+  agent_id: string;
+  sesion_padre_id: string | null;
+  sesion_subagente_id: string | null;
+  tarea_delegada: string;
+  resultado: string | null;
+  created_at: string;
+}
+
+function rowToDelegacion(row: DelegacionSqlRow): DelegacionRow {
+  return {
+    id: row.id,
+    casoId: row.caso_id,
+    agentId: row.agent_id,
+    ...(row.sesion_padre_id !== null ? { sesionPadreId: row.sesion_padre_id } : {}),
+    ...(row.sesion_subagente_id !== null ? { sesionSubagenteId: row.sesion_subagente_id } : {}),
+    tareaDelegada: row.tarea_delegada,
+    ...(row.resultado !== null ? { resultado: row.resultado } : {}),
+    createdAt: row.created_at,
+  };
+}
+
+/** Lectura de evidencia (design.md §10): las delegaciones de un caso, en el orden en que ocurrieron. */
+export function listDelegacionesPorCaso(db: Database.Database, casoId: string): readonly DelegacionRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, caso_id, agent_id, sesion_padre_id, sesion_subagente_id, tarea_delegada, resultado, created_at
+         FROM delegaciones
+        WHERE caso_id = ?
+        ORDER BY created_at`,
+    )
+    .all(casoId) as DelegacionSqlRow[];
+  return rows.map(rowToDelegacion);
+}

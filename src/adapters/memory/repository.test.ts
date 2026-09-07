@@ -9,6 +9,7 @@ import {
   CasoAlreadyExistsError,
   CasoNotFoundError,
   CredencialEmpleadoDuplicadaError,
+  DelegacionNotFoundError,
   SesionAgenteAlreadyExistsError,
   SesionAgenteInvalidCasoError,
   VentaAlreadyExistsError,
@@ -16,6 +17,7 @@ import {
   aprobarEscalacionReembolso,
   aprobarReembolso,
   buscarCredencialEmpleado,
+  completarDelegacion,
   confirmarVentaConComision,
   createActividad,
   createCaso,
@@ -32,8 +34,10 @@ import {
   getVentaById,
   insertAccionEmpleado,
   insertCredencialEmpleado,
+  insertDelegacion,
   listAccionesEmpleadoPorVenta,
   listComisionesPorPeriodo,
+  listDelegacionesPorCaso,
   listEscalacionesReembolso,
   listVentasEnReembolsoPendiente,
   reabrirEscalacionReembolso,
@@ -50,6 +54,7 @@ import {
   type CreateCasoInput,
   type CreateSesionAgenteInput,
   type CreateVentaConCasoInput,
+  type InsertDelegacionInput,
 } from "./repository.js";
 
 /** Test factories — a single place to change the base fixture if the shape evolves. */
@@ -2127,6 +2132,119 @@ describe("repository", () => {
           )
           .run("delegacion-1", "caso-1", "revisar el PR #1", "2026-09-06T00:00:00.000Z"),
       ).toThrow(/NOT NULL/);
+    });
+  });
+
+  describe("insertDelegacion / completarDelegacion / listDelegacionesPorCaso", () => {
+    function insertDelegacionDePrueba(overrides: Partial<InsertDelegacionInput> = {}) {
+      insertDelegacion(db!, {
+        id: "delegacion-1",
+        casoId: "caso-1",
+        agentId: "planner",
+        tareaDelegada: "revisar el PR #1",
+        createdAt: "2026-09-06T00:00:00.000Z",
+        ...overrides,
+      });
+    }
+
+    it("insertDelegacion escribe una fila con sesion_padre_id/sesion_subagente_id y resultado en NULL", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionDePrueba();
+
+      const [fila] = listDelegacionesPorCaso(db, "caso-1");
+      expect(fila).toEqual({
+        id: "delegacion-1",
+        casoId: "caso-1",
+        agentId: "planner",
+        tareaDelegada: "revisar el PR #1",
+        createdAt: "2026-09-06T00:00:00.000Z",
+      });
+      expect(fila!.sesionPadreId).toBeUndefined();
+      expect(fila!.sesionSubagenteId).toBeUndefined();
+      expect(fila!.resultado).toBeUndefined();
+    });
+
+    it("insertDelegacion acepta sesionPadreId cuando el eslabon no es la cabeza de la cadena", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      createSesionAgente(db, buildSesionAgente({ id: "sesion-planner", agentId: "planner" }));
+
+      insertDelegacionDePrueba({
+        id: "delegacion-2",
+        agentId: "developer",
+        sesionPadreId: "sesion-planner",
+        tareaDelegada: "ejecutar el plan del planner",
+        createdAt: "2026-09-06T00:00:01.000Z",
+      });
+
+      const [fila] = listDelegacionesPorCaso(db, "caso-1");
+      expect(fila!.sesionPadreId).toBe("sesion-planner");
+    });
+
+    it("completarDelegacion: INSERT sesiones_agente + UPDATE delegaciones en una sola transaccion", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionDePrueba();
+
+      completarDelegacion(db, {
+        delegacionId: "delegacion-1",
+        sesion: buildSesionAgente({ id: "sesion-planner", agentId: "planner" }),
+        resultado: "plan de revision: revisar src/index.ts",
+      });
+
+      const [fila] = listDelegacionesPorCaso(db, "caso-1");
+      expect(fila!.sesionSubagenteId).toBe("sesion-planner");
+      expect(fila!.resultado).toBe("plan de revision: revisar src/index.ts");
+      expect(getLatestSesionAgente(db, "caso-1", "planner")?.id).toBe("sesion-planner");
+    });
+
+    it("completarDelegacion es atomica: falla RUIDOSA si la delegacion no existe, y NO deja la sesion huerfana", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      expect(() =>
+        completarDelegacion(db!, {
+          delegacionId: "delegacion-inexistente",
+          sesion: buildSesionAgente({ id: "sesion-planner", agentId: "planner" }),
+          resultado: "plan de revision",
+        }),
+      ).toThrow(DelegacionNotFoundError);
+
+      expect(getLatestSesionAgente(db, "caso-1", "planner")).toBeUndefined();
+    });
+
+    it("listDelegacionesPorCaso devuelve las filas en orden created_at", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacion(db, {
+        id: "delegacion-reviewer",
+        casoId: "caso-1",
+        agentId: "reviewer",
+        tareaDelegada: "emitir veredicto",
+        createdAt: "2026-09-06T00:00:02.000Z",
+      });
+      insertDelegacion(db, {
+        id: "delegacion-planner",
+        casoId: "caso-1",
+        agentId: "planner",
+        tareaDelegada: "planificar revision",
+        createdAt: "2026-09-06T00:00:00.000Z",
+      });
+      insertDelegacion(db, {
+        id: "delegacion-developer",
+        casoId: "caso-1",
+        agentId: "developer",
+        tareaDelegada: "ejecutar plan",
+        createdAt: "2026-09-06T00:00:01.000Z",
+      });
+
+      const filas = listDelegacionesPorCaso(db, "caso-1");
+      expect(filas.map((fila) => fila.id)).toEqual([
+        "delegacion-planner",
+        "delegacion-developer",
+        "delegacion-reviewer",
+      ]);
     });
   });
 });
