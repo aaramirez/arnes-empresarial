@@ -1,14 +1,24 @@
 /**
  * Invocador del Modelo (arc42 Caja Blanca Bloque de Construcción 1.3).
  *
- * Calls the *ModelProvider* port (I5) with the assembled context; for this
- * hito the model returns plain text with no delegation tool calls (arc42
- * Escenario de ejecución 1: "El modelo devuelve una respuesta en texto, sin
- * tool calls de delegación"), so this module does not process `tool_use`
- * blocks — that belongs to the Despachador de Delegación (Hito posterior,
- * Caja Blanca 1.4). After the turn completes, it fires the post-turn hooks
- * (Motor de Hooks, Hito 1 tarea 6), exactly as the same scenario states:
- * "Invocador del Modelo dispara los hooks de post-turno correspondientes".
+ * Calls the *ModelProvider* port (I5) with the assembled context. This
+ * module still does not process `tool_use` blocks the model itself might
+ * emit to delegate to a subagent — that stays out of scope, with reason
+ * (Hito 5, tarea 9, ADR 44/46): the Despachador de Delegación already
+ * exists (`dispatch-delegation.ts`, `despacharDelegacion`/
+ * `despacharCadena`) and resolves/dispatches roles explicitly, without ever
+ * going through a model-emitted `tool_use`. Once a subagent is registered
+ * under `options.agents` (`toQueryOptions` below) and the caller's
+ * `allowedTools` grants the `Agent` tool, the SDK would execute that tool
+ * itself, internally — intercepting it here would mean reimplementing the
+ * subagent's execution and losing the native isolation the SDK already
+ * provides, which is the isolation this hito actually demonstrates through
+ * the Despachador instead. arc42 Escenario de ejecución 1 ("El modelo
+ * devuelve una respuesta en texto, sin tool calls de delegación") remains
+ * the only turn shape this module itself resolves. After the turn
+ * completes, it fires the post-turn hooks (Motor de Hooks, Hito 1 tarea 6),
+ * exactly as the same scenario states: "Invocador del Modelo dispara los
+ * hooks de post-turno correspondientes".
  *
  * Design decision — no `ModelProvider` port/adapter split in v1: unlike I3
  * (Adaptador de Memoria), which `assemble-context.ts` deliberately puts
@@ -125,11 +135,16 @@
  *
  * `Options.agents[id]` requires a `description` field (this SDK's own
  * `AgentDefinition` type, re-exported here as `SdkAgentDefinition` to avoid
- * a name clash with this repo's core `AgentDefinition`) that the core
- * `AgentDefinition` type does not carry — see `toMainThreadAgentDescription`
- * below for how this module derives one without adding a new required
- * field to `definitions.ts` (already approved, out of scope to reopen for
- * this fix).
+ * a name clash with this repo's core `AgentDefinition`). The core
+ * `AgentDefinition` now carries its own mandatory `description` (Hito 5,
+ * tarea 4, `definitions.ts`) — routing data for the model, not narrative
+ * documentation: it is what a delegating agent reads off
+ * `options.agents[id]` to decide which registered agent/subagent a
+ * delegation `tool_use` should target (Hito 5, tarea 9, ADR 44/51).
+ * `toSdkAgentDefinition` below forwards `agent.description` verbatim — the
+ * earlier `toMainThreadAgentDescription` placeholder that synthesized one
+ * from the agent's id (needed only while `description` was not yet a core
+ * field) is retired.
  *
  * Fix 2 (post-tarea-9 Reviewer finding) — `is_error` on `result/success` was
  * ignored: `SDKResultSuccess` (`subtype: "success"`) carries an `is_error:
@@ -155,6 +170,7 @@ import {
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "../agents/definitions.js";
+import { listSubagentDefinitions } from "../agents/definitions.js";
 import type { HookContext, HookEngine } from "../hooks/hook-engine.js";
 import type { AssembledContext } from "./assemble-context.js";
 
@@ -179,6 +195,21 @@ export interface InvokeModelResult {
    * `caso` can resume it via `AssembledContext.resumeSessionId`.
    */
   readonly sdkSessionId: string;
+  /**
+   * `parent_tool_use_id` read off an `assistant` message of this turn, when
+   * one is present and non-null (Hito 5, tarea 9, design.md §5.8 punto 3).
+   * The real `.d.ts` documents it as non-null "when the message was
+   * produced inside a subagent started by that tool_use" — i.e. this turn
+   * ran as a subagent invocation reached via the SDK's own `Agent` tool.
+   * Additive and optional on purpose: no current caller reads it, and its
+   * absence (the common case for every turn this hito actually drives,
+   * since subagentes run via the Despachador's own top-level `invokeModel`
+   * call, never via the SDK's `Agent` tool) does not block anything.
+   * Omitted from the returned object entirely when absent, same
+   * incremental-object pattern as `resume`/`allowedTools`/`mcpServers`
+   * below (see `tsconfig.json`'s `exactOptionalPropertyTypes: true`).
+   */
+  readonly parentToolUseId?: string;
 }
 
 /**
@@ -209,33 +240,17 @@ export class ModelResponseIncompleteError extends Error {
 }
 
 /**
- * Derives the `description` the SDK's `AgentDefinition` requires for every
- * entry in `options.agents` (see the module doc's "Fix 1" note). The core
- * `AgentDefinition` type (`definitions.ts`, already approved) has no
- * description field to reuse, so this synthesizes a stable one from the
- * agent's id instead of adding a new required field to that module.
- *
- * This is a low-stakes placeholder on purpose: `description` only matters
- * for subagent routing via the SDK's `Agent` tool (it tells a delegating
- * agent "when to use this agent"). This hito's single agent has
- * `allowedTools: []` and is selected directly via `options.agent` (not
- * discovered/routed to via the `Agent` tool), so no code path ever reads
- * this string to make a routing decision. Exported so the test suite
- * asserts against the same derivation instead of duplicating its wording.
- */
-export function toMainThreadAgentDescription(agentId: string): string {
-  return `Agente principal del Hito 1 (registro: ${agentId})`;
-}
-
-/**
  * Maps a core `AgentDefinition` into the SDK's own `AgentDefinition` shape
  * (`SdkAgentDefinition`) for `options.agents[agent.id]`. `tools` (not
  * `allowedTools` — see the module doc's "Fix 1" note) is what actually
- * restricts the agent's available toolset.
+ * restricts the agent's available toolset. `description` is forwarded
+ * verbatim from the core `AgentDefinition` (Hito 5, tarea 9) — no longer
+ * synthesized; see the module doc's paragraph on `Options.agents[id]` for
+ * why.
  */
 function toSdkAgentDefinition(agent: AgentDefinition): SdkAgentDefinition {
   return {
-    description: toMainThreadAgentDescription(agent.id),
+    description: agent.description,
     prompt: agent.systemPrompt,
     tools: [...agent.allowedTools],
     model: agent.model,
@@ -267,15 +282,34 @@ function toSdkAgentDefinition(agent: AgentDefinition): SdkAgentDefinition {
  * Adaptador de Conocimiento) for the turn. Optional and set only when the
  * caller passes one, so a Hito 1 caller that omits it gets `options`
  * identical to Hito 1's behavior (no `mcpServers` key at all).
+ *
+ * Hito 5, tarea 9 — `subagentes` registers every entry of `subagentes` under
+ * `options.agents` alongside `agent`, keyed by its own id (default
+ * `listSubagentDefinitions()` — same DI pattern as `candidates` in
+ * `resolve-turn.ts:91` and `queryFn` above this module: production omits
+ * the argument and gets the real registry, tests inject their own list to
+ * isolate assertions, e.g. `[]`). This registers the parent plus every
+ * subagent role (currently four — planner/developer/reviewer/
+ * validador-solicitudes, ADR 51/52) so a delegating agent's `Agent` tool
+ * call, if ever allowed, would find them by id. `options.allowedTools`
+ * above is deliberately unaffected by `subagentes` — it still derives only
+ * from `agent.allowedTools`: a subagent being *registered* here does not
+ * *auto-approve* anything for the main thread agent that did not already
+ * have it granted (CONVERSATIONAL_AGENT does not gain delegation
+ * `allowedTools` just because subagentes are registered alongside it).
  */
 function toQueryOptions(
   agent: AgentDefinition,
   context: AssembledContext,
   mcpServers?: Options["mcpServers"],
+  subagentes: readonly AgentDefinition[] = listSubagentDefinitions(),
 ): Options {
   const options: Options = {
     agent: agent.id,
-    agents: { [agent.id]: toSdkAgentDefinition(agent) },
+    agents: {
+      [agent.id]: toSdkAgentDefinition(agent),
+      ...Object.fromEntries(subagentes.map((s) => [s.id, toSdkAgentDefinition(s)])),
+    },
   };
 
   if (context.resumeSessionId !== undefined) {
@@ -308,6 +342,11 @@ function toQueryOptions(
  * §5.1's "Alternativa rechazada" note for why a `deps` object was rejected
  * for this function specifically. Forwarded as-is to `toQueryOptions`.
  *
+ * `subagentes` (Hito 5, tarea 9) is a further optional trailing parameter,
+ * same reasoning — added after `mcpServers` instead of reopening the `deps`
+ * object question, default `listSubagentDefinitions()`, forwarded as-is to
+ * `toQueryOptions` (see that function's doc for what it does).
+ *
  * Throws `ModelResponseIncompleteError` if the turn ends without a usable
  * session id + response text. Lets any `queryFn` rejection propagate
  * unwrapped (error policy deferred to Hito 1, tarea 11).
@@ -319,11 +358,13 @@ export async function invokeModel(
   hookEngine: HookEngine,
   queryFn: QueryFn = query,
   mcpServers?: Options["mcpServers"],
+  subagentes: readonly AgentDefinition[] = listSubagentDefinitions(),
 ): Promise<InvokeModelResult> {
-  const options = toQueryOptions(agent, context, mcpServers);
+  const options = toQueryOptions(agent, context, mcpServers, subagentes);
 
   let sdkSessionId: string | undefined;
   let responseText: string | undefined;
+  let parentToolUseId: string | undefined;
 
   for await (const message of queryFn({ prompt, options })) {
     if (message.type === "system" && message.subtype === "init") {
@@ -334,6 +375,9 @@ export async function invokeModel(
       // Leaving `responseText` unset here routes this turn into the same
       // `ModelResponseIncompleteError` path as any other non-answer.
       responseText = message.result;
+    } else if (message.type === "assistant" && message.parent_tool_use_id !== null) {
+      // Hito 5, tarea 9 — see InvokeModelResult.parentToolUseId's doc.
+      parentToolUseId = message.parent_tool_use_id;
     }
   }
 
@@ -352,5 +396,9 @@ export async function invokeModel(
   };
   await hookEngine.triggerHook("POST_TURN", hookContext);
 
-  return { responseText, sdkSessionId };
+  const result: InvokeModelResult = { responseText, sdkSessionId };
+  if (parentToolUseId !== undefined) {
+    return { ...result, parentToolUseId };
+  }
+  return result;
 }
