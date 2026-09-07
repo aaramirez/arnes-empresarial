@@ -380,6 +380,7 @@ const onComandoEmpleado = buildOnComandoEmpleado({
   authConfig,
   verificarPassword,
   dummyPasswordHash,
+  hooks,
 });
 
 // 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
