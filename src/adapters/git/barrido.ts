@@ -127,11 +127,9 @@ function normalizarSeparadores(ruta: string): string {
  * borrar el checkout principal o una rama ajena.
  */
 function esCandidato(registro: RegistroWorktree, worktreeRootAbsoluto: string): registro is RegistroWorktree & { rama: string } {
-  return (
-    normalizarSeparadores(registro.ruta).startsWith(worktreeRootAbsoluto) &&
-    registro.rama !== undefined &&
-    registro.rama.startsWith(WORKTREE_RAMA_PREFIJO)
-  );
+  const ruta = normalizarSeparadores(registro.ruta);
+  const dentroDeLaRaiz = ruta === worktreeRootAbsoluto || ruta.startsWith(`${worktreeRootAbsoluto}/`);
+  return dentroDeLaRaiz && registro.rama !== undefined && registro.rama.startsWith(WORKTREE_RAMA_PREFIJO);
 }
 
 /**

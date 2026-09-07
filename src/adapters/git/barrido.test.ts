@@ -67,6 +67,42 @@ describe("barrido.ts", () => {
       expect(execFileFn).toHaveBeenCalledTimes(2); // list + prune, sin remove/branch -D
     });
 
+    it("no toca un candidato cuya ruta es un directorio HERMANO con prefijo compartido (.harness/worktrees-manual/), aunque su rama tenga el prefijo correcto", async () => {
+      // Bug real (code-review post tarea 11): un `startsWith` sin boundary check
+      // matchea ".harness/worktrees-manual/..." contra la raíz ".harness/worktrees"
+      // por coincidencia textual del PREFIJO, aunque el hermano esté FUERA de la
+      // raíz real del doble filtro.
+      const rutaHermana = `${worktreeRootAbsoluto.replaceAll("\\", "/")}-manual/caso-1-abc`;
+      const rama = `${WORKTREE_RAMA_PREFIJO}caso-1-abc`;
+      const { deps, execFileFn, statFn } = makeDeps();
+      execFileFn.mockResolvedValueOnce({ stdout: porcelain(porcelainRecord(rutaHermana, rama)), stderr: "" });
+      execFileFn.mockResolvedValueOnce({ stdout: "", stderr: "" }); // prune
+
+      const resumen = await barrerHuerfanos({ ttlMs, ahoraMs }, deps);
+
+      expect(resumen).toEqual({ examinados: 0, borrados: 0, fallidos: 0 });
+      expect(statFn).not.toHaveBeenCalled();
+      expect(execFileFn).toHaveBeenCalledTimes(2); // list + prune, sin remove/branch -D
+    });
+
+    it("normaliza separadores antes de comparar: matchea un candidato cuya ruta viene con '/' literales de git aunque el root resuelto use '\\\\' (Windows)", async () => {
+      // Regresión del hallazgo de la tarea 11: `git worktree list --porcelain`
+      // siempre reporta con '/', incluso en Windows. Se fabrica la ruta candidata
+      // forzando '/' (como la salida real de git), sin pasar por join()/resolve()
+      // (que en Windows normalizarían a '\\' y ocultarían el bug).
+      const rutaConSlash = `${worktreeRootAbsoluto.replaceAll("\\", "/")}/caso-1-abc`;
+      const rama = `${WORKTREE_RAMA_PREFIJO}caso-1-abc`;
+      const { deps, execFileFn, statFn } = makeDeps();
+      execFileFn.mockResolvedValueOnce({ stdout: porcelain(porcelainRecord(rutaConSlash, rama)), stderr: "" });
+      statFn.mockResolvedValueOnce({ mtimeMs: ahoraMs - 1_000 }); // dentro del TTL
+      execFileFn.mockResolvedValueOnce({ stdout: "", stderr: "" }); // prune
+
+      const resumen = await barrerHuerfanos({ ttlMs, ahoraMs }, deps);
+
+      expect(resumen).toEqual({ examinados: 1, borrados: 0, fallidos: 0 });
+      expect(statFn).toHaveBeenCalledWith(rutaConSlash);
+    });
+
     it("no toca un candidato bajo .harness/worktrees/ cuya rama no tiene el prefijo correcto", async () => {
       const ruta = join(worktreeRootAbsoluto, "caso-1-abc");
       const { deps, execFileFn, statFn } = makeDeps();
