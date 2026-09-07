@@ -2620,6 +2620,35 @@ describe("repository", () => {
         const limitadas = listPropuestasCambio(db, { limite: 1 });
         expect(limitadas.map((p) => p.id)).toEqual(["propuesta-2"]);
       });
+
+      it("filtra por estado usando el indice idx_propuestas_estado, sin table scan (Reviewer finding: el (@estado IS NULL OR estado = @estado) impedia que SQLite use el indice aunque estado viaje con valor)", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+
+        let sqlCapturado: string | undefined;
+        const prepareOriginal = db!.prepare.bind(db);
+        // Monkeypatch temporal solo para capturar el SQL exacto que arma listPropuestasCambio.
+        db!.prepare = (sql: string) => {
+          sqlCapturado = sql;
+          return prepareOriginal(sql);
+        };
+        listPropuestasCambio(db, { estado: "pendiente_aprobacion_humana" });
+        db!.prepare = prepareOriginal;
+
+        expect(sqlCapturado).toBeDefined();
+        const plan = db!
+          .prepare(`EXPLAIN QUERY PLAN ${sqlCapturado}`)
+          .all({ estado: "pendiente_aprobacion_humana", propuestaId: null, limite: 20 }) as Array<{
+          detail: string;
+        }>;
+        const detalle = plan.map((p) => p.detail).join("\n");
+
+        // Con `estado` presente, el acceso a `propuestas_cambio` tiene que ser un
+        // SEARCH acotado por el indice de estado, nunca un SCAN de toda la tabla.
+        expect(detalle).toMatch(/SEARCH propuestas_cambio USING INDEX idx_propuestas_estado/);
+        expect(detalle).not.toMatch(/SCAN propuestas_cambio/);
+      });
     });
 
     describe("aplicarPropuestaCambio / descartarPropuestaCambio (Hito 5.1, tarea 15)", () => {

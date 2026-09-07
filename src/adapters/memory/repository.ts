@@ -2184,17 +2184,30 @@ const LIMITE_LISTADO_PROPUESTAS_DEFAULT = 20;
  * `estado` opcional (a diferencia de aquel): `/ver-propuesta` sin argumento
  * filtra por `pendiente_aprobacion_humana`, pero la evidencia de
  * `docs/progreso/` necesita poder leer cualquier estado.
+ *
+ * `estadoClausula` (Reviewer finding, fix de eficiencia): envolver
+ * `estado = @estado` en `(@estado IS NULL OR ...)` le impide a SQLite usar
+ * `idx_propuestas_estado` AUNQUE `estado` viaje con un valor real, porque el
+ * planner no puede asumir en tiempo de prepare que el bind no va a ser NULL
+ * (mismo criterio que el `LEFT JOIN` de `listEscalacionesReembolso`: nunca
+ * una forma de SQL que fuerce a escanear toda la tabla cuando SÍ hay con qué
+ * acotar). En vez de eso, la condición sobre `estado` se arma en JS —igual
+ * que `orden` más abajo en `listEscalacionesReembolso`— y sólo entra al SQL
+ * cuando el filtro está presente, dejando la comparación como una igualdad
+ * simple que el índice sí puede resolver con `SEARCH`. Verificado con
+ * `EXPLAIN QUERY PLAN` en el test de este archivo.
  */
 export function listPropuestasCambio(
   db: Database.Database,
   filtro: { readonly estado?: string; readonly propuestaId?: string; readonly limite?: number } = {},
 ): readonly PropuestaRow[] {
+  const estadoClausula = filtro.estado === undefined ? "" : "estado = @estado AND ";
+
   const rows = db
     .prepare(
       `SELECT ${PROPUESTA_SELECT_COLUMNS}
          FROM propuestas_cambio
-        WHERE (@estado IS NULL OR estado = @estado)
-          AND (@propuestaId IS NULL OR id = @propuestaId)
+        WHERE ${estadoClausula}(@propuestaId IS NULL OR id = @propuestaId)
         ORDER BY created_at
         LIMIT @limite`,
     )
