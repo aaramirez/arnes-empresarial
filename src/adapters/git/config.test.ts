@@ -25,6 +25,12 @@ describe("resolveGitConfig", () => {
     });
   });
 
+  it("falls back to DEFAULT_GIT_BIN when HARNESS_GIT_BIN is an empty string", () => {
+    const config = resolveGitConfig({ HARNESS_GIT_BIN: "" });
+
+    expect(config.bin).toBe(DEFAULT_GIT_BIN);
+  });
+
   it("overrides only timeoutMs from HARNESS_GIT_TIMEOUT_MS", () => {
     const config = resolveGitConfig({ HARNESS_GIT_TIMEOUT_MS: "60000" });
 
@@ -39,6 +45,8 @@ describe("resolveGitConfig", () => {
     ["non-numeric", "abc"],
     ["zero", "0"],
     ["negative", "-5"],
+    ["Infinity", "Infinity"],
+    ["overflow that parses to Infinity", "1e400"],
   ])("falls back to DEFAULT_GIT_TIMEOUT_MS when HARNESS_GIT_TIMEOUT_MS is %s", (_label, value) => {
     const config = resolveGitConfig({ HARNESS_GIT_TIMEOUT_MS: value });
 
@@ -69,6 +77,12 @@ describe("resolveWorktreeConfig", () => {
     });
   });
 
+  it("falls back to DEFAULT_WORKTREE_ROOT when HARNESS_WORKTREE_ROOT is an empty string", () => {
+    const config = resolveWorktreeConfig({ HARNESS_WORKTREE_ROOT: "" });
+
+    expect(config.worktreeRoot).toBe(DEFAULT_WORKTREE_ROOT);
+  });
+
   it("overrides only ttlMs from HARNESS_WORKTREE_TTL_MS", () => {
     const config = resolveWorktreeConfig({ HARNESS_WORKTREE_TTL_MS: "3600000" });
 
@@ -83,6 +97,8 @@ describe("resolveWorktreeConfig", () => {
     ["non-numeric", "abc"],
     ["zero", "0"],
     ["negative", "-5"],
+    ["Infinity", "Infinity"],
+    ["overflow that parses to Infinity", "1e400"],
   ])("falls back to DEFAULT_WORKTREE_TTL_MS when HARNESS_WORKTREE_TTL_MS is %s", (_label, value) => {
     const config = resolveWorktreeConfig({ HARNESS_WORKTREE_TTL_MS: value });
 

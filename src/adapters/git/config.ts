@@ -37,9 +37,15 @@ export const DEFAULT_WORKTREE_TTL_MS = 7_200_000;
 
 /**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
- * raw value is missing, blank, not a number, or not strictly greater than
- * zero. Never throws — this adapter's configuration is best-effort by
- * design (see design.md §6.1).
+ * raw value is missing, blank, not a number, not finite, or not strictly
+ * greater than zero. Never throws — this adapter's configuration is
+ * best-effort by design (see design.md §6.1).
+ *
+ * The finiteness check (post-review correction, Hito 5.1 tarea 2) rejects
+ * `Infinity`/`-Infinity` — e.g. `HARNESS_GIT_TIMEOUT_MS=Infinity` or
+ * `=1e400` (which `Number()` also parses to `Infinity`) would otherwise
+ * pass and reach `execFile(..., {timeout: Infinity})`, which Node rejects
+ * synchronously at runtime, breaking this module's "never throws" contract.
  *
  * DELIBERATELY duplicated across adapter config files (Reviewer finding,
  * reuse): not hoisted to `src/core/` because this is env-var parsing
@@ -53,10 +59,28 @@ function resolvePositiveNumber(raw: string | undefined, defaultValue: number): n
     return defaultValue;
   }
   const parsed = Number(raw);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
     return defaultValue;
   }
   return parsed;
+}
+
+/**
+ * Falls back to `defaultValue` when the raw env var is missing or blank
+ * (post-trim empty string) — same "absent or blank means default" rule as
+ * `resolvePositiveNumber`, but for string fields where any non-blank value
+ * is otherwise valid as-is (post-review correction, Hito 5.1 tarea 2).
+ * Without this, `HARNESS_GIT_BIN=""`/`HARNESS_WORKTREE_ROOT=""` would leak
+ * through `env.X ?? DEFAULT` (which only catches `null`/`undefined`) as a
+ * literal empty string — an unusable `bin` for `execFile`, and a
+ * `worktreeRoot` a future caller could join against `repoRoot` and land on
+ * the repo root itself.
+ */
+function resolveNonBlankString(raw: string | undefined, defaultValue: string): string {
+  if (raw === undefined || raw.trim() === "") {
+    return defaultValue;
+  }
+  return raw;
 }
 
 /**
@@ -71,7 +95,7 @@ function resolvePositiveNumber(raw: string | undefined, defaultValue: number): n
  */
 export function resolveGitConfig(env: NodeJS.ProcessEnv = process.env): GitConfig {
   return {
-    bin: env.HARNESS_GIT_BIN ?? DEFAULT_GIT_BIN,
+    bin: resolveNonBlankString(env.HARNESS_GIT_BIN, DEFAULT_GIT_BIN),
     timeoutMs: resolvePositiveNumber(env.HARNESS_GIT_TIMEOUT_MS, DEFAULT_GIT_TIMEOUT_MS),
   };
 }
@@ -92,7 +116,7 @@ export function resolveGitConfig(env: NodeJS.ProcessEnv = process.env): GitConfi
  */
 export function resolveWorktreeConfig(env: NodeJS.ProcessEnv = process.env): WorktreeConfig {
   return {
-    worktreeRoot: env.HARNESS_WORKTREE_ROOT ?? DEFAULT_WORKTREE_ROOT,
+    worktreeRoot: resolveNonBlankString(env.HARNESS_WORKTREE_ROOT, DEFAULT_WORKTREE_ROOT),
     ttlMs: resolvePositiveNumber(env.HARNESS_WORKTREE_TTL_MS, DEFAULT_WORKTREE_TTL_MS),
   };
 }
