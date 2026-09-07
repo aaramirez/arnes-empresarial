@@ -65,12 +65,18 @@ export interface RunActivityTurnDeps {
   readonly store: ActivityStorePort;
   readonly board: ActivityBoardPort;
   /**
-   * EL punto clave del hito. El composition root inyecta acá un closure que
-   * (a) construye el Adaptador de Conocimiento PARA ESTE `casoId` — fix de
-   * R1, spec `knowledge-query` — y (b) llama `handleTurn(casoId, prompt,
-   * deps)`. `handle-turn.ts` NO se modifica ni recibe dependencias nuevas.
+   * EL punto clave del hito (Hito 5, tarea 12: renombre de `runTurn` a
+   * `despacharRevision`, MISMO TIPO — ADR 54). El composition root inyecta
+   * acá un closure que despacha la cadena de delegación Planner → Developer
+   * → Reviewer (`despacharRevisionPorRoles`, `cadena-revision.ts`, §5.5) o,
+   * bajo el interruptor de degradación `HARNESS_DELEGACION_ROLES="off"`
+   * (ADR 54, cableado real en la tarea 14), el `handleTurn` único de Hito 3.
+   * El tipo no cambió respecto del `runTurn` que reemplaza: entra el
+   * `casoId` y el prompt sintético, sale el mismo `ActivityTurnOutcome`
+   * (texto final + etiqueta de agente) — este módulo sigue sin conocer si
+   * detrás hay un único agente o una cadena de roles.
    */
-  readonly runTurn: (casoId: string, prompt: string) => Promise<ActivityTurnOutcome>;
+  readonly despacharRevision: (casoId: string, prompt: string) => Promise<ActivityTurnOutcome>;
   /** `randomUUID` en producción; contador determinista en tests. */
   readonly newId: () => string;
   /** `() => new Date().toISOString()` en producción. */
@@ -140,8 +146,10 @@ async function ejecutarEfectoDeTableroSeguro(operacion: () => Promise<void>): Pr
  *  2b. Si existe → se REUSA, incluido su `casoId` → `actividad-reusada`.
  *  3. `board.leerMetadatos` — nunca lanza; `undefined` degrada.
  *  4. `buildActivityPrompt`.
- *  5. `runTurn(actividad.casoId, prompt)` — propaga si falla, sin llamar a
- *     nada más después.
+ *  5. `despacharRevision(actividad.casoId, prompt)` — despacha la cadena de
+ *     delegación Planner → Developer → Reviewer (Hito 5, tarea 12; antes,
+ *     `runTurn` de un único agente). Propaga si falla, sin llamar a nada más
+ *     después.
  *  6. `parseVeredicto` → `transicionarEstado`.
  *  7. `store.updateActividadEstado` — SIEMPRE, aunque el estado no cambie.
  *     Propaga si falla.
@@ -155,7 +163,7 @@ export async function runActivityTurn(
   evento: IncomingActivityEvent,
   deps: RunActivityTurnDeps,
 ): Promise<RunActivityTurnResult> {
-  const { store, board, runTurn, newId, now, logEvent } = deps;
+  const { store, board, despacharRevision, newId, now, logEvent } = deps;
 
   const actividadExistente = store.findActividadPorReferencia({
     proyectoId: evento.proyectoId,
@@ -232,7 +240,7 @@ export async function runActivityTurn(
 
   // Propaga sin llamar a nada más después: ni store.updateActividadEstado
   // ni ningún método del board se invocan si esto rechaza.
-  const resultado = await runTurn(actividad.casoId, prompt);
+  const resultado = await despacharRevision(actividad.casoId, prompt);
 
   const veredicto = parseVeredicto(resultado.responseText);
   const estado = transicionarEstado(actividad.estado, veredicto);
