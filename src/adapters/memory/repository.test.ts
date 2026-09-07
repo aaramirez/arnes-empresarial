@@ -2359,6 +2359,116 @@ describe("repository", () => {
     });
   });
 
+  describe("propuestas_cambio (migración 0009, Hito 5.1, tarea 13)", () => {
+    function insertPropuestaDePrueba(
+      db: Database.Database,
+      overrides: Partial<{
+        id: string;
+        casoId: string;
+        delegacionId: string | null;
+        baseCommit: string;
+        ramaWorktree: string;
+        patch: string;
+        patchBytes: number;
+        archivos: number;
+        lineasAgregadas: number;
+        lineasEliminadas: number;
+        estado: string;
+        createdAt: string;
+        updatedAt: string;
+      }> = {},
+    ) {
+      const fila = {
+        id: "propuesta-1",
+        casoId: "caso-1",
+        delegacionId: null,
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-1-uuid",
+        patch: "diff --git a/x b/x\n",
+        patchBytes: 20,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        estado: "pendiente_aprobacion_humana",
+        createdAt: "2026-09-07T00:00:00.000Z",
+        updatedAt: "2026-09-07T00:00:00.000Z",
+        ...overrides,
+      };
+
+      db
+        .prepare(
+          "INSERT INTO propuestas_cambio (id, caso_id, delegacion_id, base_commit, rama_worktree, patch, patch_bytes, archivos, lineas_agregadas, lineas_eliminadas, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          fila.id,
+          fila.casoId,
+          fila.delegacionId,
+          fila.baseCommit,
+          fila.ramaWorktree,
+          fila.patch,
+          fila.patchBytes,
+          fila.archivos,
+          fila.lineasAgregadas,
+          fila.lineasEliminadas,
+          fila.estado,
+          fila.createdAt,
+          fila.updatedAt,
+        );
+    }
+
+    it("crea la tabla propuestas_cambio, sus índices idx_propuestas_estado/idx_propuestas_caso y la columna propuesta_id en registro_acciones_empleado", () => {
+      db = openDatabase(":memory:");
+
+      const tableNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      const indexNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(tableNames).toContain("propuestas_cambio");
+      expect(indexNames).toContain("idx_propuestas_estado");
+      expect(indexNames).toContain("idx_propuestas_caso");
+
+      const columnasRegistro = (
+        db!.prepare("PRAGMA table_info(registro_acciones_empleado)").all() as {
+          name: string;
+        }[]
+      ).map((row) => row.name);
+      expect(columnasRegistro).toContain("propuesta_id");
+    });
+
+    it("permite insertar una propuesta con delegacion_id NULL (precedente ADR 48)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      insertPropuestaDePrueba(db!, { delegacionId: null });
+
+      const fila = db!
+        .prepare("SELECT delegacion_id FROM propuestas_cambio WHERE id = ?")
+        .get("propuesta-1") as { delegacion_id: string | null };
+      expect(fila.delegacion_id).toBeNull();
+    });
+
+    it("rechaza insertar una propuesta con un caso_id inexistente", () => {
+      db = openDatabase(":memory:");
+
+      expect(() =>
+        insertPropuestaDePrueba(db!, { casoId: "caso-inexistente" }),
+      ).toThrow(/FOREIGN KEY/);
+    });
+
+    it("correr las migraciones dos veces no falla (IF NOT EXISTS)", () => {
+      db = openDatabase(":memory:");
+
+      expect(() => runMigrations(db!)).not.toThrow();
+    });
+  });
+
   describe("crearSolicitudConCaso / adjuntarDictamenSolicitud / listSolicitudesInternas / aprobarSolicitudInterna / rechazarSolicitudInterna (Hito 5, tarea 19)", () => {
     function buildSolicitudConCasoInput(
       overrides: Partial<CrearSolicitudConCasoInput> = {},
