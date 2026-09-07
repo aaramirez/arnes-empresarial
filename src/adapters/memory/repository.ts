@@ -1394,7 +1394,7 @@ export function listAccionesEmpleadoPorVenta(
 ): readonly AccionEmpleadoRow[] {
   const rows = db
     .prepare(
-      `SELECT id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at
+      `SELECT id, empleado_id, comando, venta_id, caso_id, propuesta_id, resultado, ocurrido_at
          FROM registro_acciones_empleado
         WHERE venta_id = @ventaId
         ORDER BY ocurrido_at`,

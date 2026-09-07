@@ -1744,6 +1744,51 @@ describe("repository", () => {
       expect(filas.map((f) => f.id)).toEqual(["accion-1", "accion-2"]);
     });
 
+    it("incluye propuestaId cuando la fila lo tiene, y NO agrega la clave en absoluto cuando no (Reviewer finding: el SELECT explicito no traia propuesta_id, y undefined !== null dejaba una clave espuria propuestaId: undefined)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      createCaso(db, buildCaso({ id: "caso-2" }));
+      insertPropuestaCambio(db, {
+        id: "propuesta-1",
+        casoId: "caso-2",
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-2-uuid",
+        patch: "diff --git a/x b/x\n",
+        patchBytes: 20,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        ahora: "2026-09-07T00:00:00.000Z",
+      });
+
+      insertAccionEmpleado(db, {
+        id: "accion-1",
+        empleadoId: "ana",
+        comando: "/devolucion",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        resultado: "escalada",
+        ocurridoAt: "2026-09-01T00:00:00.000Z",
+      });
+      insertAccionEmpleado(db, {
+        id: "accion-2",
+        empleadoId: "ana",
+        comando: "/aplicar-propuesta",
+        ventaId: "venta-1",
+        propuestaId: "propuesta-1",
+        resultado: "aplicada",
+        ocurridoAt: "2026-09-01T00:01:00.000Z",
+      });
+
+      const filas = listAccionesEmpleadoPorVenta(db, "venta-1");
+
+      expect(filas).toHaveLength(2);
+      const [sinPropuesta, conPropuesta] = filas;
+      expect(Object.keys(sinPropuesta!)).not.toContain("propuestaId");
+      expect(Object.keys(conPropuesta!)).toContain("propuestaId");
+      expect(conPropuesta!.propuestaId).toBe("propuesta-1");
+    });
+
     it("acepta propuestaId (columna nueva de la migracion 0009, ADR 63) y lo persiste sin tocar venta_id/caso_id", () => {
       db = openDatabase(":memory:");
       createCaso(db, buildCaso());
