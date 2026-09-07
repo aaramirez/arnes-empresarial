@@ -104,6 +104,22 @@ function parsearPorcelain(salida: string): readonly RegistroWorktree[] {
 }
 
 /**
+ * Normaliza separadores de ruta a `/` (hallazgo real de Hito 5.1, tarea 11,
+ * confirmado con `git` real en Windows): `git worktree list --porcelain`
+ * SIEMPRE reporta rutas con `/`, incluso en Windows, mientras que
+ * `resolve()` de Node en Windows devuelve `\`. Sin normalizar, el
+ * `startsWith` de `esCandidato` nunca matchea en Windows contra la salida de
+ * `git` real — el doble filtro descarta silenciosamente TODOS los
+ * candidatos (`examinados: 0` siempre), algo que ningún test unitario
+ * anterior (`barrido.test.ts`, `index.test.ts`) podía detectar porque
+ * fabrican su propio porcelain con `join()`, que usa el mismo separador que
+ * la comparación. En POSIX es un no-op (`\\` no aparece en rutas reales).
+ */
+function normalizarSeparadores(ruta: string): string {
+  return ruta.replaceAll("\\", "/");
+}
+
+/**
  * El DOBLE filtro (ADR 57 pto 7, RD-14): un candidato sólo se toca si SU
  * RUTA está bajo `worktreeRootAbsoluto` **y** SU RAMA tiene el prefijo
  * `WORKTREE_RAMA_PREFIJO` — si cualquiera de las dos condiciones falla, no
@@ -112,7 +128,7 @@ function parsearPorcelain(salida: string): readonly RegistroWorktree[] {
  */
 function esCandidato(registro: RegistroWorktree, worktreeRootAbsoluto: string): registro is RegistroWorktree & { rama: string } {
   return (
-    registro.ruta.startsWith(worktreeRootAbsoluto) &&
+    normalizarSeparadores(registro.ruta).startsWith(worktreeRootAbsoluto) &&
     registro.rama !== undefined &&
     registro.rama.startsWith(WORKTREE_RAMA_PREFIJO)
   );
@@ -152,7 +168,7 @@ export async function barrerHuerfanos(
     return { examinados: 0, borrados: 0, fallidos: 0 };
   }
 
-  const worktreeRootAbsoluto = resolve(deps.repoRoot, deps.worktreeRoot);
+  const worktreeRootAbsoluto = normalizarSeparadores(resolve(deps.repoRoot, deps.worktreeRoot));
   const candidatos: readonly CandidatoBarrido[] = parsearPorcelain(salida).filter((registro) =>
     esCandidato(registro, worktreeRootAbsoluto),
   );
