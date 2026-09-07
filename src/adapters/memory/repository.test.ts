@@ -12,13 +12,17 @@ import {
   DelegacionNotFoundError,
   SesionAgenteAlreadyExistsError,
   SesionAgenteInvalidCasoError,
+  SolicitudAlreadyExistsError,
   VentaAlreadyExistsError,
   VentaTokenDuplicadoError,
+  adjuntarDictamenSolicitud,
   aprobarEscalacionReembolso,
   aprobarReembolso,
+  aprobarSolicitudInterna,
   buscarCredencialEmpleado,
   completarDelegacion,
   confirmarVentaConComision,
+  crearSolicitudConCaso,
   createActividad,
   createCaso,
   createCasoConActividad,
@@ -39,9 +43,11 @@ import {
   listComisionesPorPeriodo,
   listDelegacionesPorCaso,
   listEscalacionesReembolso,
+  listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
   reabrirEscalacionReembolso,
   rechazarEscalacionReembolso,
+  rechazarSolicitudInterna,
   rechazarVenta,
   updateActividad,
   updateCaso,
@@ -54,6 +60,7 @@ import {
   type CreateCasoInput,
   type CreateSesionAgenteInput,
   type CreateVentaConCasoInput,
+  type CrearSolicitudConCasoInput,
   type InsertDelegacionInput,
 } from "./repository.js";
 
@@ -2349,6 +2356,225 @@ describe("repository", () => {
       expect(() =>
         insertSolicitudDePrueba(db!, { casoId: "caso-inexistente" }),
       ).toThrow(/FOREIGN KEY/);
+    });
+  });
+
+  describe("crearSolicitudConCaso / adjuntarDictamenSolicitud / listSolicitudesInternas / aprobarSolicitudInterna / rechazarSolicitudInterna (Hito 5, tarea 19)", () => {
+    function buildSolicitudConCasoInput(
+      overrides: Partial<CrearSolicitudConCasoInput> = {},
+    ): CrearSolicitudConCasoInput {
+      return {
+        caso: { id: "caso-1", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+        solicitud: {
+          id: "solicitud-1",
+          solicitanteId: "empleado-1",
+          tipo: "vacaciones",
+          detalle: "una semana en marzo",
+          estado: "pendiente_aprobacion_humana",
+        },
+        timestamp: "2026-09-07T00:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    describe("crearSolicitudConCaso", () => {
+      it("crea caso y solicitud en una sola transaccion", () => {
+        db = openDatabase(":memory:");
+
+        const { caso, solicitud } = crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        expect(caso).toEqual({
+          id: "caso-1",
+          tipo: "solicitud_interna",
+          estado: "pendiente_aprobacion_humana",
+          createdAt: "2026-09-07T00:00:00.000Z",
+          updatedAt: "2026-09-07T00:00:00.000Z",
+        });
+        expect(solicitud).toEqual({
+          id: "solicitud-1",
+          casoId: "caso-1",
+          solicitanteId: "empleado-1",
+          tipo: "vacaciones",
+          detalle: "una semana en marzo",
+          estado: "pendiente_aprobacion_humana",
+          createdAt: "2026-09-07T00:00:00.000Z",
+          updatedAt: "2026-09-07T00:00:00.000Z",
+        });
+        expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+      });
+
+      it("es atomica: si el INSERT de la solicitud falla, el caso recien creado no queda huerfano", () => {
+        db = openDatabase(":memory:");
+        // Prime an existing solicitud id by succeeding once.
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        expect(() =>
+          crearSolicitudConCaso(
+            db!,
+            buildSolicitudConCasoInput({
+              caso: { id: "caso-2", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              // Same solicitud id as the first call above -> PK violation inside the tx.
+              solicitud: {
+                id: "solicitud-1",
+                solicitanteId: "empleado-2",
+                tipo: "gasto",
+                detalle: "otro detalle",
+                estado: "pendiente_aprobacion_humana",
+              },
+            }),
+          ),
+        ).toThrow(SolicitudAlreadyExistsError);
+
+        expect(getCasoById(db, "caso-2")).toBeUndefined();
+        // The first, successful call's rows are untouched by the rollback.
+        expect(getCasoById(db, "caso-1")).not.toBeUndefined();
+      });
+    });
+
+    describe("adjuntarDictamenSolicitud", () => {
+      it("escribe dictamen/dictaminada_at sin tocar estado", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        const actualizada = adjuntarDictamenSolicitud(db, {
+          solicitudId: "solicitud-1",
+          dictamen: "detalle razonable, sin bandera roja",
+          ahora: "2026-09-07T00:05:00.000Z",
+        });
+
+        expect(actualizada?.dictamen).toBe("detalle razonable, sin bandera roja");
+        expect(actualizada?.dictaminadaAt).toBe("2026-09-07T00:05:00.000Z");
+        expect(actualizada?.estado).toBe("pendiente_aprobacion_humana");
+      });
+
+      it("devuelve undefined si la solicitud no existe", () => {
+        db = openDatabase(":memory:");
+
+        expect(
+          adjuntarDictamenSolicitud(db, {
+            solicitudId: "solicitud-inexistente",
+            dictamen: "x",
+            ahora: "2026-09-07T00:05:00.000Z",
+          }),
+        ).toBeUndefined();
+      });
+    });
+
+    describe("listSolicitudesInternas", () => {
+      function crearSegundaSolicitud() {
+        crearSolicitudConCaso(
+          db!,
+          buildSolicitudConCasoInput({
+            caso: { id: "caso-2", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+            solicitud: {
+              id: "solicitud-2",
+              solicitanteId: "empleado-2",
+              tipo: "gasto",
+              detalle: "viatico de marzo",
+              estado: "pendiente_aprobacion_humana",
+            },
+          }),
+        );
+      }
+
+      it("filtra por estado pendiente, excluyendo solicitudes ya resueltas", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        crearSegundaSolicitud();
+        aprobarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+        });
+
+        const pendientes = listSolicitudesInternas(db);
+
+        expect(pendientes.map((s) => s.id)).toEqual(["solicitud-2"]);
+      });
+
+      it("filtra opcionalmente por id", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        crearSegundaSolicitud();
+
+        const filtradas = listSolicitudesInternas(db, { solicitudId: "solicitud-2" });
+
+        expect(filtradas.map((s) => s.id)).toEqual(["solicitud-2"]);
+      });
+    });
+
+    describe("aprobarSolicitudInterna / rechazarSolicitudInterna", () => {
+      it("aprobarSolicitudInterna: CAS a aprobada + caso resuelto + UNA fila de registro, en una sola transaccion", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        const solicitud = aprobarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+        });
+
+        expect(solicitud?.estado).toBe("aprobada");
+        expect(solicitud?.resueltaPor).toBe("ana");
+        expect(solicitud?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+        expect(getCasoById(db, "caso-1")?.estado).toBe("resuelto");
+
+        const filas = db!
+          .prepare("SELECT id, empleado_id, comando, resultado, caso_id FROM registro_acciones_empleado WHERE caso_id = ?")
+          .all("caso-1") as { id: string; empleado_id: string; comando: string; resultado: string; caso_id: string }[];
+        expect(filas).toHaveLength(1);
+        expect(filas[0]).toEqual({
+          id: "accion-1",
+          empleado_id: "ana",
+          comando: "/aprobar-solicitud",
+          resultado: "aprobada",
+          caso_id: "caso-1",
+        });
+      });
+
+      it("rechazarSolicitudInterna: CAS a rechazada + caso resuelto + fila 'rechazada'", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        const solicitud = rechazarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "beto",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+        });
+
+        expect(solicitud?.estado).toBe("rechazada");
+        expect(getCasoById(db, "caso-1")?.estado).toBe("resuelto");
+      });
+
+      it("CAS que no matchea (solicitud ya no pendiente) devuelve undefined y NO escribe ni el caso ni la fila de registro (rollback verificable)", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        // Fuerza que el CAS de estado no matchee: la solicitud ya no esta pendiente.
+        db!.prepare("UPDATE solicitudes_internas SET estado = 'aprobada' WHERE id = ?").run("solicitud-1");
+
+        const resultado = aprobarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: "2026-09-07T02:00:00.000Z",
+        });
+
+        expect(resultado).toBeUndefined();
+        // El caso NO se marca resuelto -- consulta directa, no solo el valor de retorno.
+        expect(getCasoById(db, "caso-1")?.estado).toBe("pendiente_aprobacion_humana");
+        // La fila de registro NUNCA se escribio -- consulta directa, no solo el valor de retorno.
+        const filaAccion = db!
+          .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1");
+        expect(filaAccion).toBeUndefined();
+      });
     });
   });
 });

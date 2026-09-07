@@ -1724,3 +1724,313 @@ export function listDelegacionesPorCaso(db: Database.Database, casoId: string): 
     .all(casoId) as DelegacionSqlRow[];
   return rows.map(rowToDelegacion);
 }
+
+/**
+ * Colisión de `solicitudes_internas.id` (`SQLITE_CONSTRAINT_PRIMARYKEY`) —
+ * mismo criterio que `VentaAlreadyExistsError`/`ActividadAlreadyExistsError`.
+ * `caso_id` nunca colisiona desde acá: `crearSolicitudConCaso` siempre
+ * deriva `solicitud.casoId` del `caso` recién creado en la misma
+ * transacción, nunca de un parámetro suelto — el `UNIQUE` de
+ * `idx_solicitudes_caso` (migración 0008) es estructuralmente imposible de
+ * violar por esta función.
+ */
+export class SolicitudAlreadyExistsError extends Error {
+  constructor(id: string) {
+    super(`Solicitud interna already exists: ${id}`);
+    this.name = "SolicitudAlreadyExistsError";
+  }
+}
+
+/**
+ * Public shape of `solicitudes_internas`, camelCase — field-for-field the
+ * same as `SolicitudInterna` in `src/core/solicitudes/solicitudes-contract.ts`
+ * (Hito 5, tarea 16). This adapter never imports that contract (`src/core/`
+ * is the only side allowed to import across the boundary), but the shapes
+ * must line up 1:1 so the composition root can wire this module behind
+ * `SolicitudStorePort` without a translation layer.
+ */
+export interface SolicitudRow {
+  readonly id: string;
+  readonly casoId: string;
+  readonly solicitanteId: string;
+  readonly tipo: string;
+  readonly detalle: string;
+  readonly estado: string;
+  readonly dictamen?: string;
+  readonly dictaminadaAt?: string;
+  readonly resueltaPor?: string;
+  readonly resueltaAt?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface SolicitudInternaSqlRow {
+  id: string;
+  caso_id: string;
+  solicitante_id: string;
+  tipo: string;
+  detalle: string;
+  estado: string;
+  dictamen: string | null;
+  dictaminada_at: string | null;
+  resuelta_por: string | null;
+  resuelta_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const SOLICITUD_SELECT_COLUMNS =
+  "id, caso_id, solicitante_id, tipo, detalle, estado, dictamen, dictaminada_at, resuelta_por, resuelta_at, created_at, updated_at";
+
+function rowToSolicitud(row: SolicitudInternaSqlRow): SolicitudRow {
+  return {
+    id: row.id,
+    casoId: row.caso_id,
+    solicitanteId: row.solicitante_id,
+    tipo: row.tipo,
+    detalle: row.detalle,
+    estado: row.estado,
+    ...(row.dictamen !== null ? { dictamen: row.dictamen } : {}),
+    ...(row.dictaminada_at !== null ? { dictaminadaAt: row.dictaminada_at } : {}),
+    ...(row.resuelta_por !== null ? { resueltaPor: row.resuelta_por } : {}),
+    ...(row.resuelta_at !== null ? { resueltaAt: row.resuelta_at } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export interface CrearSolicitudConCasoInput {
+  readonly caso: { readonly id: string; readonly tipo: string; readonly estado: string };
+  readonly solicitud: {
+    readonly id: string;
+    readonly solicitanteId: string;
+    readonly tipo: string;
+    readonly detalle: string;
+    readonly estado: string;
+  };
+  /**
+   * Un único timestamp para `created_at`/`updated_at` de ambas filas — mismo
+   * campo, mismo nombre, que `CrearSolicitudConCasoInput` en
+   * `solicitudes-contract.ts` (tarea 16).
+   */
+  readonly timestamp: string;
+}
+
+/**
+ * `createCaso` + `INSERT solicitudes_internas` en UNA transacción
+ * (design.md §6.3), molde EXACTO de `createCasoConActividad`/
+ * `createVentaConCaso`: si el `INSERT` de la solicitud falla (colisión de
+ * `id`), SQLite revierte también el `caso` recién creado dentro de la misma
+ * transacción — no queda un caso huérfano sin su solicitud.
+ *
+ * `solicitud.casoId` sale del `caso` recién creado (`caso.id`), nunca de un
+ * parámetro separado: por construcción no puede divergir del invariante 1
+ * solicitud ↔ 1 caso que el índice `idx_solicitudes_caso` (UNIQUE, migración
+ * 0008) hace estructural.
+ */
+export function crearSolicitudConCaso(
+  db: Database.Database,
+  input: CrearSolicitudConCasoInput,
+): { readonly caso: Caso; readonly solicitud: SolicitudRow } {
+  const runInTransaction = db.transaction((): { caso: Caso; solicitud: SolicitudRow } => {
+    const caso = createCaso(db, {
+      id: input.caso.id,
+      tipo: input.caso.tipo,
+      estado: input.caso.estado,
+      createdAt: input.timestamp,
+      updatedAt: input.timestamp,
+    });
+
+    let row: SolicitudInternaSqlRow;
+    try {
+      row = db
+        .prepare(
+          `INSERT INTO solicitudes_internas
+             (id, caso_id, solicitante_id, tipo, detalle, estado, created_at, updated_at)
+           VALUES (@id, @casoId, @solicitanteId, @tipo, @detalle, @estado, @createdAt, @updatedAt)
+           RETURNING ${SOLICITUD_SELECT_COLUMNS}`,
+        )
+        .get({
+          id: input.solicitud.id,
+          casoId: caso.id,
+          solicitanteId: input.solicitud.solicitanteId,
+          tipo: input.solicitud.tipo,
+          detalle: input.solicitud.detalle,
+          estado: input.solicitud.estado,
+          createdAt: input.timestamp,
+          updatedAt: input.timestamp,
+        }) as SolicitudInternaSqlRow;
+    } catch (error) {
+      if (isSqliteConstraintError(error, "SQLITE_CONSTRAINT_PRIMARYKEY")) {
+        throw new SolicitudAlreadyExistsError(input.solicitud.id);
+      }
+      throw error;
+    }
+
+    return { caso, solicitud: rowToSolicitud(row) };
+  });
+
+  return runInTransaction();
+}
+
+export interface AdjuntarDictamenSolicitudInput {
+  readonly solicitudId: string;
+  readonly dictamen: string;
+  readonly ahora: string;
+}
+
+/**
+ * Escribe `dictamen`/`dictaminada_at` SIN transicionar `estado` (design.md
+ * §6.3, ADR 49): el dictamen del subagente validador queda adjunto, pero la
+ * transición a `aprobada`/`rechazada` sigue siendo exclusiva del CAS humano
+ * (`aprobarSolicitudInterna`/`rechazarSolicitudInterna`). `updated_at` SÍ se
+ * actualiza — adjuntar un dictamen es una escritura real de la fila.
+ * `undefined` = `solicitudId` no existe.
+ */
+export function adjuntarDictamenSolicitud(
+  db: Database.Database,
+  input: AdjuntarDictamenSolicitudInput,
+): SolicitudRow | undefined {
+  const row = db
+    .prepare(
+      `UPDATE solicitudes_internas
+          SET dictamen = @dictamen,
+              dictaminada_at = @ahora,
+              updated_at = @ahora
+        WHERE id = @solicitudId
+       RETURNING ${SOLICITUD_SELECT_COLUMNS}`,
+    )
+    .get({
+      solicitudId: input.solicitudId,
+      dictamen: input.dictamen,
+      ahora: input.ahora,
+    }) as SolicitudInternaSqlRow | undefined;
+  return row ? rowToSolicitud(row) : undefined;
+}
+
+/** Tope del listado sin filtro por id — molde de `LIMITE_LISTADO_ESCALACIONES_DEFAULT`. */
+const LIMITE_LISTADO_SOLICITUDES_DEFAULT = 20;
+
+/**
+ * `estado = 'pendiente_aprobacion_humana'`, filtrable por id (ADR 38: nunca
+ * un lector por id sin filtro de estado) — espejo de
+ * `listEscalacionesReembolso`, pero sin parámetro `estado`:
+ * `listarSolicitudesPendientes` (`SolicitudStorePort`, tarea 16) NUNCA lista
+ * otro estado, así que el literal va fijo en el SQL en vez de viajar como
+ * variable sin uso real (mismo criterio que `confirmarVentaConComision`).
+ */
+export function listSolicitudesInternas(
+  db: Database.Database,
+  filtro: { readonly solicitudId?: string; readonly limite?: number } = {},
+): readonly SolicitudRow[] {
+  const rows = db
+    .prepare(
+      `SELECT ${SOLICITUD_SELECT_COLUMNS}
+         FROM solicitudes_internas
+        WHERE estado = 'pendiente_aprobacion_humana'
+          AND (@solicitudId IS NULL OR id = @solicitudId)
+        ORDER BY created_at
+        LIMIT @limite`,
+    )
+    .all({
+      solicitudId: filtro.solicitudId ?? null,
+      limite: filtro.limite ?? LIMITE_LISTADO_SOLICITUDES_DEFAULT,
+    }) as SolicitudInternaSqlRow[];
+  return rows.map(rowToSolicitud);
+}
+
+export interface ResolucionSolicitudDbInput {
+  readonly solicitudId: string;
+  readonly casoId: string;
+  readonly empleadoId: string;
+  readonly accionId: string;
+  readonly ahora: string;
+}
+
+/**
+ * `aprobar/rechazarSolicitudInterna` comparten este privado — CAS `UPDATE`
+ * + `updateCaso(resuelto)` + `insertAccionEmpleado`, en UNA transacción,
+ * molde EXACTO de `resolverEscalacionTransaccional` (líneas 1403-1455). El
+ * `if (!row) return undefined;` ANTES de tocar el caso es lo que impide el
+ * estado intermedio "caso resuelto, solicitud no": no existe una transición
+ * exitosa sin su fila de registro, ni una fila sin su transición.
+ */
+function resolverSolicitudTransaccional(
+  db: Database.Database,
+  input: ResolucionSolicitudDbInput,
+  config: {
+    readonly estadoOrigen: string;
+    readonly estadoDestino: string;
+    readonly estadoCaso: string;
+    readonly comando: string;
+    readonly resultado: string;
+  },
+): SolicitudRow | undefined {
+  const runInTransaction = db.transaction((): SolicitudRow | undefined => {
+    const row = db
+      .prepare(
+        `UPDATE solicitudes_internas
+            SET estado = @estadoDestino,
+                resuelta_por = @empleadoId,
+                resuelta_at = @ahora,
+                updated_at = @ahora
+          WHERE id = @solicitudId
+            AND estado = @estadoOrigen
+         RETURNING ${SOLICITUD_SELECT_COLUMNS}`,
+      )
+      .get({
+        solicitudId: input.solicitudId,
+        estadoOrigen: config.estadoOrigen,
+        estadoDestino: config.estadoDestino,
+        empleadoId: input.empleadoId,
+        ahora: input.ahora,
+      }) as SolicitudInternaSqlRow | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    updateCaso(db, input.casoId, { estado: config.estadoCaso, updatedAt: input.ahora });
+
+    insertAccionEmpleado(db, {
+      id: input.accionId,
+      empleadoId: input.empleadoId,
+      comando: config.comando,
+      casoId: input.casoId,
+      resultado: config.resultado,
+      ocurridoAt: input.ahora,
+    });
+
+    return rowToSolicitud(row);
+  });
+
+  return runInTransaction();
+}
+
+/** CAS `pendiente_aprobacion_humana → aprobada` + `casos.estado → resuelto` + fila `aprobada`. */
+export function aprobarSolicitudInterna(
+  db: Database.Database,
+  input: ResolucionSolicitudDbInput,
+): SolicitudRow | undefined {
+  return resolverSolicitudTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "aprobada",
+    estadoCaso: "resuelto",
+    comando: "/aprobar-solicitud",
+    resultado: "aprobada",
+  });
+}
+
+/** CAS `pendiente_aprobacion_humana → rechazada` + `casos.estado → resuelto` + fila `rechazada`. */
+export function rechazarSolicitudInterna(
+  db: Database.Database,
+  input: ResolucionSolicitudDbInput,
+): SolicitudRow | undefined {
+  return resolverSolicitudTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "rechazada",
+    estadoCaso: "resuelto",
+    comando: "/rechazar-solicitud",
+    resultado: "rechazada",
+  });
+}
