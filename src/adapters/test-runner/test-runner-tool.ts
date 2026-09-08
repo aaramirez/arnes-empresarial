@@ -76,6 +76,8 @@ function describeFailureReason(reason: TestRunFailureReason): string {
       return "el binario/entrypoint de vitest no está disponible";
     case "timeout":
       return "la corrida de tests tardó demasiado";
+    case "output-too-large":
+      return "la salida de la corrida superó el límite de buffer permitido";
     case "unknown":
       return "error desconocido";
   }

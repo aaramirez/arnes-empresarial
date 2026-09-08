@@ -1,4 +1,4 @@
-import { execFileSafely } from "../../core/process/exec-file-policy.js";
+import { execFileSafely } from "../shared/exec-file-policy.js";
 import type { TestRunnerConfig } from "./config.js";
 
 /**
@@ -16,7 +16,7 @@ export type TestExecFileFn = (
 
 /**
  * Production `TestExecFileFn`. Delegates to the shared `execFileSafely`
- * policy (`src/core/process/exec-file-policy.ts`, Reviewer finding, reuse):
+ * policy (`src/adapters/shared/exec-file-policy.ts`, Reviewer finding, reuse):
  * array argv only (`execFile`, never `exec`), same discipline `git-cli.ts`'s
  * `defaultGitExecFile` applies.
  */
@@ -26,10 +26,12 @@ export const defaultTestExecFile: TestExecFileFn = execFileSafely;
  * ADR 66: deliberately narrower than `GitFailureReason` — no `"exit-code"`.
  * For `vitest run`, a numeric non-zero exit code means the suite RAN and has
  * red tests, which is a valid `TestRunResult`, not a failure of this
- * adapter. Only `ENOENT` (the vitest entrypoint file doesn't exist) and a
- * killed/timed-out process are real adapter-level failures.
+ * adapter. Only `ENOENT` (the vitest entrypoint file doesn't exist), a
+ * killed/timed-out process, and an `execFileSafely` `maxBuffer` overflow
+ * (`"output-too-large"`, code-review Hito 5.1 completo) are real
+ * adapter-level failures.
  */
-export type TestRunFailureReason = "not-found" | "timeout" | "unknown";
+export type TestRunFailureReason = "not-found" | "timeout" | "output-too-large" | "unknown";
 
 /**
  * Typed error crossing the adapter boundary in place of whatever
@@ -109,14 +111,17 @@ function extraerCamposError(error: unknown): {
  * through the same `node` binary already running this process (`process.execPath`)
  * sidesteps the whole problem (R6, design.md §6.2).
  *
- * ADR 66's decision tree, order-sensitive (design.md §6.2, literal):
+ * ADR 66's decision tree, order-sensitive (design.md §6.2, literal — updated
+ * by code-review, Hito 5.1 completo, CONFIRMED finding, to add the
+ * `output-too-large` branch):
  *
  * ```
  * error de execFile
- *    ├─ code === "ENOENT"                        → TestRunnerCliError("not-found")
- *    ├─ killed === true || signal === "SIGTERM"   → TestRunnerCliError("timeout")
- *    ├─ typeof code === "number"                  → RESULTADO OK { exitCode: code, output: stdout+stderr }
- *    └─ resto                                     → TestRunnerCliError("unknown")
+ *    ├─ code === "ENOENT"                                     → TestRunnerCliError("not-found")
+ *    ├─ code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"           → TestRunnerCliError("output-too-large")
+ *    ├─ killed === true || signal === "SIGTERM"                → TestRunnerCliError("timeout")
+ *    ├─ typeof code === "number"                                → RESULTADO OK { exitCode: code, output: stdout+stderr }
+ *    └─ resto                                                    → TestRunnerCliError("unknown")
  * ```
  *
  * `ENOENT` is checked before the numeric branch because `code` can be the
@@ -124,6 +129,25 @@ function extraerCamposError(error: unknown): {
  * the numeric branch because a process killed by timeout can ALSO carry a
  * numeric `code` — checking numeric first would misreport a timeout as a
  * successful (if red) run.
+ *
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` is checked before `killed`/`SIGTERM`
+ * for the same reason `classifyGitFailure` (`git-cli.ts`) orders its
+ * equivalent branch the same way: `defaultTestExecFile` (this module's
+ * `execFileFn`) delegates to `execFileSafely`, which sets `maxBuffer: 10 *
+ * 1024 * 1024` — a red suite with verbose failure output can exceed it on a
+ * real run. Empirically confirmed against the Node version this repo
+ * actually runs (`node --version` → v24.14.1, verified with a throwaway
+ * `execFile` overflow probe, not assumed from memory): Node reports the
+ * overflow as a `RangeError` with `error.code ===
+ * "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"`, distinguishable from a real timeout
+ * on this version. The check still runs before `killed`/`SIGTERM` rather
+ * than relying on the two being mutually exclusive — Node's own maxBuffer
+ * error shape has changed across versions — the same order-sensitive
+ * defense `ENOENT` already gets. Without this branch, a red suite whose
+ * output overflowed `maxBuffer` would be misreported as `"timeout"`, and
+ * `handleRunTests` would tell the Developer "la corrida de tests tardó
+ * demasiado" — a misleading diagnostic pointing at the wrong cause
+ * (code-review, Hito 5.1 completo).
  */
 export async function runVitest(
   config: TestRunnerConfig,
@@ -144,6 +168,9 @@ export async function runVitest(
 
     if (campos.code === "ENOENT") {
       throw new TestRunnerCliError("not-found", error);
+    }
+    if (campos.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new TestRunnerCliError("output-too-large", error);
     }
     if (campos.killed === true || campos.signal === "SIGTERM") {
       throw new TestRunnerCliError("timeout", error);

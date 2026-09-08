@@ -1,4 +1,4 @@
-import { execFileSafely } from "../../core/process/exec-file-policy.js";
+import { execFileSafely } from "../shared/exec-file-policy.js";
 
 /**
  * Shape of a subprocess runner narrow enough to be faked in tests without
@@ -22,7 +22,7 @@ export type GitExecFileFn = (
 
 /**
  * Production `GitExecFileFn`. Delegates to the shared `execFileSafely`
- * policy (`src/core/process/exec-file-policy.ts`, Reviewer finding, reuse):
+ * policy (`src/adapters/shared/exec-file-policy.ts`, Reviewer finding, reuse):
  * array argv only (`execFile`, never `exec`) — AGENTS.md's non-negotiable
  * rule that this adapter never exposes a function that receives a `git`
  * subcommand as a caller-controlled parameter (ADR 62) only holds if the
@@ -30,7 +30,7 @@ export type GitExecFileFn = (
  */
 export const defaultGitExecFile: GitExecFileFn = execFileSafely;
 
-export type GitFailureReason = "not-found" | "timeout" | "exit-code" | "unknown";
+export type GitFailureReason = "not-found" | "timeout" | "exit-code" | "output-too-large" | "unknown";
 
 /**
  * Typed error crossing the adapter boundary in place of whatever
@@ -54,9 +54,28 @@ export class GitCliError extends Error {
 
 /**
  * Classifies a raw error from `execFile` into a `GitFailureReason` — the
- * table design.md §6.1 fixes: `ENOENT` → binary not found, `killed`/
- * `SIGTERM` → timed out, a numeric non-zero `code` → the process ran and
- * exited with failure, anything else → unknown (safety net).
+ * table design.md §6.1 fixes: `ENOENT` → binary not found,
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` → output exceeded `execFileSafely`'s
+ * `maxBuffer`, `killed`/`SIGTERM` → timed out, a numeric non-zero `code` →
+ * the process ran and exited with failure, anything else → unknown (safety
+ * net).
+ *
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` is checked before `killed`/`SIGTERM`
+ * (code-review, Hito 5.1 completo, CONFIRMED finding): `execFileSafely` sets
+ * `maxBuffer: 10 * 1024 * 1024`, and a `git diff --binary` on a large patch
+ * can exceed it. Empirically confirmed against the Node version this repo
+ * actually runs (`node --version` → v24.14.1, verified with a throwaway
+ * `execFile` overflow probe, not assumed from memory): Node reports a
+ * `maxBuffer` overflow as a `RangeError` with `error.code ===
+ * "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"` and — on this version — `killed` and
+ * `signal` both `undefined`, genuinely distinguishable from a real timeout.
+ * Node's own release notes call out that this shape has changed across
+ * versions, so the check is still placed BEFORE `killed`/`SIGTERM` (not
+ * relying on them being mutually exclusive) the same way `ENOENT` is placed
+ * before the numeric branch below — order-sensitive defense, not decorative.
+ * Without this branch, `capturarDiff` (`worktree.ts`, which does not catch
+ * `GitCliError` by contract) would let a "diff too large" failure propagate
+ * uncaught to its caller mislabeled as `"timeout"`.
  *
  * Exported — unlike its `graphify-cli.ts` sibling `classifyFailure`, kept
  * private there — because the code that wraps this in a `GitCliError` lives
@@ -72,6 +91,9 @@ export function classifyGitFailure(error: unknown): GitFailureReason {
     const err = error as { code?: unknown; killed?: unknown; signal?: unknown };
     if (err.code === "ENOENT") {
       return "not-found";
+    }
+    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      return "output-too-large";
     }
     if (err.killed === true || err.signal === "SIGTERM") {
       return "timeout";

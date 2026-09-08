@@ -1,4 +1,4 @@
-import { execFileSafely } from "../../core/process/exec-file-policy.js";
+import { execFileSafely } from "../shared/exec-file-policy.js";
 import { SAVE_RESULT_TIMEOUT_MS, type GraphifyConfig } from "./config.js";
 
 /**
@@ -14,7 +14,7 @@ export type ExecFileFn = (
 
 /**
  * Production `ExecFileFn`. Delegates to the shared `execFileSafely` policy
- * (`src/core/process/exec-file-policy.ts`, Reviewer finding, reuse): array
+ * (`src/adapters/shared/exec-file-policy.ts`, Reviewer finding, reuse): array
  * argv only (`execFile`, never `exec`) — `question` is free text typed by an
  * employee and travels straight into this argv; with a shell, `"; rm -rf
  * ..."` or `$(...)` would be interpreted.

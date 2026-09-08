@@ -25,6 +25,11 @@ describe("classifyGitFailure", () => {
     ["non-zero numeric exit code", { code: 1 }, "exit-code"],
     ["zero exit code (not a failure code, falls through)", { code: 0 }, "unknown"],
     ["unrecognized shape", { message: "boom" }, "unknown"],
+    [
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER code (empirically confirmed shape on Node v24.14.1: a RangeError with this code, no killed/signal)",
+      { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" },
+      "output-too-large",
+    ],
   ] as const)("classifies a rejection with %s as reason %s", (_label, rawError, expectedReason) => {
     expect(classifyGitFailure(rawError)).toBe(expectedReason);
   });
@@ -35,6 +40,24 @@ describe("classifyGitFailure", () => {
     ["null", null],
   ] as const)("returns unknown for a non-object error (%s)", (_label, rawError) => {
     expect(classifyGitFailure(rawError)).toBe("unknown");
+  });
+
+  /**
+   * Ordering test (mirrors the ENOENT-before-numeric / killed-before-numeric
+   * discipline this classifier already follows): `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`
+   * must be checked BEFORE the killed/SIGTERM branch. A `maxBuffer` overflow
+   * on `git diff --binary` and a real timeout produce the exact same
+   * `killed:true`/`signal:"SIGTERM"` shape on some Node/platform
+   * combinations (Node's own docs note this varies across versions) — if the
+   * killed/SIGTERM check ran first, a large diff would be silently
+   * misreported as "timeout" instead of "output-too-large", pointing
+   * `capturarDiff`'s uncaught-by-contract callers at the wrong cause
+   * (code-review, Hito 5.1 completo).
+   */
+  it("classifies ERR_CHILD_PROCESS_STDIO_MAXBUFFER as output-too-large even when killed/signal are also set", () => {
+    const rawError = { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true, signal: "SIGTERM" };
+
+    expect(classifyGitFailure(rawError)).toBe("output-too-large");
   });
 });
 

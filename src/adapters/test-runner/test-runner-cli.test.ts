@@ -193,6 +193,56 @@ describe("runVitest — error classification (ADR 66's decision tree)", () => {
 
     expect((caught as TestRunnerCliError).reason).toBe("timeout");
   });
+
+  /**
+   * code-review, Hito 5.1 completo (CONFIRMED finding): `execFileSafely`
+   * sets `maxBuffer: 10 * 1024 * 1024`, and a red suite with verbose failure
+   * output can exceed it on a real `vitest run`. Empirically confirmed
+   * against the Node version this repo actually runs (`node --version` →
+   * v24.14.1, verified with a throwaway `execFile` overflow probe, not
+   * assumed from memory): a `maxBuffer` overflow is a `RangeError` with
+   * `error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"`, distinguishable
+   * from a real timeout (`killed`/`SIGTERM`).
+   */
+  it("wraps an ERR_CHILD_PROCESS_STDIO_MAXBUFFER rejection as TestRunnerCliError('output-too-large')", async () => {
+    const execFileFn = vi.fn<TestExecFileFn>().mockRejectedValue({
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      cmd: "node vitest.mjs run --reporter=default",
+    });
+
+    let caught: unknown;
+    await runVitest(CONFIG, CWD, execFileFn).catch((error: unknown) => {
+      caught = error;
+    });
+
+    expect(caught).toBeInstanceOf(TestRunnerCliError);
+    expect((caught as TestRunnerCliError).reason).toBe("output-too-large");
+  });
+
+  /**
+   * Ordering test #3: `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` must be checked
+   * BEFORE `killed`/`SIGTERM` — Node's own maxBuffer-overflow error shape
+   * has changed across versions (per Node's docs), so this module does not
+   * rely on the two being mutually exclusive on every version/platform. If
+   * checked after, a red suite whose failure output overflowed `maxBuffer`
+   * would be misreported as `"timeout"` — `handleRunTests` would then tell
+   * the Developer "la corrida de tests tardó demasiado", pointing at the
+   * wrong cause.
+   */
+  it("classifies ERR_CHILD_PROCESS_STDIO_MAXBUFFER as output-too-large even when killed/signal are also set", async () => {
+    const execFileFn = vi.fn<TestExecFileFn>().mockRejectedValue({
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      killed: true,
+      signal: "SIGTERM",
+    });
+
+    let caught: unknown;
+    await runVitest(CONFIG, CWD, execFileFn).catch((error: unknown) => {
+      caught = error;
+    });
+
+    expect((caught as TestRunnerCliError).reason).toBe("output-too-large");
+  });
 });
 
 describe("runVitest — argv and cwd construction", () => {
