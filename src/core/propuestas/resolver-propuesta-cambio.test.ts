@@ -220,6 +220,31 @@ describe("resolverPropuestaCambio", () => {
     expect("motivo" in inputRecibido).toBe(false);
   });
 
+  it("confirmado:true (aplicar) con motivo (caller equivocado) → motivo NUNCA viaja a store.aplicarPropuesta", () => {
+    const propuesta = buildPropuesta({ id: "propuesta-1", casoId: "caso-9" });
+    const resuelta = buildPropuesta({ id: "propuesta-1", casoId: "caso-9", estado: PROPUESTA_ESTADO_APLICADA });
+    const aplicarPropuesta = vi.fn((_input: ResolucionPropuestaInput) => resuelta);
+    const store = makeStore({
+      listarPropuestasPendientes: vi.fn(() => [propuesta]),
+      aplicarPropuesta,
+    });
+    const deps = makeDeps({ store, newId: vi.fn(() => "accion-77"), now: vi.fn(() => AHORA) });
+
+    resolverPropuestaCambio(
+      {
+        accion: ACCION_APLICAR_PROPUESTA,
+        propuestaId: "propuesta-1",
+        motivo: "motivo colado por error",
+        confirmado: true,
+        sesion: SESION,
+      },
+      deps,
+    );
+
+    const inputRecibido = vi.mocked(aplicarPropuesta).mock.calls[0]![0];
+    expect("motivo" in inputRecibido).toBe(false);
+  });
+
   it("CAS devuelve undefined (aplicar) → no_aplicable/cas, sin lanzar", () => {
     const propuesta = buildPropuesta({ id: "propuesta-1", casoId: "caso-1" });
     const store = makeStore({

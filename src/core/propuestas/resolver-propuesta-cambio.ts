@@ -142,7 +142,7 @@ export function resolverPropuestaCambio(
     empleadoId: sesion.empleadoId,
     accionId: newId(),
     ahora: now(),
-    ...(motivo !== undefined ? { motivo } : {}),
+    ...(accion === ACCION_DESCARTAR_PROPUESTA && motivo !== undefined ? { motivo } : {}),
   };
 
   const aplicada = aplicarCas(store, accion, resolucionInput);

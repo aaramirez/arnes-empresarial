@@ -17,6 +17,13 @@ describe("contarBytesUtf8 — verificado contra Buffer.byteLength (Node, sólo d
     // así que siempre toma la rama final (3 bytes) sin importar qué siga —
     // coincide con Buffer.byteLength en cualquier posición.
     ["surrogate bajo huérfano (en medio)", "texto\uDC00fin"],
+    // Surrogate alto huérfano SEGUIDO de un BMP normal (no un surrogate bajo
+    // válido): antes del fix, la rama "par surrogate" sólo chequeaba que
+    // hubiera ALGUNA unidad siguiente (no que fuera un low surrogate real),
+    // así que consumía "é" sin contarlo — resultado 4 en vez de 5. El low
+    // surrogate válido es 0xDC00-0xDFFF; "é" (U+00E9) está fuera de ese
+    // rango, así que la rama de par NUNCA debe activarse acá.
+    ["surrogate alto huérfano seguido de BMP normal", "\uD800é"],
   ];
 
   it.each(corpus)("%s: coincide con Buffer.byteLength", (_etiqueta, texto) => {

@@ -33,13 +33,16 @@ export interface ResumenPatch {
 /**
  * PURA, sin imports de Node. Cuenta bytes UTF-8 de una string UTF-16.
  *
- * Un surrogate alto (0xD800-0xDBFF) seguido de OTRA unidad se trata como un
- * par (4 bytes, consume dos unidades) — es el camino común de emojis y
- * caracteres fuera del plano básico. Un surrogate alto AL FINAL de la string
- * (sin unidad siguiente) y cualquier surrogate bajo huérfano (0xDC00-0xDFFF,
- * fuera del rango chequeado acá) caen en la rama final: 3 bytes, el tamaño
- * de U+FFFD (carácter de reemplazo) al codificar UTF-8 — mismo criterio con
- * el que Node normaliza un surrogate sin pareja.
+ * Un surrogate alto (0xD800-0xDBFF) seguido de un surrogate bajo VÁLIDO
+ * (0xDC00-0xDFFF) se trata como un par (4 bytes, consume dos unidades) — es
+ * el camino común de emojis y caracteres fuera del plano básico. Un
+ * surrogate alto AL FINAL de la string (sin unidad siguiente), un surrogate
+ * alto seguido de algo que NO es un low surrogate válido (p. ej. un BMP
+ * normal), y cualquier surrogate bajo huérfano (0xDC00-0xDFFF sin un high
+ * surrogate previo) caen en la rama final: 3 bytes, el tamaño de U+FFFD
+ * (carácter de reemplazo) al codificar UTF-8 — mismo criterio con el que
+ * Node normaliza un surrogate sin pareja. En ese caso la unidad siguiente NO
+ * se consume: se procesa en su propia iteración siguiente del loop.
  */
 export function contarBytesUtf8(texto: string): number {
   let bytes = 0;
@@ -49,11 +52,17 @@ export function contarBytesUtf8(texto: string): number {
       bytes += 1;
     } else if (code < 0x800) {
       bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < texto.length) {
-      bytes += 4; // par surrogate: un code point de 4 bytes, consume DOS unidades
+    } else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      i + 1 < texto.length &&
+      texto.charCodeAt(i + 1) >= 0xdc00 &&
+      texto.charCodeAt(i + 1) <= 0xdfff
+    ) {
+      bytes += 4; // par surrogate válido: un code point de 4 bytes, consume DOS unidades
       i += 1;
     } else {
-      bytes += 3; // incluye surrogates huérfanos: 3 bytes (U+FFFD al codificar)
+      bytes += 3; // incluye surrogates huérfanos (altos sin pareja válida, o bajos sueltos): 3 bytes (U+FFFD al codificar)
     }
   }
   return bytes;
