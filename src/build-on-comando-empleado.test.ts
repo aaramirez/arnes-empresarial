@@ -28,6 +28,12 @@ import {
   type SolicitudInterna,
   type SolicitudStorePort,
 } from "./core/solicitudes/solicitudes-contract.js";
+import {
+  LINEAS_PAGINA_PATCH,
+  PROPUESTA_ESTADO_PENDIENTE,
+  type PropuestaCambio,
+  type PropuestaStorePort,
+} from "./core/propuestas/propuestas-contract.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
@@ -133,6 +139,35 @@ function makeSolicitudStore(overrides: Partial<SolicitudStorePort> = {}): Solici
   };
 }
 
+function makePropuesta(overrides: Partial<PropuestaCambio> = {}): PropuestaCambio {
+  return {
+    id: "prop-1",
+    casoId: "caso-prop-1",
+    baseCommit: "abc1234",
+    ramaWorktree: "harness/caso-prop-1-uuid",
+    patch: "diff --git a/foo.ts b/foo.ts\n+++ una linea",
+    patchBytes: 42,
+    archivos: 1,
+    lineasAgregadas: 1,
+    lineasEliminadas: 0,
+    estado: PROPUESTA_ESTADO_PENDIENTE,
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP,
+    ...overrides,
+  };
+}
+
+function makePropuestaStore(overrides: Partial<PropuestaStorePort> = {}): PropuestaStorePort {
+  return {
+    crearPropuesta: vi.fn(() => makePropuesta()),
+    obtenerPropuesta: vi.fn(() => undefined),
+    listarPropuestasPendientes: vi.fn(() => []),
+    aplicarPropuesta: vi.fn(() => undefined),
+    descartarPropuesta: vi.fn(() => undefined),
+    ...overrides,
+  };
+}
+
 function makeDespacharDeps(overrides: Partial<DespacharDelegacionDeps> = {}): DespacharDelegacionDeps {
   return {
     store: { crearDelegacion: vi.fn(), completarDelegacion: vi.fn() },
@@ -167,6 +202,7 @@ function makeDeps(
     credenciales: makeCredenciales(),
     registro: makeRegistro(),
     solicitudStore: makeSolicitudStore(),
+    propuestaStore: makePropuestaStore(),
     despacharDeps: makeDespacharDeps(),
     hooks: createHookEngine(),
     now: () => reloj.ahora,
@@ -869,5 +905,169 @@ describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hi
     const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
     expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
     expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildOnComandoEmpleado — /ver-propuesta (Hito 5.1, tarea 31, ADR 60 pto 1, ADR 69)", () => {
+  /**
+   * Nota de alcance declarada (tarea 31, mismo criterio que la nota de la
+   * tarea 22 más arriba): `ConfirmacionPendiente` gana acá la tercera rama
+   * `dominio: "propuesta"` — ensancha el TIPO, verificado por
+   * `npx tsc --noEmit` sobre todo el archivo — pero `manejarVerPropuesta` es
+   * de UN SOLO PASO, sin confirmación, y NUNCA construye ni compara esa
+   * rama (igual que `/solicitar` con `dominio: "solicitud"` en su momento).
+   * No existe, dentro del alcance de esta tarea, ningún comando que ESCRIBA
+   * `confirmacionPendiente` con `dominio: "propuesta"` — ese escritor real
+   * es `manejarResolucionPropuesta` (`/aplicar-propuesta`/`/descartar-propuesta`),
+   * explícitamente diferido a la tarea 32. El test cruzado real ("armar una
+   * confirmación de propuesta pisa una de reembolso/solicitud, y viceversa")
+   * queda para esa tarea, cuando la rama tenga un escritor real — acá se
+   * verifica lo que SÍ es alcanzable hoy: `/ver-propuesta` nunca toca la
+   * ranura, así que una confirmación de OTRO dominio sobrevive intacta a un
+   * `/ver-propuesta` de por medio.
+   */
+  it("sin sesión vigente se rechaza sin tocar propuestaStore", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaStore = makePropuestaStore();
+    const deps = makeDeps(reloj, { propuestaStore });
+    const handler = buildOnComandoEmpleado(deps);
+
+    const resultado = await handler("/ver-propuesta");
+
+    expect(resultado.agentLabel).toBe("sistema");
+    expect(resultado.responseText).toContain("/login");
+    expect(propuestaStore.listarPropuestasPendientes).not.toHaveBeenCalled();
+    expect(propuestaStore.obtenerPropuesta).not.toHaveBeenCalled();
+  });
+
+  it("sin propuestaId lista las pendientes (vía listarPropuestasPendientes, acotado por LIMITE_LISTADO_PROPUESTAS), cero escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuesta = makePropuesta({ id: "prop-9", casoId: "caso-9", archivos: 3, lineasAgregadas: 20, lineasEliminadas: 5 });
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({ listarPropuestasPendientes: vi.fn(() => [propuesta]) });
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler("/ver-propuesta");
+
+    expect(propuestaStore.listarPropuestasPendientes).toHaveBeenCalledTimes(1);
+    // Sin límite explícito: el default (LIMITE_LISTADO_PROPUESTAS) vive del
+    // lado del store, mismo criterio que `/aprobar-solicitud` sin id.
+    expect(propuestaStore.listarPropuestasPendientes).toHaveBeenCalledWith();
+    expect(resultado.responseText).toContain("prop-9");
+    expect(resultado.responseText).toContain("caso-9");
+    expect(resultado.responseText).toContain("3");
+    expect(resultado.responseText).toContain("estado");
+    expect(propuestaStore.obtenerPropuesta).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("sin propuestaId y sin pendientes: responde que no hay propuestas, cero escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaStore = makePropuestaStore({ listarPropuestasPendientes: vi.fn(() => []) });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    const resultado = await handler("/ver-propuesta");
+
+    expect(resultado.responseText.toLowerCase()).toContain("no hay");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("con propuestaId inexistente: responde que no existe, sin tocar listarPropuestasPendientes ni registro", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({ obtenerPropuesta: vi.fn(() => undefined) });
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    const resultado = await handler("/ver-propuesta fantasma");
+
+    expect(resultado.responseText).toContain("fantasma");
+    expect(resultado.responseText.toLowerCase()).toContain("no existe");
+    expect(propuestaStore.obtenerPropuesta).toHaveBeenCalledWith("fantasma");
+    expect(propuestaStore.listarPropuestasPendientes).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("con propuestaId existente: muestra resumen (archivos, +/-, baseCommit, estado) + el patch completo si entra en una página", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuesta = makePropuesta({
+      id: "prop-1",
+      casoId: "caso-1",
+      baseCommit: "deadbee",
+      archivos: 2,
+      lineasAgregadas: 10,
+      lineasEliminadas: 4,
+      estado: PROPUESTA_ESTADO_PENDIENTE,
+      patch: "diff --git a/x.ts b/x.ts\n+una linea agregada",
+    });
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({ obtenerPropuesta: vi.fn(() => propuesta) });
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    const resultado = await handler("/ver-propuesta prop-1");
+
+    expect(propuestaStore.obtenerPropuesta).toHaveBeenCalledWith("prop-1");
+    expect(resultado.responseText).toContain("prop-1");
+    expect(resultado.responseText).toContain("caso-1");
+    expect(resultado.responseText).toContain("deadbee");
+    expect(resultado.responseText).toContain("2");
+    expect(resultado.responseText).toContain(PROPUESTA_ESTADO_PENDIENTE);
+    expect(resultado.responseText).toContain("diff --git a/x.ts b/x.ts");
+    expect(resultado.responseText).toContain("una linea agregada");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("patch con más de LINEAS_PAGINA_PATCH líneas: muestra solo la primera página y avisa que hay más", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const totalLineas = LINEAS_PAGINA_PATCH + 15;
+    const lineasPatch = Array.from({ length: totalLineas }, (_, i) => `+linea ${i}`);
+    const propuesta = makePropuesta({ id: "prop-grande", patch: lineasPatch.join("\n") });
+    const propuestaStore = makePropuestaStore({ obtenerPropuesta: vi.fn(() => propuesta) });
+    const deps = makeDeps(reloj, { propuestaStore, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const resultado = await handler("/ver-propuesta prop-grande");
+
+    expect(resultado.responseText).toContain("linea 0");
+    expect(resultado.responseText).toContain(`linea ${LINEAS_PAGINA_PATCH - 1}`);
+    expect(resultado.responseText).not.toContain(`linea ${LINEAS_PAGINA_PATCH}`);
+    expect(resultado.responseText).not.toContain(`linea ${totalLineas - 1}`);
+    // La nota de truncado avisa cuántas líneas hay en total, sin literal fijado por diseño.
+    expect(resultado.responseText).toContain(String(totalLineas));
+  });
+
+  it("una confirmación de reembolso pendiente sobrevive a un /ver-propuesta de por medio (no toca la ranura)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const propuestaStore = makePropuestaStore();
+    const deps = makeDeps(reloj, { store, propuestaStore, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const eco = await handler("/aprobar-reembolso v-1");
+    expect(eco.responseText.toLowerCase()).toContain("confirm");
+
+    await handler("/ver-propuesta");
+
+    const confirmacion = await handler("/aprobar-reembolso v-1");
+    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
+    expect(confirmacion.responseText).toContain("v-1");
   });
 });

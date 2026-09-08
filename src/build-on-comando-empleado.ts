@@ -43,6 +43,17 @@
  * transaccional a `SolicitudStorePort.aprobarSolicitud`/`rechazarSolicitud`
  * (tarea 19). Con esto el `switch (comando.tipo)` de más abajo vuelve a ser
  * exhaustivo — cierra el `TS2322` diferido desde la tarea 20.
+ *
+ * **Hito 5.1, tarea 31 (§5.10 parte 1, ADR 55, ADR 60 pto 1, ADR 69)**:
+ * `ConfirmacionPendiente` gana la TERCERA rama, `dominio: "propuesta"` —
+ * sigue habiendo UNA sola ranura. `/ver-propuesta` (`manejarVerPropuesta`)
+ * es de UN SOLO PASO, de solo lectura: NUNCA construye ni compara esa
+ * rama, mismo precedente que `/solicitar` con `dominio: "solicitud"` en la
+ * tarea 22. El escritor real de `dominio: "propuesta"`
+ * (`manejarResolucionPropuesta`, para `/aplicar-propuesta`/
+ * `/descartar-propuesta`) llega en la tarea 32 — el `switch (comando.tipo)`
+ * de más abajo sigue sin ser exhaustivo hasta esa tarea (`TS2322` diferido,
+ * documentado en `tasks.md`).
  */
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -114,6 +125,16 @@ import {
   resolverSolicitudInterna,
   type AccionSolicitud,
 } from "./core/solicitudes/resolver-solicitud-interna.js";
+import {
+  LINEAS_PAGINA_PATCH,
+  PROPUESTA_ESTADO_APLICADA,
+  PROPUESTA_ESTADO_DESCARTADA,
+  PROPUESTA_ESTADO_PENDIENTE,
+  type PropuestaCambio,
+  type PropuestaEstado,
+  type PropuestaStorePort,
+} from "./core/propuestas/propuestas-contract.js";
+import { type AccionPropuesta } from "./core/propuestas/resolver-propuesta-cambio.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { invokeModel } from "./core/turn-selector/invoke-model.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
@@ -131,7 +152,13 @@ import {
   rechazarSolicitudInterna,
   getCasoById,
   CasoNotFoundError,
+  insertPropuestaCambio,
+  getPropuestaCambio,
+  listPropuestasCambio,
+  aplicarPropuestaCambio,
+  descartarPropuestaCambio,
   type SolicitudRow,
+  type PropuestaRow,
 } from "./adapters/memory/repository.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
 
@@ -144,11 +171,20 @@ import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port
 const CONFIRMACION_TTL_MINUTOS = 2;
 
 /**
- * Unión discriminada por `dominio` (Hito 5, tarea 22, ADR 55): sigue
- * habiendo UNA sola ranura (`confirmacionPendiente` más abajo), ensanchada
- * de tipo, no duplicada. `dominio: "solicitud"` la escriben
- * `/aprobar-solicitud`/`/rechazar-solicitud` (tarea 23) — `/solicitar` es
- * de un solo paso (§4.2) y nunca construye ni compara esta rama.
+ * Unión discriminada por `dominio` (Hito 5, tarea 22, ADR 55; ensanchada en
+ * Hito 5.1, tarea 31, ADR 60 pto 1): sigue habiendo UNA sola ranura
+ * (`confirmacionPendiente` más abajo), ensanchada de tipo, no duplicada.
+ * `dominio: "solicitud"` la escriben `/aprobar-solicitud`/`/rechazar-solicitud`
+ * (tarea 23) — `/solicitar` es de un solo paso (§4.2) y nunca construye ni
+ * compara esta rama.
+ *
+ * `dominio: "propuesta"` es la tercera rama (tarea 31): existe para que el
+ * tipo compile, MISMO precedente que `dominio: "solicitud"` en la tarea 22
+ * — su escritor real (`manejarResolucionPropuesta`, para
+ * `/aplicar-propuesta`/`/descartar-propuesta`) llega recién en la tarea 32.
+ * `manejarVerPropuesta` (esta tarea) es de UN SOLO PASO, sin confirmación
+ * (ADR 60 pto 1): NUNCA construye ni compara esta rama, igual que
+ * `/solicitar` con `dominio: "solicitud"`.
  */
 type ConfirmacionPendiente =
   | {
@@ -166,6 +202,15 @@ type ConfirmacionPendiente =
       readonly accion: AccionSolicitud;
       readonly solicitudId: string;
       readonly casoId: string;
+      readonly empleadoId: string;
+      readonly expiraEn: string;
+    }
+  | {
+      readonly dominio: "propuesta";
+      readonly accion: AccionPropuesta;
+      readonly propuestaId: string;
+      readonly casoId: string;
+      readonly patchBytes: number;
       readonly empleadoId: string;
       readonly expiraEn: string;
     };
@@ -204,6 +249,8 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly registro?: RegistroAccionesEmpleadoPort;
   /** Tarea 22 — default: `createSolicitudStore(db)` (más abajo). */
   readonly solicitudStore?: SolicitudStorePort;
+  /** Tarea 31 — default: `createPropuestaStore(db)` (más abajo). */
+  readonly propuestaStore?: PropuestaStorePort;
   /** Tarea 22 — default: closure sobre `invokeModel`, mismo molde que `build-on-activity.ts`. */
   readonly despacharDeps?: DespacharDelegacionDeps;
 }
@@ -346,6 +393,86 @@ export function createSolicitudStore(db: Database.Database): SolicitudStorePort 
   };
 }
 
+/** Vocabulario de `estado` para validar contra la base — mismo criterio que `SOLICITUD_ESTADOS`. */
+const PROPUESTA_ESTADOS = [PROPUESTA_ESTADO_PENDIENTE, PROPUESTA_ESTADO_APLICADA, PROPUESTA_ESTADO_DESCARTADA] as const;
+
+/**
+ * Lanzado por `toPortPropuesta` cuando una fila de `propuestas_cambio` trae
+ * un `estado` que no pertenece a `PROPUESTA_ESTADOS` — mismo criterio que
+ * `SolicitudTipoEstadoInvalidoError`: el ÚNICO escritor del estado inicial
+ * es `insertPropuestaCambio` (literal fijo, `pendiente_aprobacion_humana`) y
+ * las únicas transiciones posibles son `aplicarPropuestaCambio`/
+ * `descartarPropuestaCambio` (`repository.ts`, tarea 15) — un valor
+ * inválido acá es corrupción de datos real, no una entrada externa
+ * esperable.
+ */
+export class PropuestaEstadoInvalidoError extends Error {
+  constructor(propuestaId: string, estado: string) {
+    super(`Propuesta ${propuestaId} tiene estado inválido en la base: ${estado}`);
+    this.name = "PropuestaEstadoInvalidoError";
+  }
+}
+
+/**
+ * Traduce un `PropuestaRow` de `repository.ts` (`estado` como `string`
+ * suelto) a la `PropuestaCambio` del puerto (`estado: PropuestaEstado`,
+ * unión literal) — mismo criterio que `toPortSolicitud`. El resto de los
+ * campos ya coincide 1:1 (`repository.ts`, `PropuestaRow`).
+ */
+function toPortPropuesta(row: PropuestaRow): PropuestaCambio {
+  const estadoValido = (PROPUESTA_ESTADOS as readonly string[]).includes(row.estado);
+  if (!estadoValido) {
+    throw new PropuestaEstadoInvalidoError(row.id, row.estado);
+  }
+  return { ...row, estado: row.estado as PropuestaEstado };
+}
+
+/**
+ * `PropuestaStorePort` por closures sobre `repository.ts` (Hito 5.1, tarea
+ * 31, §5.6) — mismo patrón que `createSolicitudStore`: delegaciones
+ * directas sin lógica de negocio propia, solo traducción vía
+ * `toPortPropuesta` de arriba. Los cinco métodos ya tienen su función real
+ * del lado de `repository.ts` (tareas 13-15), incluidos `aplicarPropuesta`/
+ * `descartarPropuesta` — esta tarea (31) solo EJERCITA `obtenerPropuesta`/
+ * `listarPropuestasPendientes` desde `manejarVerPropuesta`; los otros tres
+ * quedan cableados para cuando la tarea 32 los use, sin placeholder.
+ */
+export function createPropuestaStore(db: Database.Database): PropuestaStorePort {
+  return {
+    crearPropuesta(input) {
+      const row = insertPropuestaCambio(db, {
+        id: input.id,
+        casoId: input.casoId,
+        ...(input.delegacionId !== undefined ? { delegacionId: input.delegacionId } : {}),
+        baseCommit: input.baseCommit,
+        ramaWorktree: input.ramaWorktree,
+        patch: input.patch,
+        patchBytes: input.resumen.patchBytes,
+        archivos: input.resumen.archivos,
+        lineasAgregadas: input.resumen.lineasAgregadas,
+        lineasEliminadas: input.resumen.lineasEliminadas,
+        ahora: input.createdAt,
+      });
+      return toPortPropuesta(row);
+    },
+    obtenerPropuesta(propuestaId) {
+      const row = getPropuestaCambio(db, propuestaId);
+      return row ? toPortPropuesta(row) : undefined;
+    },
+    listarPropuestasPendientes(filtro) {
+      return listPropuestasCambio(db, { estado: PROPUESTA_ESTADO_PENDIENTE, ...filtro }).map(toPortPropuesta);
+    },
+    aplicarPropuesta(input) {
+      const row = aplicarPropuestaCambio(db, input);
+      return row ? toPortPropuesta(row) : undefined;
+    },
+    descartarPropuesta(input) {
+      const row = descartarPropuestaCambio(db, input);
+      return row ? toPortPropuesta(row) : undefined;
+    },
+  };
+}
+
 /**
  * `comando` de `registro_acciones_empleado` para cada `AccionSolicitud`
  * (Hito 5, tarea 23) — análoga a `ACCION_ESCALACION_INFO`, pero más chica:
@@ -414,6 +541,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
   const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
+  const propuestaStore: PropuestaStorePort = deps.propuestaStore ?? createPropuestaStore(db);
   /**
    * Mismo molde que `delegacionDeps` en `build-on-activity.ts` (§6.4):
    * `invocar` resuelve el `caso` REAL (ya insertado transaccionalmente por
@@ -788,6 +916,69 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     return sistema("No se pudo procesar ese comando.");
   }
 
+  /**
+   * Una línea por propuesta — mismo criterio que `formatearLineaEscalacion`/
+   * `formatearLineaSolicitud`: sin texto literal fijado por diseño (tarea
+   * 31), muestra como mínimo `id`/`casoId`/`archivos`/líneas `+`/`-`/`estado`.
+   */
+  function formatearLineaPropuesta(p: PropuestaCambio): string {
+    return `- propuesta ${p.id} | caso ${p.casoId} | archivos ${p.archivos} | +${p.lineasAgregadas}/-${p.lineasEliminadas} | estado ${p.estado}`;
+  }
+
+  function formatearListadoPropuestas(items: readonly PropuestaCambio[]): string {
+    if (items.length === 0) {
+      return "No hay propuestas para listar.";
+    }
+    return items.map(formatearLineaPropuesta).join("\n");
+  }
+
+  /**
+   * Resumen + patch paginado a `LINEAS_PAGINA_PATCH` líneas (§5.10, ADR 69).
+   * `/ver-propuesta <id>` no tiene parámetro de página — SIEMPRE la primera
+   * (primeras `LINEAS_PAGINA_PATCH` líneas del patch, partido por `\n`), con
+   * una nota si hay más líneas de las mostradas. Formato de la nota: sin
+   * literal fijado por diseño (tarea 31).
+   */
+  function formatearResumenPropuesta(p: PropuestaCambio): string {
+    const lineas = p.patch.split("\n");
+    const primeraPagina = lineas.slice(0, LINEAS_PAGINA_PATCH).join("\n");
+    const resumen = `propuesta ${p.id} · caso ${p.casoId} · archivos ${p.archivos} · +${p.lineasAgregadas}/-${p.lineasEliminadas} · base ${p.baseCommit} · estado ${p.estado}`;
+    const nota =
+      lineas.length > LINEAS_PAGINA_PATCH
+        ? `\n\n[…mostrando las primeras ${LINEAS_PAGINA_PATCH} de ${lineas.length} líneas del patch…]`
+        : "";
+    return `${resumen}\n\n${primeraPagina}${nota}`;
+  }
+
+  /**
+   * `/ver-propuesta [propuestaId]` (Hito 5.1, tarea 31, §5.10 parte 1, ADR
+   * 60 pto 1, ADR 69). UN SOLO PASO, de solo lectura — a diferencia de
+   * `manejarEscalacion`/`manejarResolucionSolicitud`, esta función NUNCA
+   * lee ni escribe `confirmacionPendiente` ni llama `registrar(...)`:
+   * mostrar un patch es una lectura, punto. `privilegiado: true` ya lo
+   * garantizó la guarda del preámbulo (§6.3 paso 6) — no se duplica acá.
+   * `ahora` viaja en la firma por MISMA consistencia posicional que el
+   * resto de los `manejarX` del switch de más abajo (todos reciben
+   * `ahora`, mismo molde) — sin uso real: no hay TTL ni `registrar(...)`
+   * que calcular en un camino de solo lectura.
+   */
+  function manejarVerPropuesta(
+    comando: Extract<ComandoEmpleado, { tipo: "ver_propuesta" }>,
+    ahora: string,
+  ): TuiTurnResult {
+    void ahora;
+    if (comando.propuestaId === undefined) {
+      const items = propuestaStore.listarPropuestasPendientes();
+      return sistema(formatearListadoPropuestas(items));
+    }
+
+    const propuesta = propuestaStore.obtenerPropuesta(comando.propuestaId);
+    if (propuesta === undefined) {
+      return sistema(`No existe ninguna propuesta ${comando.propuestaId}.`);
+    }
+    return sistema(formatearResumenPropuesta(propuesta));
+  }
+
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
     if (comando.motivo === "solicitada") {
       return sistema(formatearAyuda());
@@ -854,6 +1045,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_APROBAR_SOLICITUD, comando.solicitudId, ahora);
       case "rechazar_solicitud":
         return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
+      case "ver_propuesta":
+        return manejarVerPropuesta(comando, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }
