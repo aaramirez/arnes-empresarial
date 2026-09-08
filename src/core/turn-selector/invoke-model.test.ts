@@ -441,6 +441,54 @@ describe("invokeModel", () => {
     });
   });
 
+  // Hito 5.1, tarea 28 — cwd as a trailing optional parameter (ADR 67 pto 4,
+  // segunda mitad de la propagación hasta el SDK). Added after `subagentes`
+  // (not as invoke-model.ts's literal "7th" parameter as design.md §5.3
+  // sketched before `subagentes` existed — see toQueryOptions' doc-comment
+  // for why): the non-negotiable constraint is that no existing call site
+  // may break, and `subagentes` already occupies that position.
+  describe("cwd (Hito 5.1, tarea 28, ADR 67 pto 4)", () => {
+    it("omits options.cwd entirely when the caller passes none (regression guard, identical to pre-tarea-28 behavior)", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-nocwd"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-nocwd"),
+      ]);
+
+      // No cwd argument passed — same call shape as every pre-tarea-28 site.
+      await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      expect(callArgs?.options).not.toHaveProperty("cwd");
+    });
+
+    it("passes cwd through to options.cwd verbatim when provided as the trailing parameter", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-cwd"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-cwd"),
+      ]);
+
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFn,
+        undefined,
+        [],
+        "/tmp/harness/worktrees/wt-1",
+      );
+
+      const callArgs = queryFn.mock.calls[0]?.[0];
+      expect(callArgs?.options?.cwd).toBe("/tmp/harness/worktrees/wt-1");
+    });
+  });
+
   // Hito 5, tarea 9 — InvokeModelResult.parentToolUseId, optional and
   // additive: read off an assistant message's parent_tool_use_id when
   // present, absent when no message carries one.

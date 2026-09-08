@@ -6,6 +6,7 @@ import { migration0005RegistroAccionesEmpleado } from "./0005_registro_acciones_
 import { migration0006CredencialesEmpleado } from "./0006_credenciales_empleado.js";
 import { migration0007Delegaciones } from "./0007_delegaciones.js";
 import { migration0008SolicitudesInternas } from "./0008_solicitudes_internas.js";
+import { migration0009PropuestasCambio } from "./0009_propuestas_cambio.js";
 
 /**
  * A single schema migration: a stable `id` (used to track whether it has
@@ -32,4 +33,5 @@ export const migrations: readonly Migration[] = [
   migration0006CredencialesEmpleado,
   migration0007Delegaciones,
   migration0008SolicitudesInternas,
+  migration0009PropuestasCambio,
 ];

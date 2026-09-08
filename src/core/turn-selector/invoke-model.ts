@@ -297,12 +297,30 @@ function toSdkAgentDefinition(agent: AgentDefinition): SdkAgentDefinition {
  * *auto-approve* anything for the main thread agent that did not already
  * have it granted (CONVERSATIONAL_AGENT does not gain delegation
  * `allowedTools` just because subagentes are registered alongside it).
+ *
+ * Hito 5.1, tarea 28 — `cwd` (ADR 67 pto 4, segunda mitad de la propagación
+ * hasta el SDK; la primera mitad es `subagents.ts`'s `InvocarSubagente.cwd`,
+ * tarea 27) is set only when the caller passes one, same incremental
+ * pattern as `resume`/`allowedTools`/`mcpServers` above — a caller that
+ * omits it (every call site before this task) gets `options` identical to
+ * before this task (no `cwd` key at all).
+ *
+ * **Nota de honestidad, obligatoria (RD-10, ADR 67 pto 4)**: `options.cwd`
+ * es **anclaje de alcance para la resolución de herramientas de archivo del
+ * proceso/agente iniciado**, no **aislamiento de proceso a nivel de SO**. No
+ * impide que una tool reciba o construya un path absoluto fuera de ese
+ * directorio, ni es un sandbox, ni una garantía del SDK de que las tool
+ * calls del modelo no puedan alcanzar algo fuera de él. La garantía real (si
+ * la hay) viene de la combinación de `allowedTools`/`tools` (qué puede
+ * invocarse) y del propio límite de filesystem del worktree que lo aloja
+ * (qué existe para ser alcanzado) — nunca de `cwd` por sí solo.
  */
 function toQueryOptions(
   agent: AgentDefinition,
   context: AssembledContext,
   mcpServers?: Options["mcpServers"],
   subagentes: readonly AgentDefinition[] = listSubagentDefinitions(),
+  cwd?: string,
 ): Options {
   const options: Options = {
     agent: agent.id,
@@ -322,6 +340,10 @@ function toQueryOptions(
 
   if (mcpServers !== undefined) {
     options.mcpServers = mcpServers;
+  }
+
+  if (cwd !== undefined) {
+    options.cwd = cwd;
   }
 
   return options;
@@ -347,6 +369,18 @@ function toQueryOptions(
  * object question, default `listSubagentDefinitions()`, forwarded as-is to
  * `toQueryOptions` (see that function's doc for what it does).
  *
+ * `cwd` (Hito 5.1, tarea 28, ADR 67 pto 4) is a further optional trailing
+ * parameter, added after `subagentes` for the exact same reason — every
+ * call site before this task keeps compiling and behaving unchanged.
+ * (`design.md` §5.3 originally sketched `cwd` as this function's "seventh"
+ * trailing parameter, drafted against an earlier version of this file
+ * before `subagentes` existed at that position; appending it here instead,
+ * as the eighth, is what actually satisfies that same design intent's own
+ * non-negotiable constraint — no existing call site may break — against
+ * the file's current shape.) Forwarded as-is to `toQueryOptions`, which is
+ * also where the mandatory RD-10 honesty note about `cwd` lives (see that
+ * function's doc).
+ *
  * Throws `ModelResponseIncompleteError` if the turn ends without a usable
  * session id + response text. Lets any `queryFn` rejection propagate
  * unwrapped (error policy deferred to Hito 1, tarea 11).
@@ -359,8 +393,9 @@ export async function invokeModel(
   queryFn: QueryFn = query,
   mcpServers?: Options["mcpServers"],
   subagentes: readonly AgentDefinition[] = listSubagentDefinitions(),
+  cwd?: string,
 ): Promise<InvokeModelResult> {
-  const options = toQueryOptions(agent, context, mcpServers, subagentes);
+  const options = toQueryOptions(agent, context, mcpServers, subagentes, cwd);
 
   let sdkSessionId: string | undefined;
   let responseText: string | undefined;

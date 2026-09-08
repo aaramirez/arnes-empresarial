@@ -15,6 +15,10 @@ Thumbs.db
 graphify-out/
 .atl/
 
+# Worktrees aislados del Developer con escritura delegada (Hito 5.1) —
+# se crean y se destruyen en runtime, nunca deben versionarse.
+.harness/
+
 # Artefacto de Windows/Git Bash: a veces un proceso hijo (tsc/npm/vitest)
 # crea un archivo literal "nul" en vez de escribir al dispositivo nulo real.
 nul

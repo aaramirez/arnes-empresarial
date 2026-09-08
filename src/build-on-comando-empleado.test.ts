@@ -28,6 +28,20 @@ import {
   type SolicitudInterna,
   type SolicitudStorePort,
 } from "./core/solicitudes/solicitudes-contract.js";
+import {
+  LINEAS_PAGINA_PATCH,
+  PROPUESTA_ESTADO_APLICADA,
+  PROPUESTA_ESTADO_DESCARTADA,
+  PROPUESTA_ESTADO_PENDIENTE,
+  type PropuestaCambio,
+  type PropuestaStorePort,
+} from "./core/propuestas/propuestas-contract.js";
+import {
+  MOTIVO_PATCH_CONFLICTO,
+  MOTIVO_PATCH_ERROR_GIT,
+  type AplicarPatchPort,
+  type ResultadoPatch,
+} from "./core/agents/worktree-contract.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
@@ -133,6 +147,44 @@ function makeSolicitudStore(overrides: Partial<SolicitudStorePort> = {}): Solici
   };
 }
 
+function makePropuesta(overrides: Partial<PropuestaCambio> = {}): PropuestaCambio {
+  return {
+    id: "prop-1",
+    casoId: "caso-prop-1",
+    baseCommit: "abc1234",
+    ramaWorktree: "harness/caso-prop-1-uuid",
+    patch: "diff --git a/foo.ts b/foo.ts\n+++ una linea",
+    patchBytes: 42,
+    archivos: 1,
+    lineasAgregadas: 1,
+    lineasEliminadas: 0,
+    estado: PROPUESTA_ESTADO_PENDIENTE,
+    createdAt: TIMESTAMP,
+    updatedAt: TIMESTAMP,
+    ...overrides,
+  };
+}
+
+function makePropuestaStore(overrides: Partial<PropuestaStorePort> = {}): PropuestaStorePort {
+  return {
+    crearPropuesta: vi.fn(() => makePropuesta()),
+    obtenerPropuesta: vi.fn(() => undefined),
+    listarPropuestasPendientes: vi.fn(() => []),
+    aplicarPropuesta: vi.fn(() => undefined),
+    descartarPropuesta: vi.fn(() => undefined),
+    ...overrides,
+  };
+}
+
+/** Molde de `makeStore`/`makeSolicitudStore`: `verificar`/`aplicar` en verde por default (Hito 5.1, tarea 32). */
+function makeAplicarPatch(overrides: Partial<AplicarPatchPort> = {}): AplicarPatchPort {
+  return {
+    verificar: vi.fn(async (): Promise<ResultadoPatch> => ({ ok: true })),
+    aplicar: vi.fn(async (): Promise<ResultadoPatch> => ({ ok: true })),
+    ...overrides,
+  };
+}
+
 function makeDespacharDeps(overrides: Partial<DespacharDelegacionDeps> = {}): DespacharDelegacionDeps {
   return {
     store: { crearDelegacion: vi.fn(), completarDelegacion: vi.fn() },
@@ -167,6 +219,8 @@ function makeDeps(
     credenciales: makeCredenciales(),
     registro: makeRegistro(),
     solicitudStore: makeSolicitudStore(),
+    propuestaStore: makePropuestaStore(),
+    aplicarPatch: makeAplicarPatch(),
     despacharDeps: makeDespacharDeps(),
     hooks: createHookEngine(),
     now: () => reloj.ahora,
@@ -865,6 +919,461 @@ describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hi
     expect(ecoSolicitud.responseText.toLowerCase()).toContain("confirm");
 
     // La ranura única quedó con dominio "solicitud": repetir el reembolso
+    // vuelve a pedir eco (no coincide), no ejecuta.
+    const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
+    expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildOnComandoEmpleado — /ver-propuesta (Hito 5.1, tarea 31, ADR 60 pto 1, ADR 69)", () => {
+  /**
+   * Nota de alcance declarada (tarea 31, mismo criterio que la nota de la
+   * tarea 22 más arriba): `ConfirmacionPendiente` gana acá la tercera rama
+   * `dominio: "propuesta"` — ensancha el TIPO, verificado por
+   * `npx tsc --noEmit` sobre todo el archivo — pero `manejarVerPropuesta` es
+   * de UN SOLO PASO, sin confirmación, y NUNCA construye ni compara esa
+   * rama (igual que `/solicitar` con `dominio: "solicitud"` en su momento).
+   * No existe, dentro del alcance de esta tarea, ningún comando que ESCRIBA
+   * `confirmacionPendiente` con `dominio: "propuesta"` — ese escritor real
+   * es `manejarResolucionPropuesta` (`/aplicar-propuesta`/`/descartar-propuesta`),
+   * explícitamente diferido a la tarea 32. El test cruzado real ("armar una
+   * confirmación de propuesta pisa una de reembolso/solicitud, y viceversa")
+   * queda para esa tarea, cuando la rama tenga un escritor real — acá se
+   * verifica lo que SÍ es alcanzable hoy: `/ver-propuesta` nunca toca la
+   * ranura, así que una confirmación de OTRO dominio sobrevive intacta a un
+   * `/ver-propuesta` de por medio.
+   */
+  it("sin sesión vigente se rechaza sin tocar propuestaStore", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaStore = makePropuestaStore();
+    const deps = makeDeps(reloj, { propuestaStore });
+    const handler = buildOnComandoEmpleado(deps);
+
+    const resultado = await handler("/ver-propuesta");
+
+    expect(resultado.agentLabel).toBe("sistema");
+    expect(resultado.responseText).toContain("/login");
+    expect(propuestaStore.listarPropuestasPendientes).not.toHaveBeenCalled();
+    expect(propuestaStore.obtenerPropuesta).not.toHaveBeenCalled();
+  });
+
+  it("sin propuestaId lista las pendientes (vía listarPropuestasPendientes, acotado por LIMITE_LISTADO_PROPUESTAS), cero escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuesta = makePropuesta({ id: "prop-9", casoId: "caso-9", archivos: 3, lineasAgregadas: 20, lineasEliminadas: 5 });
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({ listarPropuestasPendientes: vi.fn(() => [propuesta]) });
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler("/ver-propuesta");
+
+    expect(propuestaStore.listarPropuestasPendientes).toHaveBeenCalledTimes(1);
+    // Sin límite explícito: el default (LIMITE_LISTADO_PROPUESTAS) vive del
+    // lado del store, mismo criterio que `/aprobar-solicitud` sin id.
+    expect(propuestaStore.listarPropuestasPendientes).toHaveBeenCalledWith();
+    expect(resultado.responseText).toContain("prop-9");
+    expect(resultado.responseText).toContain("caso-9");
+    expect(resultado.responseText).toContain("3");
+    expect(resultado.responseText).toContain("estado");
+    expect(propuestaStore.obtenerPropuesta).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("sin propuestaId y sin pendientes: responde que no hay propuestas, cero escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaStore = makePropuestaStore({ listarPropuestasPendientes: vi.fn(() => []) });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    const resultado = await handler("/ver-propuesta");
+
+    expect(resultado.responseText.toLowerCase()).toContain("no hay");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("con propuestaId inexistente: responde que no existe, sin tocar listarPropuestasPendientes ni registro", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({ obtenerPropuesta: vi.fn(() => undefined) });
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    const resultado = await handler("/ver-propuesta fantasma");
+
+    expect(resultado.responseText).toContain("fantasma");
+    expect(resultado.responseText.toLowerCase()).toContain("no existe");
+    expect(propuestaStore.obtenerPropuesta).toHaveBeenCalledWith("fantasma");
+    expect(propuestaStore.listarPropuestasPendientes).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("con propuestaId existente: muestra resumen (archivos, +/-, baseCommit, estado) + el patch completo si entra en una página", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuesta = makePropuesta({
+      id: "prop-1",
+      casoId: "caso-1",
+      baseCommit: "deadbee",
+      archivos: 2,
+      lineasAgregadas: 10,
+      lineasEliminadas: 4,
+      estado: PROPUESTA_ESTADO_PENDIENTE,
+      patch: "diff --git a/x.ts b/x.ts\n+una linea agregada",
+    });
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({ obtenerPropuesta: vi.fn(() => propuesta) });
+    const deps = makeDeps(reloj, { propuestaStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    const resultado = await handler("/ver-propuesta prop-1");
+
+    expect(propuestaStore.obtenerPropuesta).toHaveBeenCalledWith("prop-1");
+    expect(resultado.responseText).toContain("prop-1");
+    expect(resultado.responseText).toContain("caso-1");
+    expect(resultado.responseText).toContain("deadbee");
+    expect(resultado.responseText).toContain("2");
+    expect(resultado.responseText).toContain(PROPUESTA_ESTADO_PENDIENTE);
+    expect(resultado.responseText).toContain("diff --git a/x.ts b/x.ts");
+    expect(resultado.responseText).toContain("una linea agregada");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("patch con más de LINEAS_PAGINA_PATCH líneas: muestra solo la primera página y avisa que hay más", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const totalLineas = LINEAS_PAGINA_PATCH + 15;
+    const lineasPatch = Array.from({ length: totalLineas }, (_, i) => `+linea ${i}`);
+    const propuesta = makePropuesta({ id: "prop-grande", patch: lineasPatch.join("\n") });
+    const propuestaStore = makePropuestaStore({ obtenerPropuesta: vi.fn(() => propuesta) });
+    const deps = makeDeps(reloj, { propuestaStore, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const resultado = await handler("/ver-propuesta prop-grande");
+
+    expect(resultado.responseText).toContain("linea 0");
+    expect(resultado.responseText).toContain(`linea ${LINEAS_PAGINA_PATCH - 1}`);
+    expect(resultado.responseText).not.toContain(`linea ${LINEAS_PAGINA_PATCH}`);
+    expect(resultado.responseText).not.toContain(`linea ${totalLineas - 1}`);
+    // La nota de truncado avisa cuántas líneas hay en total, sin literal fijado por diseño.
+    expect(resultado.responseText).toContain(String(totalLineas));
+  });
+
+  it("una confirmación de reembolso pendiente sobrevive a un /ver-propuesta de por medio (no toca la ranura)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const propuestaStore = makePropuestaStore();
+    const deps = makeDeps(reloj, { store, propuestaStore, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const eco = await handler("/aprobar-reembolso v-1");
+    expect(eco.responseText.toLowerCase()).toContain("confirm");
+
+    await handler("/ver-propuesta");
+
+    const confirmacion = await handler("/aprobar-reembolso v-1");
+    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
+    expect(confirmacion.responseText).toContain("v-1");
+  });
+});
+
+describe("buildOnComandoEmpleado — resolución de propuestas en dos pasos (Hito 5.1, tarea 32, ADR 64, ADR 65)", () => {
+  function depsConPropuestaPendiente(reloj: Reloj, overrides: Partial<BuildOnComandoEmpleadoDeps> = {}) {
+    const propuesta = makePropuesta({
+      id: "prop-1",
+      casoId: "caso-prop-9",
+      baseCommit: "deadbee",
+      archivos: 2,
+      lineasAgregadas: 10,
+      lineasEliminadas: 3,
+    });
+    const registro = makeRegistro();
+    const propuestaStore = makePropuestaStore({
+      listarPropuestasPendientes: vi.fn(() => [propuesta]),
+      obtenerPropuesta: vi.fn(() => propuesta),
+      aplicarPropuesta: vi.fn(
+        (): PropuestaCambio => ({ ...propuesta, estado: PROPUESTA_ESTADO_APLICADA }),
+      ),
+      descartarPropuesta: vi.fn(
+        (): PropuestaCambio => ({ ...propuesta, estado: PROPUESTA_ESTADO_DESCARTADA, motivo: "no me convence" }),
+      ),
+    });
+    const aplicarPatch = makeAplicarPatch();
+    return {
+      deps: makeDeps(reloj, { propuestaStore, registro, aplicarPatch, verificarPassword: vi.fn(() => true), ...overrides }),
+      propuestaStore,
+      registro,
+      aplicarPatch,
+      propuesta,
+    };
+  }
+
+  it("sin sesión vigente, /aplicar-propuesta y /descartar-propuesta se rechazan sin tocar propuestaStore ni aplicarPatch", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaStore = makePropuestaStore();
+    const aplicarPatch = makeAplicarPatch();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch });
+    const handler = buildOnComandoEmpleado(deps);
+
+    for (const texto of ["/aplicar-propuesta prop-1", "/descartar-propuesta prop-1 no convence"]) {
+      const resultado = await handler(texto);
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+    }
+
+    expect(propuestaStore.obtenerPropuesta).not.toHaveBeenCalled();
+    expect(propuestaStore.aplicarPropuesta).not.toHaveBeenCalled();
+    expect(propuestaStore.descartarPropuesta).not.toHaveBeenCalled();
+    expect(aplicarPatch.verificar).not.toHaveBeenCalled();
+    expect(aplicarPatch.aplicar).not.toHaveBeenCalled();
+  });
+
+  it("primer /aplicar-propuesta prop-1: eco con base_commit y archivos, CERO escrituras", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const { deps, propuestaStore, registro, aplicarPatch } = depsConPropuestaPendiente(reloj);
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const primero = await handler("/aplicar-propuesta prop-1");
+
+    expect(primero.responseText.toLowerCase()).toContain("confirm");
+    expect(primero.responseText).toContain("deadbee");
+    expect(primero.responseText).toContain("prop-1");
+    expect(propuestaStore.aplicarPropuesta).not.toHaveBeenCalled();
+    expect(aplicarPatch.verificar).not.toHaveBeenCalled();
+    expect(aplicarPatch.aplicar).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("segundo /aplicar-propuesta: git apply --check ANTES, la transacción CAS (commit) DESPUÉS, y recién ahí git apply real (ADR 64)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const orden: string[] = [];
+    const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9", baseCommit: "deadbee" });
+    const propuestaStore = makePropuestaStore({
+      listarPropuestasPendientes: vi.fn(() => [propuesta]),
+      obtenerPropuesta: vi.fn(() => propuesta),
+      aplicarPropuesta: vi.fn((): PropuestaCambio => {
+        orden.push("cas-commit");
+        return { ...propuesta, estado: PROPUESTA_ESTADO_APLICADA };
+      }),
+    });
+    const aplicarPatch = makeAplicarPatch({
+      verificar: vi.fn(async (): Promise<ResultadoPatch> => {
+        orden.push("verificar");
+        return { ok: true };
+      }),
+      aplicar: vi.fn(async (): Promise<ResultadoPatch> => {
+        orden.push("aplicar");
+        return { ok: true };
+      }),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/aplicar-propuesta prop-1"); // eco
+    const resultado = await handler("/aplicar-propuesta prop-1"); // confirma
+
+    expect(orden).toEqual(["verificar", "cas-commit", "aplicar"]);
+    expect(resultado.responseText).toContain("prop-1");
+    expect(resultado.responseText.toLowerCase()).toContain("aplicada");
+    // La fila ya viajó DENTRO de la transacción del repository (tarea 15) —
+    // este archivo NO debe emitir una escritura extra.
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("--check que falla: evento propuesta-conflicto, CERO escrituras y el estado de la propuesta queda intacto", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const writes: string[] = [];
+    const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9", baseCommit: "deadbee" });
+    const propuestaStore = makePropuestaStore({
+      listarPropuestasPendientes: vi.fn(() => [propuesta]),
+      obtenerPropuesta: vi.fn(() => propuesta),
+    });
+    const aplicarPatch = makeAplicarPatch({
+      verificar: vi.fn(
+        async (): Promise<ResultadoPatch> => ({ ok: false, motivo: MOTIVO_PATCH_CONFLICTO, detalle: "patch does not apply" }),
+      ),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch, registro, writes, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/aplicar-propuesta prop-1"); // eco
+    const resultado = await handler("/aplicar-propuesta prop-1"); // confirma -> --check falla
+
+    expect(resultado.responseText.toLowerCase()).toContain("conflicto");
+    expect(resultado.responseText).toContain("deadbee");
+    expect(propuestaStore.aplicarPropuesta).not.toHaveBeenCalled();
+    expect(aplicarPatch.aplicar).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(JSON.stringify(writes)).toContain("propuesta-conflicto");
+  });
+
+  it("otro empleado ya resolvió la propuesta ENTRE el eco y la confirmación: NO corre git apply --check (filtra por pendiente antes, no por obtenerPropuesta sin filtro), mensaje 'ya no está pendiente' en vez de 'conflicto' (code review, Hito 5.1 completo)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaPendiente = makePropuesta({
+      id: "prop-1",
+      casoId: "caso-prop-9",
+      baseCommit: "deadbee",
+      estado: PROPUESTA_ESTADO_PENDIENTE,
+    });
+    // `obtenerPropuesta` (sin filtro de estado) SIGUE devolviendo la fila —
+    // ya fue resuelta por otra persona mientras tanto — para reproducir la
+    // carrera exacta que reporta el finding: un lookup sin filtro de estado
+    // vería esta fila como "existente" aunque ya no esté pendiente.
+    const propuestaYaAplicada: PropuestaCambio = { ...propuestaPendiente, estado: PROPUESTA_ESTADO_APLICADA };
+    let llamadasListar = 0;
+    const propuestaStore = makePropuestaStore({
+      // 1ª llamada (eco, vía `resolverPropuestaCambio`): SIGUE pendiente.
+      // 2ª llamada (confirma): otra persona ya la resolvió — vacío.
+      listarPropuestasPendientes: vi.fn(() => {
+        llamadasListar += 1;
+        return llamadasListar === 1 ? [propuestaPendiente] : [];
+      }),
+      obtenerPropuesta: vi.fn(() => propuestaYaAplicada),
+    });
+    const aplicarPatch = makeAplicarPatch({
+      verificar: vi.fn(
+        async (): Promise<ResultadoPatch> => ({ ok: false, motivo: MOTIVO_PATCH_CONFLICTO, detalle: "ya fue aplicada" }),
+      ),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/aplicar-propuesta prop-1"); // eco: todavía pendiente
+    const resultado = await handler("/aplicar-propuesta prop-1"); // confirma: la carrera ya se perdió
+
+    expect(aplicarPatch.verificar).not.toHaveBeenCalled();
+    expect(propuestaStore.aplicarPropuesta).not.toHaveBeenCalled();
+    expect(resultado.responseText.toLowerCase()).toContain("no está pendiente");
+    expect(resultado.responseText.toLowerCase()).not.toContain("conflicto");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("--check pasa pero el CAS pierde la carrera (otro empleado ya la resolvió): no_aplicable, registra FUERA de transacción, NO llama a git apply", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9" });
+    const propuestaStore = makePropuestaStore({
+      listarPropuestasPendientes: vi.fn(() => [propuesta]),
+      obtenerPropuesta: vi.fn(() => propuesta),
+      aplicarPropuesta: vi.fn(() => undefined), // el CAS no matcheó
+    });
+    const aplicarPatch = makeAplicarPatch();
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/aplicar-propuesta prop-1"); // eco
+    const resultado = await handler("/aplicar-propuesta prop-1"); // confirma -> check pasa, CAS pierde
+
+    expect(aplicarPatch.verificar).toHaveBeenCalledTimes(1);
+    expect(aplicarPatch.aplicar).not.toHaveBeenCalled();
+    expect(resultado.responseText.toLowerCase()).toContain("no se aplicó");
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "/aplicar-propuesta",
+      resultado: "no_aplicable",
+      casoId: "caso-prop-9",
+      empleadoId: "ana",
+    });
+  });
+
+  it("git apply real falla DESPUÉS del commit: evento propuesta-apply-fallido y mensaje explícito al humano (RD-13)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const writes: string[] = [];
+    const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9", baseCommit: "deadbee" });
+    const propuestaStore = makePropuestaStore({
+      listarPropuestasPendientes: vi.fn(() => [propuesta]),
+      obtenerPropuesta: vi.fn(() => propuesta),
+      aplicarPropuesta: vi.fn((): PropuestaCambio => ({ ...propuesta, estado: PROPUESTA_ESTADO_APLICADA })),
+    });
+    const aplicarPatch = makeAplicarPatch({
+      aplicar: vi.fn(
+        async (): Promise<ResultadoPatch> => ({ ok: false, motivo: MOTIVO_PATCH_ERROR_GIT, detalle: "working tree dirty" }),
+      ),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch, registro, writes, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/aplicar-propuesta prop-1"); // eco
+    const resultado = await handler("/aplicar-propuesta prop-1"); // confirma -> CAS comitea, apply falla
+
+    expect(propuestaStore.aplicarPropuesta).toHaveBeenCalledTimes(1); // el commit SÍ ocurrió
+    expect(resultado.responseText.toLowerCase()).toContain("aplicada");
+    expect(resultado.responseText.toLowerCase()).toContain("no cambió");
+    expect(JSON.stringify(writes)).toContain("propuesta-apply-fallido");
+  });
+
+  it("segundo /descartar-propuesta con motivo: transacción CAS a descartada, SIN tocar aplicarPatch", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const { deps, propuestaStore, registro, aplicarPatch } = depsConPropuestaPendiente(reloj);
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/descartar-propuesta prop-1 no me convence"); // eco
+    const resultado = await handler("/descartar-propuesta prop-1 no me convence"); // confirma
+
+    expect(propuestaStore.descartarPropuesta).toHaveBeenCalledTimes(1);
+    expect(propuestaStore.descartarPropuesta).toHaveBeenCalledWith(
+      expect.objectContaining({ propuestaId: "prop-1", motivo: "no me convence" }),
+    );
+    expect(resultado.responseText).toContain("prop-1");
+    expect(resultado.responseText.toLowerCase()).toContain("descartada");
+    expect(propuestaStore.obtenerPropuesta).not.toHaveBeenCalled();
+    expect(aplicarPatch.verificar).not.toHaveBeenCalled();
+    expect(aplicarPatch.aplicar).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("una confirmación de reembolso pendiente es PISADA por una de /aplicar-propuesta de por medio, y viceversa (ADR 55, test cruzado real de la tarea 32)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9" });
+    const propuestaStore = makePropuestaStore({ listarPropuestasPendientes: vi.fn(() => [propuesta]) });
+    const deps = makeDeps(reloj, { store, propuestaStore, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const ecoReembolso = await handler("/aprobar-reembolso v-1");
+    expect(ecoReembolso.responseText.toLowerCase()).toContain("confirm");
+
+    const ecoPropuesta = await handler("/aplicar-propuesta prop-1");
+    expect(ecoPropuesta.responseText.toLowerCase()).toContain("confirm");
+
+    // La ranura única quedó con dominio "propuesta": repetir el reembolso
     // vuelve a pedir eco (no coincide), no ejecuta.
     const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
     expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");

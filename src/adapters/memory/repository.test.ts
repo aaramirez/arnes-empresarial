@@ -16,6 +16,7 @@ import {
   VentaAlreadyExistsError,
   VentaTokenDuplicadoError,
   adjuntarDictamenSolicitud,
+  aplicarPropuestaCambio,
   aprobarEscalacionReembolso,
   aprobarReembolso,
   aprobarSolicitudInterna,
@@ -28,21 +29,25 @@ import {
   createCasoConActividad,
   createSesionAgente,
   createVentaConCaso,
+  descartarPropuestaCambio,
   escalarReembolso,
   findActividadPorReferencia,
   findVentaByToken,
   getActividadById,
   getCasoById,
   getLatestSesionAgente,
+  getPropuestaCambio,
   getProyectoById,
   getVentaById,
   insertAccionEmpleado,
   insertCredencialEmpleado,
   insertDelegacion,
+  insertPropuestaCambio,
   listAccionesEmpleadoPorVenta,
   listComisionesPorPeriodo,
   listDelegacionesPorCaso,
   listEscalacionesReembolso,
+  listPropuestasCambio,
   listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
   reabrirEscalacionReembolso,
@@ -60,8 +65,10 @@ import {
   type CreateCasoInput,
   type CreateSesionAgenteInput,
   type CreateVentaConCasoInput,
+  type CrearPropuestaDbInput,
   type CrearSolicitudConCasoInput,
   type InsertDelegacionInput,
+  type ResolucionPropuestaDbInput,
 } from "./repository.js";
 
 /** Test factories — a single place to change the base fixture if the shape evolves. */
@@ -1736,6 +1743,85 @@ describe("repository", () => {
 
       expect(filas.map((f) => f.id)).toEqual(["accion-1", "accion-2"]);
     });
+
+    it("incluye propuestaId cuando la fila lo tiene, y NO agrega la clave en absoluto cuando no (Reviewer finding: el SELECT explicito no traia propuesta_id, y undefined !== null dejaba una clave espuria propuestaId: undefined)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+      createCaso(db, buildCaso({ id: "caso-2" }));
+      insertPropuestaCambio(db, {
+        id: "propuesta-1",
+        casoId: "caso-2",
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-2-uuid",
+        patch: "diff --git a/x b/x\n",
+        patchBytes: 20,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        ahora: "2026-09-07T00:00:00.000Z",
+      });
+
+      insertAccionEmpleado(db, {
+        id: "accion-1",
+        empleadoId: "ana",
+        comando: "/devolucion",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        resultado: "escalada",
+        ocurridoAt: "2026-09-01T00:00:00.000Z",
+      });
+      insertAccionEmpleado(db, {
+        id: "accion-2",
+        empleadoId: "ana",
+        comando: "/aplicar-propuesta",
+        ventaId: "venta-1",
+        propuestaId: "propuesta-1",
+        resultado: "aplicada",
+        ocurridoAt: "2026-09-01T00:01:00.000Z",
+      });
+
+      const filas = listAccionesEmpleadoPorVenta(db, "venta-1");
+
+      expect(filas).toHaveLength(2);
+      const [sinPropuesta, conPropuesta] = filas;
+      expect(Object.keys(sinPropuesta!)).not.toContain("propuestaId");
+      expect(Object.keys(conPropuesta!)).toContain("propuestaId");
+      expect(conPropuesta!.propuestaId).toBe("propuesta-1");
+    });
+
+    it("acepta propuestaId (columna nueva de la migracion 0009, ADR 63) y lo persiste sin tocar venta_id/caso_id", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertPropuestaCambio(db, {
+        id: "propuesta-1",
+        casoId: "caso-1",
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-1-uuid",
+        patch: "diff --git a/x b/x\n",
+        patchBytes: 20,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        ahora: "2026-09-07T00:00:00.000Z",
+      });
+
+      insertAccionEmpleado(db, {
+        id: "accion-1",
+        empleadoId: "ana",
+        comando: "/aplicar-propuesta",
+        propuestaId: "propuesta-1",
+        casoId: "caso-1",
+        resultado: "aplicada",
+        ocurridoAt: "2026-09-07T01:00:00.000Z",
+      });
+
+      const fila = db
+        .prepare("SELECT propuesta_id, venta_id, caso_id FROM registro_acciones_empleado WHERE id = ?")
+        .get("accion-1") as { propuesta_id: string | null; venta_id: string | null; caso_id: string | null };
+      expect(fila.propuesta_id).toBe("propuesta-1");
+      expect(fila.venta_id).toBeNull();
+      expect(fila.caso_id).toBe("caso-1");
+    });
   });
 
   describe("aprobarEscalacionReembolso / rechazarEscalacionReembolso / reabrirEscalacionReembolso", () => {
@@ -2356,6 +2442,380 @@ describe("repository", () => {
       expect(() =>
         insertSolicitudDePrueba(db!, { casoId: "caso-inexistente" }),
       ).toThrow(/FOREIGN KEY/);
+    });
+  });
+
+  describe("propuestas_cambio (migración 0009, Hito 5.1, tarea 13)", () => {
+    function insertPropuestaDePrueba(
+      db: Database.Database,
+      overrides: Partial<{
+        id: string;
+        casoId: string;
+        delegacionId: string | null;
+        baseCommit: string;
+        ramaWorktree: string;
+        patch: string;
+        patchBytes: number;
+        archivos: number;
+        lineasAgregadas: number;
+        lineasEliminadas: number;
+        estado: string;
+        createdAt: string;
+        updatedAt: string;
+      }> = {},
+    ) {
+      const fila = {
+        id: "propuesta-1",
+        casoId: "caso-1",
+        delegacionId: null,
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-1-uuid",
+        patch: "diff --git a/x b/x\n",
+        patchBytes: 20,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        estado: "pendiente_aprobacion_humana",
+        createdAt: "2026-09-07T00:00:00.000Z",
+        updatedAt: "2026-09-07T00:00:00.000Z",
+        ...overrides,
+      };
+
+      db
+        .prepare(
+          "INSERT INTO propuestas_cambio (id, caso_id, delegacion_id, base_commit, rama_worktree, patch, patch_bytes, archivos, lineas_agregadas, lineas_eliminadas, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          fila.id,
+          fila.casoId,
+          fila.delegacionId,
+          fila.baseCommit,
+          fila.ramaWorktree,
+          fila.patch,
+          fila.patchBytes,
+          fila.archivos,
+          fila.lineasAgregadas,
+          fila.lineasEliminadas,
+          fila.estado,
+          fila.createdAt,
+          fila.updatedAt,
+        );
+    }
+
+    it("crea la tabla propuestas_cambio, sus índices idx_propuestas_estado/idx_propuestas_caso y la columna propuesta_id en registro_acciones_empleado", () => {
+      db = openDatabase(":memory:");
+
+      const tableNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      const indexNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(tableNames).toContain("propuestas_cambio");
+      expect(indexNames).toContain("idx_propuestas_estado");
+      expect(indexNames).toContain("idx_propuestas_caso");
+
+      const columnasRegistro = (
+        db!.prepare("PRAGMA table_info(registro_acciones_empleado)").all() as {
+          name: string;
+        }[]
+      ).map((row) => row.name);
+      expect(columnasRegistro).toContain("propuesta_id");
+    });
+
+    it("permite insertar una propuesta con delegacion_id NULL (precedente ADR 48)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      insertPropuestaDePrueba(db!, { delegacionId: null });
+
+      const fila = db!
+        .prepare("SELECT delegacion_id FROM propuestas_cambio WHERE id = ?")
+        .get("propuesta-1") as { delegacion_id: string | null };
+      expect(fila.delegacion_id).toBeNull();
+    });
+
+    it("rechaza insertar una propuesta con un caso_id inexistente", () => {
+      db = openDatabase(":memory:");
+
+      expect(() =>
+        insertPropuestaDePrueba(db!, { casoId: "caso-inexistente" }),
+      ).toThrow(/FOREIGN KEY/);
+    });
+
+    it("correr las migraciones dos veces no falla (IF NOT EXISTS)", () => {
+      db = openDatabase(":memory:");
+
+      expect(() => runMigrations(db!)).not.toThrow();
+    });
+  });
+
+  describe("insertPropuestaCambio / getPropuestaCambio / listPropuestasCambio (Hito 5.1, tarea 14)", () => {
+    function buildPropuestaInput(overrides: Partial<CrearPropuestaDbInput> = {}): CrearPropuestaDbInput {
+      return {
+        id: "propuesta-1",
+        casoId: "caso-1",
+        baseCommit: "abc123",
+        ramaWorktree: "harness/caso-caso-1-uuid",
+        patch: "diff --git a/x b/x\n+hola\n",
+        patchBytes: 28,
+        archivos: 1,
+        lineasAgregadas: 1,
+        lineasEliminadas: 0,
+        ahora: "2026-09-07T00:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    describe("insertPropuestaCambio", () => {
+      it("crea una fila en estado pendiente_aprobacion_humana con los contadores exactos", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+
+        const propuesta = insertPropuestaCambio(db, buildPropuestaInput());
+
+        expect(propuesta).toEqual({
+          id: "propuesta-1",
+          casoId: "caso-1",
+          baseCommit: "abc123",
+          ramaWorktree: "harness/caso-caso-1-uuid",
+          patch: "diff --git a/x b/x\n+hola\n",
+          patchBytes: 28,
+          archivos: 1,
+          lineasAgregadas: 1,
+          lineasEliminadas: 0,
+          estado: "pendiente_aprobacion_humana",
+          createdAt: "2026-09-07T00:00:00.000Z",
+          updatedAt: "2026-09-07T00:00:00.000Z",
+        });
+      });
+
+      it("persiste igual sin delegacion_id (ADR 48): la fila queda sin delegacionId", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+
+        const propuesta = insertPropuestaCambio(db, buildPropuestaInput());
+
+        expect(propuesta.delegacionId).toBeUndefined();
+      });
+    });
+
+    describe("getPropuestaCambio", () => {
+      it("devuelve undefined para un id inexistente", () => {
+        db = openDatabase(":memory:");
+
+        expect(getPropuestaCambio(db, "propuesta-inexistente")).toBeUndefined();
+      });
+
+      it("devuelve la fila insertada por id", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+
+        expect(getPropuestaCambio(db, "propuesta-1")?.estado).toBe("pendiente_aprobacion_humana");
+      });
+    });
+
+    describe("listPropuestasCambio", () => {
+      function crearSegundaPropuesta(ahora: string) {
+        createCaso(db!, buildCaso({ id: "caso-2" }));
+        insertPropuestaCambio(db!, buildPropuestaInput({ id: "propuesta-2", casoId: "caso-2", ahora }));
+      }
+
+      it("filtra por estado", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+        crearSegundaPropuesta("2026-09-07T00:05:00.000Z");
+        db!.prepare("UPDATE propuestas_cambio SET estado = 'aplicada' WHERE id = ?").run("propuesta-2");
+
+        const pendientes = listPropuestasCambio(db, { estado: "pendiente_aprobacion_humana" });
+
+        expect(pendientes.map((p) => p.id)).toEqual(["propuesta-1"]);
+      });
+
+      it("filtra opcionalmente por propuestaId", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+        crearSegundaPropuesta("2026-09-07T00:05:00.000Z");
+
+        const filtradas = listPropuestasCambio(db, { propuestaId: "propuesta-2" });
+
+        expect(filtradas.map((p) => p.id)).toEqual(["propuesta-2"]);
+      });
+
+      it("ordena por created_at y respeta el limite", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        // Se inserta primero la que tiene el `created_at` MÁS TARDÍO, para que
+        // el orden del resultado sólo pueda explicarse por `ORDER BY
+        // created_at`, nunca por el orden de inserción.
+        insertPropuestaCambio(db, buildPropuestaInput({ ahora: "2026-09-07T00:10:00.000Z" }));
+        crearSegundaPropuesta("2026-09-07T00:05:00.000Z");
+
+        const listado = listPropuestasCambio(db);
+        expect(listado.map((p) => p.id)).toEqual(["propuesta-2", "propuesta-1"]);
+
+        const limitadas = listPropuestasCambio(db, { limite: 1 });
+        expect(limitadas.map((p) => p.id)).toEqual(["propuesta-2"]);
+      });
+
+      it("filtra por estado usando el indice idx_propuestas_estado, sin table scan (Reviewer finding: el (@estado IS NULL OR estado = @estado) impedia que SQLite use el indice aunque estado viaje con valor)", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertPropuestaCambio(db, buildPropuestaInput());
+
+        let sqlCapturado: string | undefined;
+        const prepareOriginal = db!.prepare.bind(db);
+        // Monkeypatch temporal solo para capturar el SQL exacto que arma listPropuestasCambio.
+        db!.prepare = (sql: string) => {
+          sqlCapturado = sql;
+          return prepareOriginal(sql);
+        };
+        listPropuestasCambio(db, { estado: "pendiente_aprobacion_humana" });
+        db!.prepare = prepareOriginal;
+
+        expect(sqlCapturado).toBeDefined();
+        const plan = db!
+          .prepare(`EXPLAIN QUERY PLAN ${sqlCapturado}`)
+          .all({ estado: "pendiente_aprobacion_humana", propuestaId: null, limite: 20 }) as Array<{
+          detail: string;
+        }>;
+        const detalle = plan.map((p) => p.detail).join("\n");
+
+        // Con `estado` presente, el acceso a `propuestas_cambio` tiene que ser un
+        // SEARCH acotado por el indice de estado, nunca un SCAN de toda la tabla.
+        expect(detalle).toMatch(/SEARCH propuestas_cambio USING INDEX idx_propuestas_estado/);
+        expect(detalle).not.toMatch(/SCAN propuestas_cambio/);
+      });
+    });
+
+    describe("aplicarPropuestaCambio / descartarPropuestaCambio (Hito 5.1, tarea 15)", () => {
+      function buildResolucionInput(
+        overrides: Partial<ResolucionPropuestaDbInput> = {},
+      ): ResolucionPropuestaDbInput {
+        return {
+          propuestaId: "propuesta-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+          ...overrides,
+        };
+      }
+
+      it("aplicarPropuestaCambio: CAS a aplicada + updateCaso SOLO updatedAt (el estado del caso NO cambia, ADR 65) + UNA fila de auditoria con propuestaId, en una sola transaccion", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+        const casoAntes = getCasoById(db, "caso-1");
+
+        const propuesta = aplicarPropuestaCambio(db, buildResolucionInput());
+
+        expect(propuesta?.estado).toBe("aplicada");
+        expect(propuesta?.resueltaPor).toBe("ana");
+        expect(propuesta?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+
+        // ADR 65, assert explícito: el `estado` del caso NO cambia — sólo
+        // `updatedAt` se mueve. Aplicar una propuesta no es un canal de
+        // transición de estado del caso.
+        const casoDespues = getCasoById(db, "caso-1");
+        expect(casoDespues?.estado).toBe(casoAntes?.estado);
+        expect(casoDespues?.estado).toBe("abierto");
+        expect(casoDespues?.updatedAt).toBe("2026-09-07T01:00:00.000Z");
+
+        const fila = db!
+          .prepare(
+            "SELECT id, empleado_id, comando, resultado, caso_id, propuesta_id FROM registro_acciones_empleado WHERE id = ?",
+          )
+          .get("accion-1") as {
+          id: string;
+          empleado_id: string;
+          comando: string;
+          resultado: string;
+          caso_id: string;
+          propuesta_id: string;
+        };
+        expect(fila).toEqual({
+          id: "accion-1",
+          empleado_id: "ana",
+          comando: "/aplicar-propuesta",
+          resultado: "aplicada",
+          caso_id: "caso-1",
+          propuesta_id: "propuesta-1",
+        });
+      });
+
+      it("descartarPropuestaCambio: CAS a descartada con motivo + caso SOLO updatedAt (ADR 65) + fila 'descartada' con propuestaId, en una sola transaccion", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+
+        const propuesta = descartarPropuestaCambio(
+          db,
+          buildResolucionInput({ empleadoId: "beto", motivo: "base_commit desactualizado" }),
+        );
+
+        expect(propuesta?.estado).toBe("descartada");
+        expect(propuesta?.motivo).toBe("base_commit desactualizado");
+        expect(propuesta?.resueltaPor).toBe("beto");
+        expect(getCasoById(db, "caso-1")?.estado).toBe("abierto");
+
+        const fila = db!
+          .prepare("SELECT comando, resultado, propuesta_id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1") as { comando: string; resultado: string; propuesta_id: string };
+        expect(fila).toEqual({
+          comando: "/descartar-propuesta",
+          resultado: "descartada",
+          propuesta_id: "propuesta-1",
+        });
+      });
+
+      it("CAS que no matchea (propuesta ya no pendiente) devuelve undefined y NO escribe ni el caso ni la fila de auditoria (rollback verificable)", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto", updatedAt: "2026-09-07T00:00:00.000Z" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+        // Fuerza que el CAS de estado no matchee: la propuesta ya no esta pendiente.
+        db!.prepare("UPDATE propuestas_cambio SET estado = 'aplicada' WHERE id = ?").run("propuesta-1");
+
+        const resultado = aplicarPropuestaCambio(db, buildResolucionInput({ ahora: "2026-09-07T02:00:00.000Z" }));
+
+        expect(resultado).toBeUndefined();
+        // El caso NO se toca en absoluto (ni estado ni updatedAt) -- consulta
+        // directa, no solo el valor de retorno.
+        const caso = getCasoById(db, "caso-1");
+        expect(caso?.estado).toBe("abierto");
+        expect(caso?.updatedAt).toBe("2026-09-07T00:00:00.000Z");
+        // La fila de auditoria NUNCA se escribio -- consulta directa.
+        const filaAccion = db!
+          .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1");
+        expect(filaAccion).toBeUndefined();
+        // La propuesta persistida sigue intacta en 'aplicada' (el estado que
+        // ya tenía, forzado arriba) -- el CAS fallido no la mueve a otro lado.
+        expect(getPropuestaCambio(db, "propuesta-1")?.estado).toBe("aplicada");
+      });
+
+      it("descartarPropuestaCambio con CAS que no matchea tampoco escribe nada (rollback verificable)", () => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso({ estado: "abierto" }));
+        insertPropuestaCambio(db, buildPropuestaInput());
+        db!.prepare("UPDATE propuestas_cambio SET estado = 'descartada' WHERE id = ?").run("propuesta-1");
+
+        const resultado = descartarPropuestaCambio(db, buildResolucionInput({ motivo: "ya resuelta" }));
+
+        expect(resultado).toBeUndefined();
+        const filaAccion = db!
+          .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
+          .get("accion-1");
+        expect(filaAccion).toBeUndefined();
+      });
     });
   });
 

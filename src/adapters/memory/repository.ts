@@ -1308,13 +1308,20 @@ export function listEscalacionesReembolso(
   return rows.map(rowToEscalacionReembolso);
 }
 
-/** Una fila de `registro_acciones_empleado` (ADR 27, 39). */
+/**
+ * Una fila de `registro_acciones_empleado` (ADR 27, 39). `propuestaId`
+ * (ADR 63, migración `0009`) es la tercera columna de correlación opcional,
+ * junto a `ventaId`/`casoId`: una fila de auditoría de `/aplicar-propuesta` o
+ * `/descartar-propuesta` no puede reusar `ventaId` (la FK a `ventas`
+ * fallaría) ni depender sólo de `casoId` (la relación caso↔propuesta es 1:N).
+ */
 export interface AccionEmpleadoInput {
   readonly id: string;
   readonly empleadoId: string;
   readonly comando: string;
   readonly ventaId?: string;
   readonly casoId?: string;
+  readonly propuestaId?: string;
   readonly resultado: string;
   readonly ocurridoAt: string;
 }
@@ -1325,6 +1332,7 @@ export interface AccionEmpleadoRow {
   readonly comando: string;
   readonly ventaId?: string;
   readonly casoId?: string;
+  readonly propuestaId?: string;
   readonly resultado: string;
   readonly ocurridoAt: string;
 }
@@ -1335,6 +1343,7 @@ interface AccionEmpleadoSqlRow {
   comando: string;
   venta_id: string | null;
   caso_id: string | null;
+  propuesta_id: string | null;
   resultado: string;
   ocurrido_at: string;
 }
@@ -1346,6 +1355,7 @@ function rowToAccionEmpleado(row: AccionEmpleadoSqlRow): AccionEmpleadoRow {
     comando: row.comando,
     ...(row.venta_id !== null ? { ventaId: row.venta_id } : {}),
     ...(row.caso_id !== null ? { casoId: row.caso_id } : {}),
+    ...(row.propuesta_id !== null ? { propuestaId: row.propuesta_id } : {}),
     resultado: row.resultado,
     ocurridoAt: row.ocurrido_at,
   };
@@ -1354,19 +1364,20 @@ function rowToAccionEmpleado(row: AccionEmpleadoSqlRow): AccionEmpleadoRow {
 /**
  * UN solo lugar que sabe el layout de la fila. Las DOS rutas del ADR 27
  * (dentro de la transacción del CAS, y `registrarAccion` fuera) terminan
- * acá. `ventaId`/`casoId` se normalizan a `null`.
+ * acá. `ventaId`/`casoId`/`propuestaId` se normalizan a `null`.
  */
 export function insertAccionEmpleado(db: Database.Database, input: AccionEmpleadoInput): void {
   db.prepare(
     `INSERT INTO registro_acciones_empleado
-       (id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at)
-     VALUES (@id, @empleadoId, @comando, @ventaId, @casoId, @resultado, @ocurridoAt)`,
+       (id, empleado_id, comando, venta_id, caso_id, propuesta_id, resultado, ocurrido_at)
+     VALUES (@id, @empleadoId, @comando, @ventaId, @casoId, @propuestaId, @resultado, @ocurridoAt)`,
   ).run({
     id: input.id,
     empleadoId: input.empleadoId,
     comando: input.comando,
     ventaId: input.ventaId ?? null,
     casoId: input.casoId ?? null,
+    propuestaId: input.propuestaId ?? null,
     resultado: input.resultado,
     ocurridoAt: input.ocurridoAt,
   });
@@ -1383,7 +1394,7 @@ export function listAccionesEmpleadoPorVenta(
 ): readonly AccionEmpleadoRow[] {
   const rows = db
     .prepare(
-      `SELECT id, empleado_id, comando, venta_id, caso_id, resultado, ocurrido_at
+      `SELECT id, empleado_id, comando, venta_id, caso_id, propuesta_id, resultado, ocurrido_at
          FROM registro_acciones_empleado
         WHERE venta_id = @ventaId
         ORDER BY ocurrido_at`,
@@ -2032,5 +2043,287 @@ export function rechazarSolicitudInterna(
     estadoCaso: "resuelto",
     comando: "/rechazar-solicitud",
     resultado: "rechazada",
+  });
+}
+
+/**
+ * Public shape of `propuestas_cambio`, camelCase — field-for-field the same
+ * as `PropuestaCambio` in `src/core/propuestas/propuestas-contract.ts`
+ * (Hito 5.1, tarea 17, todavía no existe). Este adaptador nunca importa esa
+ * futura contract (`src/core/` es el único lado que importa a través del
+ * límite), pero las formas tienen que calzar 1:1 para que el composition
+ * root pueda cablear este módulo detrás de `PropuestaStorePort` sin capa de
+ * traducción — mismo criterio que `SolicitudRow`.
+ */
+export interface PropuestaRow {
+  readonly id: string;
+  readonly casoId: string;
+  readonly delegacionId?: string;
+  readonly baseCommit: string;
+  readonly ramaWorktree: string;
+  readonly patch: string;
+  readonly patchBytes: number;
+  readonly archivos: number;
+  readonly lineasAgregadas: number;
+  readonly lineasEliminadas: number;
+  readonly estado: string;
+  readonly motivo?: string;
+  readonly resueltaPor?: string;
+  readonly resueltaAt?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface PropuestaSqlRow {
+  id: string;
+  caso_id: string;
+  delegacion_id: string | null;
+  base_commit: string;
+  rama_worktree: string;
+  patch: string;
+  patch_bytes: number;
+  archivos: number;
+  lineas_agregadas: number;
+  lineas_eliminadas: number;
+  estado: string;
+  motivo: string | null;
+  resuelta_por: string | null;
+  resuelta_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const PROPUESTA_SELECT_COLUMNS =
+  "id, caso_id, delegacion_id, base_commit, rama_worktree, patch, patch_bytes, archivos, lineas_agregadas, lineas_eliminadas, estado, motivo, resuelta_por, resuelta_at, created_at, updated_at";
+
+function rowToPropuesta(row: PropuestaSqlRow): PropuestaRow {
+  return {
+    id: row.id,
+    casoId: row.caso_id,
+    ...(row.delegacion_id !== null ? { delegacionId: row.delegacion_id } : {}),
+    baseCommit: row.base_commit,
+    ramaWorktree: row.rama_worktree,
+    patch: row.patch,
+    patchBytes: row.patch_bytes,
+    archivos: row.archivos,
+    lineasAgregadas: row.lineas_agregadas,
+    lineasEliminadas: row.lineas_eliminadas,
+    estado: row.estado,
+    ...(row.motivo !== null ? { motivo: row.motivo } : {}),
+    ...(row.resuelta_por !== null ? { resueltaPor: row.resuelta_por } : {}),
+    ...(row.resuelta_at !== null ? { resueltaAt: row.resuelta_at } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export interface CrearPropuestaDbInput {
+  readonly id: string;
+  readonly casoId: string;
+  readonly delegacionId?: string;
+  readonly baseCommit: string;
+  readonly ramaWorktree: string;
+  readonly patch: string;
+  readonly patchBytes: number;
+  readonly archivos: number;
+  readonly lineasAgregadas: number;
+  readonly lineasEliminadas: number;
+  readonly ahora: string;
+}
+
+/**
+ * `INSERT` de una propuesta recién capturada (design.md §7.2, spec
+ * `propuesta-cambio-hitl` req. "Un diff capturado crea una fila en estado
+ * inicial"). `estado` NUNCA viaja como parámetro — esta función es el único
+ * escritor del estado inicial, y ese estado es siempre
+ * `pendiente_aprobacion_humana`; el literal va fijo en el SQL, mismo
+ * criterio que `listSolicitudesInternas`. `delegacionId` ausente ⇒
+ * `delegacion_id = NULL` (ADR 48: la evidencia no se pierde por una
+ * constraint). `created_at = updated_at = ahora`, molde de
+ * `insertCredencialEmpleado`.
+ */
+export function insertPropuestaCambio(db: Database.Database, input: CrearPropuestaDbInput): PropuestaRow {
+  const row = db
+    .prepare(
+      `INSERT INTO propuestas_cambio
+         (id, caso_id, delegacion_id, base_commit, rama_worktree, patch, patch_bytes, archivos, lineas_agregadas, lineas_eliminadas, estado, created_at, updated_at)
+       VALUES (@id, @casoId, @delegacionId, @baseCommit, @ramaWorktree, @patch, @patchBytes, @archivos, @lineasAgregadas, @lineasEliminadas, @estado, @ahora, @ahora)
+       RETURNING ${PROPUESTA_SELECT_COLUMNS}`,
+    )
+    .get({
+      id: input.id,
+      casoId: input.casoId,
+      delegacionId: input.delegacionId ?? null,
+      baseCommit: input.baseCommit,
+      ramaWorktree: input.ramaWorktree,
+      patch: input.patch,
+      patchBytes: input.patchBytes,
+      archivos: input.archivos,
+      lineasAgregadas: input.lineasAgregadas,
+      lineasEliminadas: input.lineasEliminadas,
+      estado: "pendiente_aprobacion_humana",
+      ahora: input.ahora,
+    }) as PropuestaSqlRow;
+  return rowToPropuesta(row);
+}
+
+/** `SELECT ... WHERE id = ?`. `undefined` si no existe — molde de `getCasoById`. */
+export function getPropuestaCambio(db: Database.Database, propuestaId: string): PropuestaRow | undefined {
+  const row = db
+    .prepare(`SELECT ${PROPUESTA_SELECT_COLUMNS} FROM propuestas_cambio WHERE id = ?`)
+    .get(propuestaId) as PropuestaSqlRow | undefined;
+  return row ? rowToPropuesta(row) : undefined;
+}
+
+/** Tope del listado sin filtro por id — molde de `LIMITE_LISTADO_SOLICITUDES_DEFAULT`. */
+const LIMITE_LISTADO_PROPUESTAS_DEFAULT = 20;
+
+/**
+ * Listado filtrable por `estado`/`propuestaId`, acotado por `limite` y
+ * ordenado por `created_at` — molde de `listEscalacionesReembolso`, pero con
+ * `estado` opcional (a diferencia de aquel): `/ver-propuesta` sin argumento
+ * filtra por `pendiente_aprobacion_humana`, pero la evidencia de
+ * `docs/progreso/` necesita poder leer cualquier estado.
+ *
+ * `estadoClausula` (Reviewer finding, fix de eficiencia): envolver
+ * `estado = @estado` en `(@estado IS NULL OR ...)` le impide a SQLite usar
+ * `idx_propuestas_estado` AUNQUE `estado` viaje con un valor real, porque el
+ * planner no puede asumir en tiempo de prepare que el bind no va a ser NULL
+ * (mismo criterio que el `LEFT JOIN` de `listEscalacionesReembolso`: nunca
+ * una forma de SQL que fuerce a escanear toda la tabla cuando SÍ hay con qué
+ * acotar). En vez de eso, la condición sobre `estado` se arma en JS —igual
+ * que `orden` más abajo en `listEscalacionesReembolso`— y sólo entra al SQL
+ * cuando el filtro está presente, dejando la comparación como una igualdad
+ * simple que el índice sí puede resolver con `SEARCH`. Verificado con
+ * `EXPLAIN QUERY PLAN` en el test de este archivo.
+ */
+export function listPropuestasCambio(
+  db: Database.Database,
+  filtro: { readonly estado?: string; readonly propuestaId?: string; readonly limite?: number } = {},
+): readonly PropuestaRow[] {
+  const estadoClausula = filtro.estado === undefined ? "" : "estado = @estado AND ";
+
+  const rows = db
+    .prepare(
+      `SELECT ${PROPUESTA_SELECT_COLUMNS}
+         FROM propuestas_cambio
+        WHERE ${estadoClausula}(@propuestaId IS NULL OR id = @propuestaId)
+        ORDER BY created_at
+        LIMIT @limite`,
+    )
+    .all({
+      estado: filtro.estado ?? null,
+      propuestaId: filtro.propuestaId ?? null,
+      limite: filtro.limite ?? LIMITE_LISTADO_PROPUESTAS_DEFAULT,
+    }) as PropuestaSqlRow[];
+  return rows.map(rowToPropuesta);
+}
+
+export interface ResolucionPropuestaDbInput {
+  readonly propuestaId: string;
+  readonly casoId: string;
+  readonly empleadoId: string;
+  readonly accionId: string;
+  readonly ahora: string;
+  readonly motivo?: string;
+}
+
+/**
+ * `aplicarPropuestaCambio`/`descartarPropuestaCambio` comparten este privado
+ * — CAS `UPDATE` + `updateCaso` + `insertAccionEmpleado`, en UNA transacción,
+ * molde EXACTO de `resolverEscalacionTransaccional` (líneas 1403-1455) y de
+ * `resolverSolicitudTransaccional`. El `if (!row) return undefined;` ANTES
+ * de tocar el caso es lo que impide el estado intermedio "caso tocado,
+ * propuesta no": no existe una transición exitosa sin su fila de auditoría,
+ * ni una fila sin su transición.
+ *
+ * A diferencia de esos dos moldes, acá NO hay `estadoCaso` en `config`: por
+ * ADR 65 (confirmado en el checkpoint humano, ver design.md), el `caso` de
+ * una propuesta es el caso de la actividad de PR, cuyo `estado` lo maneja la
+ * máquina de `runActivityTurn` — la propuesta de cambio es un artefacto
+ * ADICIONAL, no un canal alternativo de transición de estado (ADR 59 pto 4).
+ * `updateCaso` se llama con `{ updatedAt }` **solamente**: `tipo`/`estado`
+ * quedan `undefined`, y `updateCaso` los deja intactos vía `COALESCE`
+ * (`repository.ts:131-153`). NO "arreglar" esta omisión — es la decisión ya
+ * tomada, no un olvido.
+ */
+function resolverPropuestaTransaccional(
+  db: Database.Database,
+  input: ResolucionPropuestaDbInput,
+  config: {
+    readonly estadoOrigen: string;
+    readonly estadoDestino: string;
+    readonly comando: string;
+    readonly resultado: string;
+  },
+): PropuestaRow | undefined {
+  const runInTransaction = db.transaction((): PropuestaRow | undefined => {
+    const row = db
+      .prepare(
+        `UPDATE propuestas_cambio
+            SET estado = @estadoDestino,
+                motivo = COALESCE(@motivo, motivo),
+                resuelta_por = @empleadoId,
+                resuelta_at = @ahora,
+                updated_at = @ahora
+          WHERE id = @propuestaId
+            AND estado = @estadoOrigen
+         RETURNING ${PROPUESTA_SELECT_COLUMNS}`,
+      )
+      .get({
+        propuestaId: input.propuestaId,
+        estadoOrigen: config.estadoOrigen,
+        estadoDestino: config.estadoDestino,
+        motivo: input.motivo ?? null,
+        empleadoId: input.empleadoId,
+        ahora: input.ahora,
+      }) as PropuestaSqlRow | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    // ADR 65: SÓLO `updatedAt` — el `estado` del caso NUNCA cambia acá.
+    updateCaso(db, input.casoId, { updatedAt: input.ahora });
+
+    insertAccionEmpleado(db, {
+      id: input.accionId,
+      empleadoId: input.empleadoId,
+      comando: config.comando,
+      propuestaId: input.propuestaId,
+      casoId: input.casoId,
+      resultado: config.resultado,
+      ocurridoAt: input.ahora,
+    });
+
+    return rowToPropuesta(row);
+  });
+
+  return runInTransaction();
+}
+
+/** CAS `pendiente_aprobacion_humana → aplicada` + `casos.updated_at` (SÓLO timestamp, ADR 65) + fila `aplicada`. */
+export function aplicarPropuestaCambio(
+  db: Database.Database,
+  input: ResolucionPropuestaDbInput,
+): PropuestaRow | undefined {
+  return resolverPropuestaTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "aplicada",
+    comando: "/aplicar-propuesta",
+    resultado: "aplicada",
+  });
+}
+
+/** CAS `pendiente_aprobacion_humana → descartada` con `motivo` + `casos.updated_at` (SÓLO timestamp, ADR 65) + fila `descartada`. */
+export function descartarPropuestaCambio(
+  db: Database.Database,
+  input: ResolucionPropuestaDbInput,
+): PropuestaRow | undefined {
+  return resolverPropuestaTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "descartada",
+    comando: "/descartar-propuesta",
+    resultado: "descartada",
   });
 }

@@ -1,0 +1,184 @@
+import { execFileSafely } from "../shared/exec-file-policy.js";
+
+/**
+ * Shape of a subprocess runner narrow enough to be faked in tests without
+ * touching the real `git` binary. `defaultGitExecFile` is the production
+ * implementation; tests inject their own fake (Hito 5.1, tarea 3, design.md
+ * §6.1).
+ *
+ * `cwd` is part of the required shape, not an optional extra — design.md
+ * §6.1 calls this out explicitly ("Diferencia real con el molde, no
+ * cosmética"): every `git` call this adapter makes is scoped to a
+ * worktree's own checkout, never to the process's cwd (the real repo). A
+ * caller that forgets to pass `cwd` doesn't get a chance to run against the
+ * real checkout by accident — the type makes that inexpressible instead of
+ * relying on a convention to remember.
+ */
+export type GitExecFileFn = (
+  file: string,
+  args: readonly string[],
+  options: { readonly timeout: number; readonly cwd: string },
+) => Promise<{ readonly stdout: string; readonly stderr: string }>;
+
+/**
+ * Production `GitExecFileFn`. Delegates to the shared `execFileSafely`
+ * policy (`src/adapters/shared/exec-file-policy.ts`, Reviewer finding, reuse):
+ * array argv only (`execFile`, never `exec`) — AGENTS.md's non-negotiable
+ * rule that this adapter never exposes a function that receives a `git`
+ * subcommand as a caller-controlled parameter (ADR 62) only holds if the
+ * runner underneath it never hands anything to a shell either.
+ */
+export const defaultGitExecFile: GitExecFileFn = execFileSafely;
+
+export type GitFailureReason = "not-found" | "timeout" | "exit-code" | "output-too-large" | "unknown";
+
+/**
+ * Typed error crossing the adapter boundary in place of whatever
+ * `execFile`/`node:child_process` raised. Same pattern `graphify-cli.ts`'s
+ * `GraphifyCliError` applies (and, further back, `repository.ts`'s
+ * `isSqliteConstraintError`): the raw driver error (`cause`) never leaks
+ * past this module's callers unclassified — only a `reason` they can
+ * branch on.
+ */
+export class GitCliError extends Error {
+  readonly reason: GitFailureReason;
+  readonly cause: unknown;
+
+  constructor(reason: GitFailureReason, command: string, cause: unknown) {
+    super(`git ${command} failed: ${reason}`);
+    this.name = "GitCliError";
+    this.reason = reason;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Classifies a raw error from `execFile` into a `GitFailureReason` — the
+ * table design.md §6.1 fixes: `ENOENT` → binary not found,
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` → output exceeded `execFileSafely`'s
+ * `maxBuffer`, `killed`/`SIGTERM` → timed out, a numeric non-zero `code` →
+ * the process ran and exited with failure, anything else → unknown (safety
+ * net).
+ *
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` is checked before `killed`/`SIGTERM`
+ * (code-review, Hito 5.1 completo, CONFIRMED finding): `execFileSafely` sets
+ * `maxBuffer: 10 * 1024 * 1024`, and a `git diff --binary` on a large patch
+ * can exceed it. Empirically confirmed against the Node version this repo
+ * actually runs (`node --version` → v24.14.1, verified with a throwaway
+ * `execFile` overflow probe, not assumed from memory): Node reports a
+ * `maxBuffer` overflow as a `RangeError` with `error.code ===
+ * "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"` and — on this version — `killed` and
+ * `signal` both `undefined`, genuinely distinguishable from a real timeout.
+ * Node's own release notes call out that this shape has changed across
+ * versions, so the check is still placed BEFORE `killed`/`SIGTERM` (not
+ * relying on them being mutually exclusive) the same way `ENOENT` is placed
+ * before the numeric branch below — order-sensitive defense, not decorative.
+ * Without this branch, `capturarDiff` (`worktree.ts`, which does not catch
+ * `GitCliError` by contract) would let a "diff too large" failure propagate
+ * uncaught to its caller mislabeled as `"timeout"`.
+ *
+ * Exported — unlike its `graphify-cli.ts` sibling `classifyFailure`, kept
+ * private there — because the code that wraps this in a `GitCliError` lives
+ * in a *different* file. This module has no generic `run`-style wrapper of
+ * its own by design (ADR 62: the adapter never exposes a function that
+ * receives a `git` subcommand as a parameter, only the ten named argv
+ * builders of §6.1 parte 2, tarea 4); the actual `execFileFn` call +
+ * try/catch + wrap sequence lives in `worktree.ts`/`barrido.ts` (tarea 7-8),
+ * which import this function to do it.
+ */
+export function classifyGitFailure(error: unknown): GitFailureReason {
+  if (typeof error === "object" && error !== null) {
+    const err = error as { code?: unknown; killed?: unknown; signal?: unknown };
+    if (err.code === "ENOENT") {
+      return "not-found";
+    }
+    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      return "output-too-large";
+    }
+    if (err.killed === true || err.signal === "SIGTERM") {
+      return "timeout";
+    }
+    if (typeof err.code === "number" && err.code !== 0) {
+      return "exit-code";
+    }
+  }
+  return "unknown";
+}
+
+/**
+ * The ten named argv builders (design.md §6.1 parte 2, ADR 62, Hito 5.1
+ * tarea 4). Each one has a fixed subcommand literal at position 0; the only
+ * thing a caller controls is a branch name or a filesystem path, and only
+ * at positions >= 1. There is no `git(args: string[])` — a caller cannot
+ * hand this module a subcommand at all, which is what makes AGENTS.md's
+ * rule ("el adaptador expone funciones nombradas, nunca un `git(args)`
+ * genérico") true by construction rather than by convention: `commit`,
+ * `push`, `remote`, and `tag` are not "something this module chooses not
+ * to do" — they are something there is no parameter to write into.
+ */
+export function buildRevParseHeadArgs(): readonly string[] {
+  return ["rev-parse", "HEAD"];
+}
+
+export function buildWorktreeAddArgs(rama: string, ruta: string): readonly string[] {
+  return ["worktree", "add", "-b", rama, ruta, "HEAD"];
+}
+
+export function buildIntentToAddArgs(): readonly string[] {
+  return ["add", "--intent-to-add", "--all"];
+}
+
+export function buildDiffArgs(): readonly string[] {
+  return ["diff", "--binary", "--no-color", "--no-ext-diff"];
+}
+
+export function buildWorktreeRemoveArgs(ruta: string): readonly string[] {
+  return ["worktree", "remove", "--force", ruta];
+}
+
+export function buildBranchDeleteArgs(rama: string): readonly string[] {
+  return ["branch", "-D", rama];
+}
+
+export function buildWorktreeListArgs(): readonly string[] {
+  return ["worktree", "list", "--porcelain"];
+}
+
+export function buildWorktreePruneArgs(): readonly string[] {
+  return ["worktree", "prune"];
+}
+
+export function buildApplyCheckArgs(rutaPatch: string): readonly string[] {
+  return ["apply", "--check", "--whitespace=nowarn", rutaPatch];
+}
+
+export function buildApplyArgs(rutaPatch: string): readonly string[] {
+  return ["apply", "--whitespace=nowarn", rutaPatch];
+}
+
+/**
+ * The set of subcommand literals any of the ten builders above can ever
+ * place at `argv[0]`. Used by `git-cli.test.ts`'s adversarial-input test —
+ * the check that makes "no builder can emit `commit`, `push`, `remote`, or
+ * `tag`" a verifiable property of the code instead of a documentation-only
+ * claim (design.md §10.A).
+ */
+export const SUBCOMANDOS_PERMITIDOS = ["rev-parse", "worktree", "add", "diff", "branch", "apply"] as const;
+
+/**
+ * The ten builders, gathered so the test for design.md §10.A can iterate
+ * them generically instead of hand-listing each one (and silently missing
+ * a future eleventh builder someone adds without updating the test).
+ */
+export const CONSTRUCTORES_ARGV: readonly ((...args: never[]) => readonly string[])[] = [
+  buildRevParseHeadArgs,
+  buildWorktreeAddArgs,
+  buildIntentToAddArgs,
+  buildDiffArgs,
+  buildWorktreeRemoveArgs,
+  buildBranchDeleteArgs,
+  buildWorktreeListArgs,
+  buildWorktreePruneArgs,
+  buildApplyCheckArgs,
+  buildApplyArgs,
+];

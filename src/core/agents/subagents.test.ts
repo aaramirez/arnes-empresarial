@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "./definitions.js";
 import {
   construirTareaDelegada,
   TAREA_DELEGADA_MAX_CHARS,
   TAREA_TRUNCADA_SUFIJO,
   type InsumoDelegado,
+  type InvocarSubagente,
 } from "./subagents.js";
 
 /**
@@ -96,5 +98,74 @@ describe("construirTareaDelegada — truncado con TAREA_DELEGADA_MAX_CHARS", () 
     );
     // El material completo sin truncar no debe aparecer literal en el resultado.
     expect(resultado.includes("M".repeat(TAREA_DELEGADA_MAX_CHARS + 1))).toBe(false);
+  });
+});
+
+/**
+ * Hito 5.1, tarea 27 (§5.3, ADR 67 pto 4 — primera mitad, "propagación hasta
+ * el SDK"). `InvocarSubagente` gana `cwd?`/`mcpServers?` opcionales en su
+ * input. Es un cambio ADITIVO sobre un TIPO — no hay una función concreta acá
+ * que lo implemente (el composition root la cierra sobre `invokeModel`,
+ * tareas 14/28); lo que este bloque prueba es el CONTRATO:
+ *
+ *  (a) un call site de v2.0.0 que arma el input con solo
+ *      `agent`/`casoId`/`tareaDelegada` sigue tipando y ejecutando IGUAL, sin
+ *      que `cwd`/`mcpServers` aparezcan en el objeto recibido (regresión); y
+ *  (b) un call site nuevo puede agregar `cwd`/`mcpServers` sin que TypeScript
+ *      los rechace como propiedades desconocidas del objeto literal (excess
+ *      property check).
+ *
+ * El gate REAL del caso (b) es `npx tsc --noEmit`, no `npx vitest run`:
+ * vitest corre sobre JS transpilado por esbuild, que borra los tipos y no
+ * hace excess-property-check — un objeto literal con `cwd`/`mcpServers` de
+ * más EJECUTA igual aunque el tipo no los declare. Antes de tocar
+ * `subagents.ts`, este archivo NO compila (`tsc --noEmit` marca `cwd`,
+ * `mcpServers` y `recibido?.cwd`/`recibido?.mcpServers` como propiedades
+ * inexistentes en el tipo) — ese es el RED de esta tarea. Una vez agregados
+ * los dos campos opcionales al tipo, compila limpio y las mismas
+ * aserciones en runtime confirman que los valores viajan intactos.
+ */
+describe("InvocarSubagente — cwd y mcpServers opcionales (Hito 5.1, tarea 27)", () => {
+  it("un call site de v2.0.0 (sin cwd ni mcpServers) sigue compilando y ejecutando igual", async () => {
+    const recibidos: unknown[] = [];
+    const invocar: InvocarSubagente = async (input) => {
+      recibidos.push(input);
+      return { responseText: "resultado v2.0.0", sdkSessionId: "sdk-v2" };
+    };
+
+    const resultado = await invocar({
+      agent: ROL_BASE,
+      casoId: "caso-v2",
+      tareaDelegada: "tarea sin cwd ni mcpServers",
+    });
+
+    expect(resultado).toEqual({ responseText: "resultado v2.0.0", sdkSessionId: "sdk-v2" });
+    expect(recibidos).toHaveLength(1);
+    expect(recibidos[0]).not.toHaveProperty("cwd");
+    expect(recibidos[0]).not.toHaveProperty("mcpServers");
+  });
+
+  it("acepta cwd y mcpServers opcionales adicionales, y los propaga intactos (ADR 67 pto 4)", async () => {
+    const cwdEsperado = "/tmp/harness/worktrees/caso-nuevo";
+    const mcpServersEsperado: NonNullable<Options["mcpServers"]> = {
+      worktree: { type: "stdio", command: "vitest-worktree-tool" },
+    };
+    let recibido: Parameters<InvocarSubagente>[0] | undefined;
+
+    const invocar: InvocarSubagente = async (input) => {
+      recibido = input;
+      return { responseText: "resultado con escritura", sdkSessionId: "sdk-escritura" };
+    };
+
+    await invocar({
+      agent: ROL_BASE,
+      casoId: "caso-nuevo",
+      tareaDelegada: "tarea con escritura habilitada",
+      cwd: cwdEsperado,
+      mcpServers: mcpServersEsperado,
+    });
+
+    expect(recibido?.cwd).toBe(cwdEsperado);
+    expect(recibido?.mcpServers).toBe(mcpServersEsperado);
   });
 });

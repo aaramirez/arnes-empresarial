@@ -240,6 +240,81 @@ describe("parsearComando", () => {
     });
   });
 
+  it("/ver-propuesta sin propuestaId → propuestaId ausente (ADR 69)", () => {
+    expect(parsearComando("/ver-propuesta")).toEqual({ tipo: "ver_propuesta" });
+  });
+
+  it("/ver-propuesta <propuestaId> → propuestaId presente (ADR 69)", () => {
+    expect(parsearComando("/ver-propuesta prop-1")).toEqual({
+      tipo: "ver_propuesta",
+      propuestaId: "prop-1",
+    });
+  });
+
+  describe("forma id_opcional_propuesta — el tipo se lee del descriptor, no de una cadena de nombres (ADR 69)", () => {
+    // Mismo criterio que los describes de "forma id_opcional"/"forma
+    // id_opcional_solicitud" de arriba: recorre DESCRIPTORES dinámicamente
+    // vía COMANDOS, sin hardcodear nombres.
+    type DescriptorConTipo = { readonly nombre: string; readonly tipo: string; readonly forma: string };
+    const descriptoresIdOpcionalPropuesta = (COMANDOS as unknown as readonly DescriptorConTipo[]).filter(
+      (d) => d.forma === "id_opcional_propuesta",
+    );
+
+    it("hay al menos un descriptor de forma id_opcional_propuesta (no testear un array vacío)", () => {
+      expect(descriptoresIdOpcionalPropuesta.length).toBeGreaterThan(0);
+    });
+
+    it.each(descriptoresIdOpcionalPropuesta.map((d) => [d.nombre, d.tipo] as const))(
+      "%s sin propuestaId → tipo devuelto == descriptor.tipo declarado (%s)",
+      (nombre, tipoDeclarado) => {
+        expect(parsearComando(nombre)).toEqual({ tipo: tipoDeclarado });
+      },
+    );
+  });
+
+  it("/aplicar-propuesta <propuestaId> → tipo aplicar_propuesta con propuestaId (ADR 69)", () => {
+    expect(parsearComando("/aplicar-propuesta prop-1")).toEqual({
+      tipo: "aplicar_propuesta",
+      propuestaId: "prop-1",
+    });
+  });
+
+  it("/aplicar-propuesta sin propuestaId → ayuda/argumentos (propuestaId es OBLIGATORIO, ADR 69)", () => {
+    expect(parsearComando("/aplicar-propuesta")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/aplicar-propuesta",
+    });
+  });
+
+  it("/aplicar-propuesta prop-1 resto ignorado → el resultado NO lleva 'motivo' (el tipo no lo tiene, ADR 69)", () => {
+    const resultado = parsearComando("/aplicar-propuesta prop-1 esto no debería importar");
+    expect(resultado).toEqual({ tipo: "aplicar_propuesta", propuestaId: "prop-1" });
+    expect(resultado && "motivo" in resultado).toBe(false);
+  });
+
+  it("/descartar-propuesta <propuestaId> \"motivo con espacios\" → motivo es el resto de línea entero (ADR 69)", () => {
+    expect(parsearComando("/descartar-propuesta prop-1 ya no aplica, cambió el requisito")).toEqual({
+      tipo: "descartar_propuesta",
+      propuestaId: "prop-1",
+      motivo: "ya no aplica, cambió el requisito",
+    });
+  });
+
+  it("/descartar-propuesta <propuestaId> sin motivo → motivo AUSENTE (no cadena vacía, ADR 69)", () => {
+    const resultado = parsearComando("/descartar-propuesta prop-1");
+    expect(resultado).toEqual({ tipo: "descartar_propuesta", propuestaId: "prop-1" });
+    expect(resultado && "motivo" in resultado ? resultado.motivo : undefined).toBeUndefined();
+  });
+
+  it("/descartar-propuesta sin propuestaId → ayuda/argumentos (ADR 69)", () => {
+    expect(parsearComando("/descartar-propuesta")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/descartar-propuesta",
+    });
+  });
+
   it("/ayuda explícito → motivo 'solicitada', sin campo comando", () => {
     expect(parsearComando("/ayuda")).toEqual({ tipo: "ayuda", motivo: "solicitada" });
   });
@@ -260,9 +335,9 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los once descriptores (diez comandos + ayuda) — ocho de v1.4.0 + los tres de la tarea 20", () => {
+  it("lista los catorce descriptores (trece comandos + ayuda) — once de v2.0.0 + los tres de la tarea 29 (ADR 69)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(11);
+    expect(COMANDOS).toHaveLength(14);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
@@ -272,6 +347,13 @@ describe("formatearAyuda", () => {
 describe("esComandoPrivilegiado", () => {
   it.each(["solicitar", "aprobar_solicitud", "rechazar_solicitud"] as const)(
     "%s es privilegiado (ADR 56, exige sesión vigente)",
+    (tipo) => {
+      expect(esComandoPrivilegiado(tipo)).toBe(true);
+    },
+  );
+
+  it.each(["ver_propuesta", "aplicar_propuesta", "descartar_propuesta"] as const)(
+    "%s es privilegiado (ADR 69, exige sesión vigente — incluso ver-propuesta, que no escribe)",
     (tipo) => {
       expect(esComandoPrivilegiado(tipo)).toBe(true);
     },
@@ -286,10 +368,6 @@ describe("regresión — los ocho descriptores de v1.4.0 no cambian de orden ni 
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("hay once descriptores en total", () => {
-    expect(descriptores).toHaveLength(11);
-  });
-
   it("los primeros siete (todo lo anterior a /ayuda en v1.4.0) conservan nombre y forma", () => {
     expect(descriptores.slice(0, 7).map((d) => [d.nombre, d.forma] as const)).toEqual([
       ["/login", "id_mas_resto"],
@@ -302,16 +380,33 @@ describe("regresión — los ocho descriptores de v1.4.0 no cambian de orden ni 
     ]);
   });
 
-  it("los tres descriptores nuevos van en los índices 7-9, en el orden de design.md §5.7", () => {
+  it("los tres descriptores de Hito 5 (índices 7-9) conservan nombre y forma (design.md §5.7, ADR 56)", () => {
     expect(descriptores.slice(7, 10).map((d) => [d.nombre, d.forma] as const)).toEqual([
       ["/solicitar", "id_mas_resto"],
       ["/aprobar-solicitud", "id_opcional_solicitud"],
       ["/rechazar-solicitud", "id_opcional_solicitud"],
     ]);
   });
+});
 
-  it("/ayuda sigue último (índice 10)", () => {
-    expect(descriptores[10]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+describe("regresión — los tres descriptores nuevos de la tarea 29 van antes de /ayuda, que sigue último (ADR 69)", () => {
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("hay catorce descriptores en total", () => {
+    expect(descriptores).toHaveLength(14);
+  });
+
+  it("los tres descriptores nuevos ocupan los índices 10-12, en el orden de design.md §5.9 / ADR 69", () => {
+    expect(descriptores.slice(10, 13).map((d) => [d.nombre, d.forma] as const)).toEqual([
+      ["/ver-propuesta", "id_opcional_propuesta"],
+      ["/aplicar-propuesta", "id_mas_resto"],
+      ["/descartar-propuesta", "id_mas_resto"],
+    ]);
+  });
+
+  it("/ayuda sigue último (índice 13)", () => {
+    expect(descriptores[13]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
   });
 });
 

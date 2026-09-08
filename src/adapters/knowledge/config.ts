@@ -26,26 +26,59 @@ export const MCP_TIMEOUT_MARGIN_MS = 5_000;
 
 /**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
- * raw value is missing, blank, not a number, or not strictly greater than
- * zero. Never throws — this adapter's configuration is best-effort by
- * design (see design.md §8).
+ * raw value is missing, blank, not a number, not finite, or not strictly
+ * greater than zero. Never throws — this adapter's configuration is
+ * best-effort by design (see design.md §8), same contract as
+ * `resolvePositiveNumber` in `src/adapters/git/config.ts`.
  *
- * DELIBERATELY duplicated across 5 adapter config files (Reviewer finding,
+ * The finiteness check (post-review correction) rejects `Infinity`/
+ * `-Infinity` — e.g. `GRAPHIFY_TIMEOUT_MS=Infinity` or `=1e400` (which
+ * `Number()` also parses to `Infinity`) previously passed this validation
+ * silently; nothing downstream in this module calls `execFile` with that
+ * value, but an unbounded "timeout" defeats the purpose of having one.
+ *
+ * DELIBERATELY duplicated across adapter config files (Reviewer finding,
  * reuse): not hoisted to `src/core/` because this is env-var parsing
  * infrastructure, not business logic — `src/core/` shouldn't gain a
  * dependency just to serve adapter convenience — and AGENTS.md's
  * non-negotiable rule forbids one adapter importing from another. Same
- * accepted-duplication call as `sesion.ts`/`token-confirmacion.ts`.
+ * accepted-duplication call as `git/config.ts`/`test-runner/config.ts`.
  */
 function resolvePositiveNumber(raw: string | undefined, defaultValue: number): number {
   if (raw === undefined || raw.trim() === "") {
     return defaultValue;
   }
   const parsed = Number(raw);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  if (!Number.isFinite(parsed) || parsed <= 0) {
     return defaultValue;
   }
   return parsed;
+}
+
+/**
+ * Falls back to `defaultValue` when the raw env var is missing or blank
+ * (post-trim empty string) — same "absent or blank means default" rule as
+ * `resolvePositiveNumber`, but for string fields where any non-blank value
+ * is otherwise valid as-is (post-review correction, Hito 5.1, code-review
+ * hito completo). Without this, `GRAPHIFY_BIN=""`/`GRAPHIFY_GRAPH_PATH=""`
+ * would leak through `env.X ?? DEFAULT` (which only catches
+ * `null`/`undefined`) as a literal empty string — an unusable `bin` for
+ * `execFile`, and a `graphPath` that would fail to resolve any graph file.
+ *
+ * DELIBERATELY duplicated across adapter config files (Reviewer finding,
+ * reuse): not hoisted to `src/core/` because this is env-var parsing
+ * infrastructure, not business logic — `src/core/` shouldn't gain a
+ * dependency just to serve adapter convenience — and AGENTS.md's
+ * non-negotiable rule forbids one adapter importing from another. Same
+ * accepted-duplication call as `resolveNonBlankString` in
+ * `git/config.ts`.
+ */
+function resolveNonBlankString(raw: string | undefined, defaultValue: string): string {
+  if (raw === undefined) {
+    return defaultValue;
+  }
+  const trimmed = raw.trim();
+  return trimmed === "" ? defaultValue : trimmed;
 }
 
 /**
@@ -64,8 +97,8 @@ export function resolveGraphifyConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): GraphifyConfig {
   return {
-    bin: env.GRAPHIFY_BIN ?? DEFAULT_GRAPHIFY_BIN,
-    graphPath: env.GRAPHIFY_GRAPH_PATH ?? DEFAULT_GRAPH_PATH,
+    bin: resolveNonBlankString(env.GRAPHIFY_BIN, DEFAULT_GRAPHIFY_BIN),
+    graphPath: resolveNonBlankString(env.GRAPHIFY_GRAPH_PATH, DEFAULT_GRAPH_PATH),
     budget: resolvePositiveNumber(env.GRAPHIFY_BUDGET, DEFAULT_BUDGET),
     queryTimeoutMs: resolvePositiveNumber(env.GRAPHIFY_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS),
   };

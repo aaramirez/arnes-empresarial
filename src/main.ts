@@ -93,6 +93,8 @@ import { startWebServer, type WebAdapter } from "./adapters/web/index.js";
 import { resolveAuthConfig, type AuthConfig } from "./core/auth/auth-config.js";
 import { hashPassword, verificarPassword } from "./adapters/crypto/password.js";
 import { buildOnComandoEmpleado } from "./build-on-comando-empleado.js";
+import { createGitAdapter } from "./adapters/git/index.js";
+import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -382,6 +384,38 @@ const onComandoEmpleado = buildOnComandoEmpleado({
   dummyPasswordHash,
   hooks,
 });
+
+// 5d. Barrido de worktrees huérfanos al arranque (Hito 5.1, tarea 34, ADR 57
+//     pto 7, design.md §7.3 bloque 5d). NO BLOQUEANTE (`void ... .catch(...)`,
+//     nunca `await`): `BarridoWorktreePort.barrerHuerfanos`
+//     (`src/adapters/git/barrido.ts`) nunca rechaza por contrato
+//     (`worktree-contract.ts`) — el `.catch()` de acá es una red de seguridad
+//     sobre esa promesa, mismo criterio que el `try`/`catch` de
+//     `webhook.close()` más abajo sobre un método que también promete no
+//     rechazar nunca: si algún día lo violara, no puede demorar el arranque
+//     de la TUI. Sin `casoId` real (corre antes de que exista ningún turno):
+//     usa la correlación fija `WORKTREE_LOG_CORRELATION_ID`, mismo patrón que
+//     `WEBHOOK_LOG_CORRELATION_ID`/`COMANDO_LOG_CORRELATION_ID` de arriba.
+//     `gitAdapter` se construye ACÁ, propio de este bloque: ni
+//     `buildOnComandoEmpleado` (tarea 32) ni `buildOnActivity` (tarea 33)
+//     exponen la instancia que arman internamente como default de
+//     `aplicarPatch`/`worktree` — no hay una instancia compartida en este
+//     archivo que reusar.
+const WORKTREE_LOG_CORRELATION_ID = "worktree";
+const worktreeConfig = resolveWorktreeConfig();
+const gitAdapter = createGitAdapter({
+  repoRoot: process.cwd(),
+  logEvent: (event, fields) => logTurnEvent(WORKTREE_LOG_CORRELATION_ID, event, fields),
+  config: { ...resolveGitConfig(), worktreeRoot: worktreeConfig.worktreeRoot },
+});
+
+void gitAdapter.barrido
+  .barrerHuerfanos({ ttlMs: worktreeConfig.ttlMs, ahoraMs: Date.now() })
+  .catch((error) =>
+    logTurnEvent(WORKTREE_LOG_CORRELATION_ID, "worktree-barrido-fallido", {
+      message: toErrorMessage(error),
+    }),
+  );
 
 // 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
