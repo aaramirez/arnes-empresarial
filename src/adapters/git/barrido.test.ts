@@ -195,6 +195,30 @@ describe("barrido.ts", () => {
       expect(logEvent).toHaveBeenCalledWith("worktree-barrido-ok", expect.objectContaining(resumen));
     });
 
+    it("cuenta como borrado (no fallido) un candidato cuyo worktree remove tuvo éxito pero branch -D falló, y registra la rama huérfana con su nombre", async () => {
+      // Code review (Hito 5.1, code-review hito completo): mismo bug de clase
+      // que cerrarWorktree — antes del fix, este caso caía al `catch` genérico
+      // del loop y se contaba como `fallidos`, aunque el worktree SÍ se borró
+      // del disco (telemetría engañosa), y la rama huérfana quedaba sin
+      // nombre en ningún evento, invisible para siempre a barridos futuros.
+      const ruta = join(worktreeRootAbsoluto, "caso-1-abc");
+      const rama = `${WORKTREE_RAMA_PREFIJO}caso-1-abc`;
+      const { deps, execFileFn, statFn, logEvent } = makeDeps();
+      execFileFn.mockResolvedValueOnce({ stdout: porcelain(porcelainRecord(ruta, rama)), stderr: "" }); // list
+      statFn.mockResolvedValueOnce({ mtimeMs: ahoraMs - ttlMs - 1 }); // más viejo que el TTL
+      execFileFn.mockResolvedValueOnce({ stdout: "", stderr: "" }); // worktree remove: éxito
+      execFileFn.mockRejectedValueOnce({ code: 128 }); // branch -D: falla
+      execFileFn.mockResolvedValueOnce({ stdout: "", stderr: "" }); // prune
+
+      const resumen = await barrerHuerfanos({ ttlMs, ahoraMs }, deps);
+
+      expect(resumen).toEqual({ examinados: 1, borrados: 1, fallidos: 0 });
+      expect(logEvent).toHaveBeenCalledWith(
+        "worktree-barrido-rama-huerfana",
+        expect.objectContaining({ ruta, rama, reason: "exit-code" }),
+      );
+    });
+
     it("un fallo de git al listar los worktrees devuelve {0,0,0} sin rechazar y degrada a worktree-barrido-fallido", async () => {
       const { deps, execFileFn, statFn, logEvent } = makeDeps();
       execFileFn.mockRejectedValueOnce({ code: "ENOENT" }); // git worktree list --porcelain

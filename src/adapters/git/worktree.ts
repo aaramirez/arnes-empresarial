@@ -118,19 +118,36 @@ export async function capturarDiff(worktree: WorktreeAbierto, deps: WorktreeRunn
 /**
  * `worktree remove --force` then `branch -D`, both scoped to `deps.repoRoot`
  * (the worktree's own directory is being deleted, so it can't be the `cwd`
- * of the second call either) — inside a SINGLE `try/catch` (design.md §6.1,
- * literal). NEVER rejects, under any circumstance: called from a `finally`
- * by the future cadena de revisión (tarea 30), and a `finally` that throws
- * masks whatever real error the surrounding `try` raised. Degrades to the
- * `worktree-cierre-fallido` event instead.
+ * of the second call either) — each call in its OWN `try/catch` (code review,
+ * Hito 5.1, code-review hito completo: a shared try/catch made a `branch -D`
+ * failure AFTER a successful `worktree remove` indistinguishable from the
+ * FIRST call failing, and dropped `worktree.rama` from the log entirely.
+ * Once `worktree remove` succeeds, the directory is gone from
+ * `git worktree list --porcelain`, so `barrerHuerfanos`'s candidate list can
+ * never rediscover that branch again — losing the name here means it leaks
+ * forever, with no way for an operator to `git branch -D <rama>` by hand).
+ * NEVER rejects, under any circumstance: called from a `finally` by the
+ * future cadena de revisión (tarea 30), and a `finally` that throws masks
+ * whatever real error the surrounding `try` raised. Degrades to
+ * `worktree-cierre-fallido` (the worktree itself couldn't be removed) or
+ * `worktree-rama-huerfana` (the worktree IS gone, but its branch is now
+ * orphaned) — two distinct events on purpose, so a human/log consumer can
+ * tell which case happened without decoding a shared shape.
  */
 export async function cerrarWorktree(worktree: WorktreeAbierto, deps: WorktreeRunnerDeps): Promise<void> {
   try {
     await runGit(buildWorktreeRemoveArgs(worktree.ruta), "worktree remove --force", deps.repoRoot, deps);
+  } catch (error) {
+    const reason = error instanceof GitCliError ? error.reason : "unknown";
+    deps.logEvent("worktree-cierre-fallido", { casoId: worktree.casoId, ruta: worktree.ruta, rama: worktree.rama, reason });
+    return;
+  }
+
+  try {
     await runGit(buildBranchDeleteArgs(worktree.rama), "branch -D", deps.repoRoot, deps);
   } catch (error) {
     const reason = error instanceof GitCliError ? error.reason : "unknown";
-    deps.logEvent("worktree-cierre-fallido", { casoId: worktree.casoId, ruta: worktree.ruta, reason });
+    deps.logEvent("worktree-rama-huerfana", { casoId: worktree.casoId, ruta: worktree.ruta, rama: worktree.rama, reason });
   }
 }
 

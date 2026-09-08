@@ -141,7 +141,15 @@ function esCandidato(registro: RegistroWorktree, worktreeRootAbsoluto: string): 
  * 3. Filtrar con las DOS condiciones del doble filtro.
  * 4. Por cada candidato, en su PROPIO `try/catch` (uno que falla no aborta
  *    el resto): medir mtime; si está dentro del TTL, dejarlo intacto (podría
- *    estar vivo); si no, `worktree remove --force` + `branch -D`.
+ *    estar vivo); si no, `worktree remove --force` + `branch -D`, este último
+ *    en su PROPIO `try/catch` interno (code review, Hito 5.1, code-review
+ *    hito completo — mismo bug de clase que `cerrarWorktree`/`worktree.ts`):
+ *    si `worktree remove` tuvo éxito pero `branch -D` falla, el worktree SÍ se
+ *    borró del disco — eso cuenta como `borrados`, no `fallidos` (la
+ *    telemetría no puede mentir sobre qué mitad del cleanup ocurrió), pero la
+ *    rama queda huérfana y ya no es descubrible por ningún barrido futuro
+ *    (desapareció de `git worktree list --porcelain`), así que su nombre se
+ *    registra en un evento dedicado (`worktree-barrido-rama-huerfana`).
  * 5. `git worktree prune` (limpia registros de worktrees ya borrados a
  *    mano) — en su propio `try/catch`: si falla, degrada a evento
  *    `worktree-barrido-fallido` en vez de descartar el resumen ya calculado
@@ -181,8 +189,15 @@ export async function barrerHuerfanos(
         continue; // dentro del TTL: podría estar vivo, se deja intacto
       }
       await runGit(buildWorktreeRemoveArgs(candidato.ruta), "worktree remove --force", deps.repoRoot, deps);
-      await runGit(buildBranchDeleteArgs(candidato.rama), "branch -D", deps.repoRoot, deps);
-      borrados += 1;
+      borrados += 1; // el worktree ya se borró del disco: cuenta como borrado
+      // pase lo que pase con `branch -D` a continuación (ver doc-comment).
+
+      try {
+        await runGit(buildBranchDeleteArgs(candidato.rama), "branch -D", deps.repoRoot, deps);
+      } catch (error) {
+        const reason = error instanceof GitCliError ? error.reason : "unknown";
+        deps.logEvent("worktree-barrido-rama-huerfana", { ruta: candidato.ruta, rama: candidato.rama, reason });
+      }
     } catch {
       fallidos += 1;
     }

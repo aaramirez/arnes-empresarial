@@ -171,12 +171,26 @@ describe("worktree.ts", () => {
       );
     });
 
-    it("never rejects when only branch -D fails after a successful worktree remove", async () => {
-      execFileFn.mockResolvedValueOnce({ stdout: "", stderr: "" });
-      execFileFn.mockRejectedValueOnce({ code: 128 });
+    it("never rejects when only branch -D fails after a successful worktree remove, and logs a distinguishable orphaned-branch event carrying the branch name", async () => {
+      // Code review (Hito 5.1, code-review hito completo): the original single
+      // try/catch swallowed this into the SAME "worktree-cierre-fallido" event
+      // as a fully-failed close, without `worktree.rama` — once the worktree
+      // directory is gone, `barrerHuerfanos` can never rediscover the branch
+      // from `git worktree list --porcelain` again, so losing the branch name
+      // here means the branch leaks forever with no way for an operator to
+      // clean it up by hand.
+      execFileFn.mockResolvedValueOnce({ stdout: "", stderr: "" }); // worktree remove succeeds
+      execFileFn.mockRejectedValueOnce({ code: 128 }); // branch -D fails
 
       await expect(cerrarWorktree(worktree, deps)).resolves.toBeUndefined();
-      expect(logEvent).toHaveBeenCalledWith("worktree-cierre-fallido", expect.objectContaining({ reason: "exit-code" }));
+
+      expect(logEvent).toHaveBeenCalledWith(
+        "worktree-rama-huerfana",
+        expect.objectContaining({ casoId: worktree.casoId, ruta: worktree.ruta, rama: worktree.rama, reason: "exit-code" }),
+      );
+      // Must NOT be reported under the generic "close failed entirely" shape —
+      // the worktree really is gone, only the branch delete failed.
+      expect(logEvent).not.toHaveBeenCalledWith("worktree-cierre-fallido", expect.anything());
     });
   });
 
