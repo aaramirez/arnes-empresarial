@@ -49,11 +49,22 @@
  * sigue habiendo UNA sola ranura. `/ver-propuesta` (`manejarVerPropuesta`)
  * es de UN SOLO PASO, de solo lectura: NUNCA construye ni compara esa
  * rama, mismo precedente que `/solicitar` con `dominio: "solicitud"` en la
- * tarea 22. El escritor real de `dominio: "propuesta"`
- * (`manejarResolucionPropuesta`, para `/aplicar-propuesta`/
- * `/descartar-propuesta`) llega en la tarea 32 — el `switch (comando.tipo)`
- * de más abajo sigue sin ser exhaustivo hasta esa tarea (`TS2322` diferido,
- * documentado en `tasks.md`).
+ * tarea 22. El escritor real de `dominio: "propuesta"` era
+ * `manejarResolucionPropuesta`, para `/aplicar-propuesta`/
+ * `/descartar-propuesta`.
+ *
+ * **Hito 5.1, tarea 32 (§5.10 parte 2, ADR 64, ADR 65)**:
+ * `manejarResolucionPropuesta` llega acá — mismo molde en dos pasos que
+ * `manejarResolucionSolicitud`, con UNA diferencia impuesta por ADR 64: el
+ * segundo llamado de `/aplicar-propuesta` intercala `git apply --check`
+ * (`AplicarPatchPort.verificar`) ANTES de la transacción CAS y `git apply`
+ * real (`AplicarPatchPort.aplicar`) DESPUÉS de que esa transacción hizo
+ * commit — nunca al revés, y `git apply` corre SIEMPRE fuera de la
+ * transacción SQL (RD-13, heredado y hecho visible con el evento
+ * `propuesta-apply-fallido`). `/descartar-propuesta` NUNCA toca
+ * `AplicarPatchPort` — no hay patch que aplicar al descartar. Con esto el
+ * `switch (comando.tipo)` de más abajo vuelve a ser exhaustivo — cierra el
+ * `TS2322` diferido desde la tarea 29.
  */
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -66,8 +77,10 @@ import {
   type ComandoEmpleado,
 } from "./core/commands/comando-empleado.js";
 import {
+  COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
   COMANDO_REABRIR_REEMBOLSO,
@@ -134,13 +147,21 @@ import {
   type PropuestaEstado,
   type PropuestaStorePort,
 } from "./core/propuestas/propuestas-contract.js";
-import { type AccionPropuesta } from "./core/propuestas/resolver-propuesta-cambio.js";
+import {
+  ACCION_APLICAR_PROPUESTA,
+  ACCION_DESCARTAR_PROPUESTA,
+  resolverPropuestaCambio,
+  type AccionPropuesta,
+} from "./core/propuestas/resolver-propuesta-cambio.js";
+import { type AplicarPatchPort } from "./core/agents/worktree-contract.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { invokeModel } from "./core/turn-selector/invoke-model.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { createVentaStore } from "./build-on-venta.js";
 import { createDelegacionStore } from "./build-on-activity.js";
+import { createGitAdapter } from "./adapters/git/index.js";
+import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
 import type { SoporteResult } from "./build-on-soporte.js";
 import {
   buscarCredencialEmpleado,
@@ -251,6 +272,13 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly solicitudStore?: SolicitudStorePort;
   /** Tarea 31 — default: `createPropuestaStore(db)` (más abajo). */
   readonly propuestaStore?: PropuestaStorePort;
+  /**
+   * Tarea 32, ADR 64 — default: `createGitAdapter({ repoRoot: process.cwd(), ... }).aplicarPatch`
+   * (más abajo), construido con la config real resuelta de env
+   * (`resolveGitConfig`/`resolveWorktreeConfig`, `src/adapters/git/config.ts`).
+   * `git apply --check`/`git apply` — nunca `git commit`/`git push`/PR.
+   */
+  readonly aplicarPatch?: AplicarPatchPort;
   /** Tarea 22 — default: closure sobre `invokeModel`, mismo molde que `build-on-activity.ts`. */
   readonly despacharDeps?: DespacharDelegacionDeps;
 }
@@ -489,6 +517,20 @@ const ACCION_SOLICITUD_COMANDO: Record<AccionSolicitud, string> = {
 };
 
 /**
+ * `comando` de `registro_acciones_empleado` para cada `AccionPropuesta`
+ * (Hito 5.1, tarea 32) — mismo criterio que `ACCION_SOLICITUD_COMANDO`: la
+ * transición CAS + fila de auditoría del camino feliz la resuelve
+ * enteramente `resolverPropuestaTransaccional` del lado del store
+ * (`repository.ts`, tarea 15); este dispatcher solo necesita el `comando`
+ * para la escritura FUERA de transacción del motivo `MOTIVO_CAS` (ver
+ * `manejarResolucionPropuesta`).
+ */
+const ACCION_PROPUESTA_COMANDO: Record<AccionPropuesta, string> = {
+  [ACCION_APLICAR_PROPUESTA]: COMANDO_APLICAR_PROPUESTA,
+  [ACCION_DESCARTAR_PROPUESTA]: COMANDO_DESCARTAR_PROPUESTA,
+};
+
+/**
  * Una línea por solicitud — mismo criterio que `formatearLineaEscalacion`.
  * Formato elegido (sin texto literal fijado por el diseño, tarea 23):
  * `id`, `solicitante`, `tipo`, `detalle`, `estado` y `caso` siempre; el
@@ -542,6 +584,22 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     logTurnEvent(casoId, event, fields, logDeps);
   const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
   const propuestaStore: PropuestaStorePort = deps.propuestaStore ?? createPropuestaStore(db);
+  /**
+   * Tarea 32, ADR 64 — `git apply --check`/`git apply` reales sobre el
+   * checkout real (`repoRoot: process.cwd()`, mismo criterio que
+   * `design.md` §6.1: `repoRoot` lo fija la composición, nunca un env var).
+   * `logEvent` no hace nada acá a propósito: `verificarPatch`/`aplicarPatch`
+   * (`src/adapters/git/worktree.ts`) NUNCA lo invocan — solo `cerrarWorktree`
+   * lo usa, y este dispatcher no usa `WorktreePort` (§5.10 no abre worktrees,
+   * solo aplica patches ya persistidos).
+   */
+  const aplicarPatch: AplicarPatchPort =
+    deps.aplicarPatch ??
+    createGitAdapter({
+      repoRoot: process.cwd(),
+      config: { ...resolveGitConfig(), worktreeRoot: resolveWorktreeConfig().worktreeRoot },
+      logEvent: () => {},
+    }).aplicarPatch;
   /**
    * Mismo molde que `delegacionDeps` en `build-on-activity.ts` (§6.4):
    * `invocar` resuelve el `caso` REAL (ya insertado transaccionalmente por
@@ -933,6 +991,17 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   }
 
   /**
+   * Eco de confirmación de `/aplicar-propuesta`/`/descartar-propuesta`
+   * (Hito 5.1, tarea 32, §5.10 parte 2). Requirement del spec
+   * `propuesta-cambio-hitl`: "id, `base_commit`, archivos, `+N/-M`" — mismo
+   * criterio que `formatearEco`/`formatearEcoSolicitud`, sin texto literal
+   * fijado por diseño más allá de esos cuatro datos.
+   */
+  function formatearEcoPropuesta(p: PropuestaCambio): string {
+    return `propuesta ${p.id} · caso ${p.casoId} · base ${p.baseCommit} · archivos ${p.archivos} · +${p.lineasAgregadas}/-${p.lineasEliminadas} — repetí el comando para confirmar.`;
+  }
+
+  /**
    * Resumen + patch paginado a `LINEAS_PAGINA_PATCH` líneas (§5.10, ADR 69).
    * `/ver-propuesta <id>` no tiene parámetro de página — SIEMPRE la primera
    * (primeras `LINEAS_PAGINA_PATCH` líneas del patch, partido por `\n`), con
@@ -977,6 +1046,179 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       return sistema(`No existe ninguna propuesta ${comando.propuestaId}.`);
     }
     return sistema(formatearResumenPropuesta(propuesta));
+  }
+
+  /**
+   * Resolución de `/aplicar-propuesta`/`/descartar-propuesta` en dos pasos
+   * (Hito 5.1, tarea 32, §5.10 parte 2, ADR 36, ADR 55, ADR 64, ADR 65).
+   * Molde de `manejarResolucionSolicitud`, con dos diferencias impuestas por
+   * el parser/ADR 64:
+   *
+   *  1. `propuestaId` es SIEMPRE `string` acá (`comando-empleado.ts` exige
+   *     el argumento para ambos comandos) — a diferencia de reembolso/
+   *     solicitud, NO hay rama "listar sin id".
+   *  2. El segundo llamado de `aplicar` intercala DOS `await` a
+   *     `AplicarPatchPort` alrededor de `resolverPropuestaCambio`:
+   *     `verificar` (`git apply --check`) ANTES — fuera de cualquier
+   *     escritura, con los bytes EXACTOS de `propuestaStore.obtenerPropuesta`
+   *     (`p` en design.md §4.2, no el `patchBytes` cacheado en
+   *     `confirmacionPendiente`) — y `aplicar` (`git apply` real) DESPUÉS,
+   *     solo si la transacción CAS (`resolverPropuestaCambio` con
+   *     `confirmado: true`, que ya comitea vía `PropuestaStorePort.aplicarPropuesta`)
+   *     devolvió `"aplicada"`. Un `--check` que falla NUNCA llega a
+   *     `resolverPropuestaCambio`: cero escrituras, estado intacto (spec,
+   *     escenario explícito) — evento `propuesta-conflicto`. Un `aplicar`
+   *     que falla DESPUÉS del commit no propaga (`AplicarPatchPort` nunca
+   *     rechaza, ADR 64): evento `propuesta-apply-fallido` + mensaje
+   *     EXPLÍCITO al humano (RD-13, heredado, hecho visible).
+   *
+   * `descartar` NUNCA toca `aplicarPatch` — no hay patch que aplicar al
+   * descartar; solo corre la transacción CAS a `descartada` con `motivo`.
+   *
+   * Escritura de `registrar(...)`: SOLO para `resultado: "no_aplicable"` con
+   * `motivo: MOTIVO_CAS` (la carrera entre el `--check` y el commit, o el
+   * CAS de `descartar` perdiendo) — mismo criterio que `manejarEscalacion`/
+   * `manejarResolucionSolicitud`: si el CAS hubiese matcheado, la fila ya
+   * viajó DENTRO de la transacción de `repository.ts` (tarea 15,
+   * `resolverPropuestaTransaccional`).
+   */
+  async function manejarResolucionPropuesta(
+    accion: AccionPropuesta,
+    propuestaId: string,
+    motivo: string | undefined,
+    ahora: string,
+  ): Promise<TuiTurnResult> {
+    const sesionActual = sesion as SesionEmpleado;
+
+    const coincide =
+      confirmacionPendiente !== undefined &&
+      confirmacionPendiente.dominio === "propuesta" &&
+      confirmacionPendiente.propuestaId === propuestaId &&
+      confirmacionPendiente.accion === accion &&
+      confirmacionPendiente.empleadoId === sesionActual.empleadoId;
+
+    if (!coincide) {
+      const resultado = resolverPropuestaCambio(
+        {
+          accion,
+          propuestaId,
+          confirmado: false,
+          sesion: sesionActual,
+          ...(motivo !== undefined ? { motivo } : {}),
+        },
+        { store: propuestaStore, newId, now, logEvent },
+      );
+
+      if (resultado.resultado === "no_aplicable") {
+        return sistema(`No hay ninguna propuesta ${propuestaId} pendiente de resolución.`);
+      }
+      if (resultado.resultado !== "requiere_confirmacion") {
+        return sistema("No se pudo procesar ese comando.");
+      }
+
+      confirmacionPendiente = {
+        dominio: "propuesta",
+        accion,
+        propuestaId,
+        casoId: resultado.item.casoId,
+        patchBytes: resultado.item.patchBytes,
+        empleadoId: sesionActual.empleadoId,
+        expiraEn: new Date(Date.parse(ahora) + CONFIRMACION_TTL_MINUTOS * 60_000).toISOString(),
+      };
+      return sistema(formatearEcoPropuesta(resultado.item));
+    }
+
+    // Coincide: se CONSUME antes de ejecutar (ADR 36).
+    confirmacionPendiente = undefined;
+
+    if (accion === ACCION_DESCARTAR_PROPUESTA) {
+      const resultado = resolverPropuestaCambio(
+        {
+          accion,
+          propuestaId,
+          confirmado: true,
+          sesion: sesionActual,
+          ...(motivo !== undefined ? { motivo } : {}),
+        },
+        { store: propuestaStore, newId, now, logEvent },
+      );
+
+      if (resultado.resultado === "aplicada") {
+        return sistema(`Listo: la propuesta ${propuestaId} quedó ${resultado.estadoFinal}.`);
+      }
+      if (resultado.resultado === "no_aplicable") {
+        if (resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
+          registrar(
+            {
+              comando: ACCION_PROPUESTA_COMANDO[accion],
+              propuestaId,
+              casoId: resultado.casoId,
+              resultado: RESULTADO_NO_APLICABLE,
+            },
+            ahora,
+          );
+        }
+        return sistema("Esa propuesta ya no está pendiente: no se aplicó nada.");
+      }
+      return sistema("No se pudo procesar ese comando.");
+    }
+
+    // accion === ACCION_APLICAR_PROPUESTA — ADR 64: `verificar` ANTES de
+    // cualquier escritura, con los bytes EXACTOS persistidos en la base.
+    const propuesta = propuestaStore.obtenerPropuesta(propuestaId);
+    if (propuesta === undefined) {
+      return sistema(`No hay ninguna propuesta ${propuestaId} pendiente de resolución.`);
+    }
+
+    const verificacion = await aplicarPatch.verificar(propuesta.patch);
+    if (!verificacion.ok) {
+      logEvent(propuesta.casoId, "propuesta-conflicto", {
+        propuestaId,
+        baseCommit: propuesta.baseCommit,
+        ...(verificacion.detalle !== undefined ? { detalleChars: verificacion.detalle.length } : {}),
+      });
+      return sistema(
+        `No se pudo aplicar la propuesta ${propuestaId}: el patch entra en conflicto con la base actual (base_commit ${propuesta.baseCommit}). La propuesta sigue pendiente de aprobación humana — actualizá el checkout y volvé a intentar.`,
+      );
+    }
+
+    // `--check` pasó: recién ahora corre la transacción CAS (commit real en la base).
+    const resultado = resolverPropuestaCambio(
+      { accion, propuestaId, confirmado: true, sesion: sesionActual },
+      { store: propuestaStore, newId, now, logEvent },
+    );
+
+    if (resultado.resultado === "no_aplicable") {
+      if (resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
+        registrar(
+          {
+            comando: ACCION_PROPUESTA_COMANDO[accion],
+            propuestaId,
+            casoId: resultado.casoId,
+            resultado: RESULTADO_NO_APLICABLE,
+          },
+          ahora,
+        );
+      }
+      return sistema("Esa propuesta ya no está pendiente: no se aplicó nada.");
+    }
+    if (resultado.resultado !== "aplicada") {
+      return sistema("No se pudo procesar ese comando.");
+    }
+
+    // La transacción ya hizo COMMIT acá — recién ahora corre `git apply` real
+    // (ADR 64), SIEMPRE fuera de la transacción SQL.
+    const aplicacion = await aplicarPatch.aplicar(propuesta.patch);
+    if (!aplicacion.ok) {
+      logEvent(propuesta.casoId, "propuesta-apply-fallido", { propuestaId, motivo: aplicacion.motivo });
+      return sistema(
+        `La propuesta ${propuestaId} quedó marcada como aplicada, pero el árbol de trabajo NO cambió (${aplicacion.motivo}). Revisá manualmente con git status y aplicá el patch a mano si corresponde.`,
+      );
+    }
+
+    return sistema(
+      `Listo: la propuesta ${propuestaId} quedó aplicada. ${propuesta.archivos} archivo(s) modificados, sin stagear — revisá con git status.`,
+    );
   }
 
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
@@ -1047,6 +1289,10 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
+      case "aplicar_propuesta":
+        return manejarResolucionPropuesta(ACCION_APLICAR_PROPUESTA, comando.propuestaId, undefined, ahora);
+      case "descartar_propuesta":
+        return manejarResolucionPropuesta(ACCION_DESCARTAR_PROPUESTA, comando.propuestaId, comando.motivo, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }
