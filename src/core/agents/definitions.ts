@@ -23,6 +23,10 @@
  * SDK-agnostic rule above, it is still core talking to core.
  */
 import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.js";
+import {
+  WORKTREE_TEST_TOOL_QUALIFIED_NAME,
+  type WorktreeAbierto,
+} from "./worktree-contract.js";
 
 /** Configuration for a single first-level agent, independent of any SDK. */
 export interface AgentDefinition {
@@ -243,4 +247,67 @@ export function getSubagentDefinition(agentId: string): AgentDefinition | undefi
  */
 export function listSubagentDefinitions(): readonly AgentDefinition[] {
   return Array.from(SUBAGENT_REGISTRY.values());
+}
+
+// ---------------------------------------------------------------------------
+// Developer con escritura delegada (Hito 5.1, tarea 26, ADR 61 pto 1-2, ADR 67).
+// ---------------------------------------------------------------------------
+
+/**
+ * Texto agregado al `systemPrompt` del Developer cuando gana escritura (ADR
+ * 61 pto 2, ADR 67, design.md §5.2). Es PROMPT, no garantía — la garantía
+ * real es la topología del worktree aislado (R2): esto solo reduce el
+ * intento de escribir fuera del `cwd` asignado, no lo previene por sí solo.
+ */
+const INSTRUCCION_ESCRITURA_WORKTREE =
+  "Para esta tarea tenés escritura habilitada (`Write`/`Edit`), pero " +
+  "SOLO dentro de una copia descartable y aislada del repositorio: todo lo " +
+  "que escribas fuera de tu directorio de trabajo actual se descarta y no " +
+  "llega a ningún lado. Corré `mcp__worktree__run_tests` antes de dar por " +
+  "terminada la tarea. No tenés, ni vas a tener, acceso a una shell.";
+
+/**
+ * El PAR indivisible que devuelve `construirDeveloperConEscritura` (ADR 67
+ * pto 1). No existe una función que devuelva sólo el `agent`: así no hay
+ * forma de que un `Write`/`Edit` viaje sin su `cwd` de worktree acompañándolo.
+ */
+export interface InvocacionDeveloperEscritura {
+  readonly agent: AgentDefinition;
+  /** Ruta ABSOLUTA del worktree — nunca opcional, nunca vacía. */
+  readonly cwd: string;
+}
+
+/**
+ * ÚNICO constructor de la variante de escritura del Developer (ADR 61 pto 2,
+ * ADR 67, design.md §5.2). Los literales `"Write"` y `"Edit"` aparecen UNA
+ * sola vez en todo este repo: acá adentro. `SUBAGENT_REGISTRY.developer` no
+ * se toca — esta función construye un `AgentDefinition` nuevo a partir de
+ * él, nunca lo muta ni lo reemplaza en el registro.
+ *
+ * Su único parámetro es un `WorktreeAbierto` — tipo que sólo
+ * `WorktreePort.abrir` (adaptador, `src/adapters/git/`) produce — así que no
+ * existe una vía de código que le dé `Write`/`Edit` al Developer sin un
+ * worktree ya abierto: no acepta un `string`, no tiene valor por default, no
+ * tiene sobrecarga.
+ *
+ * Con `HARNESS_ESCRITURA_DELEGADA=off` el composition root simplemente no
+ * llama a esta función: el Developer vuelve a ser, byte por byte, el de
+ * `v2.0.0` (`SUBAGENT_REGISTRY.developer`, sin cambios).
+ */
+export function construirDeveloperConEscritura(
+  worktree: WorktreeAbierto,
+): InvocacionDeveloperEscritura {
+  return {
+    agent: {
+      ...DEVELOPER_AGENT,
+      allowedTools: [
+        ...DEVELOPER_AGENT.allowedTools,
+        "Write",
+        "Edit",
+        WORKTREE_TEST_TOOL_QUALIFIED_NAME,
+      ],
+      systemPrompt: `${DEVELOPER_AGENT.systemPrompt}\n\n${INSTRUCCION_ESCRITURA_WORKTREE}`,
+    },
+    cwd: worktree.ruta,
+  };
 }
