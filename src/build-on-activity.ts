@@ -40,7 +40,10 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import type { KeyedQueue } from "./core/concurrency/keyed-queue.js";
 import { runActivityTurn, type ActivityTurnOutcome } from "./core/activity/run-activity-turn.js";
-import { despacharRevisionPorRoles } from "./core/activity/cadena-revision.js";
+import {
+  despacharRevisionPorRoles,
+  type EscrituraDelegadaDeps,
+} from "./core/activity/cadena-revision.js";
 import {
   ACTIVIDAD_ESTADOS,
   ACTIVIDAD_TIPOS,
@@ -58,10 +61,15 @@ import {
   type DespacharDelegacionDeps,
 } from "./core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
+import type { WorktreePort } from "./core/agents/worktree-contract.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { TurnFailedError } from "./core/turn-selector/turn-error.js";
 import { createKnowledgeAdapter, type KnowledgeAdapter } from "./adapters/knowledge/index.js";
+import { createGitAdapter } from "./adapters/git/index.js";
+import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
+import { createTestRunnerAdapter } from "./adapters/test-runner/index.js";
+import { createPropuestaStore } from "./build-on-comando-empleado.js";
 import {
   createCasoConActividad,
   findActividadPorReferencia,
@@ -96,6 +104,16 @@ export interface BuildOnActivityDeps {
   readonly createKnowledge?: (casoId: string) => KnowledgeAdapter;
   /** Inyectable solo para el test; default: la implementación de abajo sobre `repository.ts`. */
   readonly store?: ActivityStorePort;
+  /**
+   * Hito 5.1, tarea 33 (§7.3, ADR 61 pto 2) — puerto real de la escritura
+   * delegada. Inyectable SOLO para el test (evita que la suite abra un
+   * worktree real vía `git`); default: `createGitAdapter({ repoRoot:
+   * process.cwd(), ... }).worktree`, construido más abajo con la config real
+   * resuelta de env (`resolveGitConfig`/`resolveWorktreeConfig`,
+   * `src/adapters/git/config.ts`) — mismo molde que `aplicarPatch` en
+   * `build-on-comando-empleado.ts` (tarea 32).
+   */
+  readonly worktree?: WorktreePort;
 }
 
 /**
@@ -288,11 +306,21 @@ export function buildOnActivity(deps: BuildOnActivityDeps): ActivityEventHandler
      * más arriba en este archivo), en vez de fabricar un segundo placeholder
      * disfrazado de dato real.
      */
-    invocar: async ({ agent, casoId, tareaDelegada }) => {
+    invocar: async ({ agent, casoId, tareaDelegada, cwd, mcpServers }) => {
       const caso = getCasoById(db, casoId);
       if (caso === undefined) {
         throw new CasoNotFoundError(casoId);
       }
+      /**
+       * `cwd`/`mcpServers` (Hito 5.1, tarea 33) — reenviados TAL CUAL a
+       * `invokeModel`: ausentes para Planner/Reviewer (`InvocarSubagente`
+       * los declara opcionales), presentes SOLO cuando
+       * `ejecutarDeveloperConEscritura` (`cadena-revision.ts`, tarea 30) los
+       * arma para el Developer con escritura activa. `queryFn`/`subagentes`
+       * se pasan `undefined` explícito para activar sus propios defaults de
+       * `invokeModel` sin reordenar sus posicionales (`cwd` es el OCTAVO
+       * parámetro trailing, tarea 28).
+       */
       return invokeModel(
         agent,
         {
@@ -301,6 +329,10 @@ export function buildOnActivity(deps: BuildOnActivityDeps): ActivityEventHandler
         },
         tareaDelegada,
         hooks,
+        undefined,
+        mcpServers,
+        undefined,
+        cwd,
       );
     },
     getSubagente: getSubagentDefinition,
@@ -311,9 +343,81 @@ export function buildOnActivity(deps: BuildOnActivityDeps): ActivityEventHandler
 
   const delegacionRolesActiva = process.env.HARNESS_DELEGACION_ROLES !== "off";
 
+  /**
+   * Interruptor `HARNESS_ESCRITURA_DELEGADA` (Hito 5.1, tarea 33, §7.3, ADR
+   * 61 pto 2), molde exacto de `delegacionRolesActiva` arriba (ADR 54):
+   * `"off"` ⇒ `escrituraDelegadaActiva === false`; cualquier otro valor o
+   * AUSENTE ⇒ `true` (escritura delegada ACTIVA por default, igual que
+   * `HARNESS_DELEGACION_ROLES`).
+   *
+   * `escritura` se computa DENTRO del ternario, no antes (a diferencia de
+   * `delegacionDeps`): con el interruptor en `"off"` no se construye
+   * `createGitAdapter` ni `createPropuestaStore` — cero trabajo de
+   * infraestructura para un valor que `despacharRevisionPorRoles` nunca va a
+   * mirar (recibe `escritura === undefined` y el Developer sigue el camino
+   * de `v2.0.0`, sin abrir worktree ni llamar a
+   * `construirDeveloperConEscritura`, ninguno de los dos alcanzable desde
+   * este archivo — viven dentro de `cadena-revision.ts`).
+   *
+   * `worktree` real: `createGitAdapter({ repoRoot: process.cwd(), ... })`
+   * mismo molde que `aplicarPatch` en `build-on-comando-empleado.ts` (tarea
+   * 32) — `repoRoot` lo fija la composición (nunca un env var, design.md
+   * §6.1), `logEvent` no-op porque `WorktreePort.abrir`/`capturarDiff` (a
+   * diferencia de `cerrar`) no lo invocan tampoco (`src/adapters/git/
+   * worktree.ts`, mismo criterio ya verificado por la tarea 32 para
+   * `AplicarPatchPort`). `deps.worktree` pisa el default — única costura que
+   * el test necesita para no tocar `git` real.
+   *
+   * `propuestas`: `createPropuestaStore(db)` — reusa la fábrica de la tarea
+   * 31 (`build-on-comando-empleado.ts`) en vez de duplicar sus cinco métodos
+   * acá; ese archivo ya importa `createDelegacionStore` DESDE este mismo
+   * (tarea 14), así que el import en esta dirección cierra un ciclo que ya
+   * era latente, no uno nuevo — ninguno de los dos módulos invoca la función
+   * importada al nivel superior (ambos son `function` exportadas, nunca
+   * ejecutadas durante la carga del módulo), así que el ciclo no afecta el
+   * orden de inicialización en runtime (confirmado por `tsc --noEmit`/
+   * `vitest` más abajo).
+   *
+   * `testRunnerMcpServers`: `logEvent` reconstruido con el `casoId` del
+   * worktree — mismo criterio que el fallback de `createKnowledge` más
+   * arriba en este archivo (`(casoIdInterno) => createKnowledgeAdapter({...,
+   * logEvent: (e, f) => logTurnEvent(casoIdInterno, e, f, logDeps) })`):
+   * `createTestRunnerAdapter` exige un `logEvent` de DOS argumentos
+   * (`event`, `fields?`), no el de TRES (`casoId`, `event`, `fields?`) que
+   * usa `delegacionDeps.logEvent` de abajo.
+   *
+   * `newId`/`now`: el MISMO juego que ya cierra `delegacionDeps` (no uno
+   * propio) — decisión ya anticipada por la tarea 30 (doc-comment de
+   * `EscrituraDelegadaDeps`): "en producción el composition root cierra
+   * ambos juegos sobre las mismas funciones".
+   */
+  const escrituraDelegadaActiva = process.env.HARNESS_ESCRITURA_DELEGADA !== "off";
+
+  const escritura: EscrituraDelegadaDeps | undefined = escrituraDelegadaActiva
+    ? {
+        worktree:
+          deps.worktree ??
+          createGitAdapter({
+            repoRoot: process.cwd(),
+            config: { ...resolveGitConfig(), worktreeRoot: resolveWorktreeConfig().worktreeRoot },
+            logEvent: () => {},
+          }).worktree,
+        propuestas: createPropuestaStore(db),
+        testRunnerMcpServers: (wt) =>
+          createTestRunnerAdapter({
+            casoId: wt.casoId,
+            cwd: wt.ruta,
+            logEvent: (e, f) => logTurnEvent(wt.casoId, e, f, logDeps),
+          }).mcpServers,
+        newId,
+        now,
+        logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields, logDeps),
+      }
+    : undefined;
+
   const despacharRevision: (casoId: string, prompt: string) => Promise<ActivityTurnOutcome> =
     delegacionRolesActiva
-      ? (casoId, prompt) => despacharRevisionPorRoles(casoId, prompt, delegacionDeps)
+      ? (casoId, prompt) => despacharRevisionPorRoles(casoId, prompt, delegacionDeps, escritura)
       : (casoId, prompt) => {
           // Único camino que construye el Adaptador de Conocimiento (fix de
           // R1, §6.4): ningún rol de la cadena de delegación trae el tool de

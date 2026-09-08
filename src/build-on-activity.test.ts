@@ -36,12 +36,13 @@ import {
   type AgentDefinition,
 } from "./core/agents/definitions.js";
 import { openDatabase } from "./adapters/memory/db.js";
-import { listDelegacionesPorCaso } from "./adapters/memory/repository.js";
+import { listDelegacionesPorCaso, listPropuestasCambio } from "./adapters/memory/repository.js";
 import * as repositoryModule from "./adapters/memory/repository.js";
 import type { MemoryPort } from "./core/turn-selector/handle-turn.js";
 import type { AssembledContext } from "./core/turn-selector/assemble-context.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
+import type { WorktreeAbierto, WorktreePort } from "./core/agents/worktree-contract.js";
 
 vi.mock("./core/turn-selector/handle-turn.js", () => ({
   handleTurn: vi.fn(),
@@ -234,6 +235,30 @@ function respuestaSubagente(agentId: string): { responseText: string; sdkSession
         ? `Revisión completa.\n${VEREDICTO_PREFIX} aprobado`
         : `Salida de ${agentId}`,
     sdkSessionId: `sdk-${agentId}`,
+  };
+}
+
+/**
+ * Doble de `WorktreePort` (Hito 5.1, tarea 33) — usado por el describe del
+ * interruptor `HARNESS_ESCRITURA_DELEGADA`: nunca toca `git` real.
+ * `capturarDiff` devuelve un patch NO VACÍO a propósito — un patch vacío
+ * dispara el desenlace `"sin_cambios"` de `crearPropuestaCambio` (ADR 70,
+ * cero filas en `propuestas_cambio`), lo que haría indistinguible "la
+ * propuesta se persistió" de "el interruptor no abrió worktree" en los
+ * asserts que cuentan filas.
+ */
+function makeFakeWorktree(): WorktreePort {
+  return {
+    abrir: vi.fn(
+      async ({ casoId }: { readonly casoId: string; readonly id: string }): Promise<WorktreeAbierto> => ({
+        casoId,
+        ruta: "/fake/worktree",
+        rama: `harness/caso-${casoId}-fake`,
+        baseCommit: "deadbeef",
+      }),
+    ),
+    capturarDiff: vi.fn(async () => "diff --git a/x.ts b/x.ts\n+const x = 1;\n"),
+    cerrar: vi.fn(async () => undefined),
   };
 }
 
@@ -670,6 +695,26 @@ describe("createActivityStore", () => {
  * ninguno de los dos debe pegarle al SDK real.
  */
 describe("buildOnActivity — interruptor HARNESS_DELEGACION_ROLES (Hito 5, tarea 14, ADR 53/54)", () => {
+  /**
+   * Hito 5.1, tarea 33: desde que `HARNESS_ESCRITURA_DELEGADA` se cablea,
+   * su AUSENCIA activa la escritura delegada por default (mismo criterio
+   * ADR 54 que `HARNESS_DELEGACION_ROLES`) — sin esto, el eslabón Developer
+   * de los tests de acá abajo abriría un worktree REAL vía `createGitAdapter`
+   * (ningún test de este describe inyecta `worktree`). Este describe prueba
+   * ÚNICAMENTE el interruptor de ROLES, no el de escritura — se fuerza a
+   * "off" acá, igual que el `beforeEach` de nivel de archivo fuerza
+   * `HARNESS_DELEGACION_ROLES = "off"` para aislar SUS tests del interruptor
+   * de acá. El describe dedicado a `HARNESS_ESCRITURA_DELEGADA`, más abajo,
+   * maneja esta variable explícitamente en cada uno de sus tests.
+   */
+  beforeEach(() => {
+    process.env.HARNESS_ESCRITURA_DELEGADA = "off";
+  });
+
+  afterEach(() => {
+    delete process.env.HARNESS_ESCRITURA_DELEGADA;
+  });
+
   it.each([
     ["ausente", undefined],
     ["cualquier otro valor", "on"],
@@ -898,6 +943,161 @@ describe("buildOnActivity — interruptor HARNESS_DELEGACION_ROLES (Hito 5, tare
       expect(createKnowledge).not.toHaveBeenCalled();
     });
   });
+});
+
+/**
+ * Interruptor `HARNESS_ESCRITURA_DELEGADA` (Hito 5.1, tarea 33, §7.3, ADR
+ * 61 pto 2). `HARNESS_DELEGACION_ROLES` queda AUSENTE en todo este describe
+ * salvo el último test (roles ON — molde de la tarea 14, único camino donde
+ * `despacharRevisionPorRoles` llega a invocarse en absoluto): `escritura`
+ * solo importa cuando la cadena de roles corre.
+ *
+ * `db` REAL (`:memory:`, migrado) — igual que el describe de
+ * `HARNESS_DELEGACION_ROLES`: `crearPropuestaCambio` escribe una fila real
+ * en `propuestas_cambio` con `caso_id` cumpliendo la FK contra `casos`.
+ * `worktree` SIEMPRE inyectado como doble (`makeFakeWorktree`) — nunca se
+ * ejercita `createGitAdapter` real acá (ningún test de este archivo toca
+ * `git` de verdad, mismo criterio que el resto del archivo con
+ * `handleTurn`/`invokeModel`).
+ */
+describe("buildOnActivity — interruptor HARNESS_ESCRITURA_DELEGADA (Hito 5.1, tarea 33, ADR 61 pto 2)", () => {
+  afterEach(() => {
+    delete process.env.HARNESS_ESCRITURA_DELEGADA;
+  });
+
+  it('"off" ⇒ escritura === undefined — el Developer vuelve a ser exactamente el de v2.0.0, cero llamadas a worktree.abrir', async () => {
+    delete process.env.HARNESS_DELEGACION_ROLES; // roles ON (default) — único camino donde "escritura" importa
+    process.env.HARNESS_ESCRITURA_DELEGADA = "off";
+    mockedInvokeModel.mockImplementation(async (agent) => respuestaSubagente(agent.id));
+    const worktree = makeFakeWorktree();
+
+    await withDbAsync(async (db) => {
+      const handler = buildOnActivity({
+        db,
+        memory: fakeMemory(),
+        hooks: createHookEngine(),
+        agents: [makeAgent("agente-x")],
+        board: makeBoard(),
+        queue: createKeyedQueue(),
+        newId: makeCounterNewId("id"),
+        now: makeCounterNow(),
+        logDeps: fakeLogDeps(),
+        worktree,
+      });
+
+      await handler(makeEvento());
+
+      expect(worktree.abrir).not.toHaveBeenCalled();
+      expect(worktree.capturarDiff).not.toHaveBeenCalled();
+      expect(worktree.cerrar).not.toHaveBeenCalled();
+
+      // El Developer sigue invocado (la cadena de roles corre igual) pero
+      // SIN el `allowedTools` extra que `construirDeveloperConEscritura`
+      // agrega (`Write`/`Edit`/la tool de tests) — confirma que ese
+      // constructor nunca se llamó, no solo que `worktree.abrir` no corrió.
+      expect(mockedInvokeModel).toHaveBeenCalledTimes(3);
+      const developerCall = mockedInvokeModel.mock.calls.find(
+        (call) => (call[0] as AgentDefinition).id === DEVELOPER_AGENT_ID,
+      );
+      expect(developerCall).toBeDefined();
+      expect((developerCall?.[0] as AgentDefinition).allowedTools).not.toContain("Write");
+
+      // Cero filas en `propuestas_cambio`: `crearPropuestaCambio` vive
+      // dentro de `ejecutarDeveloperConEscritura`, que nunca corrió.
+      expect(listPropuestasCambio(db, {})).toHaveLength(0);
+    });
+  });
+
+  it.each([
+    ["ausente", undefined],
+    ['"on"', "on"],
+    ["string vacío (no es exactamente \"off\")", ""],
+  ])(
+    "%s ⇒ escritura completo — abre worktree real (WorktreePort), invoca el Developer con allowedTools extendido, y persiste la propuesta",
+    async (_label, valor) => {
+      delete process.env.HARNESS_DELEGACION_ROLES;
+      if (valor === undefined) {
+        delete process.env.HARNESS_ESCRITURA_DELEGADA;
+      } else {
+        process.env.HARNESS_ESCRITURA_DELEGADA = valor;
+      }
+      mockedInvokeModel.mockImplementation(async (agent) => respuestaSubagente(agent.id));
+      const worktree = makeFakeWorktree();
+
+      await withDbAsync(async (db) => {
+        const handler = buildOnActivity({
+          db,
+          memory: fakeMemory(),
+          hooks: createHookEngine(),
+          agents: [makeAgent("agente-x")],
+          board: makeBoard(),
+          queue: createKeyedQueue(),
+          newId: makeCounterNewId("id"),
+          now: makeCounterNow(),
+          logDeps: fakeLogDeps(),
+          worktree,
+        });
+
+        await handler(makeEvento());
+
+        expect(worktree.abrir).toHaveBeenCalledTimes(1);
+        expect(worktree.capturarDiff).toHaveBeenCalledTimes(1);
+        expect(worktree.cerrar).toHaveBeenCalledTimes(1);
+
+        expect(mockedInvokeModel).toHaveBeenCalledTimes(3);
+        const developerCall = mockedInvokeModel.mock.calls.find(
+          (call) => (call[0] as AgentDefinition).id === DEVELOPER_AGENT_ID,
+        );
+        expect(developerCall).toBeDefined();
+        expect((developerCall?.[0] as AgentDefinition).allowedTools).toContain("Write");
+
+        // `newId()` es un contador compartido — el PRIMER valor emitido es
+        // el `casoId` (mismo criterio que el resto del archivo).
+        const propuestas = listPropuestasCambio(db, {}).filter((p) => p.casoId === "id-1");
+        expect(propuestas).toHaveLength(1);
+      });
+    },
+  );
+
+  it.each([
+    ["ausente", undefined],
+    ["on", "on"],
+    ["off", "off"],
+  ])(
+    'HARNESS_DELEGACION_ROLES="off" + HARNESS_ESCRITURA_DELEGADA=%s ⇒ sigue degradando a v1.4.0 (handleTurn) — los dos interruptores anidan sin interferirse',
+    async (_label, valor) => {
+      process.env.HARNESS_DELEGACION_ROLES = "off";
+      if (valor === undefined) {
+        delete process.env.HARNESS_ESCRITURA_DELEGADA;
+      } else {
+        process.env.HARNESS_ESCRITURA_DELEGADA = valor;
+      }
+      const worktree = makeFakeWorktree();
+
+      await withDbAsync(async (db) => {
+        const handler = buildOnActivity({
+          db,
+          memory: fakeMemory(),
+          hooks: createHookEngine(),
+          agents: [makeAgent("agente-x")],
+          board: makeBoard(),
+          queue: createKeyedQueue(),
+          newId: makeCounterNewId("id"),
+          now: makeCounterNow(),
+          logDeps: fakeLogDeps(),
+          worktree,
+        });
+
+        await handler(makeEvento());
+
+        expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
+        expect(mockedInvokeModel).not.toHaveBeenCalled();
+        expect(worktree.abrir).not.toHaveBeenCalled();
+        expect(listDelegacionesPorCaso(db, "id-1")).toHaveLength(0);
+        expect(listPropuestasCambio(db, {})).toHaveLength(0);
+      });
+    },
+  );
 });
 
 describe("createDelegacionStore (Hito 5, tarea 14, §6.4)", () => {
