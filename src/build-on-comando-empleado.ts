@@ -1060,9 +1060,15 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
    *  2. El segundo llamado de `aplicar` intercala DOS `await` a
    *     `AplicarPatchPort` alrededor de `resolverPropuestaCambio`:
    *     `verificar` (`git apply --check`) ANTES — fuera de cualquier
-   *     escritura, con los bytes EXACTOS de `propuestaStore.obtenerPropuesta`
+   *     escritura, con los bytes EXACTOS de
+   *     `propuestaStore.listarPropuestasPendientes({ propuestaId })[0]`
    *     (`p` en design.md §4.2, no el `patchBytes` cacheado en
-   *     `confirmacionPendiente`) — y `aplicar` (`git apply` real) DESPUÉS,
+   *     `confirmacionPendiente`; filtrado por PENDIENTE — ADR 38, mismo
+   *     criterio que usa `resolverPropuestaCambio` — y NO `obtenerPropuesta`
+   *     sin filtro de estado, que dejaría correr `--check` contra una
+   *     propuesta que otra persona ya resolvió entre el eco y esta
+   *     confirmación, code review Hito 5.1 completo) — y `aplicar` (`git
+   *     apply` real) DESPUÉS,
    *     solo si la transacción CAS (`resolverPropuestaCambio` con
    *     `confirmado: true`, que ya comitea vía `PropuestaStorePort.aplicarPropuesta`)
    *     devolvió `"aplicada"`. Un `--check` que falla NUNCA llega a
@@ -1165,9 +1171,16 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
 
     // accion === ACCION_APLICAR_PROPUESTA — ADR 64: `verificar` ANTES de
     // cualquier escritura, con los bytes EXACTOS persistidos en la base.
-    const propuesta = propuestaStore.obtenerPropuesta(propuestaId);
+    // Filtrado por PENDIENTE (ADR 38), mismo criterio que usa
+    // `resolverPropuestaCambio` acá abajo — NO `obtenerPropuesta` sin filtro
+    // de estado: esa fila puede seguir "existiendo" aunque ya haya sido
+    // resuelta por otra persona entre el eco y esta confirmación, y correr
+    // `--check` contra ese patch produce el mensaje ENGAÑOSO de "conflicto
+    // con la base" para lo que en realidad es "ya resuelta" (code review,
+    // Hito 5.1 completo).
+    const propuesta = propuestaStore.listarPropuestasPendientes({ propuestaId })[0];
     if (propuesta === undefined) {
-      return sistema(`No hay ninguna propuesta ${propuestaId} pendiente de resolución.`);
+      return sistema("Esa propuesta ya no está pendiente: no se aplicó nada.");
     }
 
     const verificacion = await aplicarPatch.verificar(propuesta.patch);

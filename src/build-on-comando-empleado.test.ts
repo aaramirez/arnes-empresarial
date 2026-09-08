@@ -1228,6 +1228,50 @@ describe("buildOnComandoEmpleado — resolución de propuestas en dos pasos (Hit
     expect(JSON.stringify(writes)).toContain("propuesta-conflicto");
   });
 
+  it("otro empleado ya resolvió la propuesta ENTRE el eco y la confirmación: NO corre git apply --check (filtra por pendiente antes, no por obtenerPropuesta sin filtro), mensaje 'ya no está pendiente' en vez de 'conflicto' (code review, Hito 5.1 completo)", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const propuestaPendiente = makePropuesta({
+      id: "prop-1",
+      casoId: "caso-prop-9",
+      baseCommit: "deadbee",
+      estado: PROPUESTA_ESTADO_PENDIENTE,
+    });
+    // `obtenerPropuesta` (sin filtro de estado) SIGUE devolviendo la fila —
+    // ya fue resuelta por otra persona mientras tanto — para reproducir la
+    // carrera exacta que reporta el finding: un lookup sin filtro de estado
+    // vería esta fila como "existente" aunque ya no esté pendiente.
+    const propuestaYaAplicada: PropuestaCambio = { ...propuestaPendiente, estado: PROPUESTA_ESTADO_APLICADA };
+    let llamadasListar = 0;
+    const propuestaStore = makePropuestaStore({
+      // 1ª llamada (eco, vía `resolverPropuestaCambio`): SIGUE pendiente.
+      // 2ª llamada (confirma): otra persona ya la resolvió — vacío.
+      listarPropuestasPendientes: vi.fn(() => {
+        llamadasListar += 1;
+        return llamadasListar === 1 ? [propuestaPendiente] : [];
+      }),
+      obtenerPropuesta: vi.fn(() => propuestaYaAplicada),
+    });
+    const aplicarPatch = makeAplicarPatch({
+      verificar: vi.fn(
+        async (): Promise<ResultadoPatch> => ({ ok: false, motivo: MOTIVO_PATCH_CONFLICTO, detalle: "ya fue aplicada" }),
+      ),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, { propuestaStore, aplicarPatch, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    await handler("/aplicar-propuesta prop-1"); // eco: todavía pendiente
+    const resultado = await handler("/aplicar-propuesta prop-1"); // confirma: la carrera ya se perdió
+
+    expect(aplicarPatch.verificar).not.toHaveBeenCalled();
+    expect(propuestaStore.aplicarPropuesta).not.toHaveBeenCalled();
+    expect(resultado.responseText.toLowerCase()).toContain("no está pendiente");
+    expect(resultado.responseText.toLowerCase()).not.toContain("conflicto");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
   it("--check pasa pero el CAS pierde la carrera (otro empleado ya la resolvió): no_aplicable, registra FUERA de transacción, NO llama a git apply", async () => {
     const reloj: Reloj = { ahora: TIMESTAMP };
     const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9" });
