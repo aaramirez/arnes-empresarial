@@ -56,6 +56,32 @@ function resolvePositiveNumber(raw: string | undefined, defaultValue: number): n
 }
 
 /**
+ * Falls back to `defaultValue` when the raw env var is missing or blank
+ * (post-trim empty string) — same "absent or blank means default" rule as
+ * `resolvePositiveNumber`, but for string fields where any non-blank value
+ * is otherwise valid as-is (post-review correction, Hito 5.1, code-review
+ * hito completo). Without this, `GRAPHIFY_BIN=""`/`GRAPHIFY_GRAPH_PATH=""`
+ * would leak through `env.X ?? DEFAULT` (which only catches
+ * `null`/`undefined`) as a literal empty string — an unusable `bin` for
+ * `execFile`, and a `graphPath` that would fail to resolve any graph file.
+ *
+ * DELIBERATELY duplicated across adapter config files (Reviewer finding,
+ * reuse): not hoisted to `src/core/` because this is env-var parsing
+ * infrastructure, not business logic — `src/core/` shouldn't gain a
+ * dependency just to serve adapter convenience — and AGENTS.md's
+ * non-negotiable rule forbids one adapter importing from another. Same
+ * accepted-duplication call as `resolveNonBlankString` in
+ * `git/config.ts`.
+ */
+function resolveNonBlankString(raw: string | undefined, defaultValue: string): string {
+  if (raw === undefined) {
+    return defaultValue;
+  }
+  const trimmed = raw.trim();
+  return trimmed === "" ? defaultValue : trimmed;
+}
+
+/**
  * Resolves the Graphify CLI configuration from environment variables. Pure:
  * receives `env` as a parameter (default `process.env`) so tests can pass a
  * literal object instead of mutating the global process env.
@@ -71,8 +97,8 @@ export function resolveGraphifyConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): GraphifyConfig {
   return {
-    bin: env.GRAPHIFY_BIN ?? DEFAULT_GRAPHIFY_BIN,
-    graphPath: env.GRAPHIFY_GRAPH_PATH ?? DEFAULT_GRAPH_PATH,
+    bin: resolveNonBlankString(env.GRAPHIFY_BIN, DEFAULT_GRAPHIFY_BIN),
+    graphPath: resolveNonBlankString(env.GRAPHIFY_GRAPH_PATH, DEFAULT_GRAPH_PATH),
     budget: resolvePositiveNumber(env.GRAPHIFY_BUDGET, DEFAULT_BUDGET),
     queryTimeoutMs: resolvePositiveNumber(env.GRAPHIFY_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS),
   };
