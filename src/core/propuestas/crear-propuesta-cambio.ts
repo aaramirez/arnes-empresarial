@@ -6,25 +6,37 @@
  * (mismo criterio que `VentaStorePort`/`SolicitudStorePort` — `better-sqlite3`
  * lo es), y esta función no hace ningún I/O propio, sólo orquesta.
  *
- * Orden interno, NO NEGOCIABLE (design.md §5.6): `trim` → `resumirPatch` →
- * **tope** → recién ahí `store.crearPropuesta`. Nunca se persiste primero y
- * se valida después.
+ * Orden interno, NO NEGOCIABLE (design.md §5.6): `trim` (sólo para detectar
+ * vacío) → `resumirPatch` → **tope** → recién ahí `store.crearPropuesta`.
+ * Nunca se persiste primero y se valida después.
  *
  *  1. `input.patch.trim()` — un diff vacío (nada que escribir en el turno)
  *     es un desenlace propio (`"sin_cambios"`, ADR 70), no una propuesta de
  *     cero bytes: sin este paso, `''` satisface `patch TEXT NOT NULL` en
  *     SQLite y persistiría una fila vacía que igual "aplica" sin cambiar
- *     nada — falla silenciosa con la base en verde.
- *  2. `resumirPatch(patchTrim)` (`./resumir-patch.js`, tarea 18) — cuenta
- *     bytes UTF-8 reales y los contadores del patch YA trimeado, para que
- *     el tope se evalúe sobre el mismo texto que se persiste.
+ *     nada — falla silenciosa con la base en verde. `patchTrim` se usa
+ *     ÚNICAMENTE para este chequeo de vacío — nunca para lo que se cuenta
+ *     ni para lo que se persiste (corrección post-tarea 37, ver abajo).
+ *  2. `resumirPatch(input.patch)` (`./resumir-patch.js`, tarea 18) — cuenta
+ *     bytes UTF-8 reales y los contadores del patch ORIGINAL (sin trim),
+ *     para que el tope se evalúe sobre el mismo texto que se persiste y que
+ *     luego viaja a `git apply`.
  *  3. Tope: `resumen.patchBytes > PATCH_MAX_BYTES` (65 536, `propuestas-
  *     contract.ts`) ⇒ `"rechazada_por_tamano"`. RECHAZO, no truncado (ADR 58
  *     pto 3): un patch de +1000 líneas de diff no es revisable, y truncarlo
  *     produciría un patch inaplicable (`git apply` fallaría a mitad de hunk).
- *  4. Sólo si pasa el tope: `store.crearPropuesta(...)`. Si el store tira,
- *     la función NO atrapa el error — falla ruidosa: sin fila no hay
- *     evidencia (mismo contrato documentado en `PropuestaStorePort`).
+ *  4. Sólo si pasa el tope: `store.crearPropuesta({ ..., patch: input.patch,
+ *     ... })` — el patch ORIGINAL, sin trim. `git diff --binary` (lo que
+ *     produce `worktree.capturarDiff`, `src/adapters/git/worktree.ts`)
+ *     SIEMPRE termina en `"\n"` — es parte del formato de diff unificado.
+ *     Persistir `patchTrim` en vez de `input.patch` le comía ese `"\n"`
+ *     final y volvía el patch inaplicable: `git apply --check` lo rechazaba
+ *     con `error: corrupt patch` pese a no haber ningún conflicto real (bug
+ *     encontrado en la verificación manual de la tarea 37, hito 2.1 —
+ *     bloqueaba TODA propuesta creada por el pipeline real worktree →
+ *     Developer → `crearPropuestaCambio`). Si el store tira, la función NO
+ *     atrapa el error — falla ruidosa: sin fila no hay evidencia (mismo
+ *     contrato documentado en `PropuestaStorePort`).
  *
  * Los dos rechazos tempranos (`sin_cambios`, `rechazada_por_tamano`) emiten
  * un evento y devuelven sin tocar el store — **cero filas** en ambos casos
@@ -69,7 +81,7 @@ export function crearPropuestaCambio(
     return { resultado: "sin_cambios" };
   }
 
-  const resumen = resumirPatch(patchTrim);
+  const resumen = resumirPatch(input.patch);
 
   if (resumen.patchBytes > PATCH_MAX_BYTES) {
     deps.logEvent(input.casoId, "propuesta-rechazada-por-tamano", {
@@ -85,7 +97,7 @@ export function crearPropuestaCambio(
     ...(input.delegacionId !== undefined ? { delegacionId: input.delegacionId } : {}),
     baseCommit: input.baseCommit,
     ramaWorktree: input.ramaWorktree,
-    patch: patchTrim,
+    patch: input.patch,
     resumen,
     createdAt: deps.now(),
   });

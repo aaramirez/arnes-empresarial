@@ -104,10 +104,13 @@ describe("crearPropuestaCambio", () => {
     });
   });
 
-  it("patch válido ⇒ 'creada' con la fila completa devuelta por el store, en el orden trim → resumirPatch → tope → store.crearPropuesta", () => {
+  it("patch válido ⇒ 'creada' con la fila completa devuelta por el store, en el orden trim (solo para detectar vacío) → resumirPatch(original) → tope → store.crearPropuesta(original)", () => {
     const store = makePropuestaStore();
     const logEvent = vi.fn();
-    const patch = "  diff --git a/a.ts b/a.ts\n+contenido nuevo\n-linea vieja\n  ";
+    // Diff unificado realista: SIN padding artificial alrededor — un `git diff --binary`
+    // real nunca trae espacios antes de "diff --git " ni después del último hunk.
+    const patch =
+      "diff --git a/a.ts b/a.ts\nindex e69de29..4b825dc 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,2 @@\n-linea vieja\n+contenido nuevo\n";
 
     const resultado = crearPropuestaCambio(
       {
@@ -122,14 +125,15 @@ describe("crearPropuestaCambio", () => {
 
     expect(store.crearPropuesta).toHaveBeenCalledTimes(1);
     const inputCreado = vi.mocked(store.crearPropuesta).mock.calls[0]![0];
-    // El patch persistido es el YA TRIMEADO (trim ocurre antes que store.crearPropuesta).
-    expect(inputCreado.patch).toBe(patch.trim());
+    // El patch persistido es el ORIGINAL, sin trim (bug hito 2.1: `git apply` exige el
+    // "\n" final de un diff unificado; `.trim()` lo comía y volvía el patch inaplicable).
+    expect(inputCreado.patch).toBe(patch);
     expect(inputCreado.casoId).toBe("caso-1");
     expect(inputCreado.delegacionId).toBe("delegacion-1");
     expect(inputCreado.baseCommit).toBe("abc123");
     expect(inputCreado.ramaWorktree).toBe("harness/caso-1-uuid");
     expect(inputCreado.resumen).toEqual({
-      patchBytes: patch.trim().length,
+      patchBytes: patch.length,
       archivos: 1,
       lineasAgregadas: 1,
       lineasEliminadas: 1,
@@ -139,16 +143,38 @@ describe("crearPropuestaCambio", () => {
     if (resultado.resultado !== "creada") throw new Error("esperaba 'creada'");
     expect(resultado.propuesta.id).toBe(inputCreado.id);
     expect(resultado.propuesta.estado).toBe(PROPUESTA_ESTADO_PENDIENTE);
-    expect(resultado.propuesta.patch).toBe(patch.trim());
+    expect(resultado.propuesta.patch).toBe(patch);
 
     expect(logEvent).toHaveBeenCalledTimes(1);
     expect(logEvent).toHaveBeenCalledWith("caso-1", "propuesta-creada", {
       propuestaId: inputCreado.id,
-      patchBytes: patch.trim().length,
+      patchBytes: patch.length,
       archivos: 1,
       lineasAgregadas: 1,
       lineasEliminadas: 1,
     });
+  });
+
+  it("patch con el '\\n' final real de `git diff --binary` ⇒ se persiste byte a byte igual a input.patch, NO a input.patch.trim() (bug encontrado en verificación manual tarea 37, hito 2.1)", () => {
+    const store = makePropuestaStore();
+    const logEvent = vi.fn();
+    // `git diff --binary` SIEMPRE termina en "\n" — es parte del formato de diff
+    // unificado. `.trim()` se lo comía y `git apply --check` rechazaba el patch
+    // persistido con "error: corrupt patch" pese a no haber conflicto real.
+    const patch =
+      "diff --git a/src/saludo.ts b/src/saludo.ts\nindex 1111111..2222222 100644\n--- a/src/saludo.ts\n+++ b/src/saludo.ts\n@@ -1 +1 @@\n-export const saludo = \"hola\";\n+export const saludo = \"chau\";\n";
+    expect(patch.endsWith("\n")).toBe(true);
+    expect(patch.trim()).not.toBe(patch); // el trim SÍ altera este patch (le saca el \n final)
+
+    crearPropuestaCambio(
+      { casoId: "caso-1", baseCommit: "abc123", ramaWorktree: "harness/caso-1-uuid", patch },
+      { store, newId: makeNewId(), now: () => "2026-09-07T00:00:00.000Z", logEvent },
+    );
+
+    const inputCreado = vi.mocked(store.crearPropuesta).mock.calls[0]![0];
+    expect(inputCreado.patch).toBe(patch);
+    expect(inputCreado.patch).not.toBe(patch.trim());
+    expect(inputCreado.patch.endsWith("\n")).toBe(true);
   });
 
   it("delegacionId ausente no viaja como undefined explícito al store (exactOptionalPropertyTypes)", () => {
