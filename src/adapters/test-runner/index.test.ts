@@ -148,7 +148,7 @@ describe("createTestRunnerAdapter — run_tests handler wiring", () => {
     expect(execFileFn).toHaveBeenCalledTimes(1);
     const [file, args, options] = execFileFn.mock.calls[0]!;
     expect(file).toBe(process.execPath);
-    expect(args).toEqual([config.vitestEntrypoint, "run", "--reporter=basic"]);
+    expect(args).toEqual([config.vitestEntrypoint, "run", "--reporter=default"]);
     expect(options).toEqual({ timeout: config.timeoutMs, cwd: "/repo/.harness/worktrees/caso-1-uuid" });
     // ninguno de los argumentos arbitrarios del llamador llega al argv real:
     expect(args).not.toContain("foo.test.ts");
@@ -211,7 +211,7 @@ describe("createTestRunnerAdapter — default config/execFileFn resolution", () 
     expect(spy).toHaveBeenCalled();
     const [file, args, options] = spy.mock.calls[0]!;
     expect(file).toBe(process.execPath);
-    expect(args).toEqual([config.vitestEntrypoint, "run", "--reporter=basic"]);
+    expect(args).toEqual([config.vitestEntrypoint, "run", "--reporter=default"]);
     expect(options).toEqual({ timeout: config.timeoutMs, cwd: "/repo/.harness/worktrees/caso-1-uuid" });
 
     spy.mockRestore();

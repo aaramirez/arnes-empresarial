@@ -196,14 +196,14 @@ describe("runVitest — error classification (ADR 66's decision tree)", () => {
 });
 
 describe("runVitest — argv and cwd construction", () => {
-  it("calls execFileFn with argv [vitestEntrypoint, 'run', '--reporter=basic'] and the given cwd/timeout", async () => {
+  it("calls execFileFn with argv [vitestEntrypoint, 'run', '--reporter=default'] and the given cwd/timeout", async () => {
     const execFileFn = vi.fn<TestExecFileFn>().mockResolvedValue({ stdout: "", stderr: "" });
 
     await runVitest(CONFIG, CWD, execFileFn);
 
     expect(execFileFn).toHaveBeenCalledTimes(1);
     const [file, args, options] = execFileFn.mock.calls[0]!;
-    expect(args).toEqual([CONFIG.vitestEntrypoint, "run", "--reporter=basic"]);
+    expect(args).toEqual([CONFIG.vitestEntrypoint, "run", "--reporter=default"]);
     expect(options).toEqual({ timeout: CONFIG.timeoutMs, cwd: CWD });
     // ADR 61 / R6: never `npm` anywhere — neither as the file nor inside argv.
     expect(file).not.toBe("npm");

@@ -94,7 +94,25 @@ function extraerCamposError(error: unknown): {
 }
 
 /**
- * `execFile(process.execPath, [vitestEntrypoint, "run", "--reporter=basic"], { cwd, timeout })`.
+ * `execFile(process.execPath, [vitestEntrypoint, "run", "--reporter=default"], { cwd, timeout })`.
+ *
+ * **Corrección post-integración (Hito 5.1, tarea 25, RED→GREEN, sin cambio
+ * de alcance)**: design.md §6.2 fijaba literal `"--reporter=basic"`, pero
+ * `"basic"` NO es un reporter de Vitest 4.x (confirmado con `npx vitest
+ * --help`, lista real: `default, agent, minimal, blob, verbose, dot, json,
+ * tap, tap-flat, junit, tree, hanging-process, github-actions` — sin
+ * `"basic"`). Contra la versión de `vitest` realmente instalada
+ * (`node_modules/vitest@4.1.11`, la misma que corre el resto de la suite del
+ * repo), CUALQUIER invocación real de `runVitest` fallaba en el arranque del
+ * servidor de Vite con `Failed to load custom Reporter from basic` —
+ * `exitCode` no-cero SIEMPRE, sin importar si la suite real era verde o roja.
+ * Los tests unitarios de tareas 22-24 (con `TestExecFileFn` fake) nunca lo
+ * detectaron porque nunca lanzan el `vitest` real; lo detectó
+ * `src/test/integration/run-tests.integration.test.ts` (tarea 25), la
+ * primera categoría de este repo que sí lo hace — mismo patrón que el
+ * hallazgo de `normalizarSeparadores` en `barrido.ts` (tarea 11). Fix:
+ * `"default"`, el reporter humano-legible más cercano al `"basic"` que
+ * describía el diseño.
  * NEVER `npm`, NEVER shell: on Windows `npm` is `npm.cmd`, and Node >= 20
  * refuses to launch it with `execFile` without a shell — and using a shell
  * is exactly what ADR 61 prohibits. Running the vitest entrypoint directly
@@ -122,7 +140,7 @@ export async function runVitest(
   cwd: string,
   execFileFn: TestExecFileFn = defaultTestExecFile,
 ): Promise<TestRunResult> {
-  const argv = [config.vitestEntrypoint, "run", "--reporter=basic"];
+  const argv = [config.vitestEntrypoint, "run", "--reporter=default"];
   const inicio = Date.now();
   try {
     const { stdout, stderr } = await execFileFn(process.execPath, argv, {
