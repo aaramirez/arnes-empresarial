@@ -1,3 +1,4 @@
+import { truncateTail } from "../../core/text/truncate-safely.js";
 import type { TestRunnerConfig } from "./config.js";
 import { TestRunnerCliError, type TestRunFailureReason, type TestRunResult } from "./test-runner-cli.js";
 
@@ -39,24 +40,19 @@ export const SALIDA_TRUNCADA_PREFIJO = "[…salida truncada: se conserva el fina
  * `vitest run` el resumen de fallas está al FINAL, así que truncar el final
  * es tirar exactamente lo que el Developer necesita (ADR 61 pto 6).
  *
- * Espejo de `truncateSafely` (`knowledge/index.ts`) pero cortando desde el
- * otro lado: ahí el riesgo es terminar en un HIGH surrogate huérfano; acá es
- * EMPEZAR en un LOW surrogate huérfano — por eso se chequea `LOW_START`/
- * `LOW_END` en vez de `HIGH_SURROGATE_START`/`HIGH_SURROGATE_END`.
+ * El corte crudo (evitar arrancar en medio de un par surrogate) vive en
+ * `truncateTail` (`src/core/text/truncate-safely.ts`, Reviewer finding,
+ * reuse) — espejo de `truncateHead` (usado por `board/index.ts` y
+ * `knowledge/index.ts`), que corta desde el otro lado. El prefijo de marca
+ * y la resta del presupuesto son específicos de este caller, así que quedan
+ * acá en vez de mudarse al helper compartido.
  */
 export function truncarConservandoCola(salida: string, maxChars = TEST_OUTPUT_MAX_CHARS): string {
   if (salida.length <= maxChars) {
     return salida;
   }
   const presupuesto = maxChars - SALIDA_TRUNCADA_PREFIJO.length; // > 0 por construcción
-  let inicio = salida.length - presupuesto;
-  const LOW_START = 0xdc00;
-  const LOW_END = 0xdfff;
-  const code = salida.charCodeAt(inicio);
-  if (code >= LOW_START && code <= LOW_END) {
-    inicio += 1; // no arrancar en medio de un par: se descarta el par completo
-  }
-  return SALIDA_TRUNCADA_PREFIJO + salida.slice(inicio);
+  return SALIDA_TRUNCADA_PREFIJO + truncateTail(salida, presupuesto);
 }
 
 export interface TestRunnerToolTextResult {
