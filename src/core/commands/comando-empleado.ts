@@ -18,9 +18,9 @@ export const COMANDO_LOG_CORRELATION_ID = "tui-comando";
 export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
 
 /**
- * Unión discriminada de los ONCE comandos (ADR 21, 34, 56). `ayuda` no es un
- * comando más: es también el sumidero de todo lo malformado, y por eso el
- * parser NO tiene una rama de error.
+ * Unión discriminada de los CATORCE comandos (ADR 21, 34, 56, 69). `ayuda`
+ * no es un comando más: es también el sumidero de todo lo malformado, y por
+ * eso el parser NO tiene una rama de error.
  *
  * ★ `login.password` es el ÚNICO campo SECRETO de todo el núcleo. ★ No se
  *   loguea, no se persiste, no se devuelve en ningún `TuiTurnResult`, y no
@@ -31,6 +31,13 @@ export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
  * este parser es puro y sin imports (comentario de cabecera), y no puede
  * importar `solicitudes-contract.ts` — la validación de `tipoSolicitud` vive
  * en el caso de uso (`crear-solicitud-interna.ts`).
+ *
+ * `ver_propuesta`/`aplicar_propuesta`/`descartar_propuesta` son de Hito 5.1
+ * (§5.9, ADR 69) — mismo precedente que el ADR 56 de arriba: `propuestaId`
+ * es `string` plano, sin validar existencia acá (eso vive en el caso de
+ * uso). `aplicar_propuesta` NO lleva `motivo?`: a diferencia de
+ * `descartar_propuesta`, su `propuestaId` es OBLIGATORIO y el tipo no
+ * necesita un campo que nadie lee.
  */
 export type ComandoEmpleado =
   | { readonly tipo: "login"; readonly empleadoId: string; readonly password: string }
@@ -43,6 +50,9 @@ export type ComandoEmpleado =
   | { readonly tipo: "solicitar"; readonly tipoSolicitud: string; readonly detalle: string }
   | { readonly tipo: "aprobar_solicitud"; readonly solicitudId?: string }
   | { readonly tipo: "rechazar_solicitud"; readonly solicitudId?: string }
+  | { readonly tipo: "ver_propuesta"; readonly propuestaId?: string }
+  | { readonly tipo: "aplicar_propuesta"; readonly propuestaId: string }
+  | { readonly tipo: "descartar_propuesta"; readonly propuestaId: string; readonly motivo?: string }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -67,8 +77,11 @@ export interface DescriptorComando {
  * un campo de configuración que obligaría a un cast en el `return` (ver el
  * comentario de la rama `"id_opcional"` más abajo, y el ADR 56 en
  * `design.md`).
+ *
+ * `"id_opcional_propuesta"` (ADR 69) es el mismo precedente otra vez: clave
+ * de payload `propuestaId`, para `/ver-propuesta`.
  */
-type Forma = "sin_argumentos" | "id_opcional" | "id_mas_resto" | "id_opcional_solicitud";
+type Forma = "sin_argumentos" | "id_opcional" | "id_mas_resto" | "id_opcional_solicitud" | "id_opcional_propuesta";
 
 interface DescriptorInterno extends DescriptorComando {
   readonly forma: Forma;
@@ -77,10 +90,10 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los once descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56), en
- * el orden en que `/ayuda` los imprime. Los tres nuevos van ANTES de
- * `/ayuda`, que sigue último — los ocho existentes no cambian de orden ni
- * de forma.
+ * Los catorce descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * tres de Hito 5.1, §5.9, ADR 69), en el orden en que `/ayuda` los imprime.
+ * Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los descriptores
+ * existentes no cambian de orden ni de forma.
  */
 const DESCRIPTORES = [
   {
@@ -174,6 +187,38 @@ const DESCRIPTORES = [
     tipo: "rechazar_solicitud",
   },
   {
+    nombre: "/ver-propuesta",
+    uso: "/ver-propuesta [propuestaId]",
+    ayuda: "Muestra una propuesta de cambio pendiente (lista las pendientes si se omite el id).",
+    // `privilegiado: true` aunque no escriba nada: muestra el contenido
+    // íntegro de un patch — código propietario del repo — y el spec de
+    // `propuesta-cambio-hitl` solo garantiza el canal TUI autenticado (ADR
+    // 69). Marcarlo `true` acá ES la implementación: `esComandoPrivilegiado`
+    // es la única fuente de verdad que consulta el guard del dispatcher.
+    privilegiado: true,
+    secreto: false,
+    forma: "id_opcional_propuesta",
+    tipo: "ver_propuesta",
+  },
+  {
+    nombre: "/aplicar-propuesta",
+    uso: "/aplicar-propuesta <propuestaId>",
+    ayuda: "Aplica el patch de una propuesta de cambio aprobada.",
+    privilegiado: true,
+    secreto: false,
+    forma: "id_mas_resto",
+    tipo: "aplicar_propuesta",
+  },
+  {
+    nombre: "/descartar-propuesta",
+    uso: "/descartar-propuesta <propuestaId> [motivo]",
+    ayuda: "Descarta una propuesta de cambio pendiente sin aplicarla.",
+    privilegiado: true,
+    secreto: false,
+    forma: "id_mas_resto",
+    tipo: "descartar_propuesta",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -185,8 +230,8 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los once descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56), en
- * el orden en que `/ayuda` los imprime.
+ * Los catorce descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * tres de Hito 5.1, §5.9, ADR 69), en el orden en que `/ayuda` los imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
 
@@ -228,17 +273,20 @@ function splitPrimerEspacio(texto: string): { readonly primero: string; readonly
 }
 
 /**
- * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56):
+ * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56, 69):
  *  1. `texto.trimStart()` no empieza con `/`  → `undefined` (turno conversacional).
  *  2. Primer token → busca descriptor por `nombre`. No matchea → `{ ayuda, "desconocido", comando }`.
  *  3. Parseo por forma:
  *     · sin argumentos: `/logout`, `/ayuda` (sobrantes ignorados).
  *     · id opcional (`ventaId`): primer token del resto, o campo ausente si el resto está vacío.
  *     · id opcional de solicitud (`solicitudId`, ADR 56): mismo patrón que "id opcional", clave de payload distinta.
+ *     · id opcional de propuesta (`propuestaId`, ADR 69): mismo patrón otra vez, para `/ver-propuesta`.
  *     · id + resto: `split` en el PRIMER espacio; el resto entero con `trim` de bordes.
  *  4. Argumento obligatorio ausente o vacío → `{ ayuda, "argumentos", comando }`.
- *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/devolucion` (token), `/solicitar` (los DOS).
- *     `motivo` de `/devolucion`, `ventaId` de los tres de reembolso y `solicitudId` de los dos de solicitud son OPCIONALES.
+ *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/devolucion` (token), `/solicitar` (los DOS),
+ *     `/aplicar-propuesta` (propuestaId), `/descartar-propuesta` (propuestaId).
+ *     `motivo` de `/devolucion` y `/descartar-propuesta`, `ventaId` de los tres de reembolso, `solicitudId` de
+ *     los dos de solicitud y `propuestaId` de `/ver-propuesta` son OPCIONALES.
  *  5. `/ayuda` explícito → `{ ayuda, "solicitada" }`.
  *
  * LÍMITE CONOCIDO Y TESTEADO (R4, resuelto por ADR 34): una contraseña con
@@ -293,7 +341,18 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     return solicitudId === undefined ? { tipo } : { tipo, solicitudId };
   }
 
-  // forma === "id_mas_resto": /login, /soporte, /devolucion, /solicitar.
+  if (descriptor.forma === "id_opcional_propuesta") {
+    const propuestaId = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
+    // Mismo razonamiento que las ramas "id_opcional"/"id_opcional_solicitud"
+    // de arriba (ADR 69): el narrowing de `descriptor.tipo` al único literal
+    // real de forma "id_opcional_propuesta" ("ver_propuesta") sale gratis de
+    // `as const satisfies readonly DescriptorInterno[]` — sin ningún cast.
+    const tipo = descriptor.tipo;
+    return propuestaId === undefined ? { tipo } : { tipo, propuestaId };
+  }
+
+  // forma === "id_mas_resto": /login, /soporte, /devolucion, /solicitar,
+  // /aplicar-propuesta, /descartar-propuesta.
   if (descriptor.nombre === "/soporte") {
     if (restoLinea === undefined) {
       return ayudaArgumentos(comandoToken);
@@ -321,6 +380,29 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
       return ayudaArgumentos(comandoToken);
     }
     return { tipo: "login", empleadoId, password };
+  }
+
+  // /aplicar-propuesta <propuestaId> — rama PROPIA (ADR 69), no comparte con
+  // /descartar-propuesta: a diferencia de esa, `propuestaId` es OBLIGATORIO
+  // y no hay `motivo` que parsear del resto.
+  if (descriptor.nombre === "/aplicar-propuesta") {
+    if (restoLinea === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    const { primero: propuestaId } = splitPrimerEspacio(restoLinea);
+    return { tipo: "aplicar_propuesta", propuestaId };
+  }
+
+  // /descartar-propuesta <propuestaId> [motivo] — rama PROPIA (ADR 69),
+  // calcada de /devolucion, no compartida con /aplicar-propuesta.
+  if (descriptor.nombre === "/descartar-propuesta") {
+    if (restoLinea === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    const { primero: propuestaId, resto: motivo } = splitPrimerEspacio(restoLinea);
+    return motivo === undefined
+      ? { tipo: "descartar_propuesta", propuestaId }
+      : { tipo: "descartar_propuesta", propuestaId, motivo };
   }
 
   // /devolucion <token> [motivo]
