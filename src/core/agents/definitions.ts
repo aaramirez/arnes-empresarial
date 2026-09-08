@@ -91,6 +91,18 @@ export const CONVERSATIONAL_AGENT_ID = "agente-conversacional";
  * formality — it should stay reserved for capabilities with a real,
  * demonstrated use case (as intentional gating still applies to Bash,
  * Write, etc.).
+ *
+ * Excepción acotada (Hito 5.1, tarea 26, ADR 61 pto 1-2, ADR 67) — ya no es
+ * cierto sin matiz que ningún rol gana herramientas de escritura: el único
+ * constructor `construirDeveloperConEscritura` (más abajo en este archivo)
+ * SÍ le agrega `Write`/`Edit` al Developer, pero solo como par indivisible
+ * junto con el `cwd` de un `WorktreeAbierto` ya abierto — nunca por default
+ * y nunca a ningún otro rol. `CONVERSATIONAL_AGENT` (este agente) y las
+ * cuatro entradas de `SUBAGENT_REGISTRY` (más abajo) siguen sin `Write`/
+ * `Edit`/`Bash` en su `allowedTools` estático, con el interruptor en
+ * cualquier estado — la excepción vive enteramente fuera del registro, en
+ * un `AgentDefinition` nuevo construido por spread, nunca mutando el
+ * original.
  */
 const CONVERSATIONAL_AGENT: AgentDefinition = {
   id: CONVERSATIONAL_AGENT_ID,
