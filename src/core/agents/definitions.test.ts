@@ -199,13 +199,13 @@ describe("construirDeveloperConEscritura (Hito 5.1, tarea 26, ADR 61 pto 1-2, AD
     expect(construirDeveloperConEscritura.length).toBe(1);
   });
 
-  it("(chequeo de tipos) no acepta un string en lugar de un WorktreeAbierto", () => {
-    function llamadaInvalidaConString(): void {
-      // @ts-expect-error — el único parámetro de construirDeveloperConEscritura
-      // es un WorktreeAbierto (ADR 67 pto 2); no acepta un string.
-      construirDeveloperConEscritura("no-es-un-worktree");
-    }
-
-    expect(typeof llamadaInvalidaConString).toBe("function");
-  });
+  // Chequeo de tipos en tiempo de compilación, no una prueba de comportamiento:
+  // esta función nunca se invoca. La garantía la da `tsc --noEmit` al fallar
+  // si el `@ts-expect-error` de abajo deja de ser necesario (o si no lo fuera
+  // y hiciera falta). El único parámetro de construirDeveloperConEscritura es
+  // un WorktreeAbierto (ADR 67 pto 2); no acepta un string.
+  function _chequeoDeTipos_noAceptaStringEnLugarDeWorktreeAbierto(): void {
+    // @ts-expect-error — un string no es un WorktreeAbierto.
+    construirDeveloperConEscritura("no-es-un-worktree");
+  }
 });
