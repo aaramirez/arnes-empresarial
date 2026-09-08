@@ -66,6 +66,8 @@ describe("resolveGraphifyConfig", () => {
     ["non-numeric", "abc"],
     ["zero", "0"],
     ["negative", "-5"],
+    ["Infinity", "Infinity"],
+    ["a numeric literal that overflows to Infinity", "1e400"],
   ])("falls back to DEFAULT_BUDGET when GRAPHIFY_BUDGET is %s", (_label, value) => {
     const config = resolveGraphifyConfig({ GRAPHIFY_BUDGET: value });
 
@@ -77,6 +79,8 @@ describe("resolveGraphifyConfig", () => {
     ["non-numeric", "abc"],
     ["zero", "0"],
     ["negative", "-5"],
+    ["Infinity", "Infinity"],
+    ["a numeric literal that overflows to Infinity", "1e400"],
   ])("falls back to DEFAULT_QUERY_TIMEOUT_MS when GRAPHIFY_TIMEOUT_MS is %s", (_label, value) => {
     const config = resolveGraphifyConfig({ GRAPHIFY_TIMEOUT_MS: value });
 

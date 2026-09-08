@@ -26,23 +26,30 @@ export const MCP_TIMEOUT_MARGIN_MS = 5_000;
 
 /**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
- * raw value is missing, blank, not a number, or not strictly greater than
- * zero. Never throws — this adapter's configuration is best-effort by
- * design (see design.md §8).
+ * raw value is missing, blank, not a number, not finite, or not strictly
+ * greater than zero. Never throws — this adapter's configuration is
+ * best-effort by design (see design.md §8), same contract as
+ * `resolvePositiveNumber` in `src/adapters/git/config.ts`.
  *
- * DELIBERATELY duplicated across 5 adapter config files (Reviewer finding,
+ * The finiteness check (post-review correction) rejects `Infinity`/
+ * `-Infinity` — e.g. `GRAPHIFY_TIMEOUT_MS=Infinity` or `=1e400` (which
+ * `Number()` also parses to `Infinity`) previously passed this validation
+ * silently; nothing downstream in this module calls `execFile` with that
+ * value, but an unbounded "timeout" defeats the purpose of having one.
+ *
+ * DELIBERATELY duplicated across adapter config files (Reviewer finding,
  * reuse): not hoisted to `src/core/` because this is env-var parsing
  * infrastructure, not business logic — `src/core/` shouldn't gain a
  * dependency just to serve adapter convenience — and AGENTS.md's
  * non-negotiable rule forbids one adapter importing from another. Same
- * accepted-duplication call as `sesion.ts`/`token-confirmacion.ts`.
+ * accepted-duplication call as `git/config.ts`/`test-runner/config.ts`.
  */
 function resolvePositiveNumber(raw: string | undefined, defaultValue: number): number {
   if (raw === undefined || raw.trim() === "") {
     return defaultValue;
   }
   const parsed = Number(raw);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  if (!Number.isFinite(parsed) || parsed <= 0) {
     return defaultValue;
   }
   return parsed;
