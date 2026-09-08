@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSafely } from "../../core/process/exec-file-policy.js";
 import type { TestRunnerConfig } from "./config.js";
 
 /**
@@ -15,22 +14,13 @@ export type TestExecFileFn = (
   options: { readonly timeout: number; readonly cwd: string },
 ) => Promise<{ readonly stdout: string; readonly stderr: string }>;
 
-const execFileAsync = promisify(execFile);
-
 /**
- * Production `TestExecFileFn`. Uses `execFile` (array argv, `shell` never
- * set) — never `exec`, same discipline `git-cli.ts`'s `defaultGitExecFile`
- * applies. `maxBuffer` is raised from Node's 1 MB default because a vitest
- * run's combined stdout/stderr can exceed it on a large suite; `windowsHide`
- * avoids a flashing console window on Windows.
+ * Production `TestExecFileFn`. Delegates to the shared `execFileSafely`
+ * policy (`src/core/process/exec-file-policy.ts`, Reviewer finding, reuse):
+ * array argv only (`execFile`, never `exec`), same discipline `git-cli.ts`'s
+ * `defaultGitExecFile` applies.
  */
-export const defaultTestExecFile: TestExecFileFn = (file, args, options) =>
-  execFileAsync(file, args as string[], {
-    timeout: options.timeout,
-    cwd: options.cwd,
-    maxBuffer: 10 * 1024 * 1024,
-    windowsHide: true,
-  });
+export const defaultTestExecFile: TestExecFileFn = execFileSafely;
 
 /**
  * ADR 66: deliberately narrower than `GitFailureReason` — no `"exit-code"`.

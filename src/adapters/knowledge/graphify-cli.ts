@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSafely } from "../../core/process/exec-file-policy.js";
 import { SAVE_RESULT_TIMEOUT_MS, type GraphifyConfig } from "./config.js";
 
 /**
@@ -13,23 +12,14 @@ export type ExecFileFn = (
   options: { readonly timeout: number },
 ) => Promise<{ readonly stdout: string; readonly stderr: string }>;
 
-const execFileAsync = promisify(execFile);
-
 /**
- * Production `ExecFileFn`. Uses `execFile` (array argv, `shell` never set)
- * — never `exec` — because `question` is free text typed by an employee and
- * travels straight into this argv; with a shell, `"; rm -rf ..."` or
- * `$(...)` would be interpreted. `maxBuffer` is raised from Node's 1 MB
- * default because a high `--budget` against a large graph can exceed it,
- * and the failure mode would otherwise be an opaque `ENOBUFS`.
- * `windowsHide` avoids a flashing console window on Windows.
+ * Production `ExecFileFn`. Delegates to the shared `execFileSafely` policy
+ * (`src/core/process/exec-file-policy.ts`, Reviewer finding, reuse): array
+ * argv only (`execFile`, never `exec`) — `question` is free text typed by an
+ * employee and travels straight into this argv; with a shell, `"; rm -rf
+ * ..."` or `$(...)` would be interpreted.
  */
-export const defaultExecFile: ExecFileFn = (file, args, options) =>
-  execFileAsync(file, args as string[], {
-    timeout: options.timeout,
-    maxBuffer: 10 * 1024 * 1024,
-    windowsHide: true,
-  });
+export const defaultExecFile: ExecFileFn = execFileSafely;
 
 export type GraphifyFailureReason = "not-found" | "timeout" | "exit-code" | "unknown";
 

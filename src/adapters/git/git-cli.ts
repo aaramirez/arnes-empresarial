@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSafely } from "../../core/process/exec-file-policy.js";
 
 /**
  * Shape of a subprocess runner narrow enough to be faked in tests without
@@ -21,26 +20,15 @@ export type GitExecFileFn = (
   options: { readonly timeout: number; readonly cwd: string },
 ) => Promise<{ readonly stdout: string; readonly stderr: string }>;
 
-const execFileAsync = promisify(execFile);
-
 /**
- * Production `GitExecFileFn`. Uses `execFile` (array argv, `shell` never
- * set) — never `exec` — same discipline `knowledge/graphify-cli.ts`'s
- * `defaultExecFile` applies: AGENTS.md's non-negotiable rule that this
- * adapter never exposes a function that receives a `git` subcommand as a
- * caller-controlled parameter (ADR 62) only holds if the runner underneath
- * it never hands anything to a shell either. `maxBuffer` is raised from
- * Node's 1 MB default because `git diff --binary` on a sizeable patch can
- * exceed it, and the failure mode would otherwise be an opaque `ENOBUFS`.
- * `windowsHide` avoids a flashing console window on Windows.
+ * Production `GitExecFileFn`. Delegates to the shared `execFileSafely`
+ * policy (`src/core/process/exec-file-policy.ts`, Reviewer finding, reuse):
+ * array argv only (`execFile`, never `exec`) — AGENTS.md's non-negotiable
+ * rule that this adapter never exposes a function that receives a `git`
+ * subcommand as a caller-controlled parameter (ADR 62) only holds if the
+ * runner underneath it never hands anything to a shell either.
  */
-export const defaultGitExecFile: GitExecFileFn = (file, args, options) =>
-  execFileAsync(file, args as string[], {
-    timeout: options.timeout,
-    cwd: options.cwd,
-    maxBuffer: 10 * 1024 * 1024,
-    windowsHide: true,
-  });
+export const defaultGitExecFile: GitExecFileFn = execFileSafely;
 
 export type GitFailureReason = "not-found" | "timeout" | "exit-code" | "unknown";
 
