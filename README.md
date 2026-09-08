@@ -77,6 +77,41 @@ Variable de entorno que controla si el bot de revisión de PRs delega en los tre
 | `"off"` | Comportamiento de `v1.4.0`: un único agente resuelve la revisión completa, sin delegación por roles. |
 | Cualquier otro valor, o ausente | Delegación por roles activa (default): cadena determinista Planner → Developer → Reviewer. |
 
+### Interruptor `HARNESS_ESCRITURA_DELEGADA`
+
+Desde Hito 5.1 (v2.1.0), variable de entorno que controla si el rol `developer` escribe código real en un worktree de `git` aislado (`src/build-on-activity.ts`) o se comporta exactamente como en `v2.0.0` (sin escritura, sin worktree, sin propuesta de cambio):
+
+| Valor | Comportamiento |
+| --- | --- |
+| `"off"` | Comportamiento exacto de `v2.0.0`: el Developer no escribe, no se abre worktree y no se persiste ninguna propuesta de cambio. |
+| Cualquier otro valor, o ausente | Escritura delegada activa (default): el Developer trabaja en un worktree aislado, corre su propia suite con `mcp__worktree__run_tests` y el diff resultante queda pendiente de aprobación humana como propuesta de cambio. |
+
+### Variables de entorno de la escritura delegada
+
+Configuración del worktree aislado y del runner de `git`/tests que usa el Developer cuando `HARNESS_ESCRITURA_DELEGADA` está activo (`src/adapters/git/config.ts`, `src/adapters/test-runner/config.ts`). Todas son best-effort: un valor ausente, vacío o inválido cae al default sin lanzar:
+
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `HARNESS_GIT_BIN` | `"git"` | Binario de `git` que invoca el runner. |
+| `HARNESS_GIT_TIMEOUT_MS` | `30_000` | Timeout (ms) por llamada individual a `git`. |
+| `HARNESS_WORKTREE_ROOT` | `".harness/worktrees"` | Directorio, relativo a la raíz del repo, donde se crean los worktrees aislados. |
+| `HARNESS_WORKTREE_TTL_MS` | `7_200_000` (2 h) | Tiempo máximo que un worktree huérfano sobrevive antes de que el barrido lo reclame. |
+| `HARNESS_WORKTREE_TEST_TIMEOUT_MS` | `300_000` (5 min) | Timeout (ms) de la corrida de `vitest run` dentro del worktree. |
+
+### Tool MCP `mcp__worktree__run_tests`
+
+Expuesta únicamente al Developer cuando trabaja dentro de un worktree aislado. No acepta parámetros — siempre corre la suite completa (`vitest run`) fijada al `cwd` del worktree, sin poder filtrar por archivo, patrón ni test individual. Devuelve el resultado real (verde o rojo) con la salida de vitest, o indica explícitamente si la corrida no se pudo ejecutar en vez de afirmar que los tests pasan.
+
+### Comandos de propuesta de cambio
+
+Comandos TUI privilegiados (Hito 5.1) para revisar el diff que produjo el Developer antes de aplicarlo:
+
+| Comando | Uso | Descripción |
+| --- | --- | --- |
+| `/ver-propuesta` | `/ver-propuesta [propuestaId]` | Muestra una propuesta de cambio pendiente (lista las pendientes si se omite el id). |
+| `/aplicar-propuesta` | `/aplicar-propuesta <propuestaId>` | Aplica el patch de una propuesta de cambio aprobada. |
+| `/descartar-propuesta` | `/descartar-propuesta <propuestaId> [motivo]` | Descarta una propuesta de cambio pendiente sin aplicarla. |
+
 ## Hoja de ruta
 
 Entrega incremental en tres hitos mayores, cada uno cerrando con un tag semántico y una carpeta `docs/progreso/vX.Y-nombre/`. La columna **Estado** refleja únicamente los tags reales del repositorio (`git tag --list`) — un hito solo se marca cerrado si tiene su tag semántico correspondiente:
