@@ -18,9 +18,16 @@
  * `InsumoDelegado.material` es siempre un `string` plano — no hay ningún
  * tipo por el que un historial de sesión pueda colarse en su lugar.
  *
- * Import único: `./definitions.js` — regla de `AGENTS.md` (`src/core/` no
- * importa de `src/adapters/*`, ni del SDK, ni de Node).
+ * Imports: `./definitions.js` (núcleo) y, solo como TIPO, `Options` del SDK
+ * (Hito 5.1, tarea 27) — la regla de `AGENTS.md` es que `src/core/` nunca
+ * importa de `src/adapters/*` (ni siquiera un import de tipo); el SDK mismo
+ * ya tiene precedente exacto de import de tipo dentro de `src/core/` en
+ * `turn-selector/handle-turn.ts` y `turn-selector/invoke-model.ts`
+ * (`import type { Options } from "@anthropic-ai/claude-agent-sdk"`), erasado
+ * en compilación — no hay contacto en runtime con el SDK ni con
+ * `src/adapters/*` desde este archivo.
  */
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDefinition } from "./definitions.js";
 
 /**
@@ -85,9 +92,29 @@ export interface InvocacionSubagenteResult {
  * Puerto (I5 por rol). El composition root lo cierra sobre `invokeModel` con
  * `resumeSessionId: undefined` explícito (ADR 53) — se ejercita con doble en
  * la tarea 8, la implementación real se cablea en la tarea 14.
+ *
+ * `cwd?`/`mcpServers?` (Hito 5.1, tarea 27, ADR 67 pto 4 — primera mitad de
+ * "propagación hasta el SDK") son ADITIVOS y OPCIONALES: todo call site de
+ * `v2.0.0` que arma el input con solo `agent`/`casoId`/`tareaDelegada` sigue
+ * compilando y ejecutando IGUAL, porque agregar campos opcionales a un tipo
+ * nunca rompe a quien ya construye un objeto más chico. `cwd` es la ruta
+ * ABSOLUTA del worktree del Developer con escritura (mismo campo, mismo tipo,
+ * que `InvocacionDeveloperEscritura.cwd` en `./definitions.js`, tarea 26);
+ * `mcpServers` se tipa como `Options["mcpServers"]` del SDK — no una forma
+ * propia inventada acá — porque ya hay precedente exacto de ese mismo tipo
+ * usado dentro de `src/core/` (`turn-selector/invoke-model.ts`,
+ * `turn-selector/handle-turn.ts`), y porque es, literalmente, el valor que
+ * termina viajando a `options.mcpServers` de la llamada real al SDK
+ * (segunda mitad de la propagación, tarea 28). Ninguno de los dos campos
+ * tiene todavía un productor ni un consumidor real en este archivo — eso se
+ * cablea en las tareas 14/28 — acá solo se declara el contrato.
  */
 export type InvocarSubagente = (input: {
   readonly agent: AgentDefinition;
   readonly casoId: string;
   readonly tareaDelegada: string;
+  /** Ruta ABSOLUTA del worktree, cuando el subagente invocado gana escritura (ADR 67). */
+  readonly cwd?: string;
+  /** Reenviado tal cual a `options.mcpServers` del SDK (ADR 61 pto 4/9). */
+  readonly mcpServers?: Options["mcpServers"];
 }) => Promise<InvocacionSubagenteResult>;
