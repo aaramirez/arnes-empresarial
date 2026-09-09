@@ -272,6 +272,58 @@ describe("despacharDelegacionA2A", () => {
     }
   });
 
+  it("delegar() que falla por transporte SIN estado (Agent Card inalcanzable, GetTask nunca respondió) omite 'estado' del patch — nunca fabrica TASK_STATE_FAILED (code-review, hallazgo 1)", async () => {
+    const cliente: ClienteA2APort = {
+      baseUrlDe: vi.fn(() => "https://kpi.example.com"),
+      delegar: vi.fn(async (): Promise<ResultadoA2A> => ({ ok: false, reason: "transporte" })),
+    };
+    const store: DelegacionA2AStorePort = {
+      crearDelegacionA2A: vi.fn(),
+      actualizarDelegacionA2A: vi.fn(),
+    };
+    const deps = makeDeps({ cliente, store });
+    const destinoKpi = { kind: "a2a", clave: DESTINO_A2A_KPI_INCIDENTE } as const;
+
+    await expect(
+      despacharDelegacionA2A({ casoId: "caso-1", destino: destinoKpi, insumo: insumoDePrueba }, deps),
+    ).rejects.toThrow(DelegacionA2ANoCompletadaError);
+
+    expect(store.actualizarDelegacionA2A).toHaveBeenCalledTimes(1);
+    const [patch] = (store.actualizarDelegacionA2A as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      Record<string, unknown>,
+    ];
+    expect(patch).not.toHaveProperty("estado");
+  });
+
+  it("delegar() que falla con un estado real definido (ej. TASK_STATE_REJECTED de un GetTask real) persiste ese estado sin cambios (code-review, hallazgo 1)", async () => {
+    const cliente: ClienteA2APort = {
+      baseUrlDe: vi.fn(() => "https://kpi.example.com"),
+      delegar: vi.fn(
+        async (): Promise<ResultadoA2A> => ({
+          ok: false,
+          reason: "rejected",
+          estado: "TASK_STATE_REJECTED",
+          a2aTaskId: "task-9",
+          endpoint: "https://kpi.example.com/rpc",
+        }),
+      ),
+    };
+    const store: DelegacionA2AStorePort = {
+      crearDelegacionA2A: vi.fn(),
+      actualizarDelegacionA2A: vi.fn(),
+    };
+    const deps = makeDeps({ cliente, store });
+    const destinoKpi = { kind: "a2a", clave: DESTINO_A2A_KPI_INCIDENTE } as const;
+
+    await expect(
+      despacharDelegacionA2A({ casoId: "caso-1", destino: destinoKpi, insumo: insumoDePrueba }, deps),
+    ).rejects.toThrow(DelegacionA2ANoCompletadaError);
+
+    expect(store.actualizarDelegacionA2A).toHaveBeenCalledWith(
+      expect.objectContaining({ estado: "TASK_STATE_REJECTED", a2aTaskId: "task-9" }),
+    );
+  });
+
   it("delegar() que RECHAZA (viola su contrato) se traduce por el try/catch a {ok:false, reason:'transporte'} y sigue el flujo normal de fallo", async () => {
     const callOrder: string[] = [];
     const errorTransporte = new Error("socket colgado");
@@ -296,9 +348,14 @@ describe("despacharDelegacionA2A", () => {
     ).rejects.toThrow(DelegacionA2ANoCompletadaError);
 
     expect(callOrder).toEqual(["crear", "delegar", "actualizar"]);
-    expect(store.actualizarDelegacionA2A).toHaveBeenCalledWith(
-      expect.objectContaining({ estado: expect.any(String) }),
-    );
+    // `delegar()` rechazando se traduce a `{ok:false, reason:"transporte"}`
+    // SIN `estado` (nunca hubo un `SendMessage`/`GetTask` exitoso) — el
+    // patch debe omitir la clave, no fabricar un valor (code-review,
+    // hallazgo 1).
+    const [patchRechazo] = (store.actualizarDelegacionA2A as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      Record<string, unknown>,
+    ];
+    expect(patchRechazo).not.toHaveProperty("estado");
 
     // El reason que ve el resultado sigue siendo "transporte" (RD-22): no se
     // abre un vocabulario nuevo. Pero el log SÍ deja evidencia distinguible

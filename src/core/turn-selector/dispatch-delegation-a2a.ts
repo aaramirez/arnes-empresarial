@@ -60,14 +60,16 @@ import type { DestinoDelegacion } from "./dispatch-delegation.js";
 export type DestinoA2A = Extract<DestinoDelegacion, { kind: "a2a" }>;
 
 /**
- * PRIVADA. Omite un campo opcional del `patch` cuando su valor es
- * `undefined`, en vez del molde repetido
- * `...(v !== undefined ? { k: v } : {})` (code-review, hallazgo 3): un único
- * punto para la misma decisión, usado en los cinco lugares de este archivo
- * donde `store.actualizarDelegacionA2A`/`DelegacionA2ANoCompletadaError`
- * reciben un campo opcional.
+ * Omite un campo opcional del `patch` cuando su valor es `undefined`, en vez
+ * del molde repetido `...(v !== undefined ? { k: v } : {})` (code-review,
+ * hallazgo 3 de una fase previa): un único punto para la misma decisión,
+ * usado en los lugares de este archivo donde `store.actualizarDelegacionA2A`/
+ * `DelegacionA2ANoCompletadaError` reciben un campo opcional. **Exportada**
+ * (code-review, hallazgo 4) porque el archivo hermano `dispatch-delegation.ts`
+ * necesita el mismo idioma para `sesionPadreId` — un único helper, no dos
+ * copias del mismo molde en archivos hermanos tocados en el mismo cambio.
  */
-function siDefinido<K extends string, V>(k: K, v: V | undefined): Partial<Record<K, V>> {
+export function siDefinido<K extends string, V>(k: K, v: V | undefined): Partial<Record<K, V>> {
   return v === undefined ? {} : ({ [k]: v } as Partial<Record<K, V>>);
 }
 
@@ -123,7 +125,16 @@ export interface DelegacionA2AStorePort {
   }): void;
   actualizarDelegacionA2A(input: {
     readonly delegacionId: string;
-    readonly estado: TaskState;
+    /**
+     * Ausente cuando `resultado.estado` nunca llegó a existir (fallo de
+     * transporte/protocolo ANTES de cualquier `SendMessage`/`GetTask`
+     * exitoso, ej. Agent Card inalcanzable) — el store debe preservar el
+     * último estado real ya persistido (`COALESCE`), NUNCA fabricar uno
+     * (code-review, hallazgo 1: antes este campo era obligatorio y el
+     * caller rellenaba con `TASK_STATE_FAILED`, corrompiendo la evidencia
+     * forense de `delegaciones_a2a`, ADR 80).
+     */
+    readonly estado?: TaskState;
     readonly a2aTaskId?: string;
     readonly resultado?: string;
     readonly agenteExternoUrl?: string;
@@ -236,7 +247,13 @@ export async function despacharDelegacionA2A(
         agenteExternoUrl: resultado.endpoint,
       }
     : {
-        estado: resultado.estado ?? "TASK_STATE_FAILED",
+        // `resultado.estado` puede ser `undefined` (fallo de transporte
+        // ANTES de que exista cualquier estado real: Agent Card
+        // inalcanzable, destino no configurado, `SendMessage` nunca
+        // respondió) — omitir la clave, NUNCA fabricar `TASK_STATE_FAILED`
+        // (code-review, hallazgo 1). `COALESCE` en `actualizarDelegacionA2A`
+        // preserva el último estado real conocido (ADR 80).
+        ...siDefinido("estado", resultado.estado),
         ...siDefinido("a2aTaskId", resultado.a2aTaskId),
         ...siDefinido("agenteExternoUrl", resultado.endpoint),
       };
