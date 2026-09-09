@@ -57,28 +57,36 @@ export function truncarTareaDelegada(texto: string): string {
 }
 
 /**
- * PURA. Ensambla el texto que se persiste TAL CUAL en
- * `delegaciones.tarea_delegada`. Mismo input, mismo string.
+ * PURA. Ensambla el texto que se persiste TAL CUAL en `tarea_delegada`
+ * (tabla `delegaciones` o `delegaciones_a2a`, según el consumidor). Helper
+ * COMÚN entre `construirTareaDelegada` (destino in-process) y
+ * `construirTareaDelegadaA2A` (`turn-selector/dispatch-delegation-a2a.ts`,
+ * destino externo) — ambos comparten la misma estructura de texto y solo
+ * difieren en la primera línea del encabezado (Hito 6, tarea 12/hallazgo 2 de
+ * code-review: antes cada uno duplicaba el `[…].join("\n")` completo).
  *
  * Estructura del texto generado, en este orden:
- *  1. Encabezado con el id y la `description` del rol invocado (para que la
- *     fila de `delegaciones` sea auditable por sí sola, sin tener que cruzar
- *     `definitions.ts`).
- *  2. La instrucción acotada del rol (`insumo.instruccion`).
+ *  1. `encabezado` (ya armado por el caller — id+description del rol, o la
+ *     clave del destino externo).
+ *  2. La instrucción acotada (`insumo.instruccion`).
  *  3. El material acotado (`insumo.material`) — metadatos del PR o la salida
- *     de texto del rol anterior, nunca su sesión ni su `systemPrompt`.
+ *     de texto del rol/paso anterior, nunca una sesión ni un `systemPrompt`.
  *
  * El texto ensamblado se trunca a `TAREA_DELEGADA_MAX_CHARS` (§ arriba).
  */
-export function construirTareaDelegada(rol: AgentDefinition, insumo: InsumoDelegado): string {
-  const texto = [
-    `Rol delegado: ${rol.id} — ${rol.description}`,
-    `Instrucción: ${insumo.instruccion}`,
-    "",
-    insumo.material,
-  ].join("\n");
+export function ensamblarTareaDelegada(encabezado: string, insumo: InsumoDelegado): string {
+  const texto = [encabezado, `Instrucción: ${insumo.instruccion}`, "", insumo.material].join("\n");
 
   return truncarTareaDelegada(texto);
+}
+
+/**
+ * PURA. Encabezado con el id y la `description` del rol invocado (para que la
+ * fila de `delegaciones` sea auditable por sí sola, sin tener que cruzar
+ * `definitions.ts`) — el resto del texto lo arma `ensamblarTareaDelegada`.
+ */
+export function construirTareaDelegada(rol: AgentDefinition, insumo: InsumoDelegado): string {
+  return ensamblarTareaDelegada(`Rol delegado: ${rol.id} — ${rol.description}`, insumo);
 }
 
 export interface InvocacionSubagenteResult {
