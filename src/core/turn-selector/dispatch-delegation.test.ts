@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   DEVELOPER_AGENT_ID,
@@ -7,7 +8,6 @@ import {
 } from "../agents/definitions.js";
 import type { InsumoDelegado, InvocacionSubagenteResult, InvocarSubagente } from "../agents/subagents.js";
 import {
-  DelegacionA2ANoImplementadaError,
   SubagenteDesconocidoError,
   despacharCadena,
   despacharDelegacion,
@@ -42,17 +42,27 @@ describe("resolverDestino", () => {
     expect(destino).not.toBeInstanceOf(Promise);
     expect(typeof (destino as { then?: unknown }).then).not.toBe("function");
   });
+
+  it("post-refactor (Hito 6, tarea 13): sigue devolviendo {kind: 'in-process', agentId} para todo id registrado — comportamiento sin cambios tras saldar la deuda del ADR 45", () => {
+    for (const id of [PLANNER_AGENT_ID, DEVELOPER_AGENT_ID, REVIEWER_AGENT_ID]) {
+      expect(resolverDestino(id)).toEqual({ kind: "in-process", agentId: id });
+    }
+  });
 });
 
-describe("DelegacionA2ANoImplementadaError", () => {
-  it("es una clase de Error con nombre propio", () => {
-    const destino = { kind: "a2a" as const, agentId: "rol-a2a", endpoint: "https://a2a.ejemplo/invocar" };
+describe("dispatch-delegation.ts — límite estructural (Hito 6, tarea 13, ADR 78 pto 1-2)", () => {
+  it("el código fuente no exporta DelegacionA2ANoImplementadaError (deuda del ADR 45 saldada)", () => {
+    const source = readFileSync(new URL("./dispatch-delegation.ts", import.meta.url), "utf8");
 
-    const error = new DelegacionA2ANoImplementadaError(destino);
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error.name).toBe("DelegacionA2ANoImplementadaError");
+    expect(source).not.toMatch(/DelegacionA2ANoImplementadaError/);
   });
+
+  // Nota (ADR 78 pto 2): pasar `{ kind: "a2a", clave: ... }` como
+  // `input.destino` de `despacharDelegacion` es, desde este cambio, un ERROR
+  // DE COMPILACIÓN — `input.destino?` está angostado a
+  // `Extract<DestinoDelegacion, { kind: "in-process" }>`. Un test en runtime
+  // no puede demostrar un rechazo de compilación; la evidencia es
+  // `npm run typecheck` (`tsc --noEmit`), no un `it` acá.
 });
 
 describe("SubagenteDesconocidoError", () => {
@@ -135,25 +145,6 @@ describe("despacharDelegacion", () => {
     );
 
     expect(callOrder).toEqual(["crear", "invocar", "completar"]);
-  });
-
-  it("destino a2a lanza DelegacionA2ANoImplementadaError antes de crear ninguna fila (sin importar src/adapters/a2a/)", async () => {
-    const deps = makeDeps();
-    const destino = {
-      kind: "a2a" as const,
-      agentId: "rol-a2a",
-      endpoint: "https://a2a.ejemplo/invocar",
-    };
-
-    await expect(
-      despacharDelegacion(
-        { casoId: "caso-1", agentId: "rol-a2a", insumo: insumoDePrueba, destino },
-        deps,
-      ),
-    ).rejects.toThrow(DelegacionA2ANoImplementadaError);
-
-    expect(deps.store.crearDelegacion).not.toHaveBeenCalled();
-    expect(deps.invocar).not.toHaveBeenCalled();
   });
 
   it("falla del invocador deja la fila sin resultado, propaga sin revertir, sin tocar el estado canónico", async () => {

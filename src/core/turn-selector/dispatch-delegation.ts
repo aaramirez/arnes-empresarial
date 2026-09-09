@@ -1,8 +1,8 @@
 /**
  * Despachador de Delegación (arc42 1.4, Hito 5, design.md §5.4).
  *
- * Parte 1 (tarea 7): `DestinoDelegacion`, `resolverDestino` y las dos clases
- * de error tipado del despachador.
+ * Parte 1 (tarea 7): `DestinoDelegacion`, `resolverDestino` y el error
+ * tipado del despachador.
  *
  * Parte 2 (tarea 8, esta extensión): `despacharDelegacion`/`despacharCadena`,
  * con el puerto `DelegacionStorePort`, sus dependencias
@@ -14,54 +14,41 @@
  *
  * `resolverDestino` es PURA y SÍNCRONA — cero `await`, cero I/O, cero red,
  * mismo molde que `procesarDevolucion` (`src/core/ventas/procesar-devolucion.ts`):
- * un orquestador de núcleo que no necesita ser `async` no lo es. En este hito
- * devuelve siempre `{ kind: "in-process", agentId }` para todo id presente en
+ * un orquestador de núcleo que no necesita ser `async` no lo es. Devuelve
+ * siempre `{ kind: "in-process", agentId }` para todo id presente en
  * `SUBAGENT_REGISTRY` (`src/core/agents/definitions.ts`) — la rama `a2a` de
- * `DestinoDelegacion` no es alcanzable por esta función en v2.0.0: existe,
- * está tipada, y se ejercita acá construyendo el destino a mano y
- * pasándoselo directo a `despacharDelegacion` vía su campo opcional
- * `input.destino` (ADR 45 punto 3 — el contrato con el Hito 6, que reemplaza
- * el `throw` por el Cliente A2A real y borra ese test).
+ * `DestinoDelegacion` no es alcanzable por esta función: es resuelta por su
+ * función hermana `resolverDestinoA2A` (`dispatch-delegation-a2a.ts`, Hito 6
+ * tarea 12), consumida por `despacharDelegacionA2A`, el despachador hermano
+ * de `despacharDelegacion` para el brazo externo (ADR 78 pto 1-3).
  *
  * Un `agentId` que no está en `SUBAGENT_REGISTRY` lanza
  * `SubagenteDesconocidoError` **antes** de tocar la base (design.md §8,
  * mismo criterio que `ActividadTipoEstadoInvalidoError`).
  *
- * Imports: `../agents/definitions.js` y `../agents/subagents.js` (núcleo →
- * núcleo — regla de `AGENTS.md`: `src/core/` nunca importa de
- * `src/adapters/*`, ni del SDK, ni de Node). Deliberadamente **ningún**
- * import de `src/adapters/a2a/` — ese directorio no existe en este hito
- * (ADR 45 punto 4).
+ * Imports: `../agents/definitions.js`, `../agents/subagents.js` y
+ * `../agents/a2a-contract.js` (núcleo → núcleo — regla de `AGENTS.md`:
+ * `src/core/` nunca importa de `src/adapters/*`, ni del SDK, ni de Node).
+ * Deliberadamente **ningún** import de `src/adapters/a2a/`.
  */
 import type { AgentDefinition } from "../agents/definitions.js";
 import { getSubagentDefinition } from "../agents/definitions.js";
+import type { DestinoA2AClave } from "../agents/a2a-contract.js";
 import type { InsumoDelegado, InvocarSubagente } from "../agents/subagents.js";
 import { construirTareaDelegada } from "../agents/subagents.js";
 
 /**
  * Unión discriminada del destino de una delegación (spec `despacho-delegacion`,
  * req. "`DestinoDelegacion` como unión discriminada resuelta por función
- * pura"). `a2a` es el brazo reservado para el Hito 6 — no implementado, ver
- * `DelegacionA2ANoImplementadaError`.
+ * pura"). `a2a` identifica el destino externo por su `clave` cerrada del
+ * registro de `a2a-contract.ts` (ADR 78 pto 1) — nunca por una URL: la base
+ * sale del registro por env, jamás de un parámetro (R8). Su consumidor real
+ * es `despacharDelegacionA2A` (`dispatch-delegation-a2a.ts`), que recibe
+ * `destino: Extract<DestinoDelegacion, { kind: "a2a" }>`.
  */
 export type DestinoDelegacion =
   | { readonly kind: "in-process"; readonly agentId: string }
-  | { readonly kind: "a2a"; readonly agentId: string; readonly endpoint: string };
-
-/**
- * ÚNICO punto del sistema donde el brazo A2A falla (ADR 45 punto 2).
- * Hito 6: reemplazar el `throw` que la usa por el Cliente A2A real y BORRAR
- * el test que la asserta.
- */
-export class DelegacionA2ANoImplementadaError extends Error {
-  constructor(destino: Extract<DestinoDelegacion, { kind: "a2a" }>) {
-    super(
-      `Delegación a2a no implementada (Hito 6): agentId="${destino.agentId}", ` +
-        `endpoint="${destino.endpoint}"`,
-    );
-    this.name = "DelegacionA2ANoImplementadaError";
-  }
-}
+  | { readonly kind: "a2a"; readonly clave: DestinoA2AClave };
 
 /** `agentId` no encontrado en `SUBAGENT_REGISTRY` (design.md §8). */
 export class SubagenteDesconocidoError extends Error {
@@ -179,10 +166,6 @@ export interface Eslabon {
  *  d. `await deps.invocar({ agent: rol, casoId, tareaDelegada })`.
  *  e. `store.completarDelegacion(...)` — DESPUÉS, con la sesión del subagente.
  *
- * Si el destino resuelto es `a2a`, lanza `DelegacionA2ANoImplementadaError`
- * ANTES de crear ninguna fila (ADR 45; spec `despacho-delegacion`, escenario
- * "Despachar a destino A2A lanza el error tipado").
- *
  * Si `deps.invocar` rechaza, el error propaga TAL CUAL — sin capturar, sin
  * revertir la fila ya creada por `store.crearDelegacion` (que queda con
  * `tarea_delegada` y sin `resultado`), y sin tocar ningún otro estado
@@ -191,12 +174,13 @@ export interface Eslabon {
  *
  * `input.destino` es un campo opcional adicional respecto de la firma de
  * design.md §5.4 (que solo declara `casoId`/`agentId`/`insumo`/
- * `sesionPadreId`): permite ejercitar el brazo `a2a` construyendo el destino
- * a mano en un test, sin depender de un rol `a2a` real registrado en
- * `SUBAGENT_REGISTRY` (que no existe en este hito) — exactamente el plan que
- * el doc-comment de `resolverDestino` (tarea 7) ya anticipaba ("se ejercita
- * ... pasándoselo directo a `despacharDelegacion`"). Ausente en producción:
- * se resuelve siempre con `resolverDestino(agentId)`.
+ * `sesionPadreId`), angostado a
+ * `Extract<DestinoDelegacion, { kind: "in-process" }>` (ADR 78 pto 2): el
+ * brazo `a2a` de la unión ya no es un valor aceptable acá — pasarlo es un
+ * ERROR DE COMPILACIÓN, no una convención documentada. El destino externo se
+ * despacha por `despacharDelegacionA2A` (`dispatch-delegation-a2a.ts`), la
+ * función hermana. Ausente en producción: se resuelve siempre con
+ * `resolverDestino(agentId)`.
  */
 export async function despacharDelegacion(
   input: {
@@ -204,18 +188,18 @@ export async function despacharDelegacion(
     readonly agentId: string;
     readonly insumo: InsumoDelegado;
     readonly sesionPadreId?: string;
-    readonly destino?: DestinoDelegacion;
+    readonly destino?: Extract<DestinoDelegacion, { kind: "in-process" }>;
   },
   deps: DespacharDelegacionDeps,
 ): Promise<DelegacionAplicada> {
   const { casoId, agentId, insumo, sesionPadreId } = input;
   const { store, invocar, getSubagente, newId, now, logEvent } = deps;
 
-  const destino = input.destino ?? resolverDestino(agentId);
-
-  if (destino.kind === "a2a") {
-    throw new DelegacionA2ANoImplementadaError(destino);
-  }
+  // `input.destino ?? resolverDestino(agentId)` ya no se calcula acá: ambos
+  // resuelven siempre `{ kind: "in-process", agentId }` (el tipo angostado
+  // de `input.destino` lo garantiza en compilación — ADR 78 pto 2) y ningún
+  // consumidor de este cuerpo necesita el objeto `DestinoDelegacion` en sí,
+  // solo `agentId`, ya disponible desde `input`.
 
   const rol = getSubagente(agentId);
   if (rol === undefined) {
