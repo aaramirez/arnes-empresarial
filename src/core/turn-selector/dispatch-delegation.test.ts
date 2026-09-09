@@ -20,9 +20,11 @@ import {
 
 /**
  * Hito 5, tarea 7 (§5.4 parte 1 — tipos y resolución). Solo `resolverDestino`
- * y las dos clases de error tipado; `despacharDelegacion`/`despacharCadena`
- * (§5.4 parte 2) se agregan en la tarea 8, sobre este mismo archivo. Sin
- * fixture de LLM — nada acá invoca `InvocarSubagente`.
+ * y su clase de error tipado (`SubagenteDesconocidoError` — la otra,
+ * `DelegacionA2ANoImplementadaError`, se borró en Hito 6 tarea 13 al saldar
+ * la deuda del ADR 45); `despacharDelegacion`/`despacharCadena` (§5.4 parte
+ * 2) se agregan en la tarea 8, sobre este mismo archivo. Sin fixture de LLM
+ * — nada acá invoca `InvocarSubagente`.
  */
 
 describe("resolverDestino", () => {
@@ -63,6 +65,38 @@ describe("dispatch-delegation.ts — límite estructural (Hito 6, tarea 13, ADR 
   // `Extract<DestinoDelegacion, { kind: "in-process" }>`. Un test en runtime
   // no puede demostrar un rechazo de compilación; la evidencia es
   // `npm run typecheck` (`tsc --noEmit`), no un `it` acá.
+
+  it("constancia HOY: un destino {kind:'a2a'} colado con un cast NO frena nada en runtime — `input.destino` no se lee, el despacho lo gobierna agentId solo (ADR 78 pto 2 es protección de TIPO, no de runtime)", async () => {
+    const callOrder: string[] = [];
+    const deps: DespacharDelegacionDeps = {
+      store: makeStore(callOrder),
+      invocar: makeInvocar(callOrder, { responseText: "listo", sdkSessionId: "sdk-1" }),
+      getSubagente: getSubagentDefinition,
+      newId: makeNewId(),
+      now: () => "2026-09-08T00:00:00.000Z",
+      logEvent: vi.fn(),
+    };
+    // Solo alcanzable saltándose el tipo: `input.destino` está angostado a
+    // `Extract<DestinoDelegacion, { kind: "in-process" }>` (ADR 78 pto 2), así
+    // que un destino `a2a` acá es, en código real, un error de compilación.
+    const destinoA2AColado = { kind: "a2a", clave: "riesgo-credito" } as unknown as NonNullable<
+      Parameters<typeof despacharDelegacion>[0]["destino"]
+    >;
+
+    await despacharDelegacion(
+      { casoId: "caso-1", agentId: PLANNER_AGENT_ID, insumo: insumoDePrueba, destino: destinoA2AColado },
+      deps,
+    );
+
+    // HOY esto SÍ se ejecuta: `despacharDelegacion` nunca desestructura
+    // `input.destino` en su cuerpo, así que el valor colado queda sin leer y
+    // el despacho procede igual que si `destino` no se hubiese pasado,
+    // gobernado enteramente por `agentId`. No hay guard de runtime — el
+    // ÚNICO freno es el tipo. Ver reporte del Implementer (hallazgo 3): esto
+    // no es un bug a arreglar acá, solo la constancia de lo que hay.
+    expect(deps.store.crearDelegacion).toHaveBeenCalledTimes(1);
+    expect(deps.invocar).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("SubagenteDesconocidoError", () => {
