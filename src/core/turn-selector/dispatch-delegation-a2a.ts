@@ -41,7 +41,7 @@
  * negociable de `AGENTS.md`: `src/core/` nunca importa de `src/adapters/*`.
  * Deliberadamente **ningún** import de `src/adapters/a2a/`.
  */
-import { TAREA_DELEGADA_MAX_CHARS, truncarTareaDelegada, type InsumoDelegado } from "../agents/subagents.js";
+import { truncarTareaDelegada, type InsumoDelegado } from "../agents/subagents.js";
 import {
   DelegacionA2ANoCompletadaError,
   DestinoA2ADesconocidoError,
@@ -206,21 +206,35 @@ export async function despacharDelegacionA2A(
   let resultado: ResultadoA2A;
   try {
     resultado = await cliente.delegar({ clave: destinoClave, tarea: tareaDelegada, casoId });
-  } catch {
+  } catch (error) {
+    // Red de seguridad (ADR 77 pto 4): `ClienteA2APort.delegar` NUNCA debería
+    // rechazar (ADR 77). Si igual rechaza, esto es una violación REAL del
+    // contrato del puerto, no una falla de transporte genuina — se traduce
+    // igual a `{ ok: false, reason: "transporte" }` (mismo criterio RD-22 que
+    // "destino no configurado": no se abre un noveno `reason`), pero el log
+    // deja evidencia DISTINGUIBLE con un evento propio.
+    logEvent(casoId, "a2a-delegar-violo-contrato", { destinoClave, error: String(error) });
     resultado = { ok: false, reason: "transporte" };
   }
 
   const updatedAt = now();
 
+  const patch = resultado.ok
+    ? {
+        estado: resultado.estado,
+        a2aTaskId: resultado.a2aTaskId,
+        resultado: resultado.resultado,
+        agenteExternoUrl: resultado.endpoint,
+      }
+    : {
+        estado: resultado.estado ?? "TASK_STATE_FAILED",
+        ...(resultado.a2aTaskId !== undefined ? { a2aTaskId: resultado.a2aTaskId } : {}),
+        ...(resultado.endpoint !== undefined ? { agenteExternoUrl: resultado.endpoint } : {}),
+      };
+
+  store.actualizarDelegacionA2A({ delegacionId, updatedAt, ...patch });
+
   if (resultado.ok) {
-    store.actualizarDelegacionA2A({
-      delegacionId,
-      estado: resultado.estado,
-      a2aTaskId: resultado.a2aTaskId,
-      resultado: resultado.resultado,
-      agenteExternoUrl: resultado.endpoint,
-      updatedAt,
-    });
     logEvent(casoId, "delegacion-a2a-completada", {
       destinoClave,
       delegacionId,
@@ -238,13 +252,6 @@ export async function despacharDelegacionA2A(
     };
   }
 
-  store.actualizarDelegacionA2A({
-    delegacionId,
-    estado: resultado.estado ?? "TASK_STATE_FAILED",
-    ...(resultado.a2aTaskId !== undefined ? { a2aTaskId: resultado.a2aTaskId } : {}),
-    ...(resultado.endpoint !== undefined ? { agenteExternoUrl: resultado.endpoint } : {}),
-    updatedAt,
-  });
   logEvent(casoId, "delegacion-a2a-fallida", {
     destinoClave,
     delegacionId,

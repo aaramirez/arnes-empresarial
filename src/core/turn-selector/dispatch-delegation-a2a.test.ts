@@ -300,6 +300,16 @@ describe("despacharDelegacionA2A", () => {
       expect.objectContaining({ estado: expect.any(String) }),
     );
 
+    // El reason que ve el resultado sigue siendo "transporte" (RD-22): no se
+    // abre un vocabulario nuevo. Pero el log SÍ deja evidencia distinguible
+    // de que esto fue una violación real del contrato "nunca rechaza"
+    // (ADR 77), no una falla de transporte genuina.
+    expect(deps.logEvent).toHaveBeenCalledWith(
+      "caso-1",
+      "a2a-delegar-violo-contrato",
+      expect.objectContaining({ destinoClave: DESTINO_A2A_RIESGO_CREDITO }),
+    );
+
     try {
       await despacharDelegacionA2A(
         { casoId: "caso-1", destino: destinoRiesgo, insumo: insumoDePrueba },
