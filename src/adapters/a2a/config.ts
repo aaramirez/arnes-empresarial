@@ -73,6 +73,23 @@ function resolveNonBlankString(raw: string | undefined): string | undefined {
 }
 
 /**
+ * Normaliza `baseUrl` quitando toda barra final (code-review, hallazgo 1).
+ * Resuelto ACÁ — el único punto donde `HARNESS_A2A_ENDPOINT_*` se convierte
+ * en `DestinoA2AConfig.baseUrl` — y no en `client.ts` (su único consumidor
+ * hoy, `resolverEndpointJsonRpc`): mismo criterio "normalizar una vez en el
+ * origen" que ya usan `resolvePositiveNumber`/`resolveNonBlankString` en este
+ * archivo, así CUALQUIER consumidor futuro de `baseUrl` hereda la garantía
+ * sin tener que acordarse de normalizar de nuevo. Sin esto, un operador con
+ * `HARNESS_A2A_ENDPOINT_*=http://host:9001/` (barra final) produce
+ * `.../agent-card.json` con doble barra (`//`), que un servidor A2A real
+ * (incluido `a2a-sdk`, la referencia que exige el propio `README.md`) puede
+ * rechazar con 404.
+ */
+function normalizarBaseUrl(raw: string): string {
+  return raw.replace(/\/+$/, "");
+}
+
+/**
  * PURA. `("riesgo-credito", "ENDPOINT")` → `"HARNESS_A2A_ENDPOINT_RIESGO_CREDITO"`.
  * Los guiones de la clave NO son expresables en un nombre de variable de
  * entorno; esa traducción es exactamente el detalle que se rompe en silencio,
@@ -90,13 +107,13 @@ function resolveDestinoA2AConfig(
   clave: DestinoA2AClave,
   env: NodeJS.ProcessEnv,
 ): DestinoA2AConfig | undefined {
-  const baseUrl = resolveNonBlankString(env[claveAVariableEntorno(clave, "ENDPOINT")]);
-  if (baseUrl === undefined) {
+  const baseUrlCrudo = resolveNonBlankString(env[claveAVariableEntorno(clave, "ENDPOINT")]);
+  if (baseUrlCrudo === undefined) {
     return undefined;
   }
   const authToken = resolveNonBlankString(env[claveAVariableEntorno(clave, "TOKEN")]);
   return {
-    baseUrl,
+    baseUrl: normalizarBaseUrl(baseUrlCrudo),
     ...(authToken !== undefined ? { authToken } : {}),
   };
 }
@@ -120,19 +137,42 @@ export function resolveA2AConfig(env: NodeJS.ProcessEnv = process.env): A2AConfi
     DESTINOS_A2A.map((clave) => [clave, resolveDestinoA2AConfig(clave, env)]),
   ) as Readonly<Record<DestinoA2AClave, DestinoA2AConfig | undefined>>;
 
+  const requestTimeoutMs = resolvePositiveNumber(
+    env.HARNESS_A2A_REQUEST_TIMEOUT_MS,
+    DEFAULT_A2A_REQUEST_TIMEOUT_MS,
+  );
+  let pollIntervalMs = resolvePositiveNumber(
+    env.HARNESS_A2A_POLL_INTERVAL_MS,
+    DEFAULT_A2A_POLL_INTERVAL_MS,
+  );
+  let taskTimeoutMs = resolvePositiveNumber(
+    env.HARNESS_A2A_TASK_TIMEOUT_MS,
+    DEFAULT_A2A_TASK_TIMEOUT_MS,
+  );
+
+  // Validación cruzada (code-review, hallazgo): `pollIntervalMs >=
+  // taskTimeoutMs` es una combinación que no tiene sentido y rompe el loop de
+  // `GetTask` de `client.ts` en la práctica — ese loop sólo chequea el
+  // deadline AL PRINCIPIO de cada iteración, nunca durante el propio
+  // `dormir(pollIntervalMs)`; con `pollIntervalMs >= taskTimeoutMs` el primer
+  // chequeo pasa (el timeout aún no venció) y el loop duerme el
+  // `pollIntervalMs` COMPLETO antes de volver a chequear — el timeout
+  // efectivo termina gobernado por `pollIntervalMs`, no por el
+  // `taskTimeoutMs` configurado (p. ej. `pollIntervalMs=60000` con
+  // `taskTimeoutMs=5000` da un timeout efectivo de ~60s, no 5s). Cae a los
+  // defaults de AMBOS campos — no sólo al del "culpable" — porque una
+  // combinación inválida no permite saber cuál de los dos valores era el
+  // error de configuración real; mismo criterio "nunca lanza, siempre un
+  // default sano" que ya usa `resolvePositiveNumber` en esta función.
+  if (pollIntervalMs >= taskTimeoutMs) {
+    pollIntervalMs = DEFAULT_A2A_POLL_INTERVAL_MS;
+    taskTimeoutMs = DEFAULT_A2A_TASK_TIMEOUT_MS;
+  }
+
   return {
-    requestTimeoutMs: resolvePositiveNumber(
-      env.HARNESS_A2A_REQUEST_TIMEOUT_MS,
-      DEFAULT_A2A_REQUEST_TIMEOUT_MS,
-    ),
-    pollIntervalMs: resolvePositiveNumber(
-      env.HARNESS_A2A_POLL_INTERVAL_MS,
-      DEFAULT_A2A_POLL_INTERVAL_MS,
-    ),
-    taskTimeoutMs: resolvePositiveNumber(
-      env.HARNESS_A2A_TASK_TIMEOUT_MS,
-      DEFAULT_A2A_TASK_TIMEOUT_MS,
-    ),
+    requestTimeoutMs,
+    pollIntervalMs,
+    taskTimeoutMs,
     destinos,
   };
 }

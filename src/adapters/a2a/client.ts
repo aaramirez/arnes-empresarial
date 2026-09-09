@@ -336,9 +336,18 @@ function estadoDeTarea(task: TaskLike): TaskState | undefined {
   return typeof state === "string" && esTaskStateConocido(state) ? state : undefined;
 }
 
-/** PURA. `task.id`, o `undefined` si falta o no es un string — nunca inventa un id. */
+/**
+ * PURA. `task.id`, o `undefined` si falta, no es un string, o está en blanco
+ * (vacío o sólo espacios) — nunca inventa un id. Un agente parcialmente
+ * conforme puede responder `task.id: ""`; sin este chequeo esa cadena vacía
+ * se aceptaba como id válido y terminaba persistida tal cual en
+ * `delegaciones_a2a.a2a_task_id` (code-review, hallazgo 3) — un NOT NULL
+ * vacío, indistinguible de un id real en un volcado manual. `.trim()` para
+ * tratar un id de sólo espacios igual de en blanco, mismo criterio
+ * "blank means absent" que `resolveNonBlankString` en `config.ts`.
+ */
 function idDeTarea(task: TaskLike): string | undefined {
-  return typeof task.id === "string" ? task.id : undefined;
+  return typeof task.id === "string" && task.id.trim() !== "" ? task.id : undefined;
 }
 
 /**

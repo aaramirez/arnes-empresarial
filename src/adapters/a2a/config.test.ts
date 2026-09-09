@@ -83,6 +83,56 @@ describe("resolveA2AConfig", () => {
     });
   });
 
+  it("baseUrl con una barra final se normaliza sin ella (code-review, hallazgo 1 — evita doble barra en el GET del Agent Card)", () => {
+    const config = resolveA2AConfig({
+      HARNESS_A2A_ENDPOINT_RIESGO_CREDITO: "https://riesgo.example.com/",
+    });
+
+    expect(config.destinos["riesgo-credito"]?.baseUrl).toBe("https://riesgo.example.com");
+  });
+
+  it("baseUrl con varias barras finales se normaliza sin ninguna", () => {
+    const config = resolveA2AConfig({
+      HARNESS_A2A_ENDPOINT_RIESGO_CREDITO: "https://riesgo.example.com///",
+    });
+
+    expect(config.destinos["riesgo-credito"]?.baseUrl).toBe("https://riesgo.example.com");
+  });
+
+  it("baseUrl sin barra final queda sin cambios", () => {
+    const config = resolveA2AConfig({
+      HARNESS_A2A_ENDPOINT_RIESGO_CREDITO: "https://riesgo.example.com",
+    });
+
+    expect(config.destinos["riesgo-credito"]?.baseUrl).toBe("https://riesgo.example.com");
+  });
+
+  it.each([
+    ["igual", "5000", "5000"],
+    ["mayor", "60000", "5000"],
+  ])(
+    "pollIntervalMs %s a taskTimeoutMs ⇒ cae a los defaults de AMBOS campos (code-review, hallazgo — sin esto el timeout efectivo queda gobernado por pollIntervalMs, no por taskTimeoutMs)",
+    (_label, pollIntervalMs, taskTimeoutMs) => {
+      const config = resolveA2AConfig({
+        HARNESS_A2A_POLL_INTERVAL_MS: pollIntervalMs,
+        HARNESS_A2A_TASK_TIMEOUT_MS: taskTimeoutMs,
+      });
+
+      expect(config.pollIntervalMs).toBe(DEFAULT_A2A_POLL_INTERVAL_MS);
+      expect(config.taskTimeoutMs).toBe(DEFAULT_A2A_TASK_TIMEOUT_MS);
+    },
+  );
+
+  it("pollIntervalMs menor que taskTimeoutMs (combinación válida) se respeta tal cual", () => {
+    const config = resolveA2AConfig({
+      HARNESS_A2A_POLL_INTERVAL_MS: "1000",
+      HARNESS_A2A_TASK_TIMEOUT_MS: "5000",
+    });
+
+    expect(config.pollIntervalMs).toBe(1000);
+    expect(config.taskTimeoutMs).toBe(5000);
+  });
+
   it.each([
     ["empty string", ""],
     ["non-numeric", "abc"],

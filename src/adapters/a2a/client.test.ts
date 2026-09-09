@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { A2AConfig, DestinoA2AConfig } from "./config.js";
+import { type A2AConfig, type DestinoA2AConfig, resolveA2AConfig } from "./config.js";
 import { type A2AClientDeps, type FetchFn, type FetchResponseLike, delegarTarea } from "./client.js";
 
 /**
@@ -85,6 +85,25 @@ describe("delegarTarea — Agent Card", () => {
     await delegarTarea(
       { destino: DESTINO, clave: "riesgo-credito", tarea: "verificar riesgo", casoId: "caso-1" },
       makeDeps({ fetchFn }),
+    );
+
+    expect(fetchFn).toHaveBeenNthCalledWith(
+      1,
+      "https://agente.example.com/.well-known/agent-card.json",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("baseUrl con barra final (normalizada por resolveA2AConfig, code-review hallazgo 1) NO produce doble barra en el GET del Agent Card", async () => {
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(agentCardResponse({ supportedInterfaces: [] }));
+    const config = resolveA2AConfig({
+      HARNESS_A2A_ENDPOINT_RIESGO_CREDITO: "https://agente.example.com/",
+    });
+    const destino = config.destinos["riesgo-credito"] as DestinoA2AConfig;
+
+    await delegarTarea(
+      { destino, clave: "riesgo-credito", tarea: "verificar riesgo", casoId: "caso-1" },
+      makeDeps({ fetchFn, config }),
     );
 
     expect(fetchFn).toHaveBeenNthCalledWith(
@@ -387,6 +406,44 @@ describe("delegarTarea — SendMessage", () => {
     expect(!resultado.ok && resultado.endpoint).toBe(ENTRADA_JSONRPC.url);
     // Ningún GetTask: sólo Agent Card + SendMessage (2 llamadas) — nunca hay Task que trackear.
     expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["cadena vacía", ""],
+    ["sólo espacios", "   "],
+  ])(
+    "task.id: %j (código %s) ⇒ mismo resultado que task.id ausente: reason 'protocolo', sin a2aTaskId, sin llegar al loop de polling (code-review, hallazgo 3 — idDeTarea no debe aceptar un id en blanco como válido)",
+    async (_label, idEnBlanco) => {
+      const fetchFn: FetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC] }))
+        .mockResolvedValueOnce(
+          sendMessageTaskResponse({ id: idEnBlanco, status: { state: "TASK_STATE_SUBMITTED" } }),
+        );
+
+      const resultado = await delegarTarea(
+        { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+        makeDeps({ fetchFn }),
+      );
+
+      expect(resultado).toEqual({ ok: false, reason: "protocolo", endpoint: ENTRADA_JSONRPC.url });
+      // Ningún GetTask: id inválido corta antes de entrar al loop de polling.
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("task.id ausente (sin campo id) ⇒ mismo resultado que task.id vacío, para comparación directa", async () => {
+    const fetchFn: FetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC] }))
+      .mockResolvedValueOnce(sendMessageTaskResponse({ status: { state: "TASK_STATE_SUBMITTED" } }));
+
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      makeDeps({ fetchFn }),
+    );
+
+    expect(resultado).toEqual({ ok: false, reason: "protocolo", endpoint: ENTRADA_JSONRPC.url });
   });
 });
 
