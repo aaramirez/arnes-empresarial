@@ -1736,6 +1736,138 @@ export function listDelegacionesPorCaso(db: Database.Database, casoId: string): 
   return rows.map(rowToDelegacion);
 }
 
+export interface InsertDelegacionA2AInput {
+  readonly id: string;
+  readonly casoId: string;
+  readonly destinoClave: string;
+  readonly agenteExternoUrl: string;
+  readonly tareaDelegada: string;
+  readonly estado: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Registra una delegación externa por A2A ANTES de invocar al agente
+ * (Hito 6, tarea 10, design.md §7.2, ADR 80 pto 1): `a2a_task_id` y
+ * `resultado` quedan en `NULL` — sólo existen después del `SendMessage` y
+ * de la terminación de la tarea respectivamente. Mismo criterio que
+ * `insertDelegacion` (delegaciones internas, `0007`).
+ */
+export function insertDelegacionA2A(db: Database.Database, input: InsertDelegacionA2AInput): void {
+  db.prepare(
+    `INSERT INTO delegaciones_a2a
+       (id, caso_id, destino_clave, agente_externo_url, tarea_delegada, a2a_task_id, estado, resultado, created_at, updated_at)
+     VALUES (@id, @casoId, @destinoClave, @agenteExternoUrl, @tareaDelegada, NULL, @estado, NULL, @createdAt, @updatedAt)`,
+  ).run(input);
+}
+
+export class DelegacionA2ANotFoundError extends Error {
+  constructor(id: string) {
+    super(`Delegacion A2A not found: ${id}`);
+    this.name = "DelegacionA2ANotFoundError";
+  }
+}
+
+export interface ActualizarDelegacionA2AInput {
+  readonly delegacionId: string;
+  readonly estado: string;
+  readonly a2aTaskId?: string;
+  readonly resultado?: string;
+  readonly agenteExternoUrl?: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * `UPDATE` simple, SIN transacción (ADR 80 pto 3) — a diferencia de
+ * `completarDelegacion`, acá no hay una segunda fila que insertar en el
+ * mismo acto. `COALESCE(@campo, campo)` para los tres opcionales: un
+ * `undefined` no pisa lo ya escrito (mismo patrón que `updateCaso`,
+ * líneas 131-153). `agenteExternoUrl` es opcional porque nace con la URL
+ * base del destino y termina con el endpoint efectivo resuelto del Agent
+ * Card (ADR 80 pto 1). Throws `DelegacionA2ANotFoundError` si
+ * `delegacionId` no matchea ninguna fila — mismo criterio que
+ * `completarDelegacion`.
+ */
+export function actualizarDelegacionA2A(db: Database.Database, input: ActualizarDelegacionA2AInput): void {
+  const { changes } = db
+    .prepare(
+      `UPDATE delegaciones_a2a
+          SET estado = @estado,
+              a2a_task_id = COALESCE(@a2aTaskId, a2a_task_id),
+              resultado = COALESCE(@resultado, resultado),
+              agente_externo_url = COALESCE(@agenteExternoUrl, agente_externo_url),
+              updated_at = @updatedAt
+        WHERE id = @delegacionId`,
+    )
+    .run({
+      delegacionId: input.delegacionId,
+      estado: input.estado,
+      a2aTaskId: input.a2aTaskId ?? null,
+      resultado: input.resultado ?? null,
+      agenteExternoUrl: input.agenteExternoUrl ?? null,
+      updatedAt: input.updatedAt,
+    });
+
+  if (changes === 0) {
+    throw new DelegacionA2ANotFoundError(input.delegacionId);
+  }
+}
+
+export interface DelegacionA2ARow {
+  readonly id: string;
+  readonly casoId: string;
+  readonly destinoClave: string;
+  readonly agenteExternoUrl: string;
+  readonly tareaDelegada: string;
+  readonly a2aTaskId?: string;
+  readonly estado: string;
+  readonly resultado?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface DelegacionA2ASqlRow {
+  id: string;
+  caso_id: string;
+  destino_clave: string;
+  agente_externo_url: string;
+  tarea_delegada: string;
+  a2a_task_id: string | null;
+  estado: string;
+  resultado: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToDelegacionA2A(row: DelegacionA2ASqlRow): DelegacionA2ARow {
+  return {
+    id: row.id,
+    casoId: row.caso_id,
+    destinoClave: row.destino_clave,
+    agenteExternoUrl: row.agente_externo_url,
+    tareaDelegada: row.tarea_delegada,
+    ...(row.a2a_task_id !== null ? { a2aTaskId: row.a2a_task_id } : {}),
+    estado: row.estado,
+    ...(row.resultado !== null ? { resultado: row.resultado } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Lectura de evidencia (design.md §7.2): las delegaciones externas de un caso, en orden. */
+export function listDelegacionesA2APorCaso(db: Database.Database, casoId: string): readonly DelegacionA2ARow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, caso_id, destino_clave, agente_externo_url, tarea_delegada, a2a_task_id, estado, resultado, created_at, updated_at
+         FROM delegaciones_a2a
+        WHERE caso_id = ?
+        ORDER BY created_at`,
+    )
+    .all(casoId) as DelegacionA2ASqlRow[];
+  return rows.map(rowToDelegacionA2A);
+}
+
 /**
  * Colisión de `solicitudes_internas.id` (`SQLITE_CONSTRAINT_PRIMARYKEY`) —
  * mismo criterio que `VentaAlreadyExistsError`/`ActividadAlreadyExistsError`.

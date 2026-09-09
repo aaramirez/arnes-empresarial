@@ -9,12 +9,14 @@ import {
   CasoAlreadyExistsError,
   CasoNotFoundError,
   CredencialEmpleadoDuplicadaError,
+  DelegacionA2ANotFoundError,
   DelegacionNotFoundError,
   SesionAgenteAlreadyExistsError,
   SesionAgenteInvalidCasoError,
   SolicitudAlreadyExistsError,
   VentaAlreadyExistsError,
   VentaTokenDuplicadoError,
+  actualizarDelegacionA2A,
   adjuntarDictamenSolicitud,
   aplicarPropuestaCambio,
   aprobarEscalacionReembolso,
@@ -42,9 +44,11 @@ import {
   insertAccionEmpleado,
   insertCredencialEmpleado,
   insertDelegacion,
+  insertDelegacionA2A,
   insertPropuestaCambio,
   listAccionesEmpleadoPorVenta,
   listComisionesPorPeriodo,
+  listDelegacionesA2APorCaso,
   listDelegacionesPorCaso,
   listEscalacionesReembolso,
   listPropuestasCambio,
@@ -67,6 +71,7 @@ import {
   type CreateVentaConCasoInput,
   type CrearPropuestaDbInput,
   type CrearSolicitudConCasoInput,
+  type InsertDelegacionA2AInput,
   type InsertDelegacionInput,
   type ResolucionPropuestaDbInput,
 } from "./repository.js";
@@ -2338,6 +2343,139 @@ describe("repository", () => {
         "delegacion-developer",
         "delegacion-reviewer",
       ]);
+    });
+  });
+
+  describe("insertDelegacionA2A / actualizarDelegacionA2A / listDelegacionesA2APorCaso (migración 0010)", () => {
+    function insertDelegacionA2ADePrueba(overrides: Partial<InsertDelegacionA2AInput> = {}) {
+      insertDelegacionA2A(db!, {
+        id: "delegacion-a2a-1",
+        casoId: "caso-1",
+        destinoClave: "riesgo-credito",
+        agenteExternoUrl: "https://ejemplo.test/riesgo-credito",
+        tareaDelegada: "Verificá el riesgo crediticio del cliente para esta venta y devolvé una evaluación breve.",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+        ...overrides,
+      });
+    }
+
+    it("insertDelegacionA2A escribe una fila con a2a_task_id y resultado en NULL", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionA2ADePrueba();
+
+      const [fila] = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(fila).toEqual({
+        id: "delegacion-a2a-1",
+        casoId: "caso-1",
+        destinoClave: "riesgo-credito",
+        agenteExternoUrl: "https://ejemplo.test/riesgo-credito",
+        tareaDelegada: "Verificá el riesgo crediticio del cliente para esta venta y devolvé una evaluación breve.",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+      });
+      expect(fila!.a2aTaskId).toBeUndefined();
+      expect(fila!.resultado).toBeUndefined();
+    });
+
+    it("el estado persistido y leido de vuelta es TASK_STATE_* crudo, nunca traducido a minuscula-con-guion", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionA2ADePrueba({ estado: "TASK_STATE_SUBMITTED" });
+
+      const [fila] = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(fila!.estado).toBe("TASK_STATE_SUBMITTED");
+    });
+
+    it("actualizarDelegacionA2A con un campo undefined no pisa lo ya escrito (COALESCE)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionA2ADePrueba();
+
+      actualizarDelegacionA2A(db, {
+        delegacionId: "delegacion-a2a-1",
+        estado: "TASK_STATE_COMPLETED",
+        resultado: "el cliente tiene riesgo bajo",
+        updatedAt: "2026-09-06T00:01:00.000Z",
+      });
+
+      // Segunda actualización: sólo toca `estado`. `resultado` y
+      // `agenteExternoUrl` quedan `undefined` acá — el COALESCE no debe
+      // pisar lo que la actualización anterior ya escribió.
+      actualizarDelegacionA2A(db, {
+        delegacionId: "delegacion-a2a-1",
+        estado: "TASK_STATE_COMPLETED",
+        updatedAt: "2026-09-06T00:02:00.000Z",
+      });
+
+      const [fila] = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(fila!.resultado).toBe("el cliente tiene riesgo bajo");
+      expect(fila!.agenteExternoUrl).toBe("https://ejemplo.test/riesgo-credito");
+      expect(fila!.estado).toBe("TASK_STATE_COMPLETED");
+      expect(fila!.updatedAt).toBe("2026-09-06T00:02:00.000Z");
+    });
+
+    it("actualizarDelegacionA2A actualiza a2aTaskId y agenteExternoUrl al endpoint efectivo del Agent Card", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionA2ADePrueba();
+
+      actualizarDelegacionA2A(db, {
+        delegacionId: "delegacion-a2a-1",
+        estado: "TASK_STATE_WORKING",
+        a2aTaskId: "task-externo-1",
+        agenteExternoUrl: "https://ejemplo.test/riesgo-credito/jsonrpc",
+        updatedAt: "2026-09-06T00:01:00.000Z",
+      });
+
+      const [fila] = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(fila!.a2aTaskId).toBe("task-externo-1");
+      expect(fila!.agenteExternoUrl).toBe("https://ejemplo.test/riesgo-credito/jsonrpc");
+      expect(fila!.estado).toBe("TASK_STATE_WORKING");
+    });
+
+    it("actualizarDelegacionA2A sobre un delegacionId inexistente lanza DelegacionA2ANotFoundError", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+
+      expect(() =>
+        actualizarDelegacionA2A(db!, {
+          delegacionId: "delegacion-a2a-inexistente",
+          estado: "TASK_STATE_FAILED",
+          updatedAt: "2026-09-06T00:01:00.000Z",
+        }),
+      ).toThrow(DelegacionA2ANotFoundError);
+    });
+
+    it("listDelegacionesA2APorCaso devuelve las filas de un caso ordenadas por created_at", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionA2A(db, {
+        id: "delegacion-a2a-kpi",
+        casoId: "caso-1",
+        destinoClave: "kpi-incidente",
+        agenteExternoUrl: "https://ejemplo.test/kpi-incidente",
+        tareaDelegada: "consultar el kpi",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-06T00:00:02.000Z",
+        updatedAt: "2026-09-06T00:00:02.000Z",
+      });
+      insertDelegacionA2A(db, {
+        id: "delegacion-a2a-riesgo",
+        casoId: "caso-1",
+        destinoClave: "riesgo-credito",
+        agenteExternoUrl: "https://ejemplo.test/riesgo-credito",
+        tareaDelegada: "verificar riesgo",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+      });
+
+      const filas = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(filas.map((fila) => fila.id)).toEqual(["delegacion-a2a-riesgo", "delegacion-a2a-kpi"]);
     });
   });
 
