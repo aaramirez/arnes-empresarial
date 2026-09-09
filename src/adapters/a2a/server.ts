@@ -1,8 +1,9 @@
 /**
- * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-9, design.md
- * §6.3 — partes 1a y 1b: tipos + auth + body + ruteo por método+ruta + Agent
- * Card). El parseo del sobre JSON-RPC y el despacho de los tres métodos
- * (tarea 10 y 12-13) NO están acá todavía.
+ * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-10, design.md
+ * §6.3 — partes 1a, 1b y 1c: tipos + auth + body + ruteo por método+ruta +
+ * Agent Card + sobre JSON-RPC + los cinco errores base). El despacho real de
+ * los tres métodos (`SendMessage`/`GetTask`/`CancelTask`, tarea 12) NO está
+ * acá todavía: responden un placeholder `-32603` documentado más abajo.
  *
  * Recorte estructural DUPLICADO a propósito de `web/http.ts` y
  * `webhooks/server.ts:30-51` (ADR 13 — **tercer servidor HTTP de la misma
@@ -24,16 +25,29 @@
  *
  * `createRequestListener` gana en la tarea 9 el ruteo por `método+ruta`
  * (orden EXHAUSTIVO, no se reordena: `método+ruta → tope de body → AUTH →
- * parseo JSON-RPC → despacho`, design.md §6.3). Esta tarea resuelve sólo la
- * primera fila de la tabla de respuestas (`GET RUTA_AGENT_CARD`, público, sin
- * auth — ADR 88 pto 5) y la última (cualquier `método+ruta` no reconocido ⇒
- * `404` vacío, molde `web/server.ts:486`). El resto de la tabla (tope de
- * body, AUTH, sobre JSON-RPC, los tres métodos) llega en las tareas 10 y
- * 12-13, sin reabrir esta.
+ * parseo JSON-RPC → despacho`, design.md §6.3): `GET RUTA_AGENT_CARD`,
+ * público, sin auth (ADR 88 pto 5), y cualquier `método+ruta` no reconocido
+ * ⇒ `404` vacío (molde `web/server.ts:486`). La tarea 10 agrega
+ * `POST RUTA_JSONRPC`: tope de body → AUTH → parseo del sobre JSON-RPC →
+ * ruteo por `method` → placeholder `-32603` para los tres métodos
+ * soportados. El despacho real de esos tres métodos llega en la tarea 12,
+ * sin reabrir esta.
  */
 import { timingSafeEqual } from "node:crypto";
 import { construirAgentCard } from "./agent-card.js";
-import { A2A_SERVER_LOG_CORRELATION_ID, RUTA_AGENT_CARD, type A2AServerConfig } from "./server-config.js";
+import {
+  A2A_SERVER_LOG_CORRELATION_ID,
+  JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_REQUEST,
+  JSONRPC_METHOD_NOT_FOUND,
+  JSONRPC_PARSE_ERROR,
+  METODO_CANCEL_TASK,
+  METODO_GET_TASK,
+  METODO_SEND_MESSAGE,
+  RUTA_AGENT_CARD,
+  RUTA_JSONRPC,
+  type A2AServerConfig,
+} from "./server-config.js";
 
 export interface A2ARequest {
   readonly method?: string | undefined;
@@ -192,14 +206,118 @@ export interface A2AServerDeps {
   ) => void;
 }
 
+/** Sobre de error JSON-RPC 2.0 — molde literal de `errorEnvelopeResponse` en `client.test.ts:502`. */
+interface JsonRpcErrorEnvelope {
+  readonly jsonrpc: "2.0";
+  readonly id: unknown;
+  readonly error: { readonly code: number; readonly message: string };
+}
+
+function respondJsonRpcError(res: A2AResponse, id: unknown, code: number, message: string): void {
+  const sobre: JsonRpcErrorEnvelope = { jsonrpc: "2.0", id, error: { code, message } };
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(sobre));
+}
+
+/**
+ * `sobre` es un objeto (no `null`, no array) con `jsonrpc === "2.0"` y
+ * `method` string. Un campo extra/desconocido en el sobre NO lo invalida —
+ * sólo se leen estas tres claves (molde `parsearSobreDeTarea`, `client.ts:276-280`).
+ */
+function esSobreJsonRpcValido(
+  sobre: unknown,
+): sobre is { readonly id?: unknown; readonly method: string; readonly params?: unknown } {
+  if (typeof sobre !== "object" || sobre === null || Array.isArray(sobre)) {
+    return false;
+  }
+  const candidato = sobre as { readonly jsonrpc?: unknown; readonly method?: unknown };
+  return candidato.jsonrpc === "2.0" && typeof candidato.method === "string";
+}
+
+/**
+ * `POST RUTA_JSONRPC` — parte 1c (tarea 10, design.md §6.3, orden EXHAUSTIVO
+ * `tope de body → AUTH → parseo JSON-RPC → despacho`, ya en marcha desde
+ * `método+ruta`, tarea 9).
+ *
+ * **Interino documentado, a propósito, NO optimizar**: los tres métodos
+ * conocidos (`SendMessage`/`GetTask`/`CancelTask`) responden `-32603` con un
+ * mensaje de "handler no configurado" — la tarea 12 (PR5) reemplaza este
+ * placeholder por el despacho real, sin tocar ninguno de los tests de esta
+ * tarea.
+ */
+async function handleSolicitudJsonRpc(
+  req: A2ARequest,
+  res: A2AResponse,
+  deps: A2AServerDeps,
+): Promise<void> {
+  const { config, logEvent } = deps;
+  const origenTransporte = req.socket?.remoteAddress ?? "desconocido";
+
+  const lectura = await leerCuerpoConTope(req, res, config.maxBodyBytes);
+  if (!lectura.ok) {
+    if (lectura.motivo === "tamano") {
+      logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-solicitud-rechazada-tamano", {
+        origenTransporte,
+        maxBodyBytes: config.maxBodyBytes,
+      });
+      return;
+    }
+    // `motivo === "error-transporte"`: `400` vacío, sin log (design.md §6.3, "nada").
+    res.statusCode = 400;
+    res.end();
+    return;
+  }
+
+  if (!esAutorizado(req, config.token)) {
+    res.statusCode = 401;
+    res.setHeader("WWW-Authenticate", "Bearer");
+    res.end();
+    logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-solicitud-no-autorizada", { origenTransporte });
+    return;
+  }
+
+  let sobre: unknown;
+  try {
+    sobre = JSON.parse(lectura.body.toString("utf8"));
+  } catch {
+    logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-sobre-invalido", { code: JSONRPC_PARSE_ERROR });
+    respondJsonRpcError(res, null, JSONRPC_PARSE_ERROR, "JSON invalido");
+    return;
+  }
+
+  if (!esSobreJsonRpcValido(sobre)) {
+    logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-sobre-invalido", { code: JSONRPC_INVALID_REQUEST });
+    respondJsonRpcError(res, null, JSONRPC_INVALID_REQUEST, "sobre JSON-RPC invalido");
+    return;
+  }
+
+  const { id, method } = sobre;
+
+  if (method !== METODO_SEND_MESSAGE && method !== METODO_GET_TASK && method !== METODO_CANCEL_TASK) {
+    logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-metodo-no-soportado", { method });
+    respondJsonRpcError(res, id, JSONRPC_METHOD_NOT_FOUND, `method no soportado: ${method}`);
+    return;
+  }
+
+  respondJsonRpcError(res, id, JSONRPC_INTERNAL_ERROR, "handler no configurado");
+}
+
 /**
  * El listener HTTP, aislado del ciclo de vida del servidor para poder
  * testear cada respuesta con dobles planos (molde `webhooks/server.ts:139-244`).
  *
- * Tabla de respuestas — parcial, esta tarea (design.md §6.3):
+ * Tabla de respuestas — hasta esta tarea (design.md §6.3):
  * | Condición | Status | Efecto |
  * |---|---|---|
  * | `GET RUTA_AGENT_CARD` | `200` | el card de `construirAgentCard`, **sin auth**. `a2a-card-servido` |
+ * | `POST RUTA_JSONRPC`, body > `maxBodyBytes` | `413` | `a2a-solicitud-rechazada-tamano`. Sin auth, sin parse |
+ * | `POST RUTA_JSONRPC`, error de transporte leyendo el body | `400` | nada |
+ * | `POST RUTA_JSONRPC`, sin auth válida | `401` | `a2a-solicitud-no-autorizada`. Ninguna fila creada |
+ * | `POST RUTA_JSONRPC`, `JSON.parse` inválido | `200` | `-32700`, `id: null`. `a2a-sobre-invalido` |
+ * | `POST RUTA_JSONRPC`, sobre no-objeto / `jsonrpc !== "2.0"` / `method` no-string | `200` | `-32600`, `id: null` |
+ * | `POST RUTA_JSONRPC`, `method` fuera de los tres soportados | `200` | `-32601`, con el `id` del request. `a2a-metodo-no-soportado` |
+ * | `POST RUTA_JSONRPC`, `method` soportado (interino) | `200` | `-32603` "handler no configurado" — reemplazado en la tarea 12 |
  * | Cualquier `método+ruta` no reconocido | `404` | nada |
  *
  * `GET RUTA_AGENT_CARD` se sirve SIN auth a propósito (ADR 88 pto 5): es el
@@ -223,6 +341,11 @@ export function createRequestListener(
       res.end(JSON.stringify(card));
 
       logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-card-servido", { origenTransporte });
+      return;
+    }
+
+    if (req.method === "POST" && path === RUTA_JSONRPC) {
+      void handleSolicitudJsonRpc(req, res, deps);
       return;
     }
 

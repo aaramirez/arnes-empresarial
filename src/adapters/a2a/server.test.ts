@@ -1,7 +1,19 @@
 import { timingSafeEqual } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { construirAgentCard } from "./agent-card.js";
-import { A2A_SERVER_LOG_CORRELATION_ID, RUTA_AGENT_CARD, type A2AServerConfig } from "./server-config.js";
+import {
+  A2A_SERVER_LOG_CORRELATION_ID,
+  JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_REQUEST,
+  JSONRPC_METHOD_NOT_FOUND,
+  JSONRPC_PARSE_ERROR,
+  METODO_CANCEL_TASK,
+  METODO_GET_TASK,
+  METODO_SEND_MESSAGE,
+  RUTA_AGENT_CARD,
+  RUTA_JSONRPC,
+  type A2AServerConfig,
+} from "./server-config.js";
 import {
   createRequestListener,
   esAutorizado,
@@ -100,6 +112,15 @@ class FakeA2AResponse implements A2AResponse {
 
 function authHeader(token = TOKEN): Record<string, string> {
   return { authorization: `Bearer ${token}` };
+}
+
+/** Molde de `esperarRespuesta` de `web/server.test.ts:103-105`: espera a que la ruta `async` termine. */
+async function esperarRespuesta(res: FakeA2AResponse): Promise<void> {
+  await vi.waitFor(() => expect(res.end).toHaveBeenCalled());
+}
+
+function jsonBody(valor: unknown): Buffer {
+  return Buffer.from(JSON.stringify(valor), "utf8");
 }
 
 /** Molde de `makeDeps` de `webhooks/server.test.ts`, adaptado a `A2AServerDeps`. */
@@ -337,5 +358,207 @@ describe("createRequestListener — ruteo por método+ruta y Agent Card (Hito 7,
     listener(req, res);
 
     expect(logEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("createRequestListener — POST RUTA_JSONRPC, sobre JSON-RPC y errores base (Hito 7, tarea 10, design.md §6.3)", () => {
+  function postJsonRpc(
+    deps: A2AServerDeps,
+    body: Buffer,
+  ): { req: FakeA2ARequest; res: FakeA2AResponse } {
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: authHeader() });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+    req.emitBody([body]);
+
+    return { req, res };
+  }
+
+  function parsedBody(res: FakeA2AResponse): { jsonrpc: string; id: unknown; error: { code: number; message: string } } {
+    const call = res.end.mock.calls[0]?.[0] as string | undefined;
+    expect(call).toBeDefined();
+    return JSON.parse(call as string) as {
+      jsonrpc: string;
+      id: unknown;
+      error: { code: number; message: string };
+    };
+  }
+
+  it("responds -32700 with id: null when JSON.parse fails on the body", async () => {
+    const deps = makeDeps();
+
+    const { res } = postJsonRpc(deps, Buffer.from("no-es-json{{{", "utf8"));
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    const sobre = parsedBody(res);
+    expect(sobre.id).toBeNull();
+    expect(sobre.error.code).toBe(JSONRPC_PARSE_ERROR);
+  });
+
+  it.each([
+    ["a non-object string", jsonBody("un string")],
+    ["a bare number", jsonBody(42)],
+    ["null", jsonBody(null)],
+    ["an array", jsonBody([])],
+  ])("responds -32600 with id: null when the parsed body is %s", async (_label, body) => {
+    const deps = makeDeps();
+
+    const { res } = postJsonRpc(deps, body);
+    await esperarRespuesta(res);
+
+    const sobre = parsedBody(res);
+    expect(sobre.id).toBeNull();
+    expect(sobre.error.code).toBe(JSONRPC_INVALID_REQUEST);
+  });
+
+  it("responds -32600 with id: null when jsonrpc is '1.0' instead of '2.0'", async () => {
+    const deps = makeDeps();
+
+    const { res } = postJsonRpc(
+      deps,
+      jsonBody({ jsonrpc: "1.0", method: METODO_GET_TASK, id: 1, params: {} }),
+    );
+    await esperarRespuesta(res);
+
+    const sobre = parsedBody(res);
+    expect(sobre.id).toBeNull();
+    expect(sobre.error.code).toBe(JSONRPC_INVALID_REQUEST);
+  });
+
+  it("responds -32600 with id: null when jsonrpc is absent", async () => {
+    const deps = makeDeps();
+
+    const { res } = postJsonRpc(deps, jsonBody({ method: METODO_GET_TASK, id: 1, params: {} }));
+    await esperarRespuesta(res);
+
+    const sobre = parsedBody(res);
+    expect(sobre.id).toBeNull();
+    expect(sobre.error.code).toBe(JSONRPC_INVALID_REQUEST);
+  });
+
+  it("responds -32600 with id: null when method is not a string", async () => {
+    const deps = makeDeps();
+
+    const { res } = postJsonRpc(deps, jsonBody({ jsonrpc: "2.0", method: 123, id: 1 }));
+    await esperarRespuesta(res);
+
+    const sobre = parsedBody(res);
+    expect(sobre.id).toBeNull();
+    expect(sobre.error.code).toBe(JSONRPC_INVALID_REQUEST);
+  });
+
+  it.each([["ListTasks"], ["SendStreamingMessage"]])(
+    "responds -32601 with the original request id and HTTP 200 (not 500) for the unsupported method '%s'",
+    async (method) => {
+      const deps = makeDeps();
+
+      const { res } = postJsonRpc(deps, jsonBody({ jsonrpc: "2.0", method, id: "req-7", params: {} }));
+      await esperarRespuesta(res);
+
+      expect(res.statusCode).toBe(200);
+      const sobre = parsedBody(res);
+      expect(sobre.id).toBe("req-7");
+      expect(sobre.error.code).toBe(JSONRPC_METHOD_NOT_FOUND);
+    },
+  );
+
+  it("logs a2a-metodo-no-soportado with the unsupported method name", async () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+
+    const { res } = postJsonRpc(deps, jsonBody({ jsonrpc: "2.0", method: "ListTasks", id: 1 }));
+    await esperarRespuesta(res);
+
+    expect(logEvent).toHaveBeenCalledWith(A2A_SERVER_LOG_CORRELATION_ID, "a2a-metodo-no-soportado", {
+      method: "ListTasks",
+    });
+  });
+
+  it("does not fail parsing when the envelope carries an unknown extra field", async () => {
+    const deps = makeDeps();
+
+    const { res } = postJsonRpc(
+      deps,
+      jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: 1, params: {}, campoRaro: true }),
+    );
+    await esperarRespuesta(res);
+
+    const sobre = parsedBody(res);
+    expect(sobre.error.code).not.toBe(JSONRPC_INVALID_REQUEST);
+    expect(sobre.error.code).not.toBe(JSONRPC_PARSE_ERROR);
+  });
+
+  it.each([[METODO_SEND_MESSAGE], [METODO_GET_TASK], [METODO_CANCEL_TASK]])(
+    "responds the interim -32603 for the known method '%s' (placeholder until task 12)",
+    async (method) => {
+      const deps = makeDeps();
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method, id: "req-1", params: { cualquiera: true } }),
+      );
+      await esperarRespuesta(res);
+
+      expect(res.statusCode).toBe(200);
+      const sobre = parsedBody(res);
+      expect(sobre.id).toBe("req-1");
+      expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
+    },
+  );
+
+  it("responds 401 without parsing the body when Authorization is missing (order: AUTH before parse)", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: {} });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: 1, params: {} })]);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
+    expect(deps.logEvent).toHaveBeenCalledWith(
+      A2A_SERVER_LOG_CORRELATION_ID,
+      "a2a-solicitud-no-autorizada",
+      expect.anything(),
+    );
+  });
+
+  it("responds 413 with end() called before destroy(), without parsing the body, when it exceeds maxBodyBytes", async () => {
+    const config = makeConfig({ maxBodyBytes: 16 });
+    const deps = makeDeps({ config });
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: authHeader() });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+    req.emitBody([Buffer.alloc(config.maxBodyBytes + 1, "a")]);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(413);
+    expect(req.destroy).toHaveBeenCalled();
+    expect(deps.logEvent).toHaveBeenCalledWith(
+      A2A_SERVER_LOG_CORRELATION_ID,
+      "a2a-solicitud-rechazada-tamano",
+      { origenTransporte: "desconocido", maxBodyBytes: config.maxBodyBytes },
+    );
+  });
+
+  it("responds 400 with an empty body on a transport error while reading the body", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: authHeader() });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+    req.emitError(new Error("ECONNRESET"));
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.end).toHaveBeenCalledWith();
   });
 });
