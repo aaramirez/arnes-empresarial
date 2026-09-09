@@ -273,3 +273,29 @@ export type NotificacionMotivo = "sin-api-key" | "sin-destinatario" | "http" | "
 export type NotificacionResultado =
   | { readonly enviado: true }
   | { readonly enviado: false; readonly motivo: NotificacionMotivo };
+
+/**
+ * Consulta INFORMATIVA de riesgo/crédito para una venta grande (Hito 6, ADR 76).
+ * Declarado ACÁ, junto a `VentaNotifierPort`, para que `registrar-venta.ts` no
+ * rompa su regla de imports ("únicamente los otros módulos de
+ * `src/core/ventas/`") — el puerto real vive en `src/adapters/a2a/`.
+ *
+ * CONTRATO, dos mitades, las dos obligatorias:
+ *  · NUNCA rechaza, NUNCA lanza — mismo criterio que `VentaNotifierPort`.
+ *  · El llamador NUNCA la awaitea: se dispara con `void … .catch(…)`, molde
+ *    literal de `main.ts` (bloque de `barrerHuerfanos`). Una venta no espera
+ *    a un tercero.
+ *
+ * NO recibe `clienteEmail`: ese dato no se persiste (ADR 18 pto 4) y el texto
+ * de esta consulta SÍ se persiste en `delegaciones_a2a.tarea_delegada`.
+ */
+export interface ConsultaRiesgoCreditoPort {
+  consultar(input: {
+    readonly casoId: string;
+    readonly ventaId: string;
+    readonly clienteId: string;
+    readonly planAnterior?: string;
+    readonly planNuevo: string;
+    readonly monto: number;
+  }): Promise<void>;
+}

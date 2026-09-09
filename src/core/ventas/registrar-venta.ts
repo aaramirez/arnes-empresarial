@@ -5,13 +5,19 @@
  * propague y NUNCA propaga lo que el `notifier` haga (contrato de
  * `VentaNotifierPort`: nunca rechaza, nunca lanza).
  *
- * Secuencia exacta (design.md §3.4):
+ * Secuencia exacta (design.md §3.4, §5.6 para el paso 2b de Hito 6):
  *  1. `timestamp = now()`, `token = newToken()`, `expiresAt =
  *     calcularExpiresAt(timestamp, config.tokenTtlHoras)`.
  *  2. `store.crearVentaConCaso({...})` — UNA transacción: upsert de
  *     `vendedores`, `caso` tipo `CASO_TIPO_VENTA` en estado activo, y la fila
  *     de `ventas` en `pendiente_confirmacion`. PROPAGA si falla: sin venta no
  *     hay nada que notificar. → `venta-creada`.
+ *  2b. (Hito 6, ADR 76) Si `riesgoCredito` está definido y
+ *     `input.monto >= config.ventaGrandeUmbral`, dispara — SIN `await` — una
+ *     consulta de riesgo/crédito hacia `"riesgo-credito"`. Informativa y NO
+ *     BLOQUEANTE: nunca retiene ni cancela la venta. `riesgoCredito` ausente
+ *     (interruptor `HARNESS_A2A_SALIENTE` apagado) ⇒ comportamiento idéntico
+ *     a `v2.1.0`.
  *  3. `link = `${baseUrlPublica}/confirmar/${token}``.
  *  4. `await notifier.notificarLinkConfirmacion({...})` — NUNCA rechaza por
  *     contrato. → `email-enviado` | `email-omitido` (sin API key) |
@@ -33,6 +39,7 @@
 import {
   CASO_TIPO_VENTA,
   VENTA_ESTADO_PENDIENTE_CONFIRMACION,
+  type ConsultaRiesgoCreditoPort,
   type VentaNotifierPort,
   type VentaStorePort,
 } from "./ventas-contract.js";
@@ -63,6 +70,11 @@ export interface RegistrarVentaDeps {
     event: string,
     fields?: Readonly<Record<string, unknown>>,
   ) => void;
+  /**
+   * Ausente ⇒ `HARNESS_A2A_SALIENTE` apagado ⇒ comportamiento IDÉNTICO a
+   * `v2.1.0` (ADR 82 pto 3): `registrarVenta` ni siquiera evalúa el umbral.
+   */
+  readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
 }
 
 export interface RegistrarVentaInput {
@@ -87,7 +99,8 @@ export async function registrarVenta(
   input: RegistrarVentaInput,
   deps: RegistrarVentaDeps,
 ): Promise<RegistrarVentaResult> {
-  const { store, notifier, config, baseUrlPublica, newId, newToken, now, logEvent } = deps;
+  const { store, notifier, config, baseUrlPublica, newId, newToken, now, logEvent, riesgoCredito } =
+    deps;
 
   const timestamp = now();
   const token = newToken();
@@ -117,6 +130,35 @@ export async function registrarVenta(
     ventaId: venta.id,
     vendedorId: venta.vendedorId,
   });
+
+  // Paso 2b (Hito 6, ADR 76): consulta de riesgo/crédito por A2A, INFORMATIVA
+  // y NO BLOQUEANTE — sólo cuando el interruptor A2A está activo
+  // (`riesgoCredito` definido) y la venta alcanza el umbral de "venta
+  // grande" (`>=`, no `>` — ADR 83 pto 4). Molde literal de `main.ts`
+  // (`void gitAdapter.barrido.barrerHuerfanos(...).catch(...)`): se dispara
+  // ANTES de notificar (paso 4) pero SIN `await`, sobre un puerto que ya
+  // promete nunca rechazar (`ConsultaRiesgoCreditoPort`, `ventas-contract.ts`)
+  // — el `.catch()` es sólo la red de seguridad de esa promesa. `clienteEmail`
+  // NUNCA viaja en el insumo: no se persiste (ADR 18 pto 4).
+  if (riesgoCredito !== undefined && input.monto >= config.ventaGrandeUmbral) {
+    logEvent(venta.casoId, "a2a-riesgo-credito-disparada", {
+      ventaId: venta.id,
+      monto: input.monto,
+      umbral: config.ventaGrandeUmbral,
+    });
+    void riesgoCredito
+      .consultar({
+        casoId: venta.casoId,
+        ventaId: venta.id,
+        clienteId: input.clienteId,
+        ...(input.planAnterior !== undefined ? { planAnterior: input.planAnterior } : {}),
+        planNuevo: input.planNuevo,
+        monto: input.monto,
+      })
+      .catch(() =>
+        logEvent(venta.casoId, "a2a-riesgo-credito-contrato-violado", { ventaId: venta.id }),
+      );
+  }
 
   const linkConfirmacion = `${baseUrlPublica}/confirmar/${token}`;
 
