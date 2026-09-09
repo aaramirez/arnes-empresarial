@@ -11,12 +11,14 @@
  * valida una clave cruda contra el registro CERRADO `DESTINOS_A2A` y lanza
  * `DestinoA2ADesconocidoError` sin tocar la base.
  *
- * `construirTareaDelegadaA2A` reusa `TAREA_DELEGADA_MAX_CHARS`/
- * `truncarTareaDelegada` TAL CUAL (ADR 79 pto 3) — el mismo tope que
- * `delegaciones.tarea_delegada`, no una copia. NO recibe una
- * `AgentDefinition`: un agente externo no tiene entrada en
- * `SUBAGENT_REGISTRY` (R2). El encabezado es la CLAVE, no el nombre del
- * Agent Card, porque la fila se crea ANTES de conocerlo (ADR 79 pto 1).
+ * `construirTareaDelegadaA2A` reusa `ensamblarTareaDelegada`
+ * (`../agents/subagents.js`, helper común con `construirTareaDelegada`) que a
+ * su vez trunca con `truncarTareaDelegada`/`TAREA_DELEGADA_MAX_CHARS` TAL
+ * CUAL (ADR 79 pto 3) — el mismo tope que `delegaciones.tarea_delegada`, no
+ * una copia. NO recibe una `AgentDefinition`: un agente externo no tiene
+ * entrada en `SUBAGENT_REGISTRY` (R2). El encabezado es la CLAVE, no el
+ * nombre del Agent Card, porque la fila se crea ANTES de conocerlo (ADR 79
+ * pto 1).
  *
  * `despacharDelegacionA2A` (§4.1 pasos a-f):
  *  a. `deps.cliente.baseUrlDe(destino.clave)` — sin destino configurado NO se
@@ -41,11 +43,12 @@
  * negociable de `AGENTS.md`: `src/core/` nunca importa de `src/adapters/*`.
  * Deliberadamente **ningún** import de `src/adapters/a2a/`.
  */
-import { truncarTareaDelegada, type InsumoDelegado } from "../agents/subagents.js";
+import { ensamblarTareaDelegada, type InsumoDelegado } from "../agents/subagents.js";
 import {
   DelegacionA2ANoCompletadaError,
   DestinoA2ADesconocidoError,
   DESTINOS_A2A,
+  TASK_STATE_SUBMITTED,
   type ClienteA2APort,
   type DestinoA2AClave,
   type ResultadoA2A,
@@ -55,6 +58,18 @@ import type { DestinoDelegacion } from "./dispatch-delegation.js";
 
 /** El brazo externo de la unión, con nombre propio (ADR 78 pto 3). */
 export type DestinoA2A = Extract<DestinoDelegacion, { kind: "a2a" }>;
+
+/**
+ * PRIVADA. Omite un campo opcional del `patch` cuando su valor es
+ * `undefined`, en vez del molde repetido
+ * `...(v !== undefined ? { k: v } : {})` (code-review, hallazgo 3): un único
+ * punto para la misma decisión, usado en los cinco lugares de este archivo
+ * donde `store.actualizarDelegacionA2A`/`DelegacionA2ANoCompletadaError`
+ * reciben un campo opcional.
+ */
+function siDefinido<K extends string, V>(k: K, v: V | undefined): Partial<Record<K, V>> {
+  return v === undefined ? {} : ({ [k]: v } as Partial<Record<K, V>>);
+}
 
 /**
  * PURA y SÍNCRONA. Hermana de `resolverDestino`: valida una clave cruda
@@ -70,12 +85,13 @@ export function resolverDestinoA2A(clave: string): DestinoA2A {
 }
 
 /**
- * PURA. Reusa `TAREA_DELEGADA_MAX_CHARS` (8_000) TAL CUAL vía
- * `truncarTareaDelegada` — el mismo tope que `delegaciones.tarea_delegada`,
- * no una copia (ADR 79 pto 3). NO recibe una `AgentDefinition`: un agente
- * externo no tiene entrada en `SUBAGENT_REGISTRY` (R2). El encabezado es la
- * CLAVE, no el nombre del Agent Card, porque la fila se crea ANTES de
- * conocerlo (ADR 79 pto 1).
+ * PURA. Delega el ensamblado a `ensamblarTareaDelegada` (helper común con
+ * `construirTareaDelegada` en `../agents/subagents.js`), que trunca a
+ * `TAREA_DELEGADA_MAX_CHARS` (8_000) TAL CUAL vía `truncarTareaDelegada` — el
+ * mismo tope que `delegaciones.tarea_delegada`, no una copia (ADR 79 pto 3).
+ * NO recibe una `AgentDefinition`: un agente externo no tiene entrada en
+ * `SUBAGENT_REGISTRY` (R2). El encabezado es la CLAVE, no el nombre del
+ * Agent Card, porque la fila se crea ANTES de conocerlo (ADR 79 pto 1).
  *
  * Texto generado, en este orden:
  *   1. `Destino externo: <clave>`
@@ -83,14 +99,7 @@ export function resolverDestinoA2A(clave: string): DestinoA2A {
  *   3. (línea en blanco) + `insumo.material`
  */
 export function construirTareaDelegadaA2A(clave: DestinoA2AClave, insumo: InsumoDelegado): string {
-  const texto = [
-    `Destino externo: ${clave}`,
-    `Instrucción: ${insumo.instruccion}`,
-    "",
-    insumo.material,
-  ].join("\n");
-
-  return truncarTareaDelegada(texto);
+  return ensamblarTareaDelegada(`Destino externo: ${clave}`, insumo);
 }
 
 /**
@@ -194,7 +203,7 @@ export async function despacharDelegacionA2A(
     destinoClave,
     agenteExternoUrl,
     tareaDelegada,
-    estado: "TASK_STATE_SUBMITTED",
+    estado: TASK_STATE_SUBMITTED,
     createdAt,
   });
   logEvent(casoId, "delegacion-a2a-iniciada", {
@@ -228,8 +237,8 @@ export async function despacharDelegacionA2A(
       }
     : {
         estado: resultado.estado ?? "TASK_STATE_FAILED",
-        ...(resultado.a2aTaskId !== undefined ? { a2aTaskId: resultado.a2aTaskId } : {}),
-        ...(resultado.endpoint !== undefined ? { agenteExternoUrl: resultado.endpoint } : {}),
+        ...siDefinido("a2aTaskId", resultado.a2aTaskId),
+        ...siDefinido("agenteExternoUrl", resultado.endpoint),
       };
 
   store.actualizarDelegacionA2A({ delegacionId, updatedAt, ...patch });
@@ -256,14 +265,14 @@ export async function despacharDelegacionA2A(
     destinoClave,
     delegacionId,
     reason: resultado.reason,
-    ...(resultado.a2aTaskId !== undefined ? { a2aTaskId: resultado.a2aTaskId } : {}),
+    ...siDefinido("a2aTaskId", resultado.a2aTaskId),
   });
 
   throw new DelegacionA2ANoCompletadaError({
     reason: resultado.reason,
     destinoClave,
-    ...(resultado.estado !== undefined ? { estado: resultado.estado } : {}),
+    ...siDefinido("estado", resultado.estado),
     delegacionId,
-    ...(resultado.detalle !== undefined ? { detalle: resultado.detalle } : {}),
+    ...siDefinido("detalle", resultado.detalle),
   });
 }
