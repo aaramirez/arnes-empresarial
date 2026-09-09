@@ -1855,14 +1855,19 @@ function rowToDelegacionA2A(row: DelegacionA2ASqlRow): DelegacionA2ARow {
   };
 }
 
-/** Lectura de evidencia (design.md §7.2): las delegaciones externas de un caso, en orden. */
+/**
+ * Lectura de evidencia (design.md §7.2): las delegaciones externas de un
+ * caso, en orden. `created_at` es un string ISO con resolución de
+ * milisegundo — dos filas insertadas en el mismo milisegundo empatan, así
+ * que `id` desempata para un orden determinístico.
+ */
 export function listDelegacionesA2APorCaso(db: Database.Database, casoId: string): readonly DelegacionA2ARow[] {
   const rows = db
     .prepare(
       `SELECT id, caso_id, destino_clave, agente_externo_url, tarea_delegada, a2a_task_id, estado, resultado, created_at, updated_at
          FROM delegaciones_a2a
         WHERE caso_id = ?
-        ORDER BY created_at`,
+        ORDER BY created_at, id`,
     )
     .all(casoId) as DelegacionA2ASqlRow[];
   return rows.map(rowToDelegacionA2A);

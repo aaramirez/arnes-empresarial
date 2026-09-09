@@ -2477,6 +2477,35 @@ describe("repository", () => {
       const filas = listDelegacionesA2APorCaso(db, "caso-1");
       expect(filas.map((fila) => fila.id)).toEqual(["delegacion-a2a-riesgo", "delegacion-a2a-kpi"]);
     });
+
+    it("con el mismo created_at (empate al milisegundo), desempata por id de forma determinística", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      const createdAtEmpatado = "2026-09-08T00:00:00.000Z";
+      insertDelegacionA2A(db, {
+        id: "delegacion-a2a-z",
+        casoId: "caso-1",
+        destinoClave: "kpi-incidente",
+        agenteExternoUrl: "https://ejemplo.test/kpi-incidente",
+        tareaDelegada: "consultar el kpi",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: createdAtEmpatado,
+        updatedAt: createdAtEmpatado,
+      });
+      insertDelegacionA2A(db, {
+        id: "delegacion-a2a-a",
+        casoId: "caso-1",
+        destinoClave: "riesgo-credito",
+        agenteExternoUrl: "https://ejemplo.test/riesgo-credito",
+        tareaDelegada: "verificar riesgo",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: createdAtEmpatado,
+        updatedAt: createdAtEmpatado,
+      });
+
+      const filas = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(filas.map((fila) => fila.id)).toEqual(["delegacion-a2a-a", "delegacion-a2a-z"]);
+    });
   });
 
   describe("solicitudes_internas (migración 0008)", () => {
