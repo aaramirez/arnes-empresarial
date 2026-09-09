@@ -114,6 +114,8 @@ Configuración del cliente A2A saliente (Hito 6, `src/adapters/a2a/config.ts`) u
 | `HARNESS_A2A_TASK_TIMEOUT_MS` | `120_000` | Timeout total (ms) del loop de polling antes de `CancelTask` con motivo `"timeout"`. |
 | `VENTA_GRANDE_UMBRAL` | `5_000` | Umbral de venta grande (`src/core/ventas/ventas-config.ts`). A partir de este monto, `registrarVenta` dispara una consulta de riesgo/crédito no bloqueante hacia `riesgo-credito`. |
 
+El comando TUI privilegiado `/consultar-kpi <consulta>` (Hito 6, ADR 85) es el productor real del destino `kpi-incidente`: **espera** (síncrono, bloqueante) la respuesta del agente externo antes de responder — con `HARNESS_A2A_SALIENTE` apagado responde que está desactivado, sin crear caso ni fila.
+
 #### Cómo correr la integración A2A contra un sample real
 
 `src/test/integration/a2a-client.integration.test.ts` sondea el Agent Card del destino configurado (`GET .well-known/agent-card.json`) antes de decidir si corre contra la red real o degrada a *skip* — mismo molde que el test de integración de `git`/`vitest` (`src/test/integration/run-tests.integration.test.ts`), nunca falla por una dependencia externa ausente. Para levantar un sample a mano y correrlo de verdad:

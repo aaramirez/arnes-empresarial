@@ -334,22 +334,37 @@ const notifier = createNotificadorAdapter({
 
 const webConfig = resolveWebConfig();
 
-// 5b-bis. Cliente A2A saliente (Hito 6, tarea 17, ADR 82). OPT-IN: sin
-//         HARNESS_A2A_SALIENTE=on no se construye NADA — ni adaptador, ni
-//         store, ni puerto — y `registrarVenta` se comporta exactamente
-//         como en v2.1.0 (cero filas en delegaciones_a2a, cero fetch
-//         salientes). Molde de wiring condicional no bloqueante ya
-//         existente en este archivo (`createNotificadorAdapter` arriba,
-//         `barrerHuerfanos` más abajo).
-const riesgoCredito = isA2ASalienteEnabled()
-  ? createConsultaRiesgoCredito({
-      db,
-      cliente: createA2AAdapter({
-        logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
-      }),
+// 5b-bis. Cliente A2A saliente (Hito 6, tareas 17 y 21, ADR 82, design.md
+//         §5.7.4 tensión 1). OPT-IN: sin HARNESS_A2A_SALIENTE=on no se
+//         construye NADA — ni adaptador, ni store, ni puerto — y los DOS
+//         consumidores se comportan exactamente como en v2.1.0 (cero filas
+//         en delegaciones_a2a, cero fetch salientes). `HARNESS_A2A_SALIENTE`
+//         se lee UNA SOLA VEZ acá y `createA2AAdapter` se instancia UNA SOLA
+//         VEZ, hoisteado antes de `buildOnVenta` (línea 335 más abajo) y de
+//         `buildOnComandoEmpleado` (línea 377 más abajo) porque los DOS lo
+//         necesitan: ventas (`riesgoCredito`, ya cableado en Hito 6) y el
+//         comando privilegiado `/consultar-kpi` de la TUI (`clienteA2A`,
+//         Hito 6, tarea 21, ADR 85). Se rechaza deliberadamente la salida
+//         fácil de leer el interruptor DENTRO de
+//         `build-on-comando-empleado.ts` — ese archivo ya hace algo
+//         parecido con `resolveGitConfig()` para `aplicarPatch`, pero `git`
+//         no tiene interruptor y A2A sí: duplicar la lectura de
+//         `HARNESS_A2A_SALIENTE` pondría el rollback a `v2.1.0` en dos
+//         lugares distintos en vez de uno solo, acá.
+const clienteA2A = isA2ASalienteEnabled()
+  ? createA2AAdapter({
       logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
     })
   : undefined;
+
+const riesgoCredito =
+  clienteA2A !== undefined
+    ? createConsultaRiesgoCredito({
+        db,
+        cliente: clienteA2A,
+        logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
+      })
+    : undefined;
 
 const ventaHandlers = buildOnVenta({
   db,
@@ -403,6 +418,7 @@ const onComandoEmpleado = buildOnComandoEmpleado({
   verificarPassword,
   dummyPasswordHash,
   hooks,
+  ...(clienteA2A !== undefined ? { clienteA2A } : {}), // exactOptionalPropertyTypes
 });
 
 // 5d. Barrido de worktrees huérfanos al arranque (Hito 5.1, tarea 34, ADR 57
