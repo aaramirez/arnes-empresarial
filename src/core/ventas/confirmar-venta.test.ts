@@ -65,7 +65,7 @@ function makeDeps(overrides: Partial<ConfirmarVentaDeps> = {}): ConfirmarVentaDe
   let contadorId = 0;
   return {
     store: makeStore(),
-    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 },
+    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
     newId: vi.fn(() => `comision-${++contadorId}`),
     now: vi.fn(() => AHORA),
     logEvent: vi.fn(),

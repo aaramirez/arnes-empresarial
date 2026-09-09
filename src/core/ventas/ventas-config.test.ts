@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_COMISION_PORCENTAJE,
   DEFAULT_REEMBOLSO_UMBRAL,
+  DEFAULT_VENTA_GRANDE_UMBRAL,
   DEFAULT_VENTA_TOKEN_TTL_HORAS,
   MAX_VENTA_TOKEN_TTL_HORAS,
   resolveVentasConfig,
@@ -19,11 +20,13 @@ describe("resolveVentasConfig — defaults", () => {
         comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
         reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
         tokenTtlHoras: DEFAULT_VENTA_TOKEN_TTL_HORAS,
+        ventaGrandeUmbral: DEFAULT_VENTA_GRANDE_UMBRAL,
       },
     });
     expect(DEFAULT_COMISION_PORCENTAJE).toBe(0.1);
     expect(DEFAULT_REEMBOLSO_UMBRAL).toBe(500);
     expect(DEFAULT_VENTA_TOKEN_TTL_HORAS).toBe(72);
+    expect(DEFAULT_VENTA_GRANDE_UMBRAL).toBe(5_000);
   });
 
   it("cadena vacía se trata igual que ausente — cae al default, no es error", () => {
@@ -31,6 +34,7 @@ describe("resolveVentasConfig — defaults", () => {
       COMISION_PORCENTAJE: "",
       REEMBOLSO_UMBRAL: "",
       VENTA_TOKEN_TTL_HORAS: "",
+      VENTA_GRANDE_UMBRAL: "",
     });
 
     expect(result).toEqual({
@@ -39,6 +43,7 @@ describe("resolveVentasConfig — defaults", () => {
         comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
         reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
         tokenTtlHoras: DEFAULT_VENTA_TOKEN_TTL_HORAS,
+        ventaGrandeUmbral: DEFAULT_VENTA_GRANDE_UMBRAL,
       },
     });
   });
@@ -69,6 +74,7 @@ describe("resolveVentasConfig — COMISION_PORCENTAJE", () => {
         comisionPorcentaje: 1,
         reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
         tokenTtlHoras: DEFAULT_VENTA_TOKEN_TTL_HORAS,
+        ventaGrandeUmbral: DEFAULT_VENTA_GRANDE_UMBRAL,
       },
     });
   });
@@ -90,6 +96,7 @@ describe("resolveVentasConfig — REEMBOLSO_UMBRAL", () => {
         comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
         reembolsoUmbral: 750,
         tokenTtlHoras: DEFAULT_VENTA_TOKEN_TTL_HORAS,
+        ventaGrandeUmbral: DEFAULT_VENTA_GRANDE_UMBRAL,
       },
     });
   });
@@ -120,6 +127,7 @@ describe("resolveVentasConfig — VENTA_TOKEN_TTL_HORAS", () => {
         comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
         reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
         tokenTtlHoras: 0,
+        ventaGrandeUmbral: DEFAULT_VENTA_GRANDE_UMBRAL,
       },
     });
   });
@@ -156,6 +164,7 @@ describe("resolveVentasConfig — VENTA_TOKEN_TTL_HORAS", () => {
         comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
         reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
         tokenTtlHoras: MAX_VENTA_TOKEN_TTL_HORAS,
+        ventaGrandeUmbral: DEFAULT_VENTA_GRANDE_UMBRAL,
       },
     });
   });
@@ -179,6 +188,46 @@ describe("resolveVentasConfig — VENTA_TOKEN_TTL_HORAS", () => {
     const result = resolveVentasConfig({ VENTA_TOKEN_TTL_HORAS: "999999999999" });
 
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("resolveVentasConfig — VENTA_GRANDE_UMBRAL", () => {
+  it("acepta un valor positivo válido", () => {
+    const result = resolveVentasConfig({ VENTA_GRANDE_UMBRAL: "10000" });
+
+    expect(result).toEqual({
+      ok: true,
+      config: {
+        comisionPorcentaje: DEFAULT_COMISION_PORCENTAJE,
+        reembolsoUmbral: DEFAULT_REEMBOLSO_UMBRAL,
+        tokenTtlHoras: DEFAULT_VENTA_TOKEN_TTL_HORAS,
+        ventaGrandeUmbral: 10_000,
+      },
+    });
+  });
+
+  it("ausente ⇒ cae al default (5000)", () => {
+    const result = resolveVentasConfig({});
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.ventaGrandeUmbral).toBe(DEFAULT_VENTA_GRANDE_UMBRAL);
+    }
+  });
+
+  it.each([
+    ["cero", "0"],
+    ["negativo", "-5"],
+    ["no numérico", "abc"],
+  ])("%s → ok:false", (_label, value) => {
+    const result = resolveVentasConfig({ VENTA_GRANDE_UMBRAL: value });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errores).toHaveLength(1);
+      expect(result.errores[0]).toContain("VENTA_GRANDE_UMBRAL");
+      expect(result.errores[0]).toContain(value);
+    }
   });
 });
 
@@ -207,6 +256,20 @@ describe("resolveVentasConfig — acumulación de errores", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errores).toHaveLength(3);
+    }
+  });
+
+  it("VENTA_GRANDE_UMBRAL inválido junto a REEMBOLSO_UMBRAL inválido acumula AMBOS errores", () => {
+    const result = resolveVentasConfig({
+      VENTA_GRANDE_UMBRAL: "-1",
+      REEMBOLSO_UMBRAL: "0",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errores).toHaveLength(2);
+      expect(result.errores.some((e) => e.includes("VENTA_GRANDE_UMBRAL"))).toBe(true);
+      expect(result.errores.some((e) => e.includes("REEMBOLSO_UMBRAL"))).toBe(true);
     }
   });
 });

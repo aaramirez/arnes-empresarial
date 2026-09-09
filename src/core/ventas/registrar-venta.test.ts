@@ -87,7 +87,7 @@ function makeDeps(overrides: Partial<RegistrarVentaDeps> = {}): RegistrarVentaDe
   return {
     store: makeStore(),
     notifier: makeNotifier(),
-    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 },
+    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
     baseUrlPublica: BASE_URL,
     newId: vi.fn(() => `id-${++contadorId}`),
     newToken: vi.fn(() => "token-fijo"),
@@ -154,7 +154,7 @@ describe("registrarVenta", () => {
     const store = makeStore();
     const deps = makeDeps({
       store,
-      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 },
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
     });
 
     await registrarVenta(makeInput(), deps);
@@ -169,7 +169,7 @@ describe("registrarVenta", () => {
     const store = makeStore();
     const deps = makeDeps({
       store,
-      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 0 },
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 0, ventaGrandeUmbral: 5000 },
     });
 
     await registrarVenta(makeInput(), deps);

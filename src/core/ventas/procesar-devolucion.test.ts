@@ -64,7 +64,7 @@ function makeStore(overrides: Partial<VentaStorePort> = {}): VentaStorePort {
 function makeDeps(overrides: Partial<ProcesarDevolucionDeps> = {}): ProcesarDevolucionDeps {
   return {
     store: makeStore(),
-    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 },
+    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
     now: vi.fn(() => AHORA),
     logEvent: vi.fn(),
     ...overrides,
@@ -110,7 +110,10 @@ describe("procesarDevolucion", () => {
       buscarVentaPorToken: vi.fn(() => venta),
       aprobarReembolso: vi.fn(() => withEstado(venta, VENTA_ESTADO_REEMBOLSADA)),
     });
-    const deps = makeDeps({ store, config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 } });
+    const deps = makeDeps({
+      store,
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
+    });
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
@@ -125,7 +128,10 @@ describe("procesarDevolucion", () => {
       buscarVentaPorToken: vi.fn(() => venta),
       escalarReembolso: vi.fn(() => withEstado(venta, VENTA_ESTADO_REEMBOLSO_PENDIENTE)),
     });
-    const deps = makeDeps({ store, config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 } });
+    const deps = makeDeps({
+      store,
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
+    });
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 
@@ -144,7 +150,10 @@ describe("procesarDevolucion", () => {
       buscarVentaPorToken: vi.fn(() => venta),
       escalarReembolso: vi.fn(() => withEstado(venta, VENTA_ESTADO_REEMBOLSO_PENDIENTE)),
     });
-    const deps = makeDeps({ store, config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 } });
+    const deps = makeDeps({
+      store,
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
+    });
 
     const resultado = procesarDevolucion({ token: venta.tokenConfirmacion }, deps);
 

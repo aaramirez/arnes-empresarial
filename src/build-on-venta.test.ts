@@ -80,7 +80,13 @@ function makeNotifier(overrides: Partial<VentaNotifierPort> = {}): VentaNotifier
 }
 
 function makeConfig(overrides: Partial<VentasConfig> = {}): VentasConfig {
-  return { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ...overrides };
+  return {
+    comisionPorcentaje: 0.1,
+    reembolsoUmbral: 500,
+    tokenTtlHoras: 72,
+    ventaGrandeUmbral: 5000,
+    ...overrides,
+  };
 }
 
 function makeAltaInput(overrides: Partial<RegistrarVentaInput> = {}): RegistrarVentaInput {

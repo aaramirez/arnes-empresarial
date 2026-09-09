@@ -115,7 +115,13 @@ function makeRegistro(overrides: Partial<RegistroAccionesEmpleadoPort> = {}): Re
 }
 
 function makeConfig(overrides: Partial<VentasConfig> = {}): VentasConfig {
-  return { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ...overrides };
+  return {
+    comisionPorcentaje: 0.1,
+    reembolsoUmbral: 500,
+    tokenTtlHoras: 72,
+    ventaGrandeUmbral: 5000,
+    ...overrides,
+  };
 }
 
 function makeAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig {
