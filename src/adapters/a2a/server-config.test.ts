@@ -155,11 +155,9 @@ describe("códigos de error JSON-RPC", () => {
     expect(codigosBase).not.toContain(A2A_ERROR_TASK_NOT_CANCELABLE);
   });
 
-  it("las dos constantes A2A-específicas caen en el rango reservado -32000..-32099", () => {
-    expect(A2A_ERROR_TASK_NOT_FOUND).toBeLessThanOrEqual(-32000);
-    expect(A2A_ERROR_TASK_NOT_FOUND).toBeGreaterThanOrEqual(-32099);
-    expect(A2A_ERROR_TASK_NOT_CANCELABLE).toBeLessThanOrEqual(-32000);
-    expect(A2A_ERROR_TASK_NOT_CANCELABLE).toBeGreaterThanOrEqual(-32099);
+  it("las dos constantes A2A-específicas son los valores literales de docs/specification.md v1.0.0 (TaskNotFoundError/TaskNotCancelableError, RD-37)", () => {
+    expect(A2A_ERROR_TASK_NOT_FOUND).toBe(-32001);
+    expect(A2A_ERROR_TASK_NOT_CANCELABLE).toBe(-32002);
   });
 });
 
