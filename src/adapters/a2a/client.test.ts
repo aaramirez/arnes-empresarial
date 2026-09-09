@@ -120,6 +120,24 @@ describe("delegarTarea — Agent Card", () => {
     );
   });
 
+  it("con authToken configurado, el header Authorization sale también en el GET del Agent Card", async () => {
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(agentCardResponse({ supportedInterfaces: [] }));
+
+    await delegarTarea(
+      {
+        destino: { baseUrl: DESTINO.baseUrl, authToken: "token-secreto" },
+        clave: "riesgo-credito",
+        tarea: "t",
+        casoId: "caso-1",
+      },
+      makeDeps({ fetchFn }),
+    );
+
+    const mockFetch = fetchFn as ReturnType<typeof vi.fn>;
+    const [, init] = mockFetch.mock.calls[0] as [string, { headers: Record<string, string> }];
+    expect(init.headers.Authorization).toBe("Bearer token-secreto");
+  });
+
   it("dos delegaciones consecutivas hacen DOS GET del Agent Card, sin caché", async () => {
     const fetchFn: FetchFn = vi.fn().mockResolvedValue(agentCardResponse({ supportedInterfaces: [] }));
     const deps = makeDeps({ fetchFn });
@@ -245,6 +263,20 @@ describe("delegarTarea — SendMessage", () => {
     expect(resultado).toEqual({ ok: false, reason: "transporte", endpoint: ENTRADA_JSONRPC.url });
   });
 
+  it("response.text() que rechaza en un SendMessage exitoso ⇒ reason: 'transporte', delegarTarea nunca rechaza", async () => {
+    const fetchFn: FetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC] }))
+      .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.reject(new Error("stream cortado")) });
+
+    await expect(
+      delegarTarea(
+        { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+        makeDeps({ fetchFn }),
+      ),
+    ).resolves.toEqual({ ok: false, reason: "transporte", endpoint: ENTRADA_JSONRPC.url });
+  });
+
   it("con authToken configurado, el header Authorization sale en el POST de SendMessage", async () => {
     const fetchFn: FetchFn = vi
       .fn()
@@ -289,6 +321,11 @@ function taskResponse(task: unknown): FetchResponseLike {
 
 function errorEnvelopeResponse(): FetchResponseLike {
   return agentCardResponse({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "fallo del agente" } });
+}
+
+/** `error: null` explícito (algunos frameworks no estrictos serializan ambos campos) — sigue siendo éxito. */
+function errorNuloEnvelopeResponse(task: unknown): FetchResponseLike {
+  return agentCardResponse({ jsonrpc: "2.0", id: 1, result: task, error: null });
 }
 
 function taskSubmitted(): unknown {
@@ -404,9 +441,22 @@ describe("delegarTarea — loop de GetTask", () => {
       estado: "TASK_STATE_SUBMITTED",
       a2aTaskId: "task-1",
       endpoint: ENTRADA_JSONRPC.url,
+      // Último `detalle` truncado de los tres polls fallidos por transporte —
+      // ya no muere en el `logEvent`, llega hasta el `ResultadoA2A` final
+      // (post-review PR2, Hallazgo 2).
+      detalle: "GetTask caído",
     });
+    // `CancelTask` ahora se dispara sin esperarlo (Hallazgo 4) — la llamada a
+    // `fetchFn` ocurre síncronamente dentro de `intentarCancelTask` antes de
+    // su primer `await`, así que ya está registrada acá.
     expect((fetchFn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(6);
 
+    // El `logEvent("a2a-cancel-intentado", ...)` sólo se dispara DESPUÉS de
+    // que `consultarOControlarTarea` resuelve — como ya no se espera antes de
+    // retornar, hace falta flushear microtasks (Hallazgo 4).
+    await vi.waitFor(() => {
+      expect(logEvent.mock.calls.some(([, evento]) => evento === "a2a-cancel-intentado")).toBe(true);
+    });
     const cancelCall = logEvent.mock.calls.find(([, evento]) => evento === "a2a-cancel-intentado");
     expect(cancelCall?.[2]).toEqual({ a2aTaskId: "task-1", ok: true });
 
@@ -434,6 +484,28 @@ describe("delegarTarea — loop de GetTask", () => {
     expect((fetchFn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(5);
   });
 
+  it("response.text() que rechaza en un GetTask exitoso (response.ok) no corta el loop y delegarTarea nunca rechaza", async () => {
+    const reloj = makeRelojFake();
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      taskResponse(taskSubmitted()),
+      { ok: true, status: 200, text: () => Promise.reject(new Error("stream cortado")) }, // GetTask #1
+      taskResponse(taskCompleted({ artifacts: [{ parts: [{ text: "ok" }] }] })), // GetTask #2
+    ]);
+    const deps = makeDeps({ fetchFn, ...reloj });
+
+    await expect(
+      delegarTarea({ destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" }, deps),
+    ).resolves.toEqual({
+      ok: true,
+      a2aTaskId: "task-1",
+      estado: "TASK_STATE_COMPLETED",
+      resultado: "ok",
+      agenteNombre: "Agente de Riesgo",
+      endpoint: ENTRADA_JSONRPC.url,
+    });
+  });
+
   it("sobre JSON-RPC con 'error' en GetTask clasifica como protocolo y corta el loop", async () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([CARD_JSONRPC, taskResponse(taskSubmitted()), errorEnvelopeResponse()]);
@@ -451,6 +523,23 @@ describe("delegarTarea — loop de GetTask", () => {
       a2aTaskId: "task-1",
     });
     expect((fetchFn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+  });
+
+  it("sobre JSON-RPC con 'error: null' explícito clasifica como éxito, no como protocolo", async () => {
+    const reloj = makeRelojFake();
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      taskResponse(taskSubmitted()),
+      errorNuloEnvelopeResponse(taskCompleted()),
+    ]);
+    const deps = makeDeps({ fetchFn, ...reloj });
+
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      deps,
+    );
+
+    expect(resultado.ok).toBe(true);
   });
 
   it.each(["ESTADO_INVENTADO", "TASK_STATE_UNSPECIFIED"])(

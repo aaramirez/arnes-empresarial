@@ -191,20 +191,23 @@ function extraerEndpointJsonRpc(card: unknown): string | undefined {
  * Paso 1 del ciclo (design.md §6.2): `GET <base>/.well-known/agent-card.json`,
  * exacto, sin caché — dos delegaciones hacen dos GET. Sin `url` de destino
  * JSON-RPC ⇒ `protocolo`, sin intentar `SendMessage`. Card inaccesible (red
- * caída o `!response.ok`) ⇒ `transporte`.
+ * caída o `!response.ok`) ⇒ `transporte`. El header `Authorization` se arma
+ * con `construirHeaders`, igual que las otras tres llamadas (post-review
+ * PR2, Hallazgo 6) — un destino que exige auth también para el card no debe
+ * fallar por falta de token.
  */
 async function resolverEndpointJsonRpc(input: {
-  readonly baseUrl: string;
+  readonly destino: DestinoA2AConfig;
   readonly fetchFn: FetchFn;
   readonly requestTimeoutMs: number;
 }): Promise<ResolucionAgentCard> {
-  const url = `${input.baseUrl}/.well-known/agent-card.json`;
+  const url = `${input.destino.baseUrl}/.well-known/agent-card.json`;
 
   let response: FetchResponseLike;
   try {
     response = await input.fetchFn(url, {
       method: "GET",
-      headers: {},
+      headers: construirHeaders(input.destino),
       signal: AbortSignal.timeout(input.requestTimeoutMs),
     });
   } catch {
@@ -247,7 +250,10 @@ function parsearSobreDeTarea(cuerpo: string): { readonly ok: true; readonly task
     return { ok: false };
   }
   const { result, error } = sobre as { readonly result?: unknown; readonly error?: unknown };
-  if (error !== undefined || typeof result !== "object" || result === null) {
+  // `error: null` explícito (algunos frameworks no estrictos serializan
+  // ambos campos) NO cuenta como error — sólo un valor presente y no nulo
+  // (post-review PR2, Hallazgo 5).
+  if ((error !== undefined && error !== null) || typeof result !== "object" || result === null) {
     return { ok: false };
   }
   return { ok: true, task: result as TaskLike };
@@ -333,6 +339,19 @@ type EnvioSendMessage =
   | { readonly ok: true; readonly task: TaskLike }
   | { readonly ok: false; readonly reason: "transporte" | "protocolo" };
 
+/**
+ * PURA. Defensa de contrato: un `FetchFn` real siempre resuelve un
+ * `FetchResponseLike`; si no lo hace (contrato violado), el llamador debe
+ * tratarlo como indeterminado — no reintentable — en vez de crashear leyendo
+ * `.ok` de algo que no es la respuesta esperada. Antes duplicada verbatim en
+ * `enviarSendMessage` y `consultarOControlarTarea` (post-review PR2, Hallazgo 3).
+ */
+function respetaContratoDeFetchResponse(response: unknown): response is FetchResponseLike {
+  return (
+    typeof response === "object" && response !== null && typeof (response as FetchResponseLike).ok === "boolean"
+  );
+}
+
 /** `Content-Type` fijo + `Authorization` opcional — compartido por los tres métodos JSON-RPC de este cliente. */
 function construirHeaders(destino: DestinoA2AConfig): Record<string, string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -385,11 +404,9 @@ async function enviarSendMessage(input: {
     return { ok: false, reason: "transporte" };
   }
 
-  // Defensa de contrato: un `FetchFn` real siempre resuelve un
-  // `FetchResponseLike`; si no lo hace (contrato violado), se trata como
-  // `protocolo` — indeterminado, no reintentable — en vez de crashear leyendo
-  // `.ok` de algo que no es la respuesta esperada.
-  if (typeof response !== "object" || response === null || typeof response.ok !== "boolean") {
+  // Defensa de contrato: `response` violando `FetchResponseLike` se trata
+  // como `protocolo` — indeterminado, no reintentable.
+  if (!respetaContratoDeFetchResponse(response)) {
     return { ok: false, reason: "protocolo" };
   }
 
@@ -397,7 +414,18 @@ async function enviarSendMessage(input: {
     return { ok: false, reason: "transporte" };
   }
 
-  const parsed = parsearSobreDeTarea(await response.text());
+  // `response.text()` puede rechazar si el stream del cuerpo se corta
+  // después de que las cabeceras llegaron bien — no es un problema de
+  // protocolo, es de transporte/lectura, mismo criterio que el resto de
+  // fallas de red (post-review PR2, Hallazgo 1; ADR 77 "nunca rechaza").
+  let cuerpo: string;
+  try {
+    cuerpo = await response.text();
+  } catch {
+    return { ok: false, reason: "transporte" };
+  }
+
+  const parsed = parsearSobreDeTarea(cuerpo);
   if (!parsed.ok) {
     return { ok: false, reason: "protocolo" };
   }
@@ -436,16 +464,31 @@ async function consultarOControlarTarea(input: {
     return { ok: false, reason: "transporte" };
   }
 
-  if (typeof response !== "object" || response === null || typeof response.ok !== "boolean") {
+  if (!respetaContratoDeFetchResponse(response)) {
     return { ok: false, reason: "protocolo" };
   }
 
+  // `response.text()` puede rechazar (stream cortado) en ambas ramas — se
+  // trata como `transporte`, igual que el resto de fallas de red (post-review
+  // PR2, Hallazgo 1; ADR 77 "nunca rechaza"). Sin `detalle` cuando rechaza:
+  // no hay cuerpo que truncar.
   if (!response.ok) {
-    const cuerpo = await response.text();
-    return { ok: false, reason: "transporte", detalle: truncate(cuerpo, ERROR_BODY_MAX_CHARS) };
+    try {
+      const cuerpo = await response.text();
+      return { ok: false, reason: "transporte", detalle: truncate(cuerpo, ERROR_BODY_MAX_CHARS) };
+    } catch {
+      return { ok: false, reason: "transporte" };
+    }
   }
 
-  const parsed = parsearSobreDeTarea(await response.text());
+  let cuerpo: string;
+  try {
+    cuerpo = await response.text();
+  } catch {
+    return { ok: false, reason: "transporte" };
+  }
+
+  const parsed = parsearSobreDeTarea(cuerpo);
   if (!parsed.ok) {
     return { ok: false, reason: "protocolo" };
   }
@@ -517,7 +560,7 @@ export async function delegarTarea(
   deps: A2AClientDeps,
 ): Promise<ResultadoA2A> {
   const cardResult = await resolverEndpointJsonRpc({
-    baseUrl: input.destino.baseUrl,
+    destino: input.destino,
     fetchFn: deps.fetchFn,
     requestTimeoutMs: deps.config.requestTimeoutMs,
   });
@@ -545,6 +588,14 @@ export async function delegarTarea(
   let tareaActual = sendResult.task;
   let idJsonRpc = 2; // `id: 1` ya usado por `SendMessage`.
   let intento = 0;
+  /**
+   * Último `detalle` de un poll fallido por transporte, truncado por
+   * `consultarOControlarTarea`. Antes moría en el `logEvent` de
+   * `a2a-poll-fallido`; ahora sobrevive hasta el `return` de `timeout` si el
+   * loop nunca se recupera — `ResultadoA2AFallo.detalle` existe justo para
+   * esto (post-review PR2, Hallazgo 2).
+   */
+  let ultimoDetalleTransporte: string | undefined;
 
   for (;;) {
     const estado = estadoDeTarea(tareaActual);
@@ -567,15 +618,32 @@ export async function delegarTarea(
     }
 
     if (deps.ahoraMs() >= deadline) {
-      await intentarCancelTask({
+      // Best-effort (Requirement "CancelTask es best-effort..."): NUNCA
+      // cambia el desenlace ya decidido como `timeout`, así que no vale la
+      // pena esperarlo — dispararlo sin `await` evita hasta `requestTimeoutMs`
+      // de latencia evitable al que llama (post-review PR2, Hallazgo 4).
+      // `.catch()` es una red de seguridad: `intentarCancelTask` no debería
+      // rechazar (su `consultarOControlarTarea` interno ya no rechaza tras
+      // el fix del Hallazgo 1), pero el transporte no puede confiar
+      // ciegamente en eso. Molde de `webhooks/server.ts` (`void onEvent(...).catch(...)`).
+      void intentarCancelTask({
         endpoint,
         destino: input.destino,
         taskId,
         idJsonRpc: idJsonRpc++,
         casoId: input.casoId,
         deps,
+      }).catch(() => {
+        // Red de seguridad — ver comentario arriba.
       });
-      return { ok: false, reason: "timeout", estado, a2aTaskId: taskId, endpoint };
+      return {
+        ok: false,
+        reason: "timeout",
+        estado,
+        a2aTaskId: taskId,
+        endpoint,
+        ...(ultimoDetalleTransporte !== undefined ? { detalle: ultimoDetalleTransporte } : {}),
+      };
     }
 
     await deps.dormir(deps.config.pollIntervalMs);
@@ -592,6 +660,7 @@ export async function delegarTarea(
       if (consulta.reason === "protocolo") {
         return { ok: false, reason: "protocolo", endpoint, a2aTaskId: taskId };
       }
+      ultimoDetalleTransporte = consulta.detalle;
       deps.logEvent(input.casoId, "a2a-poll-fallido", {
         a2aTaskId: taskId,
         reason: consulta.reason,
