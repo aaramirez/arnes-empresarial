@@ -22,6 +22,8 @@ export interface VentasConfig {
   readonly reembolsoUmbral: number;
   /** Horas. `0` = SIN vencimiento (`expires_at = NULL`) — el interruptor del ADR 10 de la propuesta. Default 72. */
   readonly tokenTtlHoras: number;
+  /** Validado `> 0`. `monto >= umbral` ⇒ venta grande ⇒ consulta de riesgo/crédito (ADR 83). */
+  readonly ventaGrandeUmbral: number;
 }
 
 export const DEFAULT_COMISION_PORCENTAJE = 0.1;
@@ -41,6 +43,10 @@ export const DEFAULT_VENTA_TOKEN_TTL_HORAS = 72;
  * que `MAX_SESION_TTL_MINUTOS` usa para minutos.
  */
 export const MAX_VENTA_TOKEN_TTL_HORAS = 87_600;
+/** Holgadamente por encima de `DEFAULT_REEMBOLSO_UMBRAL` (500): si toda venta
+ * escalable fuera además "grande", el umbral no seleccionaría nada. Número
+ * OPERATIVO (design.md §15 pto 3, ADR 83). */
+export const DEFAULT_VENTA_GRANDE_UMBRAL = 5_000;
 
 export type ResolveVentasConfigResult =
   | { readonly ok: true; readonly config: VentasConfig }
@@ -78,6 +84,7 @@ export function resolveNumeroValidado(
  * | `COMISION_PORCENTAJE` | `comisionPorcentaje` | `0.1` | finito, `> 0`, `<= 1` | **ABORTA** |
  * | `REEMBOLSO_UMBRAL` | `reembolsoUmbral` | `500` | finito, `> 0` | **ABORTA** |
  * | `VENTA_TOKEN_TTL_HORAS` | `tokenTtlHoras` | `72` | entero finito, `>= 0`, `<= MAX_VENTA_TOKEN_TTL_HORAS` | **ABORTA** |
+ * | `VENTA_GRANDE_UMBRAL` | `ventaGrandeUmbral` | `5_000` | finito, `> 0` | **ABORTA** |
  *
  * Ausente o cadena vacía → default (no es un error: no configurar es un modo
  * válido). Presente pero inválido → error, con el nombre de la variable y el
@@ -115,12 +122,21 @@ export function resolveVentasConfig(
     errores,
   );
 
+  const ventaGrandeUmbral = resolveNumeroValidado(
+    "VENTA_GRANDE_UMBRAL",
+    env.VENTA_GRANDE_UMBRAL,
+    DEFAULT_VENTA_GRANDE_UMBRAL,
+    (parsed) => parsed > 0,
+    "un número finito mayor a 0",
+    errores,
+  );
+
   if (errores.length > 0) {
     return { ok: false, errores };
   }
 
   return {
     ok: true,
-    config: { comisionPorcentaje, reembolsoUmbral, tokenTtlHoras },
+    config: { comisionPorcentaje, reembolsoUmbral, tokenTtlHoras, ventaGrandeUmbral },
   };
 }

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   DEVELOPER_AGENT_ID,
@@ -7,7 +8,6 @@ import {
 } from "../agents/definitions.js";
 import type { InsumoDelegado, InvocacionSubagenteResult, InvocarSubagente } from "../agents/subagents.js";
 import {
-  DelegacionA2ANoImplementadaError,
   SubagenteDesconocidoError,
   despacharCadena,
   despacharDelegacion,
@@ -20,9 +20,11 @@ import {
 
 /**
  * Hito 5, tarea 7 (§5.4 parte 1 — tipos y resolución). Solo `resolverDestino`
- * y las dos clases de error tipado; `despacharDelegacion`/`despacharCadena`
- * (§5.4 parte 2) se agregan en la tarea 8, sobre este mismo archivo. Sin
- * fixture de LLM — nada acá invoca `InvocarSubagente`.
+ * y su clase de error tipado (`SubagenteDesconocidoError` — la otra,
+ * `DelegacionA2ANoImplementadaError`, se borró en Hito 6 tarea 13 al saldar
+ * la deuda del ADR 45); `despacharDelegacion`/`despacharCadena` (§5.4 parte
+ * 2) se agregan en la tarea 8, sobre este mismo archivo. Sin fixture de LLM
+ * — nada acá invoca `InvocarSubagente`.
  */
 
 describe("resolverDestino", () => {
@@ -42,16 +44,58 @@ describe("resolverDestino", () => {
     expect(destino).not.toBeInstanceOf(Promise);
     expect(typeof (destino as { then?: unknown }).then).not.toBe("function");
   });
+
+  it("post-refactor (Hito 6, tarea 13): sigue devolviendo {kind: 'in-process', agentId} para todo id registrado — comportamiento sin cambios tras saldar la deuda del ADR 45", () => {
+    for (const id of [PLANNER_AGENT_ID, DEVELOPER_AGENT_ID, REVIEWER_AGENT_ID]) {
+      expect(resolverDestino(id)).toEqual({ kind: "in-process", agentId: id });
+    }
+  });
 });
 
-describe("DelegacionA2ANoImplementadaError", () => {
-  it("es una clase de Error con nombre propio", () => {
-    const destino = { kind: "a2a" as const, agentId: "rol-a2a", endpoint: "https://a2a.ejemplo/invocar" };
+describe("dispatch-delegation.ts — límite estructural (Hito 6, tarea 13, ADR 78 pto 1-2)", () => {
+  it("el código fuente no exporta DelegacionA2ANoImplementadaError (deuda del ADR 45 saldada)", () => {
+    const source = readFileSync(new URL("./dispatch-delegation.ts", import.meta.url), "utf8");
 
-    const error = new DelegacionA2ANoImplementadaError(destino);
+    expect(source).not.toMatch(/DelegacionA2ANoImplementadaError/);
+  });
 
-    expect(error).toBeInstanceOf(Error);
-    expect(error.name).toBe("DelegacionA2ANoImplementadaError");
+  // Nota (ADR 78 pto 2): pasar `{ kind: "a2a", clave: ... }` como
+  // `input.destino` de `despacharDelegacion` es, desde este cambio, un ERROR
+  // DE COMPILACIÓN — `input.destino?` está angostado a
+  // `Extract<DestinoDelegacion, { kind: "in-process" }>`. Un test en runtime
+  // no puede demostrar un rechazo de compilación; la evidencia es
+  // `npm run typecheck` (`tsc --noEmit`), no un `it` acá.
+
+  it("constancia HOY: un destino {kind:'a2a'} colado con un cast NO frena nada en runtime — `input.destino` no se lee, el despacho lo gobierna agentId solo (ADR 78 pto 2 es protección de TIPO, no de runtime)", async () => {
+    const callOrder: string[] = [];
+    const deps: DespacharDelegacionDeps = {
+      store: makeStore(callOrder),
+      invocar: makeInvocar(callOrder, { responseText: "listo", sdkSessionId: "sdk-1" }),
+      getSubagente: getSubagentDefinition,
+      newId: makeNewId(),
+      now: () => "2026-09-08T00:00:00.000Z",
+      logEvent: vi.fn(),
+    };
+    // Solo alcanzable saltándose el tipo: `input.destino` está angostado a
+    // `Extract<DestinoDelegacion, { kind: "in-process" }>` (ADR 78 pto 2), así
+    // que un destino `a2a` acá es, en código real, un error de compilación.
+    const destinoA2AColado = { kind: "a2a", clave: "riesgo-credito" } as unknown as NonNullable<
+      Parameters<typeof despacharDelegacion>[0]["destino"]
+    >;
+
+    await despacharDelegacion(
+      { casoId: "caso-1", agentId: PLANNER_AGENT_ID, insumo: insumoDePrueba, destino: destinoA2AColado },
+      deps,
+    );
+
+    // HOY esto SÍ se ejecuta: `despacharDelegacion` nunca desestructura
+    // `input.destino` en su cuerpo, así que el valor colado queda sin leer y
+    // el despacho procede igual que si `destino` no se hubiese pasado,
+    // gobernado enteramente por `agentId`. No hay guard de runtime — el
+    // ÚNICO freno es el tipo. Ver reporte del Implementer (hallazgo 3): esto
+    // no es un bug a arreglar acá, solo la constancia de lo que hay.
+    expect(deps.store.crearDelegacion).toHaveBeenCalledTimes(1);
+    expect(deps.invocar).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -135,25 +179,6 @@ describe("despacharDelegacion", () => {
     );
 
     expect(callOrder).toEqual(["crear", "invocar", "completar"]);
-  });
-
-  it("destino a2a lanza DelegacionA2ANoImplementadaError antes de crear ninguna fila (sin importar src/adapters/a2a/)", async () => {
-    const deps = makeDeps();
-    const destino = {
-      kind: "a2a" as const,
-      agentId: "rol-a2a",
-      endpoint: "https://a2a.ejemplo/invocar",
-    };
-
-    await expect(
-      despacharDelegacion(
-        { casoId: "caso-1", agentId: "rol-a2a", insumo: insumoDePrueba, destino },
-        deps,
-      ),
-    ).rejects.toThrow(DelegacionA2ANoImplementadaError);
-
-    expect(deps.store.crearDelegacion).not.toHaveBeenCalled();
-    expect(deps.invocar).not.toHaveBeenCalled();
   });
 
   it("falla del invocador deja la fila sin resultado, propaga sin revertir, sin tocar el estado canónico", async () => {

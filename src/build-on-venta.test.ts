@@ -14,7 +14,12 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { buildOnVenta, createVentaStore, type BuildOnVentaDeps } from "./build-on-venta.js";
+import {
+  buildOnVenta,
+  createConsultaRiesgoCredito,
+  createVentaStore,
+  type BuildOnVentaDeps,
+} from "./build-on-venta.js";
 import {
   CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
   CASO_TIPO_VENTA,
@@ -22,6 +27,7 @@ import {
   VENTA_ESTADO_REEMBOLSADA,
   VENTA_ESTADO_REEMBOLSO_PENDIENTE,
   VENTA_ESTADO_REEMBOLSO_RECHAZADO,
+  type ConsultaRiesgoCreditoPort,
   type CrearVentaConCasoInput,
   type NotificacionResultado,
   type Venta,
@@ -32,6 +38,24 @@ import type { RegistrarVentaInput } from "./core/ventas/registrar-venta.js";
 import { DECISION_CONFIRMAR } from "./core/ventas/confirmar-venta.js";
 import type { VentasConfig } from "./core/ventas/ventas-config.js";
 import { openDatabase } from "./adapters/memory/db.js";
+import { despacharDelegacionA2A } from "./core/turn-selector/dispatch-delegation-a2a.js";
+import type { ClienteA2APort } from "./core/agents/a2a-contract.js";
+
+/**
+ * Mockeamos SOLO `despacharDelegacionA2A` (el resto del módulo, incluido
+ * `resolverDestinoA2A`, queda REAL) para forzar los dos desenlaces que
+ * `createConsultaRiesgoCredito` tiene que traducir sin nunca rechazar ni
+ * lanzar (Hito 6, tarea 16): una promesa que rechaza Y un `throw` SÍNCRONO.
+ * Este segundo caso es IMPOSIBLE de producir con la función real (una
+ * `async function` nunca lanza sincrónicamente a su llamador — cualquier
+ * excepción temprana en su cuerpo se envuelve en un rechazo), así que
+ * mockear es la única forma honesta de ejercitarlo.
+ */
+vi.mock("./core/turn-selector/dispatch-delegation-a2a.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./core/turn-selector/dispatch-delegation-a2a.js")>();
+  return { ...actual, despacharDelegacionA2A: vi.fn() };
+});
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
 const BASE_URL = "https://ventas.example.com";
@@ -80,7 +104,13 @@ function makeNotifier(overrides: Partial<VentaNotifierPort> = {}): VentaNotifier
 }
 
 function makeConfig(overrides: Partial<VentasConfig> = {}): VentasConfig {
-  return { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ...overrides };
+  return {
+    comisionPorcentaje: 0.1,
+    reembolsoUmbral: 500,
+    tokenTtlHoras: 72,
+    ventaGrandeUmbral: 5000,
+    ...overrides,
+  };
 }
 
 function makeAltaInput(overrides: Partial<RegistrarVentaInput> = {}): RegistrarVentaInput {
@@ -527,5 +557,116 @@ describe("buildOnVenta + createVentaStore sobre SQLite real — cierre de R4/§8
       .prepare("SELECT COUNT(*) as total FROM comisiones WHERE venta_id = ?")
       .get(venta.id) as { total: number };
     expect(fila.total).toBe(1);
+  });
+});
+
+function makeCliente(overrides: Partial<ClienteA2APort> = {}): ClienteA2APort {
+  return {
+    baseUrlDe: vi.fn(() => "https://riesgo-credito.example.com"),
+    delegar: vi.fn(),
+    ...overrides,
+  };
+}
+
+const CONSULTAR_INPUT = {
+  casoId: "caso-1",
+  ventaId: "venta-1",
+  clienteId: "cliente-opaco-1",
+  planNuevo: "plan-premium",
+  monto: 6000,
+};
+
+describe("createConsultaRiesgoCredito — try/catch TOTAL, molde exacto de createNotificadorAdapter (Hito 6, tarea 16)", () => {
+  afterEach(() => {
+    vi.mocked(despacharDelegacionA2A).mockReset();
+  });
+
+  it("nunca rechaza si despacharDelegacionA2A devuelve una promesa que rechaza", async () => {
+    vi.mocked(despacharDelegacionA2A).mockRejectedValueOnce(new Error("fallo async inesperado"));
+    const logEvent = vi.fn();
+    const port = createConsultaRiesgoCredito({ db: fakeDb(), cliente: makeCliente(), logEvent });
+
+    await expect(port.consultar(CONSULTAR_INPUT)).resolves.toBeUndefined();
+    expect(logEvent).toHaveBeenCalledWith(
+      CONSULTAR_INPUT.casoId,
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
+  it("nunca lanza si despacharDelegacionA2A tira una excepción SÍNCRONA (no sólo una promesa rechazada)", async () => {
+    vi.mocked(despacharDelegacionA2A).mockImplementationOnce(() => {
+      throw new Error("fallo síncrono inesperado");
+    });
+    const logEvent = vi.fn();
+    const port = createConsultaRiesgoCredito({ db: fakeDb(), cliente: makeCliente(), logEvent });
+
+    // `expect().resolves` sólo tiene sentido si `consultar(...)` en sí no
+    // lanza al invocarla — es la aserción de que el `try/catch` atrapó el
+    // throw síncrono ANTES de que escapara como excepción del llamador.
+    await expect(port.consultar(CONSULTAR_INPUT)).resolves.toBeUndefined();
+    expect(logEvent).toHaveBeenCalledWith(
+      CONSULTAR_INPUT.casoId,
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
+  it("el insumo que arma es fijo en código: NUNCA incluye clienteEmail", async () => {
+    vi.mocked(despacharDelegacionA2A).mockResolvedValueOnce({
+      delegacionId: "delegacion-1",
+      destinoClave: "riesgo-credito",
+      a2aTaskId: "task-1",
+      agenteNombre: "Riesgo Bot",
+      tareaDelegada: "tarea",
+      resultado: "bajo riesgo",
+    });
+    const port = createConsultaRiesgoCredito({
+      db: fakeDb(),
+      cliente: makeCliente(),
+      logEvent: vi.fn(),
+    });
+
+    await port.consultar({ ...CONSULTAR_INPUT, planAnterior: "plan-basico" });
+
+    const llamada = vi.mocked(despacharDelegacionA2A).mock.calls[0]?.[0];
+    expect(llamada?.casoId).toBe(CONSULTAR_INPUT.casoId);
+    expect(llamada?.destino).toEqual({ kind: "a2a", clave: "riesgo-credito" });
+    expect(llamada?.insumo.material).not.toMatch(/clienteEmail|@example\.com/);
+    expect(llamada?.insumo.material).toMatch(/ventaId: venta-1/);
+    expect(llamada?.insumo.material).toMatch(/clienteId: cliente-opaco-1/);
+    expect(llamada?.insumo.material).toMatch(/planAnterior: plan-basico/);
+    expect(llamada?.insumo.material).toMatch(/planNuevo: plan-premium/);
+    expect(llamada?.insumo.material).toMatch(/monto: 6000/);
+  });
+});
+
+describe("buildOnVenta — BuildOnVentaDeps.riesgoCredito (Hito 6, tarea 16)", () => {
+  it("con riesgoCredito ausente, el handler de onAltaVenta es exactamente el mismo que el de v2.1.0 (sin regresión)", async () => {
+    const store = makeStore();
+    const config = makeConfig({ ventaGrandeUmbral: 100 });
+    // Deliberadamente SIN `riesgoCredito` en BuildOnVentaDeps.
+    const handlers = buildOnVenta(makeDeps({ store, ventasConfig: config }));
+
+    const resultado = await handlers.onAltaVenta(makeAltaInput({ monto: 999_999 }));
+
+    expect(resultado.casoId).toBeDefined();
+    expect(resultado.notificado).toBe(true);
+  });
+
+  it("con riesgoCredito presente y monto >= umbral, buildOnVenta lo pasa a registrarVenta (dispara consultar sin bloquear onAltaVenta)", async () => {
+    const consultar = vi.fn(
+      (_input: Parameters<ConsultaRiesgoCreditoPort["consultar"]>[0]) => new Promise<void>(() => {}),
+    ); // nunca resuelve
+    const riesgoCredito: ConsultaRiesgoCreditoPort = { consultar };
+    const store = makeStore();
+    const config = makeConfig({ ventaGrandeUmbral: 100 });
+    const handlers = buildOnVenta(makeDeps({ store, ventasConfig: config, riesgoCredito }));
+
+    const resultado = await handlers.onAltaVenta(makeAltaInput({ monto: 999_999 }));
+
+    expect(resultado.casoId).toBeDefined();
+    expect(consultar).toHaveBeenCalledTimes(1);
+    expect(consultar.mock.calls[0]?.[0]).not.toHaveProperty("clienteEmail");
   });
 });

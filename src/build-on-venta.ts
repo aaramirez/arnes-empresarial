@@ -41,6 +41,7 @@ import {
   VENTA_ESTADOS,
   type Comision,
   type ConfirmacionAplicada,
+  type ConsultaRiesgoCreditoPort,
   type Venta,
   type VentaEstado,
   type VentaNotifierPort,
@@ -58,12 +59,25 @@ import { validarTokenConfirmacion } from "./core/ventas/token-confirmacion.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import {
+  despacharDelegacionA2A,
+  resolverDestinoA2A,
+  type DelegacionA2AStorePort,
+} from "./core/turn-selector/dispatch-delegation-a2a.js";
+import {
+  DelegacionA2ANoCompletadaError,
+  DESTINO_A2A_RIESGO_CREDITO,
+  type ClienteA2APort,
+} from "./core/agents/a2a-contract.js";
+import { type InsumoDelegado } from "./core/agents/subagents.js";
+import {
+  actualizarDelegacionA2A,
   aprobarEscalacionReembolso,
   aprobarReembolso,
   confirmarVentaConComision,
   createVentaConCaso,
   escalarReembolso,
   findVentaByToken,
+  insertDelegacionA2A,
   listEscalacionesReembolso,
   reabrirEscalacionReembolso,
   rechazarEscalacionReembolso,
@@ -82,6 +96,8 @@ export interface BuildOnVentaDeps {
   readonly logDeps?: LogTurnEventDeps; // omitir en producción (default: archivo)
   /** Inyectable solo para el test; default: `createVentaStore(db)`. */
   readonly store?: VentaStorePort;
+  /** Ausente ⇒ A2A apagado ⇒ `registrarVenta` no evalúa el umbral (ADR 82 pto 3). */
+  readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
 }
 
 export interface VentaHandlers {
@@ -238,6 +254,97 @@ export function createVentaStore(db: Database.Database): VentaStorePort {
 }
 
 /**
+ * `DelegacionA2AStorePort` por closures sobre `repository.ts` (Hito 6,
+ * tarea 16, design.md §7.3) — mismo patrón, y mismo lugar, que
+ * `createDelegacionStore` (`build-on-activity.ts:238`): dos delegaciones
+ * directas sin lógica propia sobre `insertDelegacionA2A`/
+ * `actualizarDelegacionA2A` (tarea 10). `crearDelegacionA2A` completa
+ * `updatedAt` con el mismo valor que `createdAt` — el puerto no expone un
+ * campo separado para el alta, y la fila recién insertada no tiene aún
+ * ninguna actualización distinta de su creación (mismo criterio que
+ * `caso`/`venta` de `crearVentaConCaso` más arriba, que también completan
+ * `createdAt`/`updatedAt` con el mismo `timestamp`).
+ */
+export function createDelegacionA2AStore(db: Database.Database): DelegacionA2AStorePort {
+  return {
+    crearDelegacionA2A(input) {
+      insertDelegacionA2A(db, { ...input, updatedAt: input.createdAt });
+    },
+    actualizarDelegacionA2A(input) {
+      actualizarDelegacionA2A(db, input);
+    },
+  };
+}
+
+/**
+ * Cierra `despacharDelegacionA2A` (núcleo) sobre `createDelegacionA2AStore`
+ * y el Cliente A2A, y lo envuelve en el `try/catch` TOTAL que hace de esta
+ * consulta algo INFORMATIVO (ADR 76 pto 4-5, design.md §7.3) — molde exacto
+ * de `createNotificadorAdapter` (`adapters/notificaciones/index.ts:74`):
+ * traduce cualquier `DelegacionA2ANoCompletadaError` o throw inesperado —
+ * incluido uno SÍNCRONO (p. ej. si `crearDelegacionA2A`/
+ * `actualizarDelegacionA2A` propagan por una base que no acepta la
+ * escritura, ADR 80 pto 4) — a un evento y devuelve sin propagar.
+ * **Nunca rechaza, nunca lanza.**
+ *
+ * El insumo (`instruccion` + `material`) es FIJO EN CÓDIGO — nunca del
+ * modelo, nunca de un prompt libre — construido únicamente a partir de
+ * `ventaId`/`clienteId`/`planAnterior?`/`planNuevo`/`monto` (design.md
+ * §7.3). `clienteEmail` NUNCA entra acá: ni siquiera es un campo de
+ * `ConsultaRiesgoCreditoPort.consultar` (ADR 18 pto 4, ya excluido desde
+ * `registrar-venta.ts` en la tarea 15).
+ */
+export function createConsultaRiesgoCredito(deps: {
+  readonly db: Database.Database;
+  readonly cliente: ClienteA2APort;
+  readonly newId?: () => string; // default: randomUUID
+  readonly now?: () => string; // default: () => new Date().toISOString()
+  readonly logEvent: (
+    casoId: string,
+    event: string,
+    fields?: Readonly<Record<string, unknown>>,
+  ) => void;
+}): ConsultaRiesgoCreditoPort {
+  const { cliente, logEvent } = deps;
+  const newId = deps.newId ?? randomUUID;
+  const now = deps.now ?? (() => new Date().toISOString());
+  const store = createDelegacionA2AStore(deps.db);
+
+  return {
+    async consultar(input) {
+      try {
+        const insumo: InsumoDelegado = {
+          instruccion:
+            "Verificá el riesgo crediticio del cliente para esta venta y devolvé una evaluación breve.",
+          material: [
+            `ventaId: ${input.ventaId}`,
+            `clienteId: ${input.clienteId}`,
+            ...(input.planAnterior !== undefined ? [`planAnterior: ${input.planAnterior}`] : []),
+            `planNuevo: ${input.planNuevo}`,
+            `monto: ${input.monto}`,
+          ].join("\n"),
+        };
+
+        await despacharDelegacionA2A(
+          {
+            casoId: input.casoId,
+            destino: resolverDestinoA2A(DESTINO_A2A_RIESGO_CREDITO),
+            insumo,
+          },
+          { store, cliente, newId, now, logEvent },
+        );
+      } catch (error) {
+        const reason = error instanceof DelegacionA2ANoCompletadaError ? error.reason : "unknown";
+        logEvent(input.casoId, "a2a-riesgo-credito-fallida", {
+          reason,
+          ...(error instanceof DelegacionA2ANoCompletadaError ? {} : { message: String(error) }),
+        });
+      }
+    },
+  };
+}
+
+/**
  * Ejecuta `run` INMEDIATAMENTE (nunca cede al event loop antes de terminar)
  * y traduce su resultado — o la excepción que lance — al canal de una
  * `Promise` ya resuelta o ya rechazada. Ver el module doc de arriba para por
@@ -267,7 +374,7 @@ function toPromise<T>(run: () => T): Promise<T> {
  * ser un oráculo que el `POST` no es (R6).
  */
 export function buildOnVenta(deps: BuildOnVentaDeps): VentaHandlers {
-  const { db, notifier, ventasConfig, baseUrlPublica, logDeps } = deps;
+  const { db, notifier, ventasConfig, baseUrlPublica, logDeps, riesgoCredito } = deps;
   const newId = deps.newId ?? randomUUID;
   const newToken = deps.newToken ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
@@ -286,6 +393,7 @@ export function buildOnVenta(deps: BuildOnVentaDeps): VentaHandlers {
         newToken,
         now,
         logEvent,
+        ...(riesgoCredito !== undefined ? { riesgoCredito } : {}),
       }),
 
     onConsultaVenta: (token) =>

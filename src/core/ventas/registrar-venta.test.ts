@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CASO_TIPO_VENTA,
   VENTA_ESTADO_PENDIENTE_CONFIRMACION,
+  type ConsultaRiesgoCreditoPort,
   type CrearVentaConCasoInput,
   type NotificacionResultado,
   type Venta,
@@ -87,7 +88,7 @@ function makeDeps(overrides: Partial<RegistrarVentaDeps> = {}): RegistrarVentaDe
   return {
     store: makeStore(),
     notifier: makeNotifier(),
-    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 },
+    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
     baseUrlPublica: BASE_URL,
     newId: vi.fn(() => `id-${++contadorId}`),
     newToken: vi.fn(() => "token-fijo"),
@@ -154,7 +155,7 @@ describe("registrarVenta", () => {
     const store = makeStore();
     const deps = makeDeps({
       store,
-      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72 },
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
     });
 
     await registrarVenta(makeInput(), deps);
@@ -169,7 +170,7 @@ describe("registrarVenta", () => {
     const store = makeStore();
     const deps = makeDeps({
       store,
-      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 0 },
+      config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 0, ventaGrandeUmbral: 5000 },
     });
 
     await registrarVenta(makeInput(), deps);
@@ -259,5 +260,115 @@ describe("registrarVenta", () => {
     // si el módulo intentara usarlos, este test fallaría en tiempo de tipado
     // o de ejecución por falta de la dependencia.
     expect(deps.store.crearVentaConCaso).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Spec `venta-confirmacion` (delta ADDED), requirement "`registrarVenta`
+ * delega una verificación de riesgo/crédito por A2A cuando el monto alcanza
+ * el umbral de venta grande..." (Hito 6, tarea 15, ADR 76/82 pto 3). Puerto
+ * fake + promesa colgada para probar el no-bloqueo (ADR 76/R3) — nunca SQLite
+ * ni red real, mismo criterio que el resto del archivo.
+ */
+describe("registrarVenta — consulta de riesgo/crédito A2A no bloqueante (Hito 6, tarea 15)", () => {
+  function makeRiesgoCredito(
+    overrides: Partial<ConsultaRiesgoCreditoPort> = {},
+  ): ConsultaRiesgoCreditoPort {
+    return {
+      consultar: vi.fn(async () => undefined),
+      ...overrides,
+    };
+  }
+
+  it("monto por debajo del umbral: cero llamadas a consultar", async () => {
+    const riesgoCredito = makeRiesgoCredito();
+    const deps = makeDeps({ riesgoCredito });
+
+    await registrarVenta(makeInput({ monto: 4999 }), deps);
+
+    expect(riesgoCredito.consultar).not.toHaveBeenCalled();
+  });
+
+  it("monto exactamente igual al umbral SÍ dispara la consulta (>=, no >)", async () => {
+    const riesgoCredito = makeRiesgoCredito();
+    const deps = makeDeps({ riesgoCredito });
+
+    await registrarVenta(makeInput({ monto: 5000 }), deps);
+
+    expect(riesgoCredito.consultar).toHaveBeenCalledTimes(1);
+  });
+
+  it("riesgoCredito ausente: comportamiento idéntico a v2.1.0, aunque el monto supere el umbral", async () => {
+    // `riesgoCredito` no se pasa: `makeDeps` lo deja ausente por default,
+    // igual que en todo el resto del archivo (comportamiento de v2.1.0).
+    const deps = makeDeps();
+
+    const resultado = await registrarVenta(makeInput({ monto: 10_000 }), deps);
+
+    expect(resultado.notificado).toBe(true);
+  });
+
+  it("la consulta se invoca ANTES de notificarLinkConfirmacion (orden)", async () => {
+    const callOrder: string[] = [];
+    const riesgoCredito = makeRiesgoCredito({
+      consultar: vi.fn(async () => {
+        callOrder.push("riesgoCredito.consultar");
+      }),
+    });
+    const notifier = makeNotifier({
+      notificarLinkConfirmacion: vi.fn(async (): Promise<NotificacionResultado> => {
+        callOrder.push("notifier.notificarLinkConfirmacion");
+        return { enviado: true };
+      }),
+    });
+    const deps = makeDeps({ riesgoCredito, notifier });
+
+    await registrarVenta(makeInput({ monto: 10_000 }), deps);
+
+    expect(callOrder).toEqual(["riesgoCredito.consultar", "notifier.notificarLinkConfirmacion"]);
+  });
+
+  it("un consultar que NUNCA resuelve no bloquea registrarVenta (no-bloqueo, ADR 76/R3)", async () => {
+    const riesgoCredito = makeRiesgoCredito({
+      consultar: vi.fn(() => new Promise<void>(() => {})),
+    });
+    const deps = makeDeps({ riesgoCredito });
+
+    const resultado = await registrarVenta(makeInput({ monto: 10_000 }), deps);
+
+    expect(resultado.notificado).toBe(true);
+  });
+
+  it("un consultar que rechaza no propaga, y se loguea a2a-riesgo-credito-contrato-violado", async () => {
+    const riesgoCredito = makeRiesgoCredito({
+      consultar: vi.fn(() => Promise.reject(new Error("el puerto violó su contrato"))),
+    });
+    const deps = makeDeps({ riesgoCredito });
+
+    const resultado = await registrarVenta(makeInput({ monto: 10_000 }), deps);
+    // Deja que el `.catch()` de la promesa disparada (no awaiteada) corra: es
+    // una cadena de microtasks separada de la que `registrarVenta` awaitea.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resultado.notificado).toBe(true);
+    expect(deps.logEvent).toHaveBeenCalledWith(
+      resultado.casoId,
+      "a2a-riesgo-credito-contrato-violado",
+      expect.objectContaining({ ventaId: resultado.ventaId }),
+    );
+  });
+
+  it("clienteEmail NUNCA viaja en el insumo pasado a consultar", async () => {
+    const riesgoCredito = makeRiesgoCredito();
+    const deps = makeDeps({ riesgoCredito });
+
+    await registrarVenta(
+      makeInput({ monto: 10_000, clienteEmail: "secreto@example.com" }),
+      deps,
+    );
+
+    const inputRecibido = vi.mocked(riesgoCredito.consultar).mock.calls[0]?.[0];
+    expect(inputRecibido).toBeDefined();
+    expect(inputRecibido).not.toHaveProperty("clienteEmail");
   });
 });
