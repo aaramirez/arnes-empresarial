@@ -5,6 +5,7 @@ import {
   construirTareaDelegada,
   TAREA_DELEGADA_MAX_CHARS,
   TAREA_TRUNCADA_SUFIJO,
+  truncarTareaDelegada,
   type InsumoDelegado,
   type InvocarSubagente,
 } from "./subagents.js";
@@ -98,6 +99,23 @@ describe("construirTareaDelegada — truncado con TAREA_DELEGADA_MAX_CHARS", () 
     );
     // El material completo sin truncar no debe aparecer literal en el resultado.
     expect(resultado.includes("M".repeat(TAREA_DELEGADA_MAX_CHARS + 1))).toBe(false);
+  });
+});
+
+/**
+ * Hito 6, tarea 11 (`design.md` §5.4). `truncarTareaDelegada` pasa a
+ * exportada para que `dispatch-delegation-a2a.ts` (tarea 12) la reuse sin
+ * duplicar el truncado. Mismo comportamiento que ya se prueba indirectamente
+ * vía `construirTareaDelegada` — acá se ejercita directo, vía import.
+ */
+describe("truncarTareaDelegada — reuso externo (exportada)", () => {
+  it("trunca un texto más largo que TAREA_DELEGADA_MAX_CHARS agregando TAREA_TRUNCADA_SUFIJO", () => {
+    const textoLargo = "X".repeat(TAREA_DELEGADA_MAX_CHARS + 500);
+    const resultado = truncarTareaDelegada(textoLargo);
+
+    expect(resultado).toBe(
+      `${textoLargo.slice(0, TAREA_DELEGADA_MAX_CHARS)}${TAREA_TRUNCADA_SUFIJO}`,
+    );
   });
 });
 

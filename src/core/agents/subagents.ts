@@ -49,7 +49,7 @@ export interface InsumoDelegado {
 }
 
 /** Trunca `texto` a `TAREA_DELEGADA_MAX_CHARS`, agregando `TAREA_TRUNCADA_SUFIJO` cuando se corta. */
-function truncarTareaDelegada(texto: string): string {
+export function truncarTareaDelegada(texto: string): string {
   if (texto.length <= TAREA_DELEGADA_MAX_CHARS) {
     return texto;
   }
