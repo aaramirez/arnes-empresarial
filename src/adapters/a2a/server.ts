@@ -34,6 +34,12 @@
  * sin reabrir esta.
  */
 import { timingSafeEqual } from "node:crypto";
+import {
+  TASK_STATE_CANCELED,
+  TASK_STATE_COMPLETED,
+  TASK_STATE_FAILED,
+  TASK_STATE_REJECTED,
+} from "../../core/agents/a2a-contract.js";
 import { construirAgentCard } from "./agent-card.js";
 import {
   A2A_SERVER_LOG_CORRELATION_ID,
@@ -78,6 +84,61 @@ export interface A2AHttpServerLike {
 export type CreateA2AServerFn = (
   listener: (req: A2ARequest, res: A2AResponse) => void,
 ) => A2AHttpServerLike;
+
+/**
+ * Vista mínima de una fila de `solicitudes_a2a_entrantes` (design.md §7.2,
+ * tarea 7) que `construirTask` necesita para armar el `Task` de respuesta
+ * (Hito 7, tarea 11, ADR 93). `estado` es el vocabulario `TASK_STATE_*`
+ * CRUDO tal cual se persiste (nunca traducido) — mismo criterio que
+ * `SolicitudA2AEntranteRow.estado` en `repository.ts`. `contextId` llega YA
+ * RESUELTO por quien arma esta vista (`onConsultarTarea`, Hito 7 tarea 15):
+ * `casoId ?? a2aTaskId` se calcula ahí, no acá — `construirTask` sólo copia
+ * el valor tal cual (design.md líneas 648-654, ajuste post-checkpoint sobre
+ * tarea 11). `resultado` ausente cuando la fila no tiene caso completado
+ * (única fila sin caso: `REJECTED`, ADR 90 pto 4) o no completó todavía.
+ */
+export interface SolicitudA2AEntranteVista {
+  readonly a2aTaskId: string;
+  readonly contextId: string;
+  readonly estado: string;
+  readonly resultado?: string | undefined;
+  readonly updatedAt: string;
+}
+
+interface TaskTextPartJson {
+  readonly text: string;
+}
+
+interface TaskStatusMessageJson {
+  readonly messageId: string;
+  readonly parts: readonly [TaskTextPartJson];
+}
+
+interface TaskArtifactJson {
+  readonly artifactId: string;
+  readonly name: string;
+  readonly parts: readonly [TaskTextPartJson];
+}
+
+interface TaskStatusJson {
+  readonly state: string;
+  readonly timestamp: string;
+  readonly message?: TaskStatusMessageJson;
+}
+
+/**
+ * Recorte del `Task` del protocolo A2A que este servidor DEVUELVE (design.md
+ * §6.3, ADR 93) — sólo los campos que `construirTask` produce y que nuestro
+ * propio Cliente A2A (`client.ts:130-134`, `TaskLike`) efectivamente lee:
+ * `id`, `contextId`, `status.state`/`status.timestamp`/`status.message`,
+ * `artifacts`. Sin `history` (ADR 93 pto 7).
+ */
+export interface TaskJson {
+  readonly id: string;
+  readonly contextId: string;
+  readonly status: TaskStatusJson;
+  readonly artifacts?: readonly [TaskArtifactJson];
+}
 
 /**
  * `req.url` recortado en el primer `?` — duplicado a propósito del mismo
@@ -352,4 +413,66 @@ export function createRequestListener(
     res.statusCode = 404;
     res.end();
   };
+}
+
+/**
+ * Texto fijo de `status.message` para los tres terminales de FRACASO
+ * (design.md ADR 93 pto 3) — constantes de módulo, nunca strings del modelo.
+ * `TASK_STATE_SUBMITTED`/`TASK_STATE_WORKING` no aparecen acá a propósito
+ * (ADR 93 pto 4: ninguno de los dos lleva `status.message`).
+ */
+const TEXTO_STATUS_MESSAGE_FRACASO: Readonly<Record<string, string>> = {
+  [TASK_STATE_FAILED]: "El turno del arnés no pudo completarse.",
+  [TASK_STATE_CANCELED]: "La tarea fue cancelada por el llamador.",
+  [TASK_STATE_REJECTED]: "El arnés está al máximo de solicitudes en curso. Reintentá más tarde.",
+};
+
+/**
+ * `construirTask` (Hito 7, tarea 11, design.md §6.3 parte 2a, ADR 93) — PURA
+ * y TOTAL: ni reloj ni `randomUUID`, y ninguna rama lanza.
+ *
+ * - `TASK_STATE_COMPLETED` con `resultado` presente ⇒ `artifacts` con el
+ *   resultado, SIN `status.message` (ADR 93 pto 1-2: el resultado vive en un
+ *   solo lugar, nunca en los dos).
+ * - `FAILED`/`CANCELED`/`REJECTED` ⇒ `status.message` con el texto fijo de
+ *   `TEXTO_STATUS_MESSAGE_FRACASO`, SIN `artifacts`.
+ * - `SUBMITTED`/`WORKING` ⇒ ni uno ni el otro (ADR 93 pto 4).
+ * - `COMPLETED` SIN `resultado` (que ningún camino real produce, pero el tipo
+ *   admite) ⇒ no lanza, `artifacts` queda AUSENTE, no un array vacío (ADR 93
+ *   pto 6).
+ * - `status.timestamp` = `vista.updatedAt`, exacto, sin transformar (ADR 93
+ *   pto 5: es más verdadero que `now()`).
+ * - `artifactId` = `` `${a2aTaskId}-0` ``, `status.message.messageId` =
+ *   `` `${a2aTaskId}-msg` `` — derivados, deterministas, sin `randomUUID`.
+ * - `contextId` = `vista.contextId`, copiado tal cual: ya viene resuelto
+ *   (`casoId ?? a2aTaskId`) por quien arma la vista, no por esta función
+ *   (design.md líneas 648-654).
+ */
+export function construirTask(vista: SolicitudA2AEntranteVista): TaskJson {
+  const { a2aTaskId, contextId, estado, resultado, updatedAt } = vista;
+
+  const status: TaskStatusJson = { state: estado, timestamp: updatedAt };
+
+  if (estado === TASK_STATE_COMPLETED && resultado !== undefined) {
+    return {
+      id: a2aTaskId,
+      contextId,
+      status,
+      artifacts: [{ artifactId: `${a2aTaskId}-0`, name: "respuesta", parts: [{ text: resultado }] }],
+    };
+  }
+
+  const textoFijo = TEXTO_STATUS_MESSAGE_FRACASO[estado];
+  if (textoFijo !== undefined) {
+    return {
+      id: a2aTaskId,
+      contextId,
+      status: {
+        ...status,
+        message: { messageId: `${a2aTaskId}-msg`, parts: [{ text: textoFijo }] },
+      },
+    };
+  }
+
+  return { id: a2aTaskId, contextId, status };
 }

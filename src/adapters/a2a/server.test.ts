@@ -15,6 +15,7 @@ import {
   type A2AServerConfig,
 } from "./server-config.js";
 import {
+  construirTask,
   createRequestListener,
   esAutorizado,
   leerCuerpoConTope,
@@ -22,6 +23,7 @@ import {
   type A2ARequest,
   type A2AResponse,
   type A2AServerDeps,
+  type SolicitudA2AEntranteVista,
 } from "./server.js";
 
 /**
@@ -560,5 +562,125 @@ describe("createRequestListener — POST RUTA_JSONRPC, sobre JSON-RPC y errores 
 
     expect(res.statusCode).toBe(400);
     expect(res.end).toHaveBeenCalledWith();
+  });
+});
+
+describe("construirTask (Hito 7, tarea 11, design.md ADR 93 — el test estrella)", () => {
+  const A2A_TASK_ID = "task-abc-1";
+  const UPDATED_AT = "2026-09-09T12:00:00.000Z";
+
+  function vista(overrides: Partial<SolicitudA2AEntranteVista> = {}): SolicitudA2AEntranteVista {
+    return {
+      a2aTaskId: A2A_TASK_ID,
+      contextId: A2A_TASK_ID,
+      estado: "TASK_STATE_SUBMITTED",
+      updatedAt: UPDATED_AT,
+      ...overrides,
+    };
+  }
+
+  it("TASK_STATE_COMPLETED with resultado present -> artifacts with the exact shape, no status.message", () => {
+    const task = construirTask(vista({ estado: "TASK_STATE_COMPLETED", resultado: "la respuesta del turno" }));
+
+    expect(task.artifacts).toEqual([
+      { artifactId: `${A2A_TASK_ID}-0`, name: "respuesta", parts: [{ text: "la respuesta del turno" }] },
+    ]);
+    expect(task.status.message).toBeUndefined();
+  });
+
+  it("TASK_STATE_FAILED -> status.message with the fixed text, no artifacts", () => {
+    const task = construirTask(vista({ estado: "TASK_STATE_FAILED" }));
+
+    expect(task.status.message).toEqual({
+      messageId: `${A2A_TASK_ID}-msg`,
+      parts: [{ text: "El turno del arnés no pudo completarse." }],
+    });
+    expect(task.artifacts).toBeUndefined();
+  });
+
+  it("TASK_STATE_CANCELED -> status.message with the fixed text, no artifacts", () => {
+    const task = construirTask(vista({ estado: "TASK_STATE_CANCELED" }));
+
+    expect(task.status.message).toEqual({
+      messageId: `${A2A_TASK_ID}-msg`,
+      parts: [{ text: "La tarea fue cancelada por el llamador." }],
+    });
+    expect(task.artifacts).toBeUndefined();
+  });
+
+  it("TASK_STATE_REJECTED -> status.message with the fixed text, no artifacts", () => {
+    const task = construirTask(vista({ estado: "TASK_STATE_REJECTED" }));
+
+    expect(task.status.message).toEqual({
+      messageId: `${A2A_TASK_ID}-msg`,
+      parts: [{ text: "El arnés está al máximo de solicitudes en curso. Reintentá más tarde." }],
+    });
+    expect(task.artifacts).toBeUndefined();
+  });
+
+  it("TASK_STATE_SUBMITTED -> neither artifacts nor status.message", () => {
+    const task = construirTask(vista({ estado: "TASK_STATE_SUBMITTED" }));
+
+    expect(task.artifacts).toBeUndefined();
+    expect(task.status.message).toBeUndefined();
+  });
+
+  it("TASK_STATE_WORKING -> neither artifacts nor status.message", () => {
+    const task = construirTask(vista({ estado: "TASK_STATE_WORKING" }));
+
+    expect(task.artifacts).toBeUndefined();
+    expect(task.status.message).toBeUndefined();
+  });
+
+  it("TASK_STATE_COMPLETED without resultado (no real path produces it, but the function is total) -> does not throw, artifacts absent", () => {
+    let task: ReturnType<typeof construirTask> | undefined;
+
+    expect(() => {
+      task = construirTask(vista({ estado: "TASK_STATE_COMPLETED" }));
+    }).not.toThrow();
+
+    expect(task?.artifacts).toBeUndefined();
+    expect(task?.status.message).toBeUndefined();
+  });
+
+  it("status.timestamp is exactly vista.updatedAt, with no transformation", () => {
+    const task = construirTask(vista({ updatedAt: "2020-01-01T00:00:00.000Z" }));
+
+    expect(task.status.timestamp).toBe("2020-01-01T00:00:00.000Z");
+  });
+
+  it("contextId is copied as-is from vista.contextId, regardless of where the value came from", () => {
+    const conCasoId = construirTask(vista({ contextId: "caso-42" }));
+    expect(conCasoId.contextId).toBe("caso-42");
+
+    const conA2ATaskId = construirTask(vista({ contextId: A2A_TASK_ID }));
+    expect(conA2ATaskId.contextId).toBe(A2A_TASK_ID);
+  });
+
+  it("artifactId and messageId are derived deterministically from a2aTaskId — no randomUUID, pure function", () => {
+    const primeraLlamada = construirTask(
+      vista({ estado: "TASK_STATE_COMPLETED", resultado: "x" }),
+    );
+    const segundaLlamada = construirTask(
+      vista({ estado: "TASK_STATE_COMPLETED", resultado: "x" }),
+    );
+
+    expect(primeraLlamada).toEqual(segundaLlamada);
+    expect(primeraLlamada.artifacts?.[0]?.artifactId).toBe(`${A2A_TASK_ID}-0`);
+
+    const conMensaje = construirTask(vista({ estado: "TASK_STATE_FAILED" }));
+    expect(conMensaje.status.message?.messageId).toBe(`${A2A_TASK_ID}-msg`);
+  });
+
+  it.each([
+    ["TASK_STATE_COMPLETED", "con resultado"],
+    ["TASK_STATE_FAILED", undefined],
+    ["TASK_STATE_CANCELED", undefined],
+    ["TASK_STATE_REJECTED", undefined],
+    ["TASK_STATE_SUBMITTED", undefined],
+    ["TASK_STATE_WORKING", undefined],
+    ["TASK_STATE_COMPLETED", undefined],
+  ])("is total — never throws for estado '%s' (resultado: %s)", (estado, resultado) => {
+    expect(() => construirTask(vista({ estado, resultado }))).not.toThrow();
   });
 });
