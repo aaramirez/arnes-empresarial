@@ -86,8 +86,10 @@ import { WEBHOOK_LOG_CORRELATION_ID } from "./adapters/webhooks/config.js";
 import { createKeyedQueue } from "./core/concurrency/keyed-queue.js";
 import { resolveVentasConfig, type VentasConfig } from "./core/ventas/ventas-config.js";
 import { createNotificadorAdapter } from "./adapters/notificaciones/index.js";
+import { createA2AAdapter } from "./adapters/a2a/index.js";
+import { isA2ASalienteEnabled } from "./adapters/a2a/config.js";
 import { resolveWebConfig, WEB_LOG_CORRELATION_ID } from "./adapters/web/config.js";
-import { buildOnVenta } from "./build-on-venta.js";
+import { buildOnVenta, createConsultaRiesgoCredito } from "./build-on-venta.js";
 import { buildOnSoporte } from "./build-on-soporte.js";
 import { startWebServer, type WebAdapter } from "./adapters/web/index.js";
 import { resolveAuthConfig, type AuthConfig } from "./core/auth/auth-config.js";
@@ -332,11 +334,29 @@ const notifier = createNotificadorAdapter({
 
 const webConfig = resolveWebConfig();
 
+// 5b-bis. Cliente A2A saliente (Hito 6, tarea 17, ADR 82). OPT-IN: sin
+//         HARNESS_A2A_SALIENTE=on no se construye NADA — ni adaptador, ni
+//         store, ni puerto — y `registrarVenta` se comporta exactamente
+//         como en v2.1.0 (cero filas en delegaciones_a2a, cero fetch
+//         salientes). Molde de wiring condicional no bloqueante ya
+//         existente en este archivo (`createNotificadorAdapter` arriba,
+//         `barrerHuerfanos` más abajo).
+const riesgoCredito = isA2ASalienteEnabled()
+  ? createConsultaRiesgoCredito({
+      db,
+      cliente: createA2AAdapter({
+        logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
+      }),
+      logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
+    })
+  : undefined;
+
 const ventaHandlers = buildOnVenta({
   db,
   notifier,
   ventasConfig,
   baseUrlPublica: webConfig.publicUrl,
+  ...(riesgoCredito !== undefined ? { riesgoCredito } : {}), // exactOptionalPropertyTypes
 });
 
 // `onSoporte` (Hito 4, tarea 27) se arma UNA sola vez acá y se COMPARTE
