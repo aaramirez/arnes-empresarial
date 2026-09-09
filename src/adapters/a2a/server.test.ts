@@ -2,8 +2,11 @@ import { timingSafeEqual } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { construirAgentCard } from "./agent-card.js";
 import {
+  A2A_ERROR_TASK_NOT_CANCELABLE,
+  A2A_ERROR_TASK_NOT_FOUND,
   A2A_SERVER_LOG_CORRELATION_ID,
   JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
   JSONRPC_METHOD_NOT_FOUND,
   JSONRPC_PARSE_ERROR,
@@ -23,6 +26,8 @@ import {
   type A2ARequest,
   type A2AResponse,
   type A2AServerDeps,
+  type CancelacionA2AResultado,
+  type SolicitudA2AAceptada,
   type SolicitudA2AEntranteVista,
 } from "./server.js";
 
@@ -141,6 +146,9 @@ function makeDeps(overrides: Partial<A2AServerDeps> = {}): A2AServerDeps {
   return {
     config: makeConfig(),
     logEvent: vi.fn(),
+    onSolicitudA2A: vi.fn(),
+    onConsultarTarea: vi.fn(),
+    onCancelarTarea: vi.fn(),
     ...overrides,
   };
 }
@@ -493,24 +501,6 @@ describe("createRequestListener — POST RUTA_JSONRPC, sobre JSON-RPC y errores 
     expect(sobre.error.code).not.toBe(JSONRPC_PARSE_ERROR);
   });
 
-  it.each([[METODO_SEND_MESSAGE], [METODO_GET_TASK], [METODO_CANCEL_TASK]])(
-    "responds the interim -32603 for the known method '%s' (placeholder until task 12)",
-    async (method) => {
-      const deps = makeDeps();
-
-      const { res } = postJsonRpc(
-        deps,
-        jsonBody({ jsonrpc: "2.0", method, id: "req-1", params: { cualquiera: true } }),
-      );
-      await esperarRespuesta(res);
-
-      expect(res.statusCode).toBe(200);
-      const sobre = parsedBody(res);
-      expect(sobre.id).toBe("req-1");
-      expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
-    },
-  );
-
   it("responds 401 without parsing the body when Authorization is missing (order: AUTH before parse)", async () => {
     const deps = makeDeps();
     const listener = createRequestListener(deps);
@@ -562,6 +552,374 @@ describe("createRequestListener — POST RUTA_JSONRPC, sobre JSON-RPC y errores 
 
     expect(res.statusCode).toBe(400);
     expect(res.end).toHaveBeenCalledWith();
+  });
+});
+
+describe("createRequestListener — despacho real de SendMessage, GetTask y CancelTask (Hito 7, tarea 12, design.md ADR 94, ADR 100)", () => {
+  function postJsonRpc(
+    deps: A2AServerDeps,
+    body: Buffer,
+  ): { req: FakeA2ARequest; res: FakeA2AResponse } {
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: authHeader() });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+    req.emitBody([body]);
+
+    return { req, res };
+  }
+
+  function parsedResult(
+    res: FakeA2AResponse,
+  ): { jsonrpc: string; id: unknown; result: { id: string; contextId: string; status: { state: string } } } {
+    const call = res.end.mock.calls[0]?.[0] as string | undefined;
+    expect(call).toBeDefined();
+    return JSON.parse(call as string) as {
+      jsonrpc: string;
+      id: unknown;
+      result: { id: string; contextId: string; status: { state: string } };
+    };
+  }
+
+  function parsedError(res: FakeA2AResponse): { jsonrpc: string; id: unknown; error: { code: number; message: string } } {
+    const call = res.end.mock.calls[0]?.[0] as string | undefined;
+    expect(call).toBeDefined();
+    return JSON.parse(call as string) as {
+      jsonrpc: string;
+      id: unknown;
+      error: { code: number; message: string };
+    };
+  }
+
+  const SUBMITTED_ACEPTADA: SolicitudA2AAceptada = {
+    estado: "TASK_STATE_SUBMITTED",
+    contextId: "caso-1",
+    updatedAt: "2026-09-09T00:00:00.000Z",
+    turno: Promise.resolve(),
+  };
+
+  describe("SendMessage", () => {
+    it("responds 200 with a Task in TASK_STATE_SUBMITTED and a non-empty id when onSolicitudA2A accepts", async () => {
+      const onSolicitudA2A = vi.fn().mockResolvedValue(SUBMITTED_ACEPTADA);
+      const deps = makeDeps({ onSolicitudA2A });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({
+          jsonrpc: "2.0",
+          method: METODO_SEND_MESSAGE,
+          id: "req-1",
+          params: { message: { parts: [{ text: "hola arnes" }] } },
+        }),
+      );
+      await esperarRespuesta(res);
+
+      expect(res.statusCode).toBe(200);
+      const sobre = parsedResult(res);
+      expect(sobre.result.status.state).toBe("TASK_STATE_SUBMITTED");
+      expect(sobre.result.id).not.toBe("");
+
+      expect(onSolicitudA2A).toHaveBeenCalledTimes(1);
+      const [input] = onSolicitudA2A.mock.calls[0] as [
+        { texto: string; origenTransporte: string; a2aTaskId: string; hayCupo: boolean },
+      ];
+      expect(input.texto).toBe("hola arnes");
+      expect(input.a2aTaskId).not.toBe("");
+    });
+
+    it("concatenates multiple parts[*].text before invoking onSolicitudA2A", async () => {
+      const onSolicitudA2A = vi.fn().mockResolvedValue(SUBMITTED_ACEPTADA);
+      const deps = makeDeps({ onSolicitudA2A });
+
+      postJsonRpc(
+        deps,
+        jsonBody({
+          jsonrpc: "2.0",
+          method: METODO_SEND_MESSAGE,
+          id: "req-2",
+          params: { message: { parts: [{ text: "hola " }, { text: "mundo" }] } },
+        }),
+      );
+      await vi.waitFor(() => expect(onSolicitudA2A).toHaveBeenCalled());
+
+      const [input] = onSolicitudA2A.mock.calls[0] as [{ texto: string }];
+      expect(input.texto).toBe("hola mundo");
+    });
+
+    it("responds -32602 without invoking onSolicitudA2A when message.parts[*].text is missing", async () => {
+      const onSolicitudA2A = vi.fn();
+      const deps = makeDeps({ onSolicitudA2A });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_SEND_MESSAGE, id: "req-3", params: {} }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INVALID_PARAMS);
+      expect(onSolicitudA2A).toHaveBeenCalledTimes(0);
+    });
+
+    it("responds -32602 without invoking onSolicitudA2A when parts[*].text is present but empty", async () => {
+      const onSolicitudA2A = vi.fn();
+      const deps = makeDeps({ onSolicitudA2A });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({
+          jsonrpc: "2.0",
+          method: METODO_SEND_MESSAGE,
+          id: "req-4",
+          params: { message: { parts: [{ text: "" }] } },
+        }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INVALID_PARAMS);
+      expect(onSolicitudA2A).toHaveBeenCalledTimes(0);
+    });
+
+    it("responds -32603 without a stack trace in the body when onSolicitudA2A rejects", async () => {
+      const onSolicitudA2A = vi.fn().mockRejectedValue(new Error("boom en el composition root"));
+      const logEvent = vi.fn();
+      const deps = makeDeps({ onSolicitudA2A, logEvent });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({
+          jsonrpc: "2.0",
+          method: METODO_SEND_MESSAGE,
+          id: "req-5",
+          params: { message: { parts: [{ text: "hola" }] } },
+        }),
+      );
+      await esperarRespuesta(res);
+
+      expect(res.statusCode).toBe(200);
+      const cuerpo = res.end.mock.calls[0]?.[0] as string;
+      expect(cuerpo).not.toContain("boom en el composition root");
+      expect(cuerpo).not.toMatch(/at .*:\d+:\d+/);
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
+      expect(logEvent).toHaveBeenCalledWith(
+        A2A_SERVER_LOG_CORRELATION_ID,
+        "a2a-handler-fallido",
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("GetTask", () => {
+    const VISTA_WORKING: SolicitudA2AEntranteVista = {
+      a2aTaskId: "task-1",
+      contextId: "caso-1",
+      estado: "TASK_STATE_WORKING",
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    };
+
+    it("responds 200 with the Task built from the row when the id exists", async () => {
+      const onConsultarTarea = vi.fn().mockReturnValue(VISTA_WORKING);
+      const deps = makeDeps({ onConsultarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: "req-6", params: { id: "task-1" } }),
+      );
+      await esperarRespuesta(res);
+
+      expect(onConsultarTarea).toHaveBeenCalledWith("task-1");
+      const sobre = parsedResult(res);
+      expect(sobre.result).toEqual(construirTask(VISTA_WORKING));
+    });
+
+    it("responds A2A_ERROR_TASK_NOT_FOUND when the id does not exist", async () => {
+      const onConsultarTarea = vi.fn().mockReturnValue(undefined);
+      const deps = makeDeps({ onConsultarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: "req-7", params: { id: "no-existe" } }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(A2A_ERROR_TASK_NOT_FOUND);
+    });
+
+    it("responds -32602 without invoking onConsultarTarea when params.id is missing", async () => {
+      const onConsultarTarea = vi.fn();
+      const deps = makeDeps({ onConsultarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: "req-8", params: {} }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INVALID_PARAMS);
+      expect(onConsultarTarea).toHaveBeenCalledTimes(0);
+    });
+
+    it("responds -32602 without invoking onConsultarTarea when params.id is a blank string", async () => {
+      const onConsultarTarea = vi.fn();
+      const deps = makeDeps({ onConsultarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: "req-9", params: { id: "  " } }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INVALID_PARAMS);
+      expect(onConsultarTarea).toHaveBeenCalledTimes(0);
+    });
+
+    it("responds -32603 without a stack trace in the body when onConsultarTarea throws", async () => {
+      const onConsultarTarea = vi.fn(() => {
+        throw new Error("boom sincrono");
+      });
+      const deps = makeDeps({ onConsultarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: "req-10", params: { id: "task-1" } }),
+      );
+      await esperarRespuesta(res);
+
+      const cuerpo = res.end.mock.calls[0]?.[0] as string;
+      expect(cuerpo).not.toContain("boom sincrono");
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
+    });
+
+    it("never awaits: a single microtask flush after the body settles is enough to reach res.end — onConsultarTarea is synchronous (ADR 100, mechanical check, no vi.waitFor polling)", async () => {
+      const onConsultarTarea = vi.fn().mockReturnValue(VISTA_WORKING);
+      const deps = makeDeps({ onConsultarTarea });
+      const listener = createRequestListener(deps);
+      const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: authHeader() });
+      const res = new FakeA2AResponse();
+
+      listener(req, res);
+      req.emitBody([
+        jsonBody({ jsonrpc: "2.0", method: METODO_GET_TASK, id: "req-11", params: { id: "task-1" } }),
+      ]);
+
+      // Todavía no corrió ningún microtask: la promesa de `leerCuerpoConTope`
+      // recién resolvió sincrónicamente dentro de `emitBody`, pero su
+      // continuación `await` está en cola, sin ejecutar.
+      expect(res.end).not.toHaveBeenCalled();
+
+      // UN solo microtask tick alcanza para llegar a `res.end()`: auth,
+      // parseo del sobre y el despacho de `GetTask` son sincrónicos de punta
+      // a punta (ADR 100) — si `onConsultarTarea` se awaiteara, haría falta
+      // un segundo tick.
+      await Promise.resolve();
+
+      expect(onConsultarTarea).toHaveBeenCalledTimes(1);
+      expect(res.end).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("CancelTask", () => {
+    const VISTA_CANCELED: SolicitudA2AEntranteVista = {
+      a2aTaskId: "task-2",
+      contextId: "caso-2",
+      estado: "TASK_STATE_CANCELED",
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    };
+
+    it.each<[string, CancelacionA2AResultado]>([
+      ["cancelada", { resultado: "cancelada", vista: VISTA_CANCELED }],
+      ["ya-cancelada", { resultado: "ya-cancelada", vista: VISTA_CANCELED }],
+    ])("responds 200 with the Task from the vista for resultado '%s'", async (_label, resultado) => {
+      const onCancelarTarea = vi.fn().mockReturnValue(resultado);
+      const deps = makeDeps({ onCancelarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_CANCEL_TASK, id: "req-12", params: { id: "task-2" } }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedResult(res);
+      expect(sobre.result).toEqual(construirTask(VISTA_CANCELED));
+    });
+
+    it("responds A2A_ERROR_TASK_NOT_CANCELABLE and does not touch the row for resultado 'no-cancelable'", async () => {
+      const resultado = {
+        resultado: "no-cancelable",
+        vista: VISTA_CANCELED,
+      } satisfies CancelacionA2AResultado;
+      const onCancelarTarea = vi.fn().mockReturnValue(resultado);
+      const deps = makeDeps({ onCancelarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_CANCEL_TASK, id: "req-13", params: { id: "task-2" } }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(A2A_ERROR_TASK_NOT_CANCELABLE);
+      // El único punto de contacto es `onCancelarTarea`: se invoca una sola
+      // vez, y no hay ningún otro método de escritura del repositorio
+      // (el doble) llamado en esta rama.
+      expect(onCancelarTarea).toHaveBeenCalledTimes(1);
+    });
+
+    it("responds A2A_ERROR_TASK_NOT_FOUND for resultado 'no-encontrada'", async () => {
+      const resultado = { resultado: "no-encontrada" } satisfies CancelacionA2AResultado;
+      const onCancelarTarea = vi.fn().mockReturnValue(resultado);
+      const deps = makeDeps({ onCancelarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_CANCEL_TASK, id: "req-14", params: { id: "no-existe" } }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(A2A_ERROR_TASK_NOT_FOUND);
+      expect(onCancelarTarea).toHaveBeenCalledTimes(1);
+    });
+
+    it("responds -32602 without invoking onCancelarTarea when params.id is missing", async () => {
+      const onCancelarTarea = vi.fn();
+      const deps = makeDeps({ onCancelarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_CANCEL_TASK, id: "req-15", params: {} }),
+      );
+      await esperarRespuesta(res);
+
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INVALID_PARAMS);
+      expect(onCancelarTarea).toHaveBeenCalledTimes(0);
+    });
+
+    it("responds -32603 without a stack trace in the body when onCancelarTarea throws", async () => {
+      const onCancelarTarea = vi.fn(() => {
+        throw new Error("boom sincrono cancel");
+      });
+      const deps = makeDeps({ onCancelarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({ jsonrpc: "2.0", method: METODO_CANCEL_TASK, id: "req-16", params: { id: "task-2" } }),
+      );
+      await esperarRespuesta(res);
+
+      const cuerpo = res.end.mock.calls[0]?.[0] as string;
+      expect(cuerpo).not.toContain("boom sincrono cancel");
+      const sobre = parsedError(res);
+      expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
+    });
   });
 });
 

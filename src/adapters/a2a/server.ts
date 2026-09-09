@@ -1,9 +1,11 @@
 /**
- * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-10, design.md
- * §6.3 — partes 1a, 1b y 1c: tipos + auth + body + ruteo por método+ruta +
- * Agent Card + sobre JSON-RPC + los cinco errores base). El despacho real de
- * los tres métodos (`SendMessage`/`GetTask`/`CancelTask`, tarea 12) NO está
- * acá todavía: responden un placeholder `-32603` documentado más abajo.
+ * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-12, design.md
+ * §6.3 — partes 1a, 1b, 1c y 2b: tipos + auth + body + ruteo por método+ruta +
+ * Agent Card + sobre JSON-RPC + los cinco errores base + el despacho REAL de
+ * los tres métodos (`SendMessage`/`GetTask`/`CancelTask`, ADR 94, ADR 100). El
+ * tope de turnos en vuelo y el drenaje (`startServer`, tarea 13) NO están acá
+ * todavía: `hayCupo` viaja fijo en `true` desde esta tarea, a inyectar
+ * correctamente por la tarea 13 (design.md ADR 99).
  *
  * Recorte estructural DUPLICADO a propósito de `web/http.ts` y
  * `webhooks/server.ts:30-51` (ADR 13 — **tercer servidor HTTP de la misma
@@ -33,7 +35,7 @@
  * soportados. El despacho real de esos tres métodos llega en la tarea 12,
  * sin reabrir esta.
  */
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   TASK_STATE_CANCELED,
   TASK_STATE_COMPLETED,
@@ -42,8 +44,11 @@ import {
 } from "../../core/agents/a2a-contract.js";
 import { construirAgentCard } from "./agent-card.js";
 import {
+  A2A_ERROR_TASK_NOT_CANCELABLE,
+  A2A_ERROR_TASK_NOT_FOUND,
   A2A_SERVER_LOG_CORRELATION_ID,
   JSONRPC_INTERNAL_ERROR,
+  JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
   JSONRPC_METHOD_NOT_FOUND,
   JSONRPC_PARSE_ERROR,
@@ -104,6 +109,53 @@ export interface SolicitudA2AEntranteVista {
   readonly resultado?: string | undefined;
   readonly updatedAt: string;
 }
+
+/**
+ * Input de `SendMessage` hacia el composition root (Hito 7, tarea 12,
+ * design.md §6.3). `hayCupo` lo decide `startServer` (tarea 13, ADR 99 pto 3,
+ * dueño del contador `enVuelo`) — hasta esa tarea viaja fijo en `true` desde
+ * `handleSolicitudJsonRpc`.
+ */
+export interface SolicitudA2AEntrada {
+  readonly a2aTaskId: string;
+  readonly texto: string;
+  readonly origenTransporte: string;
+  readonly hayCupo: boolean;
+}
+
+/**
+ * Resultado de `onSolicitudA2A` — unión discriminada por `estado` (design.md
+ * §6.3, ADR 99 pto 4): la rama `SUBMITTED` trae `turno: Promise<void>` (que
+ * `startServer` registra en `enVuelo`, tarea 13); la rama `REJECTED` NO trae
+ * ninguno — así es imposible registrar en el `Set` de drenaje un turno que no
+ * existe. El tipo lo impide, no un `if`.
+ */
+export type SolicitudA2AAceptada =
+  | {
+      readonly estado: "TASK_STATE_SUBMITTED";
+      readonly contextId: string;
+      readonly updatedAt: string;
+      readonly turno: Promise<void>;
+    }
+  | {
+      readonly estado: "TASK_STATE_REJECTED";
+      readonly contextId: string;
+      readonly updatedAt: string;
+    };
+
+/**
+ * Resultado de `onCancelarTarea` — unión discriminada por `resultado` (Hito
+ * 7, tarea 12, design.md ADR 94 + ADR 100 pto 5): el ADR 94 distingue CUATRO
+ * desenlaces que se responden distinto. `"cancelada"`/`"ya-cancelada"`
+ * responden con `Task` vía `construirTask(vista)`; `"no-cancelable"` y
+ * `"no-encontrada"` son error JSON-RPC y no traen `vista` cuando no hay fila
+ * que mostrar.
+ */
+export type CancelacionA2AResultado =
+  | { readonly resultado: "cancelada"; readonly vista: SolicitudA2AEntranteVista }
+  | { readonly resultado: "ya-cancelada"; readonly vista: SolicitudA2AEntranteVista }
+  | { readonly resultado: "no-cancelable"; readonly vista: SolicitudA2AEntranteVista }
+  | { readonly resultado: "no-encontrada" };
 
 interface TaskTextPartJson {
   readonly text: string;
@@ -251,11 +303,14 @@ export function leerCuerpoConTope(
 }
 
 /**
- * Dependencias de `createRequestListener`. Crece de forma incremental en las
- * tareas siguientes (`onSolicitudA2A`/`onConsultarTarea`/`onCancelarTarea`
- * llegan en la tarea 12, `newTaskId?` también) — molde de `WebServerDeps`/
- * `WebhookServerDeps`, que tampoco nacieron con su forma final en su primera
- * tarea.
+ * Dependencias de `createRequestListener` (Hito 7, tarea 12, design.md §6.3)
+ * — molde de `WebServerDeps`/`WebhookServerDeps`. Los tres callbacks llegan
+ * YA CERRADOS sobre `db` desde el composition root (`build-on-a2a-entrante.ts`,
+ * tarea 15) — `server.ts` NO importa `repository.ts` (ADR 102 pto 1, regla no
+ * negociable de `AGENTS.md`: ningún adaptador se comunica con otro).
+ * `onConsultarTarea`/`onCancelarTarea` son SÍNCRONAS por firma (ADR 100): sin
+ * `Promise` en su tipo de retorno, un `await` a un modelo adentro de esas dos
+ * ramas del dispatcher es un error de COMPILACIÓN, no de criterio.
  */
 export interface A2AServerDeps {
   readonly config: A2AServerConfig;
@@ -265,6 +320,13 @@ export interface A2AServerDeps {
     event: string,
     fields?: Readonly<Record<string, unknown>>,
   ) => void;
+  readonly onSolicitudA2A: (input: SolicitudA2AEntrada) => Promise<SolicitudA2AAceptada>;
+  /** SÍNCRONA (ADR 100): un `SELECT` y nada más. */
+  readonly onConsultarTarea: (a2aTaskId: string) => SolicitudA2AEntranteVista | undefined;
+  /** SÍNCRONA (ADR 100): un `SELECT` + `UPDATE` guardado, las cuatro ramas del ADR 94. */
+  readonly onCancelarTarea: (a2aTaskId: string) => CancelacionA2AResultado;
+  /** `randomUUID` en producción; contador determinista en tests. Molde de `newRequestId` (`web/server.ts:81`). */
+  readonly newTaskId?: () => string;
 }
 
 /** Sobre de error JSON-RPC 2.0 — molde literal de `errorEnvelopeResponse` en `client.test.ts:502`. */
@@ -279,6 +341,77 @@ function respondJsonRpcError(res: A2AResponse, id: unknown, code: number, messag
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json");
   res.end(JSON.stringify(sobre));
+}
+
+/** Sobre de éxito JSON-RPC 2.0 — gemelo de `JsonRpcErrorEnvelope` (Hito 7, tarea 12). */
+interface JsonRpcResultEnvelope {
+  readonly jsonrpc: "2.0";
+  readonly id: unknown;
+  readonly result: TaskJson;
+}
+
+function respondJsonRpcResult(res: A2AResponse, id: unknown, result: TaskJson): void {
+  const sobre: JsonRpcResultEnvelope = { jsonrpc: "2.0", id, result };
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(sobre));
+}
+
+/**
+ * PURA. Extrae y concatena el texto de `parts[*].text` de un `SendMessage`
+ * entrante (Hito 7, tarea 12, design.md ADR 102 pto 3-4). Gemela
+ * DELIBERADAMENTE separada de `concatenarPartesDeTexto` (`client.ts:362-377`,
+ * que hace exactamente este trabajo del lado cliente): el valor entero del
+ * test de integración de la tarea 17 es que servidor y cliente sean DOS
+ * implementaciones independientes del mismo protocolo — si el servidor
+ * reusara el parser del cliente, un bug simétrico en ambos pasaría verde. Ver
+ * el comentario gemelo en `client.ts`.
+ */
+function extraerTextoDePartes(parts: unknown): string {
+  if (!Array.isArray(parts)) {
+    return "";
+  }
+  const textos: string[] = [];
+  for (const parte of parts as readonly unknown[]) {
+    if (typeof parte !== "object" || parte === null) {
+      continue;
+    }
+    const { text } = parte as { readonly text?: unknown };
+    if (typeof text === "string") {
+      textos.push(text);
+    }
+  }
+  return textos.join("");
+}
+
+/**
+ * `params.message.parts[*].text`, concatenado y no vacío, o `undefined` si
+ * `params`/`message`/`parts` están mal formados o el texto concatenado queda
+ * en `""` (design.md §6.3, fila `-32602` de `SendMessage`).
+ */
+function extraerTextoSendMessage(params: unknown): string | undefined {
+  if (typeof params !== "object" || params === null) {
+    return undefined;
+  }
+  const { message } = params as { readonly message?: unknown };
+  if (typeof message !== "object" || message === null) {
+    return undefined;
+  }
+  const { parts } = message as { readonly parts?: unknown };
+  const texto = extraerTextoDePartes(parts);
+  return texto === "" ? undefined : texto;
+}
+
+/**
+ * `params.id` como string no vacío (sin espacios), o `undefined` — usado por
+ * `GetTask`/`CancelTask` (design.md §6.3, fila `-32602` de ambos métodos).
+ */
+function extraerIdDeParams(params: unknown): string | undefined {
+  if (typeof params !== "object" || params === null) {
+    return undefined;
+  }
+  const { id } = params as { readonly id?: unknown };
+  return typeof id === "string" && id.trim() !== "" ? id : undefined;
 }
 
 /**
@@ -297,15 +430,29 @@ function esSobreJsonRpcValido(
 }
 
 /**
- * `POST RUTA_JSONRPC` — parte 1c (tarea 10, design.md §6.3, orden EXHAUSTIVO
- * `tope de body → AUTH → parseo JSON-RPC → despacho`, ya en marcha desde
- * `método+ruta`, tarea 9).
+ * `POST RUTA_JSONRPC` — partes 1c + 2b (tareas 10 y 12, design.md §6.3, orden
+ * EXHAUSTIVO `tope de body → AUTH → parseo JSON-RPC → despacho`, ya en marcha
+ * desde `método+ruta`, tarea 9).
  *
- * **Interino documentado, a propósito, NO optimizar**: los tres métodos
- * conocidos (`SendMessage`/`GetTask`/`CancelTask`) responden `-32603` con un
- * mensaje de "handler no configurado" — la tarea 12 (PR5) reemplaza este
- * placeholder por el despacho real, sin tocar ninguno de los tests de esta
- * tarea.
+ * Despacho real de los tres métodos (Hito 7, tarea 12, ADR 94, ADR 100):
+ * - `SendMessage`: `params.message.parts[*].text` mal formado ⇒ `-32602`.
+ *   `a2aTaskId = deps.newTaskId?.() ?? randomUUID()` (molde `newRequestId`,
+ *   `web/server.ts:81`). `hayCupo` viaja FIJO en `true` — el tope real de
+ *   turnos en vuelo es la tarea 13 (`startServer`, ADR 99), que inyecta el
+ *   valor correcto sin tocar esta rama. Un `onSolicitudA2A` que rechaza ⇒
+ *   `-32603`, `a2a-handler-fallido`, NUNCA un stacktrace en el cuerpo.
+ * - `GetTask`/`CancelTask`: SÍNCRONOS (ADR 100) — **sin ningún `await`** en
+ *   estas dos ramas: la firma de `onConsultarTarea`/`onCancelarTarea` no
+ *   devuelve `Promise`, así que un `await` acá sería un error de
+ *   COMPILACIÓN, no de criterio. `params.id` mal formado ⇒ `-32602`.
+ *   `GetTask` de un id inexistente ⇒ `A2A_ERROR_TASK_NOT_FOUND`. `CancelTask`
+ *   despacha las cuatro ramas de `CancelacionA2AResultado` (ADR 94):
+ *   `"cancelada"`/`"ya-cancelada"` ⇒ `result` vía `construirTask(vista)`
+ *   (idempotente en la segunda, la fila no se toca de nuevo — eso ya lo
+ *   garantiza el repositorio, tarea 7); `"no-cancelable"` ⇒
+ *   `A2A_ERROR_TASK_NOT_CANCELABLE`; `"no-encontrada"` ⇒
+ *   `A2A_ERROR_TASK_NOT_FOUND`. Un handler que lanza (síncrono) ⇒ `-32603`,
+ *   `a2a-handler-fallido`.
  */
 async function handleSolicitudJsonRpc(
   req: A2ARequest,
@@ -353,7 +500,7 @@ async function handleSolicitudJsonRpc(
     return;
   }
 
-  const { id, method } = sobre;
+  const { id, method, params } = sobre;
 
   if (method !== METODO_SEND_MESSAGE && method !== METODO_GET_TASK && method !== METODO_CANCEL_TASK) {
     logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-metodo-no-soportado", { method });
@@ -361,14 +508,88 @@ async function handleSolicitudJsonRpc(
     return;
   }
 
-  respondJsonRpcError(res, id, JSONRPC_INTERNAL_ERROR, "handler no configurado");
+  if (method === METODO_SEND_MESSAGE) {
+    const texto = extraerTextoSendMessage(params);
+    if (texto === undefined) {
+      respondJsonRpcError(
+        res,
+        id,
+        JSONRPC_INVALID_PARAMS,
+        "params invalidos: message.parts[*].text requerido",
+      );
+      return;
+    }
+
+    const a2aTaskId = deps.newTaskId?.() ?? randomUUID();
+    try {
+      // `hayCupo` fijo en `true` hasta la tarea 13 (`startServer`, ADR 99).
+      const resultado = await deps.onSolicitudA2A({ a2aTaskId, texto, origenTransporte, hayCupo: true });
+      const vista: SolicitudA2AEntranteVista = {
+        a2aTaskId,
+        contextId: resultado.contextId,
+        estado: resultado.estado,
+        updatedAt: resultado.updatedAt,
+      };
+      respondJsonRpcResult(res, id, construirTask(vista));
+    } catch {
+      logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-handler-fallido", { method });
+      respondJsonRpcError(res, id, JSONRPC_INTERNAL_ERROR, "error interno");
+    }
+    return;
+  }
+
+  const taskId = extraerIdDeParams(params);
+  if (taskId === undefined) {
+    respondJsonRpcError(res, id, JSONRPC_INVALID_PARAMS, "params invalidos: id requerido");
+    return;
+  }
+
+  if (method === METODO_GET_TASK) {
+    // SÍNCRONA (ADR 100): ningún `await` entre acá y `res.end()`.
+    try {
+      const vista = deps.onConsultarTarea(taskId);
+      if (vista === undefined) {
+        logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-tarea-no-encontrada", { a2aTaskId: taskId });
+        respondJsonRpcError(res, id, A2A_ERROR_TASK_NOT_FOUND, "tarea no encontrada");
+        return;
+      }
+      respondJsonRpcResult(res, id, construirTask(vista));
+    } catch {
+      logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-handler-fallido", { method });
+      respondJsonRpcError(res, id, JSONRPC_INTERNAL_ERROR, "error interno");
+    }
+    return;
+  }
+
+  // `method === METODO_CANCEL_TASK` — SÍNCRONA (ADR 100), sin `await` acá tampoco.
+  try {
+    const resultado = deps.onCancelarTarea(taskId);
+    switch (resultado.resultado) {
+      case "cancelada":
+      case "ya-cancelada":
+        respondJsonRpcResult(res, id, construirTask(resultado.vista));
+        return;
+      case "no-cancelable":
+        logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-tarea-no-cancelable", { a2aTaskId: taskId });
+        respondJsonRpcError(res, id, A2A_ERROR_TASK_NOT_CANCELABLE, "tarea no cancelable");
+        return;
+      case "no-encontrada":
+        logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-tarea-no-encontrada", { a2aTaskId: taskId });
+        respondJsonRpcError(res, id, A2A_ERROR_TASK_NOT_FOUND, "tarea no encontrada");
+        return;
+    }
+  } catch {
+    logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-handler-fallido", { method });
+    respondJsonRpcError(res, id, JSONRPC_INTERNAL_ERROR, "error interno");
+  }
 }
 
 /**
  * El listener HTTP, aislado del ciclo de vida del servidor para poder
  * testear cada respuesta con dobles planos (molde `webhooks/server.ts:139-244`).
  *
- * Tabla de respuestas — hasta esta tarea (design.md §6.3):
+ * Tabla de respuestas — hasta esta tarea (design.md §6.3, sin el tope de
+ * turnos en vuelo ni el drenaje, tarea 13):
  * | Condición | Status | Efecto |
  * |---|---|---|
  * | `GET RUTA_AGENT_CARD` | `200` | el card de `construirAgentCard`, **sin auth**. `a2a-card-servido` |
@@ -378,7 +599,12 @@ async function handleSolicitudJsonRpc(
  * | `POST RUTA_JSONRPC`, `JSON.parse` inválido | `200` | `-32700`, `id: null`. `a2a-sobre-invalido` |
  * | `POST RUTA_JSONRPC`, sobre no-objeto / `jsonrpc !== "2.0"` / `method` no-string | `200` | `-32600`, `id: null` |
  * | `POST RUTA_JSONRPC`, `method` fuera de los tres soportados | `200` | `-32601`, con el `id` del request. `a2a-metodo-no-soportado` |
- * | `POST RUTA_JSONRPC`, `method` soportado (interino) | `200` | `-32603` "handler no configurado" — reemplazado en la tarea 12 |
+ * | `SendMessage`/`GetTask`/`CancelTask`, `params` mal formados | `200` | `-32602`, ningún callback invocado |
+ * | `SendMessage` con éxito | `200` | `result: Task` (`SUBMITTED`/`REJECTED` según `onSolicitudA2A`) |
+ * | `GetTask`/`CancelTask` de un id inexistente | `200` | `A2A_ERROR_TASK_NOT_FOUND` |
+ * | `CancelTask` sobre terminal no cancelable | `200` | `A2A_ERROR_TASK_NOT_CANCELABLE`, fila intacta |
+ * | `CancelTask` sobre `CANCELED`/`SUBMITTED`/`WORKING` | `200` | `result: Task` (idempotente en el primer caso) |
+ * | Un handler lanza | `200` | `-32603`, `a2a-handler-fallido`, nunca un stacktrace en el cuerpo |
  * | Cualquier `método+ruta` no reconocido | `404` | nada |
  *
  * `GET RUTA_AGENT_CARD` se sirve SIN auth a propósito (ADR 88 pto 5): es el
