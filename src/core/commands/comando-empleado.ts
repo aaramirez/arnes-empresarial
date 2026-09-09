@@ -18,9 +18,9 @@ export const COMANDO_LOG_CORRELATION_ID = "tui-comando";
 export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
 
 /**
- * Unión discriminada de los CATORCE comandos (ADR 21, 34, 56, 69). `ayuda`
- * no es un comando más: es también el sumidero de todo lo malformado, y por
- * eso el parser NO tiene una rama de error.
+ * Unión discriminada de los QUINCE comandos (ADR 21, 34, 56, 69 + uno de
+ * Hito 6, ADR 85). `ayuda` no es un comando más: es también el sumidero de
+ * todo lo malformado, y por eso el parser NO tiene una rama de error.
  *
  * ★ `login.password` es el ÚNICO campo SECRETO de todo el núcleo. ★ No se
  *   loguea, no se persiste, no se devuelve en ningún `TuiTurnResult`, y no
@@ -53,6 +53,9 @@ export type ComandoEmpleado =
   | { readonly tipo: "ver_propuesta"; readonly propuestaId?: string }
   | { readonly tipo: "aplicar_propuesta"; readonly propuestaId: string }
   | { readonly tipo: "descartar_propuesta"; readonly propuestaId: string; readonly motivo?: string }
+  /** Brazo NUEVO de Hito 6 (ADR 85). Molde exacto de `soporte`: un solo
+   *  campo, el resto entero de la línea, obligatorio. */
+  | { readonly tipo: "consultar_kpi"; readonly consulta: string }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -90,10 +93,10 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los catorce descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
- * tres de Hito 5.1, §5.9, ADR 69), en el orden en que `/ayuda` los imprime.
- * Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los descriptores
- * existentes no cambian de orden ni de forma.
+ * Los quince descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85), en el orden en
+ * que `/ayuda` los imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue
+ * último — los descriptores existentes no cambian de orden ni de forma.
  */
 const DESCRIPTORES = [
   {
@@ -219,6 +222,18 @@ const DESCRIPTORES = [
     tipo: "descartar_propuesta",
   },
   {
+    nombre: "/consultar-kpi",
+    uso: "/consultar-kpi <consulta>",
+    ayuda: "Consulta al agente externo de KPIs/incidentes y espera su respuesta.",
+    // `privilegiado: true` — no es una decisión nueva: mismo criterio ya
+    // escrito para `/ver-propuesta` arriba. Manda contexto de la empresa a
+    // un tercero externo (ADR 85).
+    privilegiado: true,
+    secreto: false,
+    forma: "id_mas_resto",
+    tipo: "consultar_kpi",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -230,8 +245,9 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los catorce descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
- * tres de Hito 5.1, §5.9, ADR 69), en el orden en que `/ayuda` los imprime.
+ * Los quince descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85), en el orden en
+ * que `/ayuda` los imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
 
@@ -403,6 +419,19 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     return motivo === undefined
       ? { tipo: "descartar_propuesta", propuestaId }
       : { tipo: "descartar_propuesta", propuestaId, motivo };
+  }
+
+  // /consultar-kpi <consulta> — rama PROPIA (ADR 85), calcada de /soporte.
+  // ★ Va OBLIGATORIAMENTE antes del bloque final de /devolucion: esa sección
+  // es una cadena de `if (descriptor.nombre === …)` cuyo fallthrough final
+  // es /devolucion, sin un `if` propio — un descriptor id_mas_resto nuevo
+  // sin su rama explícita no falla en compilación, se parsea en silencio
+  // como devolución.
+  if (descriptor.nombre === "/consultar-kpi") {
+    if (restoLinea === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    return { tipo: "consultar_kpi", consulta: restoLinea };
   }
 
   // /devolucion <token> [motivo]

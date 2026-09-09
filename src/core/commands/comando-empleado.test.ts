@@ -315,6 +315,35 @@ describe("parsearComando", () => {
     });
   });
 
+  it("/consultar-kpi <consulta multi-palabra> → tipo consultar_kpi con la consulta completa (ADR 85)", () => {
+    expect(parsearComando("/consultar-kpi hola que tal")).toEqual({
+      tipo: "consultar_kpi",
+      consulta: "hola que tal",
+    });
+  });
+
+  it("★ crítico ★: /consultar-kpi hola que tal NO cae en el fallthrough de /devolucion (ADR 85)", () => {
+    const resultado = parsearComando("/consultar-kpi hola que tal");
+    expect(resultado).not.toEqual({ tipo: "devolucion", token: "hola", motivo: "que tal" });
+    expect(resultado?.tipo).not.toBe("devolucion");
+  });
+
+  it("/consultar-kpi sin consulta → ayuda/argumentos (ADR 85)", () => {
+    expect(parsearComando("/consultar-kpi")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/consultar-kpi",
+    });
+  });
+
+  it("/consultar-kpi con solo espacios → ayuda/argumentos (ADR 85)", () => {
+    expect(parsearComando("/consultar-kpi    ")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/consultar-kpi",
+    });
+  });
+
   it("/ayuda explícito → motivo 'solicitada', sin campo comando", () => {
     expect(parsearComando("/ayuda")).toEqual({ tipo: "ayuda", motivo: "solicitada" });
   });
@@ -335,12 +364,17 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los catorce descriptores (trece comandos + ayuda) — once de v2.0.0 + los tres de la tarea 29 (ADR 69)", () => {
+  it("lista los quince descriptores (catorce comandos + ayuda) — once de v2.0.0 + los tres de la tarea 29 (ADR 69) + uno de Hito 6 (ADR 85)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(14);
+    expect(COMANDOS).toHaveLength(15);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
+  });
+
+  it("incluye la línea de /consultar-kpi (ADR 85)", () => {
+    const texto = formatearAyuda();
+    expect(texto).toContain("/consultar-kpi <consulta>");
   });
 });
 
@@ -358,6 +392,10 @@ describe("esComandoPrivilegiado", () => {
       expect(esComandoPrivilegiado(tipo)).toBe(true);
     },
   );
+
+  it("consultar_kpi es privilegiado (ADR 85, manda contexto de la empresa a un tercero externo)", () => {
+    expect(esComandoPrivilegiado("consultar_kpi")).toBe(true);
+  });
 });
 
 describe("regresión — los ocho descriptores de v1.4.0 no cambian de orden ni de forma (tarea 20)", () => {
@@ -393,8 +431,8 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("hay catorce descriptores en total", () => {
-    expect(descriptores).toHaveLength(14);
+  it("hay quince descriptores en total (catorce + uno de Hito 6, ADR 85)", () => {
+    expect(descriptores).toHaveLength(15);
   });
 
   it("los tres descriptores nuevos ocupan los índices 10-12, en el orden de design.md §5.9 / ADR 69", () => {
@@ -405,8 +443,17 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
     ]);
   });
 
-  it("/ayuda sigue último (índice 13)", () => {
-    expect(descriptores[13]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  it("/ayuda sigue último (índice 14)", () => {
+    expect(descriptores[14]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  });
+});
+
+describe("regresión — el descriptor nuevo de la tarea 19 va antes de /ayuda, que sigue último (ADR 85)", () => {
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("/consultar-kpi ocupa el índice 13, en el orden de design.md §5.7.1 / ADR 85", () => {
+    expect(descriptores[13]).toMatchObject({ nombre: "/consultar-kpi", forma: "id_mas_resto" });
   });
 });
 
