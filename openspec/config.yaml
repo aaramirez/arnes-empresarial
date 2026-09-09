@@ -5,7 +5,7 @@ context: |
   Architecture: hexagonal, single package. src/core/ must never import src/adapters/*.
   Adapters never talk directly to each other — always through core.
   Deps in place: dotenv (env loading), vitest (test runner), tsx (dev exec).
-  Planned (not yet installed): @anthropic-ai/claude-agent-sdk, better-sqlite3 (or similar), Ink (TUI), A2A (JSON-RPC).
+  Planned (not yet installed): @anthropic-ai/claude-agent-sdk, better-sqlite3 (or similar), Ink (TUI).
   Persistence: SQLite embedded, no server. Interface: TUI via Ink.
   Full rules: AGENTS.md (repo root) — non-negotiable, do not reopen without Spec Author role.
 
