@@ -80,6 +80,7 @@ import {
   COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_CONSULTAR_KPI,
   COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
@@ -92,6 +93,7 @@ import {
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_EXITOSA,
+  RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
   RESULTADO_REEMBOLSADA,
   type AccionEmpleado,
@@ -157,8 +159,20 @@ import { type AplicarPatchPort } from "./core/agents/worktree-contract.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { invokeModel } from "./core/turn-selector/invoke-model.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
+import {
+  despacharDelegacionA2A,
+  resolverDestinoA2A,
+  type DelegacionA2AStorePort,
+} from "./core/turn-selector/dispatch-delegation-a2a.js";
+import {
+  DelegacionA2ANoCompletadaError,
+  DESTINO_A2A_KPI_INCIDENTE,
+  type ClienteA2APort,
+  type MotivoDelegacionA2ANoCompletada,
+} from "./core/agents/a2a-contract.js";
+import { type InsumoDelegado } from "./core/agents/subagents.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
-import { createVentaStore } from "./build-on-venta.js";
+import { createVentaStore, createDelegacionA2AStore } from "./build-on-venta.js";
 import { createDelegacionStore } from "./build-on-activity.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
@@ -166,6 +180,7 @@ import type { SoporteResult } from "./build-on-soporte.js";
 import {
   buscarCredencialEmpleado,
   insertAccionEmpleado,
+  createCaso,
   crearSolicitudConCaso as crearSolicitudConCasoRow,
   adjuntarDictamenSolicitud,
   listSolicitudesInternas,
@@ -281,6 +296,17 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly aplicarPatch?: AplicarPatchPort;
   /** Tarea 22 — default: closure sobre `invokeModel`, mismo molde que `build-on-activity.ts`. */
   readonly despacharDeps?: DespacharDelegacionDeps;
+  /**
+   * Hito 6, tarea 20 (ADR 85 + ADR 82). Ausente ⇒ A2A saliente APAGADO ⇒
+   * `/consultar-kpi` responde que está desactivado, sin crear caso, sin
+   * fila y sin `fetch`. Lo cablea `main.ts` (tarea 21) — este módulo NO lee
+   * `HARNESS_A2A_SALIENTE` por su cuenta: el interruptor se consulta UNA
+   * vez, en el composition root, y de ahí salen los DOS consumidores
+   * (ventas y TUI).
+   */
+  readonly clienteA2A?: ClienteA2APort;
+  /** Costura de test — default: `createDelegacionA2AStore(db)` (`build-on-venta.ts`, tarea 16). */
+  readonly delegacionA2AStore?: DelegacionA2AStorePort;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -563,6 +589,55 @@ function formatearEcoSolicitud(solicitud: SolicitudInterna): string {
   return `solicitud ${solicitud.id} · tipo ${solicitud.tipo} · detalle ${solicitud.detalle} · caso ${solicitud.casoId} — repetí el comando para confirmar.`;
 }
 
+/**
+ * Tipo de `casos.tipo` para `/consultar-kpi` (Hito 6, tarea 20, ADR 85).
+ * Const de MÓDULO, no de `ventas-contract.ts`: mismo precedente que
+ * `CASO_TIPO_SOLICITUD_INTERNA` (`core/solicitudes/crear-solicitud-interna.ts:56`),
+ * que tampoco vive en el contrato compartido.
+ */
+const CASO_TIPO_CONSULTA_KPI = "consulta_kpi";
+
+/**
+ * Idéntico a `CASO_ESTADO_ACTIVO` de `handle-turn.ts`/`build-on-soporte.ts:48`.
+ * Duplicado a propósito, no un descuido: este módulo no importa esos
+ * archivos únicamente para esta constante (regla no negociable de
+ * `AGENTS.md`: solo se importa lo que hace falta, y `casos.estado` es un
+ * TEXT abierto en el esquema) — mismo criterio que `registrar-venta.ts` ya
+ * documenta para su propia copia.
+ */
+const CASO_ESTADO_ACTIVO = "activo";
+
+/**
+ * PURA, de módulo (Hito 6, tarea 20, ADR 85) — mismo lugar y mismo molde
+ * que `formatearLineaEscalacion`/`formatearListado`/`formatearResumenPropuesta`.
+ * TOTAL sobre los OCHO motivos: el `switch` es exhaustivo sobre
+ * `MotivoDelegacionA2ANoCompletada` — SIN `default` — así que un motivo
+ * nuevo del vocabulario sería un error de COMPILACIÓN, no un mensaje
+ * genérico. Requirement literal del spec: dos motivos distintos nunca
+ * comparten mensaje. NUNCA incluye el `detalle` crudo del adaptador — ese
+ * ya viene truncado a 500 chars pero puede llevar cuerpo de respuesta ajeno.
+ */
+function mensajeDeMotivoA2A(reason: MotivoDelegacionA2ANoCompletada): string {
+  switch (reason) {
+    case "failed":
+      return "El agente externo de KPIs/incidentes no pudo completar la consulta.";
+    case "canceled":
+      return "La consulta al agente externo de KPIs/incidentes fue cancelada antes de completarse.";
+    case "rejected":
+      return "El agente externo de KPIs/incidentes rechazó la consulta.";
+    case "input-required":
+      return "El agente externo de KPIs/incidentes necesita información adicional que este canal no puede proveer.";
+    case "auth-required":
+      return "El agente externo de KPIs/incidentes requiere una autenticación que este canal no puede completar.";
+    case "timeout":
+      return "La consulta al agente externo de KPIs/incidentes agotó el tiempo de espera.";
+    case "transporte":
+      return "No se pudo establecer comunicación con el agente externo de KPIs/incidentes.";
+    case "protocolo":
+      return "El agente externo de KPIs/incidentes respondió con un protocolo no reconocido.";
+  }
+}
+
 /** Devuelve un `SubmitPromptHandler` — MISMO tipo, MISMA firma. I1 no cambia. */
 export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): SubmitPromptHandler {
   const { onSubmit, onSoporte, db, ventasConfig, authConfig, verificarPassword, dummyPasswordHash, logDeps, hooks } =
@@ -584,6 +659,10 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     logTurnEvent(casoId, event, fields, logDeps);
   const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
   const propuestaStore: PropuestaStorePort = deps.propuestaStore ?? createPropuestaStore(db);
+  // Hito 6, tarea 20 (ADR 85 + ADR 82): `clienteA2A` NO tiene default — su
+  // ausencia ES el interruptor apagado, resuelto una sola vez en `main.ts`.
+  const { clienteA2A } = deps;
+  const delegacionA2AStore: DelegacionA2AStorePort = deps.delegacionA2AStore ?? createDelegacionA2AStore(db);
   /**
    * Tarea 32, ADR 64 — `git apply --check`/`git apply` reales sobre el
    * checkout real (`repoRoot: process.cwd()`, mismo criterio que
@@ -1049,6 +1128,75 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   }
 
   /**
+   * `/consultar-kpi <consulta>` (Hito 6, tarea 20, ADR 85). UN SOLO PASO —
+   * NUNCA lee ni escribe `confirmacionPendiente`, igual que
+   * `manejarVerPropuesta`/`manejarSolicitud`. `privilegiado: true` ya lo
+   * garantizó la guarda del preámbulo (paso 6): no se duplica acá.
+   *
+   * PRIMER llamador de producción del camino SÍNCRONO del ADR 74: awaitea
+   * `despacharDelegacionA2A` y devuelve su `resultado` como texto del turno.
+   *
+   * Secuencia:
+   *  a. `clienteA2A === undefined` ⇒ mensaje de "desactivado". SIN caso, SIN fila.
+   *  b. `caso` NUEVO por invocación (`createCaso` directo, mismo molde que
+   *     `buildOnSoporte`, paso 1): obligatorio, no cosmético —
+   *     `delegaciones_a2a.caso_id` es NOT NULL REFERENCES casos(id).
+   *  c. `await despacharDelegacionA2A(...)` con `resolverDestinoA2A(
+   *     DESTINO_A2A_KPI_INCIDENTE)` y el insumo FIJO EN CÓDIGO (nunca del
+   *     modelo, nunca de un prompt libre).
+   *  d. éxito ⇒ `registrar(RESULTADO_ATENDIDA)` y se devuelve el texto.
+   *  e. `catch` ÚNICO y EXPLÍCITO sobre b-c-d completo — mismo criterio que
+   *     `manejarSoporte`/ADR 40 (la TUI no puede quedarse sin respuesta):
+   *     una falla de `createCaso` (sin caso no hay nada que correlacionar)
+   *     responde igual que una falla de la delegación.
+   *     `DelegacionA2ANoCompletadaError` ⇒ `mensajeDeMotivoA2A(error.reason)`;
+   *     cualquier otro throw ⇒ el mismo `toErrorMessage` que ya usa este
+   *     archivo. En los dos casos se registra `RESULTADO_FALLIDA` y se
+   *     emite un evento — NUNCA con el `detalle` crudo del error adentro.
+   *
+   * `agentLabel: "sistema"` — el texto viene de un tercero, no de un
+   * subagente del arnés, y `agentLabel` nombra agentes de ESTE proceso.
+   */
+  async function manejarConsultarKpi(
+    comando: Extract<ComandoEmpleado, { tipo: "consultar_kpi" }>,
+    ahora: string,
+  ): Promise<TuiTurnResult> {
+    if (clienteA2A === undefined) {
+      return sistema("La consulta a agentes externos de KPIs/incidentes está desactivada.");
+    }
+
+    const casoId = newId();
+    try {
+      createCaso(db, {
+        id: casoId,
+        tipo: CASO_TIPO_CONSULTA_KPI,
+        estado: CASO_ESTADO_ACTIVO,
+        createdAt: ahora,
+        updatedAt: ahora,
+      });
+
+      const insumo: InsumoDelegado = {
+        instruccion: "Consultá al agente externo de KPIs/incidentes y devolvé su respuesta tal cual.",
+        material: comando.consulta,
+      };
+
+      const delegacion = await despacharDelegacionA2A(
+        { casoId, destino: resolverDestinoA2A(DESTINO_A2A_KPI_INCIDENTE), insumo },
+        { store: delegacionA2AStore, cliente: clienteA2A, newId, now, logEvent },
+      );
+
+      registrar({ comando: COMANDO_CONSULTAR_KPI, casoId, resultado: RESULTADO_ATENDIDA }, ahora);
+      return sistema(delegacion.resultado);
+    } catch (error) {
+      const mensaje =
+        error instanceof DelegacionA2ANoCompletadaError ? mensajeDeMotivoA2A(error.reason) : toErrorMessage(error);
+      registrar({ comando: COMANDO_CONSULTAR_KPI, casoId, resultado: RESULTADO_FALLIDA }, ahora);
+      logEvent(casoId, "comando-consultar-kpi-fallido", { message: mensaje });
+      return sistema(mensaje);
+    }
+  }
+
+  /**
    * Resolución de `/aplicar-propuesta`/`/descartar-propuesta` en dos pasos
    * (Hito 5.1, tarea 32, §5.10 parte 2, ADR 36, ADR 55, ADR 64, ADR 65).
    * Molde de `manejarResolucionSolicitud`, con dos diferencias impuestas por
@@ -1302,6 +1450,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
+      case "consultar_kpi":
+        return manejarConsultarKpi(comando, ahora);
       case "aplicar_propuesta":
         return manejarResolucionPropuesta(ACCION_APLICAR_PROPUESTA, comando.propuestaId, undefined, ahora);
       case "descartar_propuesta":

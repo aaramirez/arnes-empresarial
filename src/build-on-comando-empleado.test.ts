@@ -21,7 +21,12 @@ import {
 import type { VentasConfig } from "./core/ventas/ventas-config.js";
 import type { AuthConfig } from "./core/auth/auth-config.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
-import type { RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
+import {
+  COMANDO_CONSULTAR_KPI,
+  RESULTADO_ATENDIDA,
+  RESULTADO_FALLIDA,
+  type RegistroAccionesEmpleadoPort,
+} from "./core/commands/registro-acciones-contract.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
   SOLICITUD_ESTADO_PENDIENTE,
@@ -43,10 +48,19 @@ import {
   type ResultadoPatch,
 } from "./core/agents/worktree-contract.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
+import type { DelegacionA2AStorePort } from "./core/turn-selector/dispatch-delegation-a2a.js";
+import {
+  TASK_STATE_COMPLETED,
+  type ClienteA2APort,
+  type MotivoDelegacionA2ANoCompletada,
+  type ResultadoA2A,
+} from "./core/agents/a2a-contract.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
 import type { SoporteResult } from "./build-on-soporte.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
+import { openDatabase } from "./adapters/memory/db.js";
+import { createCaso } from "./adapters/memory/repository.js";
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
 const PASSWORD = "secreto-super-largo-123";
@@ -191,6 +205,33 @@ function makeAplicarPatch(overrides: Partial<AplicarPatchPort> = {}): AplicarPat
   };
 }
 
+/** Molde de `makeStore`/`makeAplicarPatch`: éxito por default, contra `"kpi-incidente"` (Hito 6, tarea 20). */
+function makeClienteA2A(overrides: Partial<ClienteA2APort> = {}): ClienteA2APort {
+  return {
+    baseUrlDe: vi.fn(() => "https://kpi.example.test"),
+    delegar: vi.fn(
+      async (): Promise<ResultadoA2A> => ({
+        ok: true,
+        a2aTaskId: "task-1",
+        estado: TASK_STATE_COMPLETED,
+        resultado: "todo en orden",
+        agenteNombre: "Agente KPI",
+        endpoint: "https://kpi.example.test/rpc",
+      }),
+    ),
+    ...overrides,
+  };
+}
+
+/** Molde de `makeStore`: dos métodos, ninguno transaccional (Hito 6, tarea 20). */
+function makeDelegacionA2AStore(overrides: Partial<DelegacionA2AStorePort> = {}): DelegacionA2AStorePort {
+  return {
+    crearDelegacionA2A: vi.fn(),
+    actualizarDelegacionA2A: vi.fn(),
+    ...overrides,
+  };
+}
+
 function makeDespacharDeps(overrides: Partial<DespacharDelegacionDeps> = {}): DespacharDelegacionDeps {
   return {
     store: { crearDelegacion: vi.fn(), completarDelegacion: vi.fn() },
@@ -241,6 +282,57 @@ async function login(
   password = PASSWORD,
 ): Promise<TuiTurnResult> {
   return handler(`/login ${empleadoId} ${password}`);
+}
+
+/**
+ * Molde de `makeBaseDeps` (`build-on-soporte.test.ts`): `db` es un
+ * `openDatabase(":memory:")` REAL (Hito 6, tarea 20), no un doble — porque
+ * `manejarConsultarKpi` llama `createCaso(db, ...)` directo sobre
+ * `repository.ts`, igual que `buildOnSoporte`. `registro`, `clienteA2A` y
+ * `delegacionA2AStore` NO tienen default acá a propósito: quedan en los
+ * defaults REALES de `buildOnComandoEmpleado` (closure sobre `db` /
+ * `createDelegacionA2AStore(db)` / ausente) salvo que el test los
+ * sobreescriba — `clienteA2A` ausente por default es exactamente el
+ * escenario "A2A apagado".
+ */
+function makeKpiDeps(
+  db: Database.Database,
+  reloj: Reloj,
+  overrides: Partial<BuildOnComandoEmpleadoDeps> & { readonly writes?: string[] } = {},
+): BuildOnComandoEmpleadoDeps {
+  const { writes, ...rest } = overrides;
+  const logDeps = { now: () => reloj.ahora, write: (line: string) => writes?.push(line) };
+  return {
+    onSubmit: vi.fn(async () => ({ responseText: "conversacional", agentLabel: "conversacional" })),
+    onSoporte: vi.fn(async (): Promise<SoporteResult> => ({ casoId: "caso-soporte-1", respuesta: "listo" })),
+    db,
+    ventasConfig: makeConfig(),
+    authConfig: makeAuthConfig(),
+    verificarPassword: vi.fn(() => true),
+    dummyPasswordHash: "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    store: makeStore(),
+    credenciales: makeCredenciales(),
+    solicitudStore: makeSolicitudStore(),
+    propuestaStore: makePropuestaStore(),
+    aplicarPatch: makeAplicarPatch(),
+    despacharDeps: makeDespacharDeps(),
+    hooks: createHookEngine(),
+    now: () => reloj.ahora,
+    logDeps,
+    ...rest,
+  };
+}
+
+function contarFilasRegistro(db: Database.Database, comando: string): number {
+  const row = db
+    .prepare("SELECT count(*) as total FROM registro_acciones_empleado WHERE comando = ?")
+    .get(comando) as { total: number };
+  return row.total;
+}
+
+function contarCasos(db: Database.Database): number {
+  const row = db.prepare("SELECT count(*) as total FROM casos").get() as { total: number };
+  return row.total;
 }
 
 describe("buildOnComandoEmpleado — delegación al camino conversacional", () => {
@@ -1384,5 +1476,261 @@ describe("buildOnComandoEmpleado — resolución de propuestas en dos pasos (Hit
     const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
     expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
     expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `/consultar-kpi <consulta>` (Hito 6, tarea 20, ADR 85, design.md §5.7.3).
+ * Espejo de las tres suites: `db` REAL (`openDatabase(":memory:")`, molde de
+ * `build-on-soporte.test.ts`) porque `manejarConsultarKpi` llama `createCaso`
+ * directo; `ClienteA2APort`/`DelegacionA2AStorePort` FAKE (molde de
+ * `makeAplicarPatch`/`makePropuestaStore`), sin red ni SQLite del lado A2A.
+ */
+describe("buildOnComandoEmpleado — /consultar-kpi (Hito 6, tarea 20, ADR 85)", () => {
+  it("sin sesión vigente pide /login, sin tocar clienteA2A ni crear caso", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const clienteA2A = makeClienteA2A();
+      const delegacionA2AStore = makeDelegacionA2AStore();
+      const deps = makeKpiDeps(db, reloj, { clienteA2A, delegacionA2AStore });
+      const handler = buildOnComandoEmpleado(deps);
+
+      const resultado = await handler("/consultar-kpi cuál fue el pico de latencia");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+      expect(clienteA2A.baseUrlDe).not.toHaveBeenCalled();
+      expect(clienteA2A.delegar).not.toHaveBeenCalled();
+      expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
+      expect(contarCasos(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("clienteA2A ausente responde que está desactivado, sin crear caso ni fila en delegaciones_a2a", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {}); // sin clienteA2A: A2A "apagado"
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/consultar-kpi qué tal el uptime");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText.toLowerCase()).toContain("desactivad");
+      expect(contarCasos(db)).toBe(0);
+      expect(contarFilasRegistro(db, COMANDO_CONSULTAR_KPI)).toBe(0);
+      const fila = db.prepare("SELECT count(*) as total FROM delegaciones_a2a").get() as { total: number };
+      expect(fila.total).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("éxito: responseText es el texto del agente externo y deja una fila atendida en registro_acciones_empleado", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const clienteA2A = makeClienteA2A({
+        delegar: vi.fn(
+          async (): Promise<ResultadoA2A> => ({
+            ok: true,
+            a2aTaskId: "task-99",
+            estado: TASK_STATE_COMPLETED,
+            resultado: "el pico de latencia fue a las 14:00",
+            agenteNombre: "Agente KPI",
+            endpoint: "https://kpi.example.test/rpc",
+          }),
+        ),
+      });
+      const deps = makeKpiDeps(db, reloj, { clienteA2A });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/consultar-kpi cuál fue el pico de latencia");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toBe("el pico de latencia fue a las 14:00");
+      expect(contarCasos(db)).toBe(1);
+      const fila = db
+        .prepare("SELECT resultado FROM registro_acciones_empleado WHERE comando = ?")
+        .get(COMANDO_CONSULTAR_KPI) as { resultado: string } | undefined;
+      expect(fila?.resultado).toBe(RESULTADO_ATENDIDA);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("el turno ESPERA la respuesta del agente externo — la promesa no resuelve antes (camino síncrono del ADR 74)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      let resolverDelegar: ((r: ResultadoA2A) => void) | undefined;
+      const clienteA2A = makeClienteA2A({
+        delegar: vi.fn(
+          () =>
+            new Promise<ResultadoA2A>((resolve) => {
+              resolverDelegar = resolve;
+            }),
+        ),
+      });
+      const deps = makeKpiDeps(db, reloj, { clienteA2A });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      let resuelto = false;
+      const promesa = handler("/consultar-kpi qué tal el uptime").then((r) => {
+        resuelto = true;
+        return r;
+      });
+
+      // Flushea varias tandas de microtasks: la promesa NO debe resolver
+      // hasta que `resolverDelegar` se invoque explícitamente más abajo.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(resuelto).toBe(false);
+
+      resolverDelegar?.({
+        ok: true,
+        a2aTaskId: "task-1",
+        estado: TASK_STATE_COMPLETED,
+        resultado: "todo en orden",
+        agenteNombre: "Agente KPI",
+        endpoint: "https://kpi.example.test/rpc",
+      });
+      const resultado = await promesa;
+
+      expect(resuelto).toBe(true);
+      expect(resultado.responseText).toBe("todo en orden");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("los ocho motivos de fracaso dan mensajes distintos entre sí, y siempre RESULTADO_FALLIDA", async () => {
+    const MOTIVOS: readonly MotivoDelegacionA2ANoCompletada[] = [
+      "failed",
+      "canceled",
+      "rejected",
+      "input-required",
+      "auth-required",
+      "timeout",
+      "transporte",
+      "protocolo",
+    ];
+    const mensajes = new Set<string>();
+
+    for (const reason of MOTIVOS) {
+      const db = openDatabase(":memory:");
+      try {
+        const reloj: Reloj = { ahora: TIMESTAMP };
+        const clienteA2A = makeClienteA2A({
+          delegar: vi.fn(async (): Promise<ResultadoA2A> => ({ ok: false, reason })),
+        });
+        const deps = makeKpiDeps(db, reloj, { clienteA2A });
+        const handler = buildOnComandoEmpleado(deps);
+        await login(handler);
+
+        const resultado = await handler("/consultar-kpi qué tal el uptime");
+
+        mensajes.add(resultado.responseText);
+        const fila = db
+          .prepare("SELECT resultado FROM registro_acciones_empleado WHERE comando = ?")
+          .get(COMANDO_CONSULTAR_KPI) as { resultado: string } | undefined;
+        expect(fila?.resultado).toBe(RESULTADO_FALLIDA);
+      } finally {
+        db.close();
+      }
+    }
+
+    expect(mensajes.size).toBe(MOTIVOS.length);
+  });
+
+  it("un throw NO tipado (no DelegacionA2ANoCompletadaError) igual responde, vía toErrorMessage", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const clienteA2A = makeClienteA2A();
+      const delegacionA2AStore = makeDelegacionA2AStore({
+        crearDelegacionA2A: vi.fn(() => {
+          throw new Error("la base rechazó la escritura");
+        }),
+      });
+      const deps = makeKpiDeps(db, reloj, { clienteA2A, delegacionA2AStore });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/consultar-kpi qué tal el uptime");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("la base rechazó la escritura");
+      expect(clienteA2A.delegar).not.toHaveBeenCalled();
+      const fila = db
+        .prepare("SELECT resultado FROM registro_acciones_empleado WHERE comando = ?")
+        .get(COMANDO_CONSULTAR_KPI) as { resultado: string } | undefined;
+      expect(fila?.resultado).toBe(RESULTADO_FALLIDA);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("createCaso que tira (colisión de id) igual responde, sin intentar delegar", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      createCaso(db, {
+        id: "id-colision",
+        tipo: "otro",
+        estado: "activo",
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      });
+      const clienteA2A = makeClienteA2A();
+      const deps = makeKpiDeps(db, reloj, { clienteA2A, newId: () => "id-colision" });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/consultar-kpi qué tal el uptime");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText.length).toBeGreaterThan(0);
+      expect(clienteA2A.baseUrlDe).not.toHaveBeenCalled();
+      expect(clienteA2A.delegar).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("con un detalle crudo del adaptador (simulando un authToken filtrado), el valor no aparece en responseText ni en logEvent", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const writes: string[] = [];
+      const SECRETO = "super-secret-token-xyz";
+      const clienteA2A = makeClienteA2A({
+        delegar: vi.fn(
+          async (): Promise<ResultadoA2A> => ({
+            ok: false,
+            reason: "protocolo",
+            detalle: `Authorization: Bearer ${SECRETO}`,
+          }),
+        ),
+      });
+      const deps = makeKpiDeps(db, reloj, { clienteA2A, writes });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+      writes.length = 0; // limpia lo que dejó /login
+
+      const resultado = await handler("/consultar-kpi qué tal el uptime");
+
+      expect(resultado.responseText).not.toContain(SECRETO);
+      expect(JSON.stringify(writes)).not.toContain(SECRETO);
+    } finally {
+      db.close();
+    }
   });
 });
