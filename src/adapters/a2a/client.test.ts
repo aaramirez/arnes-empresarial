@@ -23,13 +23,23 @@ function errorResponse(status: number, bodyText: string): FetchResponseLike {
   };
 }
 
+/**
+ * `SendMessageResponse` envuelve el `Task` bajo `result.task` — el `oneof
+ * payload { Task task = 1; Message message = 2; }` REAL del protocolo
+ * (verificado contra `specification/a2a.proto` del tag `v1.0.0` de
+ * `a2aproject/A2A`, encontrado en la verificación manual de la tarea 23,
+ * `docs/progreso/v2.2-a2a-cliente/verificacion-manual-tarea-23.md` §2.2). Esto
+ * es DISTINTO de `taskResponse` (más abajo), que arma la respuesta de
+ * `GetTask`/`CancelTask` — esos SÍ devuelven el `Task` plano en `result`,
+ * confirmado con `curl` real contra el sample en el mismo reporte.
+ */
+function sendMessageTaskResponse(task: unknown): FetchResponseLike {
+  return agentCardResponse({ jsonrpc: "2.0", id: 1, result: { task } });
+}
+
 /** Respuesta mínima de un `SendMessage` exitoso — el `Task` en sí no se inspecciona en esta tarea (tarea 5). */
 function okSendMessageResponse(): FetchResponseLike {
-  return agentCardResponse({
-    jsonrpc: "2.0",
-    id: 1,
-    result: { id: "task-1", status: { state: "TASK_STATE_SUBMITTED" } },
-  });
+  return sendMessageTaskResponse({ id: "task-1", status: { state: "TASK_STATE_SUBMITTED" } });
 }
 
 function makeConfig(overrides: Partial<A2AConfig> = {}): A2AConfig {
@@ -321,6 +331,94 @@ describe("delegarTarea — SendMessage", () => {
     const [, init] = mockFetch.mock.calls[1] as [string, { headers: Record<string, string> }];
     expect(init.headers.Authorization).toBe("Bearer token-secreto");
   });
+
+  it("una respuesta real de SendMessage (result.task, no un Task plano en result) parsea correctamente y llega a COMPLETED sin necesitar ningún GetTask (verificación manual tarea 23 §2.2 — el bug real: antes de este fix, idDeTarea leía .id de {task:{...}} y devolvía undefined)", async () => {
+    const fetchFn: FetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC], name: "Agente de Riesgo" }),
+      )
+      .mockResolvedValueOnce(
+        sendMessageTaskResponse({
+          id: "task-1",
+          status: { state: "TASK_STATE_COMPLETED" },
+          artifacts: [{ parts: [{ text: "listo" }] }],
+        }),
+      );
+
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      makeDeps({ fetchFn }),
+    );
+
+    expect(resultado).toEqual({
+      ok: true,
+      a2aTaskId: "task-1",
+      estado: "TASK_STATE_COMPLETED",
+      resultado: "listo",
+      agenteNombre: "Agente de Riesgo",
+      endpoint: ENTRADA_JSONRPC.url,
+    });
+    // Ningún GetTask: sólo Agent Card + SendMessage (2 llamadas).
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("result.message en vez de result.task (la otra rama real del oneof — agente sincrónico sin Task) ⇒ reason: 'protocolo', sin crashear, sin llegar al loop de polling (verificación manual tarea 23 §2.4)", async () => {
+    const fetchFn: FetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC] }))
+      .mockResolvedValueOnce(
+        agentCardResponse({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            message: { messageId: "m-agente-1", role: "ROLE_AGENT", parts: [{ text: "respuesta directa" }] },
+          },
+        }),
+      );
+
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      makeDeps({ fetchFn }),
+    );
+
+    expect(resultado.ok).toBe(false);
+    expect(!resultado.ok && resultado.reason).toBe("protocolo");
+    expect(!resultado.ok && resultado.endpoint).toBe(ENTRADA_JSONRPC.url);
+    // Ningún GetTask: sólo Agent Card + SendMessage (2 llamadas) — nunca hay Task que trackear.
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("delegarTarea — header A2A-Version (verificación manual tarea 23 §2.2 — a2a-sdk exige este header, ausente rompe con VERSION_NOT_SUPPORTED)", () => {
+  it("el GET del Agent Card lleva A2A-Version: 1.0", async () => {
+    const fetchFn: FetchFn = vi.fn().mockResolvedValue(agentCardResponse({ supportedInterfaces: [] }));
+
+    await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      makeDeps({ fetchFn }),
+    );
+
+    const mockFetch = fetchFn as ReturnType<typeof vi.fn>;
+    const [, init] = mockFetch.mock.calls[0] as [string, { headers: Record<string, string> }];
+    expect(init.headers["A2A-Version"]).toBe("1.0");
+  });
+
+  it("el POST de SendMessage lleva A2A-Version: 1.0", async () => {
+    const fetchFn: FetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC] }))
+      .mockResolvedValueOnce(okSendMessageResponse());
+
+    await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      makeDeps({ fetchFn }),
+    );
+
+    const mockFetch = fetchFn as ReturnType<typeof vi.fn>;
+    const [, init] = mockFetch.mock.calls[1] as [string, { headers: Record<string, string> }];
+    expect(init.headers["A2A-Version"]).toBe("1.0");
+  });
 });
 
 /**
@@ -339,6 +437,7 @@ function makeRelojFake(): { readonly ahoraMs: () => number; readonly dormir: (ms
   };
 }
 
+/** Respuesta de `GetTask`/`CancelTask`: el `Task` PLANO en `result` (sin envoltorio — a diferencia de `sendMessageTaskResponse`). */
 function taskResponse(task: unknown): FetchResponseLike {
   return agentCardResponse({ jsonrpc: "2.0", id: 1, result: task });
 }
@@ -375,10 +474,61 @@ function secuenciaFetch(respuestas: readonly FetchResponseLike[]): FetchFn {
 
 const CARD_JSONRPC = agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC], name: "Agente de Riesgo" });
 
+describe("delegarTarea — header A2A-Version, GetTask y CancelTask", () => {
+  it("el POST de GetTask lleva A2A-Version: 1.0", async () => {
+    const reloj = makeRelojFake();
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      sendMessageTaskResponse(taskSubmitted()),
+      taskResponse(taskCompleted()),
+    ]);
+    const deps = makeDeps({ fetchFn, ...reloj });
+
+    await delegarTarea({ destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" }, deps);
+
+    const mockFetch = fetchFn as ReturnType<typeof vi.fn>;
+    const getTaskCall = mockFetch.mock.calls.find(([, init]) => {
+      const body = JSON.parse((init as { body?: string }).body ?? "{}") as { method?: string };
+      return body.method === "GetTask";
+    }) as [string, { headers: Record<string, string> }] | undefined;
+    expect(getTaskCall?.[1].headers["A2A-Version"]).toBe("1.0");
+  });
+
+  it("el POST de CancelTask lleva A2A-Version: 1.0", async () => {
+    const reloj = makeRelojFake();
+    const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      sendMessageTaskResponse(taskSubmitted()),
+      taskResponse(taskWorking()),
+      taskResponse(taskCompleted()), // respuesta de CancelTask
+    ]);
+    const deps = makeDeps({ fetchFn, config, ...reloj });
+
+    await delegarTarea({ destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" }, deps);
+
+    const mockFetch = fetchFn as ReturnType<typeof vi.fn>;
+    const buscarCancelCall = () =>
+      mockFetch.mock.calls.find(([, init]) => {
+        const body = JSON.parse((init as { body?: string }).body ?? "{}") as { method?: string };
+        return body.method === "CancelTask";
+      });
+    await vi.waitFor(() => {
+      expect(buscarCancelCall()).toBeDefined();
+    });
+    const cancelCall = buscarCancelCall() as [string, { headers: Record<string, string> }] | undefined;
+    expect(cancelCall?.[1].headers["A2A-Version"]).toBe("1.0");
+  });
+});
+
 describe("delegarTarea — loop de GetTask", () => {
   it("SendMessage se envía una sola vez, sin importar cuántos GetTask se hagan", async () => {
     const reloj = makeRelojFake();
-    const fetchFn = secuenciaFetch([CARD_JSONRPC, taskResponse(taskSubmitted()), taskResponse(taskCompleted())]);
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      sendMessageTaskResponse(taskSubmitted()),
+      taskResponse(taskCompleted()),
+    ]);
     const deps = makeDeps({ fetchFn, ...reloj });
 
     await delegarTarea({ destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" }, deps);
@@ -395,7 +545,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const marcasDeTiempo: number[] = [];
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse(taskWorking()),
       taskResponse(taskCompleted()),
     ]);
@@ -417,7 +567,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse(taskSubmitted()),
       taskResponse(taskWorking()),
       taskResponse(taskCompleted({ artifacts: [{ parts: [{ text: "listo" }] }] })),
@@ -445,7 +595,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 3_000 });
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorResponse(500, "GetTask caído"),
       errorResponse(500, "GetTask caído"),
       errorResponse(500, "GetTask caído"),
@@ -492,7 +642,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorResponse(503, "temporal"), // GetTask #1 falla por transporte
       taskResponse(taskWorking()), // GetTask #2 responde bien — el loop siguió
       taskResponse(taskCompleted({ artifacts: [{ parts: [{ text: "ok" }] }] })), // GetTask #3
@@ -512,7 +662,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       { ok: true, status: 200, text: () => Promise.reject(new Error("stream cortado")) }, // GetTask #1
       taskResponse(taskCompleted({ artifacts: [{ parts: [{ text: "ok" }] }] })), // GetTask #2
     ]);
@@ -532,7 +682,7 @@ describe("delegarTarea — loop de GetTask", () => {
 
   it("sobre JSON-RPC con 'error' en GetTask clasifica como protocolo y corta el loop", async () => {
     const reloj = makeRelojFake();
-    const fetchFn = secuenciaFetch([CARD_JSONRPC, taskResponse(taskSubmitted()), errorEnvelopeResponse()]);
+    const fetchFn = secuenciaFetch([CARD_JSONRPC, sendMessageTaskResponse(taskSubmitted()), errorEnvelopeResponse()]);
     const deps = makeDeps({ fetchFn, ...reloj });
 
     const resultado = await delegarTarea(
@@ -553,7 +703,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorNuloEnvelopeResponse(taskCompleted()),
     ]);
     const deps = makeDeps({ fetchFn, ...reloj });
@@ -572,7 +722,7 @@ describe("delegarTarea — loop de GetTask", () => {
       const reloj = makeRelojFake();
       const fetchFn = secuenciaFetch([
         CARD_JSONRPC,
-        taskResponse(taskSubmitted()),
+        sendMessageTaskResponse(taskSubmitted()),
         taskResponse({ id: "task-1", status: { state: estadoDesconocido } }),
       ]);
       const deps = makeDeps({ fetchFn, ...reloj });
@@ -595,7 +745,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse({ id: "task-1", status: { state: "TASK_STATE_SUBMITTED" }, campoExtraDesconocido: { x: 1 } }),
       taskResponse(taskCompleted()),
     ]);
@@ -616,7 +766,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const cuerpoLargo = "x".repeat(600);
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorResponse(500, cuerpoLargo),
       taskResponse(taskCompleted()), // respuesta de CancelTask
     ]);
@@ -645,7 +795,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const cuerpoCorto = "detalle corto del error";
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorResponse(500, cuerpoCorto),
       taskResponse(taskCompleted()), // respuesta de CancelTask
     ]);
@@ -672,7 +822,7 @@ describe("delegarTarea — loop de GetTask", () => {
     const cuerpoSensible = "Authorization: Bearer secreto-super-sensible-no-debe-loguearse";
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorResponse(500, cuerpoSensible), // GetTask #1 falla por transporte, cuerpo sensible
       taskResponse(taskWorking()), // GetTask #2 — el loop se recupera
       taskResponse(taskCompleted({ artifacts: [{ parts: [{ text: "ok" }] }] })), // GetTask #3
@@ -695,7 +845,7 @@ describe("delegarTarea — extracción del texto de resultado", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse(
         taskCompleted({
           artifacts: [{ parts: [{ text: "Resultado: " }, { text: "todo bien" }] }],
@@ -717,7 +867,7 @@ describe("delegarTarea — extracción del texto de resultado", () => {
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse({
         id: "task-1",
         status: { state: "TASK_STATE_COMPLETED", message: { parts: [{ text: "mensaje final" }] } },
@@ -736,7 +886,11 @@ describe("delegarTarea — extracción del texto de resultado", () => {
 
   it("sin artifacts y sin Message ⇒ resultado vacío, y el desenlace sigue siendo éxito", async () => {
     const reloj = makeRelojFake();
-    const fetchFn = secuenciaFetch([CARD_JSONRPC, taskResponse(taskSubmitted()), taskResponse(taskCompleted())]);
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      sendMessageTaskResponse(taskSubmitted()),
+      taskResponse(taskCompleted()),
+    ]);
     const deps = makeDeps({ fetchFn, ...reloj });
 
     const resultado = await delegarTarea(
@@ -775,7 +929,11 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
   it("forma 1: GetTask falla por red (transporte) hasta agotar el timeout", async () => {
     const reloj = makeRelojFake();
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
-    const fetchFn = secuenciaFetch([CARD_JSONRPC, taskResponse(taskSubmitted()), taskResponse(taskCompleted())]);
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      sendMessageTaskResponse(taskSubmitted()),
+      taskResponse(taskCompleted()),
+    ]);
     const fetchFnQueRechaza = vi.fn(async (url: string, init: Parameters<FetchFn>[1]) => {
       const body = JSON.parse(init.body ?? "{}") as { method?: string };
       if (body.method === "GetTask") {
@@ -799,7 +957,7 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       errorResponse(500, "el agente no responde"),
       taskResponse(taskCompleted()),
     ]);
@@ -816,7 +974,7 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
 
   it("forma 3: sobre JSON-RPC de GetTask con 'error' ⇒ protocolo", async () => {
     const reloj = makeRelojFake();
-    const fetchFn = secuenciaFetch([CARD_JSONRPC, taskResponse(taskSubmitted()), errorEnvelopeResponse()]);
+    const fetchFn = secuenciaFetch([CARD_JSONRPC, sendMessageTaskResponse(taskSubmitted()), errorEnvelopeResponse()]);
     const logEvent = vi.fn();
     const deps = makeDeps({ fetchFn, logEvent, ...reloj });
 
@@ -832,7 +990,7 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
     const reloj = makeRelojFake();
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse({ id: "task-1", status: { state: "ESTADO_INVENTADO" } }),
     ]);
     const logEvent = vi.fn();
@@ -851,7 +1009,7 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse(taskWorking()),
       taskResponse(taskCompleted()), // respuesta de CancelTask (best-effort, éxito)
     ]);
@@ -871,7 +1029,7 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
     const fetchFn = secuenciaFetch([
       CARD_JSONRPC,
-      taskResponse(taskSubmitted()),
+      sendMessageTaskResponse(taskSubmitted()),
       taskResponse(taskWorking()),
       errorResponse(500, "no se pudo cancelar"), // CancelTask falla
     ]);

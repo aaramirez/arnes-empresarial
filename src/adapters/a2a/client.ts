@@ -278,6 +278,49 @@ function parsearSobreDeTarea(cuerpo: string): { readonly ok: true; readonly task
   return { ok: true, task: result as TaskLike };
 }
 
+type SobreSendMessage =
+  | { readonly ok: true; readonly outcome: "task"; readonly task: TaskLike }
+  | { readonly ok: true; readonly outcome: "message" }
+  | { readonly ok: false };
+
+/**
+ * PURA. Interpreta el sobre JSON-RPC de una respuesta `SendMessage` —
+ * DISTINTO de `parsearSobreDeTarea` (GetTask/CancelTask, sin cambios):
+ * `SendMessageResponse` es un `oneof payload { Task task = 1; Message
+ * message = 2; }` REAL del protocolo (verificado contra
+ * `specification/a2a.proto` del tag `v1.0.0` de `a2aproject/A2A` — el
+ * segundo bug encontrado en la verificación manual de la tarea 23,
+ * `docs/progreso/v2.2-a2a-cliente/verificacion-manual-tarea-23.md` §2.2), NO
+ * un `Task` plano como devuelven `GetTask`/`CancelTask` (confirmado con
+ * `curl` real contra el sample en el mismo reporte). JSON inválido, sobre sin
+ * `result` (objeto), con `error` presente, o `result` sin `task` NI `message`
+ * ⇒ `ok: false` (mismo criterio que `parsearSobreDeTarea`: `error: null`
+ * explícito no cuenta como error).
+ */
+function parsearSobreDeSendMessage(cuerpo: string): SobreSendMessage {
+  let sobre: unknown;
+  try {
+    sobre = JSON.parse(cuerpo) as unknown;
+  } catch {
+    return { ok: false };
+  }
+  if (typeof sobre !== "object" || sobre === null) {
+    return { ok: false };
+  }
+  const { result, error } = sobre as { readonly result?: unknown; readonly error?: unknown };
+  if ((error !== undefined && error !== null) || typeof result !== "object" || result === null) {
+    return { ok: false };
+  }
+  const { task, message } = result as { readonly task?: unknown; readonly message?: unknown };
+  if (typeof task === "object" && task !== null) {
+    return { ok: true, outcome: "task", task: task as TaskLike };
+  }
+  if (typeof message === "object" && message !== null) {
+    return { ok: true, outcome: "message" };
+  }
+  return { ok: false };
+}
+
 /**
  * PURA. `status.state` de un `TaskLike`, validado contra los ocho valores
  * conocidos con `esTaskStateConocido` del núcleo (ADR 84 — incluye el
@@ -371,9 +414,28 @@ function respetaContratoDeFetchResponse(response: unknown): response is FetchRes
   );
 }
 
-/** `Content-Type` fijo + `Authorization` opcional — compartido por los tres métodos JSON-RPC de este cliente. */
+/**
+ * `Content-Type` fijo + `A2A-Version` fijo + `Authorization` opcional —
+ * compartido por los tres métodos JSON-RPC de este cliente Y por el GET del
+ * Agent Card.
+ *
+ * `A2A-Version: "1.0"` NO es un requirement de la especificación v1.0.0 en sí
+ * — verificado contra `specification/a2a.proto` del tag `v1.0.0` de
+ * `a2aproject/A2A`: el `.proto` no declara ningún header HTTP obligatorio, la
+ * negociación de versión queda fuera del `.proto` de mensajes. Es lo que
+ * exige `a2a-sdk` (el paquete Python de referencia que implementan los
+ * samples de `a2aproject/a2a-samples` — la forma oficial de probar este
+ * cliente según el propio `README.md` del proyecto): sin el header, el
+ * servidor de referencia asume protocolo legacy `0.3` y rechaza con
+ * `VERSION_NOT_SUPPORTED` (verificado con `curl` real contra el sample,
+ * `docs/progreso/v2.2-a2a-cliente/verificacion-manual-tarea-23.md` §2.2, el
+ * bug que motivó este fix). Se manda igual — mismo espíritu pragmático que
+ * otras decisiones ya tomadas en este cliente (ADR 71 pto 6): sin este
+ * header, la interoperabilidad real con el ecosistema de referencia del
+ * protocolo se rompe.
+ */
 function construirHeaders(destino: DestinoA2AConfig): Record<string, string> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { "Content-Type": "application/json", "A2A-Version": "1.0" };
   if (destino.authToken !== undefined) {
     headers.Authorization = `Bearer ${destino.authToken}`;
   }
@@ -449,9 +511,24 @@ async function enviarSendMessage(input: {
     return { ok: false, reason: "transporte" };
   }
 
-  const parsed = parsearSobreDeTarea(cuerpo);
+  const parsed = parsearSobreDeSendMessage(cuerpo);
   if (!parsed.ok) {
     return { ok: false, reason: "protocolo" };
+  }
+  if (parsed.outcome === "message") {
+    // La otra rama real del `oneof` (verificación manual tarea 23 §2.4): el
+    // agente respondió con un `Message` en vez de crear una `Task` — un
+    // agente sincrónico de una sola respuesta, sin ciclo de vida de tarea.
+    // Este cliente está diseñado ENTERAMENTE alrededor de
+    // `TaskState`/polling (a2a-contract.ts, tarea 1) — no hay un `Task` que
+    // trackear acá, así que lo más honesto es tratarlo como `protocolo` (el
+    // agente no se comportó como este cliente espera), NO como un error de
+    // transporte ni un éxito fabricado.
+    return {
+      ok: false,
+      reason: "protocolo",
+      detalle: "El agente respondió con result.message en vez de result.task — sin Task que trackear.",
+    };
   }
   return { ok: true, task: parsed.task };
 }
