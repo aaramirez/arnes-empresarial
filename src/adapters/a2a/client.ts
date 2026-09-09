@@ -71,6 +71,25 @@ function truncate(text: string, maxChars: number): string {
 }
 
 /**
+ * Lee y trunca el cuerpo de una respuesta HTTP `!ok`, a `ERROR_BODY_MAX_CHARS`
+ * — compartido entre `enviarSendMessage` y `consultarOControlarTarea`
+ * (code-review, hallazgo 2): antes sólo `consultarOControlarTarea` capturaba
+ * el `detalle` para este caso, dejando `enviarSendMessage` inconsistente
+ * para el mismo desenlace (`!response.ok`). `response.text()` puede rechazar
+ * (stream cortado después de que las cabeceras llegaron bien) — se trata
+ * como "sin detalle que truncar", mismo criterio que el resto de fallas de
+ * red (ADR 77 "nunca rechaza").
+ */
+async function leerDetalleDeErrorTransporte(response: FetchResponseLike): Promise<string | undefined> {
+  try {
+    const cuerpo = await response.text();
+    return truncate(cuerpo, ERROR_BODY_MAX_CHARS);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Sobre JSON-RPC PROPIO, ACOTADO y CERRADO (ADR 71 pto 6) — molde de
  * `SobreJsonRpc` en design.md §6.2. Los tres métodos de este cliente son
  * PascalCase, sin prefijo `a2a/` (verificado contra `specification/a2a.proto`
@@ -337,7 +356,7 @@ function extraerResultado(task: TaskLike): string {
 
 type EnvioSendMessage =
   | { readonly ok: true; readonly task: TaskLike }
-  | { readonly ok: false; readonly reason: "transporte" | "protocolo" };
+  | { readonly ok: false; readonly reason: "transporte" | "protocolo"; readonly detalle?: string };
 
 /**
  * PURA. Defensa de contrato: un `FetchFn` real siempre resuelve un
@@ -410,8 +429,13 @@ async function enviarSendMessage(input: {
     return { ok: false, reason: "protocolo" };
   }
 
+  // `!response.ok` captura el cuerpo truncado en `detalle` — mismo criterio
+  // que `consultarOControlarTarea` para el mismo caso (code-review, hallazgo
+  // 2; antes esta rama devolvía `{ok:false, reason:"transporte"}` sin
+  // `detalle`, inconsistente con su función hermana).
   if (!response.ok) {
-    return { ok: false, reason: "transporte" };
+    const detalle = await leerDetalleDeErrorTransporte(response);
+    return { ok: false, reason: "transporte", ...(detalle !== undefined ? { detalle } : {}) };
   }
 
   // `response.text()` puede rechazar si el stream del cuerpo se corta
@@ -468,17 +492,14 @@ async function consultarOControlarTarea(input: {
     return { ok: false, reason: "protocolo" };
   }
 
-  // `response.text()` puede rechazar (stream cortado) en ambas ramas — se
-  // trata como `transporte`, igual que el resto de fallas de red (post-review
-  // PR2, Hallazgo 1; ADR 77 "nunca rechaza"). Sin `detalle` cuando rechaza:
-  // no hay cuerpo que truncar.
+  // `response.text()` puede rechazar (stream cortado) — se trata como
+  // `transporte`, igual que el resto de fallas de red (post-review PR2,
+  // Hallazgo 1; ADR 77 "nunca rechaza"). Sin `detalle` cuando rechaza: no hay
+  // cuerpo que truncar. Mismo helper que `enviarSendMessage` (code-review,
+  // hallazgo 2) — antes duplicado acá.
   if (!response.ok) {
-    try {
-      const cuerpo = await response.text();
-      return { ok: false, reason: "transporte", detalle: truncate(cuerpo, ERROR_BODY_MAX_CHARS) };
-    } catch {
-      return { ok: false, reason: "transporte" };
-    }
+    const detalle = await leerDetalleDeErrorTransporte(response);
+    return { ok: false, reason: "transporte", ...(detalle !== undefined ? { detalle } : {}) };
   }
 
   let cuerpo: string;
@@ -576,7 +597,12 @@ export async function delegarTarea(
     deps,
   });
   if (!sendResult.ok) {
-    return { ok: false, reason: sendResult.reason, endpoint };
+    return {
+      ok: false,
+      reason: sendResult.reason,
+      endpoint,
+      ...(sendResult.detalle !== undefined ? { detalle: sendResult.detalle } : {}),
+    };
   }
 
   const taskId = idDeTarea(sendResult.task);
@@ -661,11 +687,17 @@ export async function delegarTarea(
         return { ok: false, reason: "protocolo", endpoint, a2aTaskId: taskId };
       }
       ultimoDetalleTransporte = consulta.detalle;
+      // NUNCA se incluye `detalle` acá (code-review, hallazgo 3): es el
+      // cuerpo crudo de la respuesta del agente externo, truncado pero SIN
+      // redactar — ya sobrevive hasta el `return` final vía
+      // `ultimoDetalleTransporte` (ver comentario arriba), no hace falta
+      // loguearlo crudo en cada iteración del polling. Mismo criterio que
+      // `build-on-venta.ts`/`build-on-comando-empleado.ts`: el `detalle`
+      // crudo de un fallo A2A nunca entra a un `logEvent`.
       deps.logEvent(input.casoId, "a2a-poll-fallido", {
         a2aTaskId: taskId,
         reason: consulta.reason,
         intento,
-        ...(consulta.detalle !== undefined ? { detalle: consulta.detalle } : {}),
       });
       continue;
     }

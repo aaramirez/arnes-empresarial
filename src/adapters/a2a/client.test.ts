@@ -260,7 +260,31 @@ describe("delegarTarea — SendMessage", () => {
       makeDeps({ fetchFn }),
     );
 
-    expect(resultado).toEqual({ ok: false, reason: "transporte", endpoint: ENTRADA_JSONRPC.url });
+    expect(resultado).toEqual({
+      ok: false,
+      reason: "transporte",
+      endpoint: ENTRADA_JSONRPC.url,
+      detalle: "service unavailable",
+    });
+  });
+
+  it("!response.ok en el POST de SendMessage con cuerpo largo trunca el detalle a ERROR_BODY_MAX_CHARS, igual que GetTask/CancelTask (code-review, hallazgo 2)", async () => {
+    const cuerpoLargo = "x".repeat(600);
+    const fetchFn: FetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(agentCardResponse({ supportedInterfaces: [ENTRADA_JSONRPC] }))
+      .mockResolvedValueOnce(errorResponse(500, cuerpoLargo));
+
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      makeDeps({ fetchFn }),
+    );
+
+    expect(resultado.ok).toBe(false);
+    const detalle = !resultado.ok ? resultado.detalle : undefined;
+    expect(detalle).toBeDefined();
+    expect(detalle?.length).toBe(503); // 500 + "..."
+    expect(detalle?.startsWith("x".repeat(500))).toBe(true);
   });
 
   it("response.text() que rechaza en un SendMessage exitoso ⇒ reason: 'transporte', delegarTarea nunca rechaza", async () => {
@@ -586,7 +610,7 @@ describe("delegarTarea — loop de GetTask", () => {
     expect((fetchFn as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
   });
 
-  it("cuerpo de error de un GetTask con más de 500 caracteres se trunca en el evento a2a-poll-fallido", async () => {
+  it("cuerpo de error de un GetTask con más de 500 caracteres se trunca y sobrevive en el resultado final de timeout, pero NUNCA se loguea crudo en a2a-poll-fallido (code-review, hallazgo 3)", async () => {
     const reloj = makeRelojFake();
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
     const cuerpoLargo = "x".repeat(600);
@@ -599,16 +623,23 @@ describe("delegarTarea — loop de GetTask", () => {
     const logEvent = vi.fn();
     const deps = makeDeps({ fetchFn, config, logEvent, ...reloj });
 
-    await delegarTarea({ destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" }, deps);
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      deps,
+    );
 
     const pollFallido = logEvent.mock.calls.find(([, evento]) => evento === "a2a-poll-fallido");
-    const detalle = (pollFallido?.[2] as { detalle?: string } | undefined)?.detalle;
+    expect(pollFallido).toBeDefined();
+    expect(pollFallido?.[2]).not.toHaveProperty("detalle");
+
+    expect(resultado.ok).toBe(false);
+    const detalle = !resultado.ok ? resultado.detalle : undefined;
     expect(detalle).toBeDefined();
     expect(detalle?.length).toBe(503); // 500 + "..."
     expect(detalle?.startsWith("x".repeat(500))).toBe(true);
   });
 
-  it("cuerpo de error de un GetTask con menos de 500 caracteres se incluye completo", async () => {
+  it("cuerpo de error de un GetTask con menos de 500 caracteres sobrevive completo en el resultado final, pero NUNCA se loguea en a2a-poll-fallido (code-review, hallazgo 3)", async () => {
     const reloj = makeRelojFake();
     const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 1_000 });
     const cuerpoCorto = "detalle corto del error";
@@ -621,11 +652,41 @@ describe("delegarTarea — loop de GetTask", () => {
     const logEvent = vi.fn();
     const deps = makeDeps({ fetchFn, config, logEvent, ...reloj });
 
+    const resultado = await delegarTarea(
+      { destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" },
+      deps,
+    );
+
+    const pollFallido = logEvent.mock.calls.find(([, evento]) => evento === "a2a-poll-fallido");
+    expect(pollFallido).toBeDefined();
+    expect(pollFallido?.[2]).not.toHaveProperty("detalle");
+
+    expect(resultado.ok).toBe(false);
+    const detalle = !resultado.ok ? resultado.detalle : undefined;
+    expect(detalle).toBe(cuerpoCorto);
+  });
+
+  it("un cuerpo de error del GetTask con contenido sensible NUNCA aparece en el evento a2a-poll-fallido, ni siquiera cuando el loop se recupera después (code-review, hallazgo 3)", async () => {
+    const reloj = makeRelojFake();
+    const config = makeConfig({ pollIntervalMs: 1_000, taskTimeoutMs: 5_000 });
+    const cuerpoSensible = "Authorization: Bearer secreto-super-sensible-no-debe-loguearse";
+    const fetchFn = secuenciaFetch([
+      CARD_JSONRPC,
+      taskResponse(taskSubmitted()),
+      errorResponse(500, cuerpoSensible), // GetTask #1 falla por transporte, cuerpo sensible
+      taskResponse(taskWorking()), // GetTask #2 — el loop se recupera
+      taskResponse(taskCompleted({ artifacts: [{ parts: [{ text: "ok" }] }] })), // GetTask #3
+    ]);
+    const logEvent = vi.fn();
+    const deps = makeDeps({ fetchFn, config, logEvent, ...reloj });
+
     await delegarTarea({ destino: DESTINO, clave: "riesgo-credito", tarea: "t", casoId: "caso-1" }, deps);
 
     const pollFallido = logEvent.mock.calls.find(([, evento]) => evento === "a2a-poll-fallido");
-    const detalle = (pollFallido?.[2] as { detalle?: string } | undefined)?.detalle;
-    expect(detalle).toBe(cuerpoCorto);
+    expect(pollFallido).toBeDefined();
+    expect(pollFallido?.[2]).not.toHaveProperty("detalle");
+    expect(pollFallido?.[2]).toEqual({ a2aTaskId: "task-1", reason: "transporte", intento: 1 });
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("secreto-super-sensible");
   });
 });
 
