@@ -1,8 +1,8 @@
 /**
- * Listener HTTP del Servidor A2A entrante (Hito 7, tarea 8, design.md §6.3 —
- * parte 1a: tipos + auth + body). El ruteo por método+ruta, la publicación
- * del Agent Card (tarea 9) y el parseo del sobre JSON-RPC (tarea 10) NO están
- * acá todavía — `createRequestListener` no existe hasta la tarea 9.
+ * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-9, design.md
+ * §6.3 — partes 1a y 1b: tipos + auth + body + ruteo por método+ruta + Agent
+ * Card). El parseo del sobre JSON-RPC y el despacho de los tres métodos
+ * (tarea 10 y 12-13) NO están acá todavía.
  *
  * Recorte estructural DUPLICADO a propósito de `web/http.ts` y
  * `webhooks/server.ts:30-51` (ADR 13 — **tercer servidor HTTP de la misma
@@ -21,8 +21,19 @@
  * comparar nada** (nunca "abierta por defecto"), y chequeo de longitud
  * **ANTES** de `timingSafeEqual` (que lanza `RangeError` con buffers de
  * largo distinto).
+ *
+ * `createRequestListener` gana en la tarea 9 el ruteo por `método+ruta`
+ * (orden EXHAUSTIVO, no se reordena: `método+ruta → tope de body → AUTH →
+ * parseo JSON-RPC → despacho`, design.md §6.3). Esta tarea resuelve sólo la
+ * primera fila de la tabla de respuestas (`GET RUTA_AGENT_CARD`, público, sin
+ * auth — ADR 88 pto 5) y la última (cualquier `método+ruta` no reconocido ⇒
+ * `404` vacío, molde `web/server.ts:486`). El resto de la tabla (tope de
+ * body, AUTH, sobre JSON-RPC, los tres métodos) llega en las tareas 10 y
+ * 12-13, sin reabrir esta.
  */
 import { timingSafeEqual } from "node:crypto";
+import { construirAgentCard } from "./agent-card.js";
+import { A2A_SERVER_LOG_CORRELATION_ID, RUTA_AGENT_CARD, type A2AServerConfig } from "./server-config.js";
 
 export interface A2ARequest {
   readonly method?: string | undefined;
@@ -162,4 +173,60 @@ export function leerCuerpoConTope(
       resolve({ ok: true, body: Buffer.concat(chunks) });
     });
   });
+}
+
+/**
+ * Dependencias de `createRequestListener`. Crece de forma incremental en las
+ * tareas siguientes (`onSolicitudA2A`/`onConsultarTarea`/`onCancelarTarea`
+ * llegan en la tarea 12, `newTaskId?` también) — molde de `WebServerDeps`/
+ * `WebhookServerDeps`, que tampoco nacieron con su forma final en su primera
+ * tarea.
+ */
+export interface A2AServerDeps {
+  readonly config: A2AServerConfig;
+  /** Ya cerrado sobre el id de correlación de transporte. Molde `WebhookServerDeps.logEvent`. */
+  readonly logEvent: (
+    correlationId: string,
+    event: string,
+    fields?: Readonly<Record<string, unknown>>,
+  ) => void;
+}
+
+/**
+ * El listener HTTP, aislado del ciclo de vida del servidor para poder
+ * testear cada respuesta con dobles planos (molde `webhooks/server.ts:139-244`).
+ *
+ * Tabla de respuestas — parcial, esta tarea (design.md §6.3):
+ * | Condición | Status | Efecto |
+ * |---|---|---|
+ * | `GET RUTA_AGENT_CARD` | `200` | el card de `construirAgentCard`, **sin auth**. `a2a-card-servido` |
+ * | Cualquier `método+ruta` no reconocido | `404` | nada |
+ *
+ * `GET RUTA_AGENT_CARD` se sirve SIN auth a propósito (ADR 88 pto 5): es el
+ * único endpoint público de este adaptador — lo único que revela es que hay
+ * un agente que exige token para el resto.
+ */
+export function createRequestListener(
+  deps: A2AServerDeps,
+): (req: A2ARequest, res: A2AResponse) => void {
+  const { config, logEvent } = deps;
+
+  return (req: A2ARequest, res: A2AResponse): void => {
+    const path = pathFromUrl(req.url);
+
+    if (req.method === "GET" && path === RUTA_AGENT_CARD) {
+      const card = construirAgentCard(config);
+      const origenTransporte = req.socket?.remoteAddress ?? "desconocido";
+
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(card));
+
+      logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-card-servido", { origenTransporte });
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  };
 }

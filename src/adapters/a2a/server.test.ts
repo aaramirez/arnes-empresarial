@@ -1,6 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { esAutorizado, leerCuerpoConTope, pathFromUrl, type A2ARequest, type A2AResponse } from "./server.js";
+import { construirAgentCard } from "./agent-card.js";
+import { A2A_SERVER_LOG_CORRELATION_ID, RUTA_AGENT_CARD, type A2AServerConfig } from "./server-config.js";
+import {
+  createRequestListener,
+  esAutorizado,
+  leerCuerpoConTope,
+  pathFromUrl,
+  type A2ARequest,
+  type A2AResponse,
+  type A2AServerDeps,
+} from "./server.js";
 
 /**
  * `node:crypto` es un módulo ESM cuyo namespace no es reconfigurable — un
@@ -90,6 +100,26 @@ class FakeA2AResponse implements A2AResponse {
 
 function authHeader(token = TOKEN): Record<string, string> {
   return { authorization: `Bearer ${token}` };
+}
+
+/** Molde de `makeDeps` de `webhooks/server.test.ts`, adaptado a `A2AServerDeps`. */
+function makeConfig(overrides: Partial<A2AServerConfig> = {}): A2AServerConfig {
+  return {
+    token: TOKEN,
+    port: 8888,
+    publicUrl: "http://localhost:8888",
+    maxBodyBytes: 65_536,
+    maxEnVuelo: 4,
+    ...overrides,
+  };
+}
+
+function makeDeps(overrides: Partial<A2AServerDeps> = {}): A2AServerDeps {
+  return {
+    config: makeConfig(),
+    logEvent: vi.fn(),
+    ...overrides,
+  };
 }
 
 describe("pathFromUrl", () => {
@@ -222,5 +252,90 @@ describe("leerCuerpoConTope", () => {
     expect(resultado).toEqual({ ok: false, motivo: "error-transporte" });
     expect(res.end).not.toHaveBeenCalled();
     expect(req.destroy).not.toHaveBeenCalled();
+  });
+});
+
+describe("createRequestListener — ruteo por método+ruta y Agent Card (Hito 7, tarea 9, design.md §6.3)", () => {
+  it("responds 200 with the full Agent Card on GET RUTA_AGENT_CARD without an Authorization header — confirms it is NOT 401", () => {
+    const config = makeConfig();
+    const deps = makeDeps({ config });
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "GET", url: RUTA_AGENT_CARD, headers: {} });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).not.toBe(401);
+    expect(res.end).toHaveBeenCalledWith(JSON.stringify(construirAgentCard(config)));
+  });
+
+  it("responds 404 with an empty body for an unrecognized route (GET /no-existe)", () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "GET", url: "/no-existe", headers: {} });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.end).toHaveBeenCalledWith();
+  });
+
+  it("responds 404 with an empty body for a recognized route with an unrecognized method (DELETE on RUTA_AGENT_CARD)", () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "DELETE", url: RUTA_AGENT_CARD, headers: {} });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.end).toHaveBeenCalledWith();
+  });
+
+  it("logs a2a-card-servido with origenTransporte taken from req.socket.remoteAddress when the card is served", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({
+      method: "GET",
+      url: RUTA_AGENT_CARD,
+      headers: {},
+      socket: { remoteAddress: "127.0.0.1" },
+    });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+
+    expect(logEvent).toHaveBeenCalledWith(A2A_SERVER_LOG_CORRELATION_ID, "a2a-card-servido", {
+      origenTransporte: "127.0.0.1",
+    });
+  });
+
+  it("logs a2a-card-servido with origenTransporte 'desconocido' when the request has no socket.remoteAddress", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "GET", url: RUTA_AGENT_CARD, headers: {} });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+
+    expect(logEvent).toHaveBeenCalledWith(A2A_SERVER_LOG_CORRELATION_ID, "a2a-card-servido", {
+      origenTransporte: "desconocido",
+    });
+  });
+
+  it("does not log a2a-card-servido for an unrecognized method+route (404)", () => {
+    const logEvent = vi.fn();
+    const deps = makeDeps({ logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeA2ARequest({ method: "GET", url: "/no-existe", headers: {} });
+    const res = new FakeA2AResponse();
+
+    listener(req, res);
+
+    expect(logEvent).not.toHaveBeenCalled();
   });
 });
