@@ -1771,7 +1771,16 @@ export class DelegacionA2ANotFoundError extends Error {
 
 export interface ActualizarDelegacionA2AInput {
   readonly delegacionId: string;
-  readonly estado: string;
+  /**
+   * Opcional (code-review, hallazgo 1): ausente cuando el llamador nunca
+   * llegó a conocer un estado real (fallo de transporte/protocolo antes de
+   * cualquier `SendMessage`/`GetTask` exitoso). `COALESCE` preserva el
+   * último estado ya escrito en vez de pisarlo — antes este campo era
+   * obligatorio y el único caller (`dispatch-delegation-a2a.ts`) rellenaba
+   * con `"TASK_STATE_FAILED"` fabricado, corrompiendo la evidencia forense
+   * de `delegaciones_a2a` (ADR 80).
+   */
+  readonly estado?: string;
   readonly a2aTaskId?: string;
   readonly resultado?: string;
   readonly agenteExternoUrl?: string;
@@ -1781,19 +1790,19 @@ export interface ActualizarDelegacionA2AInput {
 /**
  * `UPDATE` simple, SIN transacción (ADR 80 pto 3) — a diferencia de
  * `completarDelegacion`, acá no hay una segunda fila que insertar en el
- * mismo acto. `COALESCE(@campo, campo)` para los tres opcionales: un
- * `undefined` no pisa lo ya escrito (mismo patrón que `updateCaso`,
- * líneas 131-153). `agenteExternoUrl` es opcional porque nace con la URL
- * base del destino y termina con el endpoint efectivo resuelto del Agent
- * Card (ADR 80 pto 1). Throws `DelegacionA2ANotFoundError` si
- * `delegacionId` no matchea ninguna fila — mismo criterio que
- * `completarDelegacion`.
+ * mismo acto. `COALESCE(@campo, campo)` para los CUATRO opcionales
+ * (`estado` incluido desde code-review hallazgo 1): un `undefined` no pisa
+ * lo ya escrito (mismo patrón que `updateCaso`, líneas 131-153).
+ * `agenteExternoUrl` es opcional porque nace con la URL base del destino y
+ * termina con el endpoint efectivo resuelto del Agent Card (ADR 80 pto 1).
+ * Throws `DelegacionA2ANotFoundError` si `delegacionId` no matchea ninguna
+ * fila — mismo criterio que `completarDelegacion`.
  */
 export function actualizarDelegacionA2A(db: Database.Database, input: ActualizarDelegacionA2AInput): void {
   const { changes } = db
     .prepare(
       `UPDATE delegaciones_a2a
-          SET estado = @estado,
+          SET estado = COALESCE(@estado, estado),
               a2a_task_id = COALESCE(@a2aTaskId, a2a_task_id),
               resultado = COALESCE(@resultado, resultado),
               agente_externo_url = COALESCE(@agenteExternoUrl, agente_externo_url),
@@ -1802,7 +1811,7 @@ export function actualizarDelegacionA2A(db: Database.Database, input: Actualizar
     )
     .run({
       delegacionId: input.delegacionId,
-      estado: input.estado,
+      estado: input.estado ?? null,
       a2aTaskId: input.a2aTaskId ?? null,
       resultado: input.resultado ?? null,
       agenteExternoUrl: input.agenteExternoUrl ?? null,

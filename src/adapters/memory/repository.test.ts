@@ -2437,6 +2437,31 @@ describe("repository", () => {
       expect(fila!.estado).toBe("TASK_STATE_WORKING");
     });
 
+    it("actualizarDelegacionA2A con estado undefined preserva el último estado real escrito (COALESCE, code-review hallazgo 1)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertDelegacionA2ADePrueba();
+
+      actualizarDelegacionA2A(db, {
+        delegacionId: "delegacion-a2a-1",
+        estado: "TASK_STATE_WORKING",
+        updatedAt: "2026-09-06T00:01:00.000Z",
+      });
+
+      // Segunda actualización sin `estado` (ej. un fallo de transporte antes
+      // de que exista cualquier estado real) — NO debe pisar el último
+      // estado real conocido con NULL ni con nada fabricado.
+      actualizarDelegacionA2A(db, {
+        delegacionId: "delegacion-a2a-1",
+        agenteExternoUrl: "https://ejemplo.test/riesgo-credito/jsonrpc",
+        updatedAt: "2026-09-06T00:02:00.000Z",
+      });
+
+      const [fila] = listDelegacionesA2APorCaso(db, "caso-1");
+      expect(fila!.estado).toBe("TASK_STATE_WORKING");
+      expect(fila!.agenteExternoUrl).toBe("https://ejemplo.test/riesgo-credito/jsonrpc");
+    });
+
     it("actualizarDelegacionA2A sobre un delegacionId inexistente lanza DelegacionA2ANotFoundError", () => {
       db = openDatabase(":memory:");
       createCaso(db, buildCaso());
