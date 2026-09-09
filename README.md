@@ -98,6 +98,33 @@ Configuración del worktree aislado y del runner de `git`/tests que usa el Devel
 | `HARNESS_WORKTREE_TTL_MS` | `7_200_000` (2 h) | Tiempo máximo que un worktree huérfano sobrevive antes de que el barrido lo reclame. |
 | `HARNESS_WORKTREE_TEST_TIMEOUT_MS` | `300_000` (5 min) | Timeout (ms) de la corrida de `vitest run` dentro del worktree. |
 
+### Variables de entorno del cliente A2A saliente
+
+Configuración del cliente A2A saliente (Hito 6, `src/adapters/a2a/config.ts`) usado para delegar hacia destinos externos (`riesgo-credito`, `kpi-incidente`). Todas son opcionales y comentadas por defecto en `.env.example` — con `HARNESS_A2A_SALIENTE` apagado el comportamiento es idéntico a v2.1.0. Los valores numéricos son best-effort: ausente, vacío o inválido cae al default sin lanzar:
+
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `HARNESS_A2A_SALIENTE` | apagado | Interruptor **opt-in**: sólo `"on"` (tras trim + lowercase) activa el mecanismo. Al revés que `HARNESS_DELEGACION_ROLES`/`HARNESS_ESCRITURA_DELEGADA`, que están activos por default. |
+| `HARNESS_A2A_ENDPOINT_RIESGO_CREDITO` | — (sin default) | URL base (Agent Card) del destino `riesgo-credito`. Ausente = destino no disponible. |
+| `HARNESS_A2A_ENDPOINT_KPI_INCIDENTE` | — (sin default) | URL base (Agent Card) del destino `kpi-incidente`. Ausente = destino no disponible. |
+| `HARNESS_A2A_TOKEN_RIESGO_CREDITO` | — (sin default) | Bearer token opcional para `riesgo-credito`. Nunca aparece en un log ni en un mensaje. |
+| `HARNESS_A2A_TOKEN_KPI_INCIDENTE` | — (sin default) | Bearer token opcional para `kpi-incidente`. Nunca aparece en un log ni en un mensaje. |
+| `HARNESS_A2A_REQUEST_TIMEOUT_MS` | `30_000` | Timeout (ms) por request JSON-RPC individual. |
+| `HARNESS_A2A_POLL_INTERVAL_MS` | `1_500` | Intervalo (ms) entre consultas del loop de polling de `GetTask`. |
+| `HARNESS_A2A_TASK_TIMEOUT_MS` | `120_000` | Timeout total (ms) del loop de polling antes de `CancelTask` con motivo `"timeout"`. |
+| `VENTA_GRANDE_UMBRAL` | `5_000` | Umbral de venta grande (`src/core/ventas/ventas-config.ts`). A partir de este monto, `registrarVenta` dispara una consulta de riesgo/crédito no bloqueante hacia `riesgo-credito`. |
+
+#### Cómo correr la integración A2A contra un sample real
+
+`src/test/integration/a2a-client.integration.test.ts` sondea el Agent Card del destino configurado (`GET .well-known/agent-card.json`) antes de decidir si corre contra la red real o degrada a *skip* — mismo molde que el test de integración de `git`/`vitest` (`src/test/integration/run-tests.integration.test.ts`), nunca falla por una dependencia externa ausente. Para levantar un sample a mano y correrlo de verdad:
+
+1. Cloná [`a2aproject/a2a-samples`](https://github.com/a2aproject/a2a-samples) y levantá el sample `helloworld` (`samples/python/agents/helloworld`, `python -m venv .venv`, `python __main__.py`) — o cualquier otro agente conforme a A2A v1.0.0 que publique su Agent Card en `/.well-known/agent-card.json` con un transporte JSON-RPC declarado.
+2. Exportá `HARNESS_A2A_ENDPOINT_RIESGO_CREDITO=http://localhost:<puerto>` apuntando a ese sample (sin barra final).
+3. Corré `npm test`. Con el sample arriba, el archivo corre sus dos primeros tests contra la red real.
+4. (Opcional, evidencia RD-26): levantá un segundo sample y exportá también `HARNESS_A2A_ENDPOINT_KPI_INCIDENTE` apuntando a él — el tercer test del archivo corre exactamente el mismo código contra ese segundo destino, como evidencia de que el cliente es agnóstico al dominio.
+
+Sin ninguna de esas dos variables (o con el sample caído/inalcanzable), el `describe` entero se reporta como **skipped**, nunca como fallo — el estado esperado en CI y en cualquier checkout sin un sample corriendo a mano.
+
 ### Tool MCP `mcp__worktree__run_tests`
 
 Expuesta únicamente al Developer cuando trabaja dentro de un worktree aislado. No acepta parámetros — siempre corre la suite completa (`vitest run`) fijada al `cwd` del worktree, sin poder filtrar por archivo, patrón ni test individual. Devuelve el resultado real (verde o rojo) con la salida de vitest, o indica explícitamente si la corrida no se pudo ejecutar en vez de afirmar que los tests pasan.
