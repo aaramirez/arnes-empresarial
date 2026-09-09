@@ -186,6 +186,7 @@ export class DelegacionA2ANoCompletadaError extends Error {
   readonly destinoClave: DestinoA2AClave;
   readonly estado?: TaskState | undefined;
   readonly delegacionId?: string | undefined;
+  readonly detalle?: string | undefined;
 
   constructor(input: {
     readonly reason: MotivoDelegacionA2ANoCompletada;
@@ -203,5 +204,6 @@ export class DelegacionA2ANoCompletadaError extends Error {
     this.destinoClave = input.destinoClave;
     this.estado = input.estado;
     this.delegacionId = input.delegacionId;
+    this.detalle = input.detalle;
   }
 }

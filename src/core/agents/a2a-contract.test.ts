@@ -159,6 +159,25 @@ describe("DelegacionA2ANoCompletadaError", () => {
     expect(error.estado).toBeUndefined();
     expect(error.delegacionId).toBeUndefined();
   });
+
+  it("expone detalle del input (mismo bug de PR2 en client.ts, repetido acá)", () => {
+    const error = new DelegacionA2ANoCompletadaError({
+      reason: "protocolo",
+      destinoClave: "riesgo-credito",
+      detalle: "respuesta JSON-RPC malformada",
+    });
+
+    expect(error.detalle).toBe("respuesta JSON-RPC malformada");
+  });
+
+  it("detalle queda undefined cuando no se pasa", () => {
+    const error = new DelegacionA2ANoCompletadaError({
+      reason: "transporte",
+      destinoClave: "kpi-incidente",
+    });
+
+    expect(error.detalle).toBeUndefined();
+  });
 });
 
 describe("ResultadoA2A", () => {
