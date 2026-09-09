@@ -36,6 +36,13 @@ import { getSubagentDefinition } from "../agents/definitions.js";
 import type { DestinoA2AClave } from "../agents/a2a-contract.js";
 import type { InsumoDelegado, InvocarSubagente } from "../agents/subagents.js";
 import { construirTareaDelegada } from "../agents/subagents.js";
+// `siDefinido` (code-review, hallazgo 4): compartido con el archivo hermano
+// `dispatch-delegation-a2a.ts`, que lo declara y exporta — evita duplicar acá
+// el molde `...(v !== undefined ? { k: v } : {})`. Import de VALOR (no de
+// tipo): sin ciclo en runtime porque `dispatch-delegation-a2a.ts` sólo
+// importa `DestinoDelegacion` de este archivo como `import type` (erasado en
+// compilación).
+import { siDefinido } from "./dispatch-delegation-a2a.js";
 
 /**
  * Unión discriminada del destino de una delegación (spec `despacho-delegacion`,
@@ -214,7 +221,7 @@ export async function despacharDelegacion(
     id: delegacionId,
     casoId,
     agentId,
-    ...(sesionPadreId !== undefined ? { sesionPadreId } : {}),
+    ...siDefinido("sesionPadreId", sesionPadreId),
     tareaDelegada,
     createdAt,
   });
@@ -291,7 +298,7 @@ export async function despacharCadena(
         casoId: input.casoId,
         agentId: eslabon.agentId,
         insumo,
-        ...(sesionPadreId !== undefined ? { sesionPadreId } : {}),
+        ...siDefinido("sesionPadreId", sesionPadreId),
       },
       deps,
     );

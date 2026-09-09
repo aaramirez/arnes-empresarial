@@ -104,9 +104,14 @@ describe("construirTareaDelegada — truncado con TAREA_DELEGADA_MAX_CHARS", () 
 
 /**
  * Hito 6, tarea 11 (`design.md` §5.4). `truncarTareaDelegada` pasa a
- * exportada para que `dispatch-delegation-a2a.ts` (tarea 12) la reuse sin
- * duplicar el truncado. Mismo comportamiento que ya se prueba indirectamente
- * vía `construirTareaDelegada` — acá se ejercita directo, vía import.
+ * exportada para testeo unitario directo de la lógica de truncado,
+ * independiente de `ensamblarTareaDelegada` (code-review, hallazgo 5: el
+ * consumidor real hoy NO es `dispatch-delegation-a2a.ts` — ese archivo
+ * importa `ensamblarTareaDelegada`, que llama a `truncarTareaDelegada`
+ * internamente, no la función directa; el único consumidor directo del
+ * export es este propio test). Mismo comportamiento que ya se prueba
+ * indirectamente vía `construirTareaDelegada` — acá se ejercita directo, vía
+ * import.
  */
 describe("truncarTareaDelegada — reuso externo (exportada)", () => {
   it("trunca un texto más largo que TAREA_DELEGADA_MAX_CHARS agregando TAREA_TRUNCADA_SUFIJO", () => {
