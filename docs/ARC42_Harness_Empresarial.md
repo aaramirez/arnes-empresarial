@@ -367,7 +367,7 @@ Extremos: Núcleo de Orquestación ↔ puerto *ModelProvider*.
 
 **Ubicación:** *src/adapters/a2a/server.ts*
 
-**Nota de versión:** hito posterior — solo hace falta cuando otros agentes externos van a invocar a este arnés.
+**Nota de versión:** implementado en v3 (Hito 7) — `startA2AServer` (`src/adapters/a2a/server-index.ts`) es opt-in por token (`HARNESS_A2A_ENTRANTE_TOKEN`): sin token, ningún puerto se abre y el comportamiento es idéntico al de `v2.2.0`.
 
 # Vista de Ejecución
 
@@ -629,11 +629,13 @@ Descripción: el puerto *ModelProvider* tiene un solo adaptador implementado (Cl
 
 Mitigación: no se resuelve en este MVP; se documenta como decisión aceptada en el ADR de la sección de decisiones de diseño si se retoma en una iteración futura.
 
-**Riesgo 2: Concurrencia de escritura en SQLite bajo múltiples agentes A2A (v3)**
+**Riesgo 2: Concurrencia de escritura en SQLite bajo múltiples agentes A2A (v3) — CONFIRMADO, sin materializarse en el escenario probado**
 
-Descripción: cuando el Servidor A2A esté activo, el proceso puede recibir varias solicitudes externas al mismo tiempo. SQLite serializa escrituras — si dos sesiones distintas escriben en simultáneo, puede haber contención o errores de bloqueo que hoy no están contemplados en el diseño (I3 asume acceso secuencial).
+Descripción: cuando el Servidor A2A está activo, el proceso puede recibir varias solicitudes externas al mismo tiempo, y esas escrituras pueden solaparse con las de otras fuentes (por ejemplo, un webhook de PR sobre el mismo proyecto). SQLite serializa escrituras — si dos sesiones distintas escriben en simultáneo, puede haber contención o errores de bloqueo.
 
-Mitigación: a evaluar en el diseño de v3 (WAL mode de SQLite, cola de escrituras, o migrar a un motor con mejor soporte de concurrencia si el volumen lo justifica).
+Evidencia: `src/test/integration/a2a-server.integration.test.ts` (Hito 7, tarea 17, design.md §10.D + §10.C fila de concurrencia) ejercita 3 `SendMessage` concurrentes contra el servidor A2A entrante real **más** un turno de actividad de webhook (`buildOnActivity`) sobre el mismo `proyectoId`, ambos con el mismo `db` real (no `:memory:` aislado por lado) y el mismo `handleTurn` con un delay idéntico para las dos fuentes. El test afirma tiempo total de ejecución muy por debajo de la suma secuencial de las cuatro invocaciones (evidencia de entrelazado real, no sólo del resultado final), y verifica al cierre: `N` filas en `solicitudes_a2a_entrantes`, todas `TASK_STATE_COMPLETED` con `caso_id` no nulo; exactamente 1 fila de actividad para el `proyectoId` del webhook; y `N + 1` filas totales en `casos`, sin ninguna fila cruzada ni perdida entre las dos fuentes.
+
+Alcance de la confirmación: el escenario probado (3 `SendMessage` + 1 webhook, turno de negocio mockeado con `handleTurn`) no reprodujo contención ni error de bloqueo — el turno A2A entrante es de lectura y no usa `KeyedQueue` (ADR 90 pto 7), y el webhook de actividad sigue serializado por su propia `KeyedQueue` por `proyectoId`. No queda probado el comportamiento bajo un volumen de escritura mayor al de este escenario; si el volumen real lo exige, sigue pendiente evaluar WAL mode de SQLite, cola de escrituras, o un motor con mejor soporte de concurrencia.
 
 **Deudas Técnicas**
 
@@ -643,11 +645,11 @@ Descripción: el Concepto Transversal 1 (sección de conceptos transversales) es
 
 Plan: especificar antes de implementar el Invocador del Modelo y el Motor de Hooks, que son los puntos donde más falta hace.
 
-**Deuda 2: Adaptador A2A implementado pero sin ejercitar en v1**
+**Deuda 2: Adaptador A2A implementado pero sin ejercitar en v1 — CERRADA en v3**
 
-Descripción: el código del Adaptador A2A existe desde el diseño pero no se prueba en un flujo real hasta v2/v3 — riesgo de que quede desactualizado respecto al resto del núcleo para cuando se active.
+Descripción: el código del Adaptador A2A existía desde el diseño pero no se probaba en un flujo real — riesgo de que quedara desactualizado respecto al resto del núcleo para cuando se activara.
 
-Plan: cubrir con los Escenarios de ejecución 3 y 4 (sección de vista de ejecución) como base de pruebas apenas se active en v2.
+Cierre: con el Servidor A2A entrante del Hito 7 (v3.0.0), el adaptador queda ejercitado extremo a extremo por `src/test/integration/a2a-server.integration.test.ts` (Hito 7, tarea 17): levanta el servidor real en puerto efímero, lo consulta con el Cliente A2A propio del Hito 6 (`delegarTarea`, sin modificarlo y sin tocar `DESTINOS_A2A`), y recorre el ciclo completo `GET` del Agent Card → `SendMessage` → loop real de `GetTask` → `TASK_STATE_COMPLETED` con el texto del resultado — el primer test del proyecto que ejercita ese loop contra un socket real, no con reloj inyectado. El test corre en CI y no degrada a *skip* (a diferencia del test de integración del Cliente A2A saliente del Hito 6, que sí depende de un sample externo). Ya no queda código de este adaptador sin ejercitar en un flujo real.
 
 **Deuda 3: Medida de usabilidad sin validar con usuarios reales**
 

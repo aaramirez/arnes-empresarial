@@ -127,6 +127,64 @@ El comando TUI privilegiado `/consultar-kpi <consulta>` (Hito 6, ADR 85) es el p
 
 Sin ninguna de esas dos variables (o con el sample caído/inalcanzable), el `describe` entero se reporta como **skipped**, nunca como fallo — el estado esperado en CI y en cualquier checkout sin un sample corriendo a mano.
 
+### Variables de entorno del servidor A2A entrante
+
+Configuración del servidor A2A entrante (Hito 7, `src/adapters/a2a/server-config.ts`) que expone el arnés como agente invocable por otros agentes A2A externos. El único gate del listener es el token: con `HARNESS_A2A_ENTRANTE_TOKEN` ausente o en blanco, el adaptador queda deshabilitado y no se abre ningún puerto. Los valores numéricos son best-effort: ausente, vacío o inválido cae al default sin lanzar:
+
+| Variable | Default | Descripción |
+| --- | --- | --- |
+| `HARNESS_A2A_ENTRANTE_TOKEN` | `""` (deshabilitado) | Bearer token que exige `POST /a2a`. `""` o sólo espacios = servidor apagado, sin puerto abierto. Nunca aparece en un log ni en un mensaje. |
+| `HARNESS_A2A_ENTRANTE_PORT` | `8888` | Puerto TCP en el que escucha el servidor HTTP entrante. |
+| `HARNESS_A2A_ENTRANTE_PUBLIC_URL` | `http://localhost:8888` | Base pública publicada en `supportedInterfaces[0].url` del Agent Card. Se normaliza sin `/` final. |
+| `HARNESS_A2A_ENTRANTE_MAX_BODY_BYTES` | `65_536` (64 KiB) | Tope de tamaño del body de `POST /a2a`; por encima, `413` sin parsear. |
+| `HARNESS_A2A_ENTRANTE_MAX_EN_VUELO` | `4` | Tope de turnos A2A entrantes en curso simultáneamente; por encima, el `SendMessage` sobrante responde `REJECTED` sin crear caso. |
+
+### Cómo consultar el arnés como agente A2A
+
+Con `HARNESS_A2A_ENTRANTE_TOKEN` seteado y el arnés levantado, el servidor expone dos rutas: el Agent Card en `GET /.well-known/agent-card.json` (sin autenticación) y el endpoint JSON-RPC en `POST /a2a` (con `Authorization: Bearer <token>`).
+
+1. Consultar el Agent Card (sin auth):
+
+   ```sh
+   curl http://localhost:8888/.well-known/agent-card.json
+   ```
+
+2. Enviar una consulta con `SendMessage` (responde `SUBMITTED` de inmediato — el turno sigue en curso en background):
+
+   ```sh
+   curl -X POST http://localhost:8888/a2a \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "jsonrpc": "2.0",
+       "id": 1,
+       "method": "SendMessage",
+       "params": {
+         "message": {
+           "parts": [{ "text": "¿En qué estado está la revisión del PR 42 del proyecto X?" }]
+         }
+       }
+     }'
+   ```
+
+   La respuesta trae `result.task.id` (el `a2aTaskId` a usar en el loop de `GetTask`) y `result.task.status.state: "TASK_STATE_SUBMITTED"`.
+
+3. Hacer polling de la tarea con `GetTask` hasta que `status.state` sea un estado terminal (`TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_REJECTED` o `TASK_STATE_CANCELED`):
+
+   ```sh
+   curl -X POST http://localhost:8888/a2a \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "jsonrpc": "2.0",
+       "id": 2,
+       "method": "GetTask",
+       "params": { "id": "<a2aTaskId devuelto por SendMessage>" }
+     }'
+   ```
+
+   Reintentar cada `HARNESS_A2A_POLL_INTERVAL_MS` (mismo intervalo que usa el Cliente A2A saliente propio) hasta un estado terminal. En `TASK_STATE_COMPLETED`, el texto de la respuesta viaja en `result.task.artifacts`.
+
 ### Tool MCP `mcp__worktree__run_tests`
 
 Expuesta únicamente al Developer cuando trabaja dentro de un worktree aislado. No acepta parámetros — siempre corre la suite completa (`vitest run`) fijada al `cwd` del worktree, sin poder filtrar por archivo, patrón ni test individual. Devuelve el resultado real (verde o rojo) con la salida de vitest, o indica explícitamente si la corrida no se pudo ejecutar en vez de afirmar que los tests pasan.
