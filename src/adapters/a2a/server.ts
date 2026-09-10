@@ -365,6 +365,34 @@ function respondJsonRpcResult(res: A2AResponse, id: unknown, result: TaskJson): 
 }
 
 /**
+ * Sobre de éxito JSON-RPC 2.0 para `SendMessage` — DISTINTO de
+ * `JsonRpcResultEnvelope` (usado por `GetTask`/`CancelTask`, donde el `Task`
+ * va DIRECTO en `result`). `SendMessageResponse` es un `oneof payload { Task
+ * task = 1; Message message = 2; }` REAL del protocolo (verificado contra
+ * `specification/a2a.proto` del tag `v1.0.0` de `a2aproject/A2A` — mismo
+ * hallazgo que `client.ts:291-303` ya documenta del lado cliente,
+ * `parsearSobreDeSendMessage`, y que un sample real confirmó con `curl` en
+ * el Hito 6). Encontrado por el test de integración de la tarea 17 (Hito 7)
+ * contra el Cliente A2A real: con el `Task` directo en `result` (el bug que
+ * este comentario reemplaza), `idDeTarea` nunca ve un `id` y la delegación
+ * completa moría con `reason: "protocolo"` sin llegar al loop de `GetTask` —
+ * invisible para los dobles unitarios de las tareas 8-12, que sólo leían
+ * `sobre.result.status.state` directo, nunca `parsearSobreDeSendMessage` real.
+ */
+interface JsonRpcSendMessageResultEnvelope {
+  readonly jsonrpc: "2.0";
+  readonly id: unknown;
+  readonly result: { readonly task: TaskJson };
+}
+
+function respondJsonRpcSendMessageResult(res: A2AResponse, id: unknown, task: TaskJson): void {
+  const sobre: JsonRpcSendMessageResultEnvelope = { jsonrpc: "2.0", id, result: { task } };
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify(sobre));
+}
+
+/**
  * PURA. Extrae y concatena el texto de `parts[*].text` de un `SendMessage`
  * entrante (Hito 7, tarea 12, design.md ADR 102 pto 3-4). Gemela
  * DELIBERADAMENTE separada de `concatenarPartesDeTexto` (`client.ts:362-377`,
@@ -539,7 +567,7 @@ async function handleSolicitudJsonRpc(
         estado: resultado.estado,
         updatedAt: resultado.updatedAt,
       };
-      respondJsonRpcResult(res, id, construirTask(vista));
+      respondJsonRpcSendMessageResult(res, id, construirTask(vista));
     } catch {
       logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-handler-fallido", { method });
       respondJsonRpcError(res, id, JSONRPC_INTERNAL_ERROR, "error interno");
@@ -609,7 +637,7 @@ async function handleSolicitudJsonRpc(
  * | `POST RUTA_JSONRPC`, sobre no-objeto / `jsonrpc !== "2.0"` / `method` no-string | `200` | `-32600`, `id: null` |
  * | `POST RUTA_JSONRPC`, `method` fuera de los tres soportados | `200` | `-32601`, con el `id` del request. `a2a-metodo-no-soportado` |
  * | `SendMessage`/`GetTask`/`CancelTask`, `params` mal formados | `200` | `-32602`, ningún callback invocado |
- * | `SendMessage` con éxito | `200` | `result: Task` (`SUBMITTED`/`REJECTED` según `onSolicitudA2A`) |
+ * | `SendMessage` con éxito | `200` | `result: { task: Task }` (`SUBMITTED`/`REJECTED` según `onSolicitudA2A` — ÚNICO método cuyo `result` envuelve el `Task`, ver `respondJsonRpcSendMessageResult`) |
  * | `GetTask`/`CancelTask` de un id inexistente | `200` | `A2A_ERROR_TASK_NOT_FOUND` |
  * | `CancelTask` sobre terminal no cancelable | `200` | `A2A_ERROR_TASK_NOT_CANCELABLE`, fila intacta |
  * | `CancelTask` sobre `CANCELED`/`SUBMITTED`/`WORKING` | `200` | `result: Task` (idempotente en el primer caso) |

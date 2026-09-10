@@ -621,9 +621,16 @@ describe("createRequestListener — despacho real de SendMessage, GetTask y Canc
       await esperarRespuesta(res);
 
       expect(res.statusCode).toBe(200);
-      const sobre = parsedResult(res);
-      expect(sobre.result.status.state).toBe("TASK_STATE_SUBMITTED");
-      expect(sobre.result.id).not.toBe("");
+      // `SendMessage` responde `result: { task: Task }` — el `oneof` REAL del
+      // protocolo (`respondJsonRpcSendMessageResult`), a diferencia de
+      // `GetTask`/`CancelTask` (`parsedResult` de este mismo describe, que sí
+      // trae el `Task` directo en `result` — ver el doc-comment de
+      // `JsonRpcSendMessageResultEnvelope` en `server.ts`).
+      const sobre = JSON.parse(res.end.mock.calls[0]?.[0] as string) as {
+        readonly result: { readonly task: { readonly id: string; readonly status: { readonly state: string } } };
+      };
+      expect(sobre.result.task.status.state).toBe("TASK_STATE_SUBMITTED");
+      expect(sobre.result.task.id).not.toBe("");
 
       expect(onSolicitudA2A).toHaveBeenCalledTimes(1);
       const [input] = onSolicitudA2A.mock.calls[0] as [
@@ -1008,10 +1015,11 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
     return { req, res };
   }
 
+  /** `postSendMessage` responde `result: { task: Task }` (ver `JsonRpcSendMessageResultEnvelope` en `server.ts`). */
   function resultState(res: FakeA2AResponse): string {
     const call = res.end.mock.calls[0]?.[0] as string;
-    const sobre = JSON.parse(call) as { result: { status: { state: string } } };
-    return sobre.result.status.state;
+    const sobre = JSON.parse(call) as { result: { task: { status: { state: string } } } };
+    return sobre.result.task.status.state;
   }
 
   describe("puerto efectivo (ADR 101)", () => {
