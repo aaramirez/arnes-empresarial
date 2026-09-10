@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { construirAgentCard } from "./agent-card.js";
 import {
+  A2A_CLOSE_TIMEOUT_MS,
   A2A_ERROR_TASK_NOT_CANCELABLE,
   A2A_ERROR_TASK_NOT_FOUND,
   A2A_SERVER_LOG_CORRELATION_ID,
@@ -23,11 +24,15 @@ import {
   esAutorizado,
   leerCuerpoConTope,
   pathFromUrl,
+  startServer,
   type A2ARequest,
   type A2AResponse,
   type A2AServerDeps,
+  type A2AServerHandle,
   type CancelacionA2AResultado,
+  type CreateA2AServerFn,
   type SolicitudA2AAceptada,
+  type SolicitudA2AEntrada,
   type SolicitudA2AEntranteVista,
 } from "./server.js";
 
@@ -919,6 +924,327 @@ describe("createRequestListener — despacho real de SendMessage, GetTask y Canc
       expect(cuerpo).not.toContain("boom sincrono cancel");
       const sobre = parsedError(res);
       expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
+    });
+  });
+});
+
+describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hito 7, tarea 13, design.md ADR 99, ADR 101)", () => {
+  const NOW = "2026-09-09T00:00:00.000Z";
+
+  interface TurnoControlable {
+    readonly promise: Promise<void>;
+    readonly resolver: () => void;
+    readonly rechazar: (error: Error) => void;
+  }
+
+  function turnoControlable(): TurnoControlable {
+    let resolver!: () => void;
+    let rechazar!: (error: Error) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolver = resolve;
+      rechazar = reject;
+    });
+    // Evita `unhandledRejection` cuando el test rechaza el turno pero nadie
+    // más lo espera todavía en ese instante — el mismo `.catch(() => {})`
+    // mudo que cualquier promesa "observada tarde" necesita.
+    promise.catch(() => {});
+    return { promise, resolver, rechazar };
+  }
+
+  /** Doble de `A2AHttpServerLike` — molde de `makeFakeHttpServer` (`web/server.test.ts:701-730`). */
+  function makeFakeA2AHttpServer(direccion: { readonly port: number } | string | null = { port: 54_321 }): {
+    server: {
+      listen: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+      on: ReturnType<typeof vi.fn>;
+      address: ReturnType<typeof vi.fn>;
+    };
+    createServer: CreateA2AServerFn;
+    getListener: () => (req: A2ARequest, res: A2AResponse) => void;
+  } {
+    let capturedListener: ((req: A2ARequest, res: A2AResponse) => void) | undefined;
+    const server = {
+      listen: vi.fn((_port: number, callback: () => void) => {
+        callback();
+      }),
+      close: vi.fn((callback: (error?: Error) => void) => {
+        callback();
+      }),
+      on: vi.fn(),
+      address: vi.fn(() => direccion),
+    };
+    const createServer = vi.fn((listener: (req: A2ARequest, res: A2AResponse) => void) => {
+      capturedListener = listener;
+      return server;
+    });
+    return {
+      server,
+      createServer,
+      getListener: () => {
+        if (capturedListener === undefined) {
+          throw new Error("listener not captured yet");
+        }
+        return capturedListener;
+      },
+    };
+  }
+
+  function postSendMessage(
+    listener: (req: A2ARequest, res: A2AResponse) => void,
+    id: string,
+    texto = "hola",
+  ): { req: FakeA2ARequest; res: FakeA2AResponse } {
+    const req = new FakeA2ARequest({ method: "POST", url: RUTA_JSONRPC, headers: authHeader() });
+    const res = new FakeA2AResponse();
+    listener(req, res);
+    req.emitBody([
+      jsonBody({
+        jsonrpc: "2.0",
+        method: METODO_SEND_MESSAGE,
+        id,
+        params: { message: { parts: [{ text: texto }] } },
+      }),
+    ]);
+    return { req, res };
+  }
+
+  function resultState(res: FakeA2AResponse): string {
+    const call = res.end.mock.calls[0]?.[0] as string;
+    const sobre = JSON.parse(call) as { result: { status: { state: string } } };
+    return sobre.result.status.state;
+  }
+
+  describe("puerto efectivo (ADR 101)", () => {
+    it("A2AServerHandle.port is server.address().port with listen(0), not the configured 0", async () => {
+      const config = makeConfig({ port: 0 });
+      const deps = makeDeps({ config, onSolicitudA2A: vi.fn() });
+      const { createServer } = makeFakeA2AHttpServer({ port: 54_321 });
+
+      const handle: A2AServerHandle = await startServer(deps, createServer);
+
+      expect(handle.port).toBe(54_321);
+      expect(handle.port).not.toBe(0);
+    });
+
+    it("falls back to deps.config.port when the double does not implement address()", async () => {
+      const config = makeConfig({ port: 8888 });
+      const deps = makeDeps({ config, onSolicitudA2A: vi.fn() });
+      const { createServer } = makeFakeA2AHttpServer(null);
+
+      const handle: A2AServerHandle = await startServer(deps, createServer);
+
+      expect(handle.port).toBe(8888);
+    });
+
+    it("rejects when the underlying server emits an 'error' event (e.g. EADDRINUSE)", async () => {
+      const deps = makeDeps({ onSolicitudA2A: vi.fn() });
+      const error = new Error("EADDRINUSE");
+      const createServer: CreateA2AServerFn = () => ({
+        listen: vi.fn(),
+        close: vi.fn(),
+        address: vi.fn(() => null),
+        on: vi.fn((event: string, listener: (error: Error) => void) => {
+          if (event === "error") {
+            listener(error);
+          }
+        }),
+      });
+
+      await expect(startServer(deps, createServer)).rejects.toBe(error);
+    });
+  });
+
+  describe("tope de turnos en vuelo (ADR 99)", () => {
+    it("with maxEnVuelo: 2, a third SendMessage with in-flight (non-resolving) turns gets hayCupo: false and REJECTED", async () => {
+      const config = makeConfig({ maxEnVuelo: 2 });
+      const turnos: TurnoControlable[] = [];
+      const onSolicitudA2A = vi.fn(
+        async (input: SolicitudA2AEntrada): Promise<SolicitudA2AAceptada> => {
+          if (!input.hayCupo) {
+            return { estado: "TASK_STATE_REJECTED", contextId: input.a2aTaskId, updatedAt: NOW };
+          }
+          const turno = turnoControlable();
+          turnos.push(turno);
+          return { estado: "TASK_STATE_SUBMITTED", contextId: input.a2aTaskId, updatedAt: NOW, turno: turno.promise };
+        },
+      );
+      const deps = makeDeps({ config, onSolicitudA2A });
+      const { createServer, getListener } = makeFakeA2AHttpServer();
+
+      await startServer(deps, createServer);
+      const listener = getListener();
+
+      const { res: res1 } = postSendMessage(listener, "req-1");
+      await esperarRespuesta(res1);
+      const { res: res2 } = postSendMessage(listener, "req-2");
+      await esperarRespuesta(res2);
+      const { res: res3 } = postSendMessage(listener, "req-3");
+      await esperarRespuesta(res3);
+
+      expect(onSolicitudA2A).toHaveBeenCalledTimes(3);
+      const [input1] = onSolicitudA2A.mock.calls[0] as [SolicitudA2AEntrada];
+      const [input2] = onSolicitudA2A.mock.calls[1] as [SolicitudA2AEntrada];
+      const [input3] = onSolicitudA2A.mock.calls[2] as [SolicitudA2AEntrada];
+      expect(input1.hayCupo).toBe(true);
+      expect(input2.hayCupo).toBe(true);
+      expect(input3.hayCupo).toBe(false);
+
+      expect(resultState(res1)).toBe("TASK_STATE_SUBMITTED");
+      expect(resultState(res2)).toBe("TASK_STATE_SUBMITTED");
+      expect(resultState(res3)).toBe("TASK_STATE_REJECTED");
+      expect(turnos).toHaveLength(2);
+    });
+
+    it("regains cupo (hayCupo: true) for the next SendMessage once an in-flight turn resolves", async () => {
+      const config = makeConfig({ maxEnVuelo: 2 });
+      const turnos: TurnoControlable[] = [];
+      const onSolicitudA2A = vi.fn(
+        async (input: SolicitudA2AEntrada): Promise<SolicitudA2AAceptada> => {
+          if (!input.hayCupo) {
+            return { estado: "TASK_STATE_REJECTED", contextId: input.a2aTaskId, updatedAt: NOW };
+          }
+          const turno = turnoControlable();
+          turnos.push(turno);
+          return { estado: "TASK_STATE_SUBMITTED", contextId: input.a2aTaskId, updatedAt: NOW, turno: turno.promise };
+        },
+      );
+      const deps = makeDeps({ config, onSolicitudA2A });
+      const { createServer, getListener } = makeFakeA2AHttpServer();
+
+      await startServer(deps, createServer);
+      const listener = getListener();
+
+      await esperarRespuesta(postSendMessage(listener, "req-1").res);
+      await esperarRespuesta(postSendMessage(listener, "req-2").res);
+      const { res: res3 } = postSendMessage(listener, "req-3");
+      await esperarRespuesta(res3);
+      expect(resultState(res3)).toBe("TASK_STATE_REJECTED");
+
+      // Libera un cupo: el primer turno resuelve, y la desregistración del
+      // `Set` de `enVuelo` (`.then(olvidar, olvidar)`) corre antes de que
+      // esta promesa propia resuelva, porque se registró primero.
+      const [primero] = turnos;
+      primero?.resolver();
+      await primero?.promise;
+
+      const { res: res4 } = postSendMessage(listener, "req-4");
+      await esperarRespuesta(res4);
+
+      expect(resultState(res4)).toBe("TASK_STATE_SUBMITTED");
+      const [, , , input4] = onSolicitudA2A.mock.calls.map(
+        (call) => (call as [SolicitudA2AEntrada])[0],
+      );
+      expect(input4?.hayCupo).toBe(true);
+    });
+  });
+
+  describe("drenaje al cerrar (ADR 99, ADR 101)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("close() with a pending turn does not resolve until the turn resolves", async () => {
+      const config = makeConfig({ maxEnVuelo: 4 });
+      const turno = turnoControlable();
+      const onSolicitudA2A = vi.fn(
+        async (input: SolicitudA2AEntrada): Promise<SolicitudA2AAceptada> => ({
+          estado: "TASK_STATE_SUBMITTED",
+          contextId: input.a2aTaskId,
+          updatedAt: NOW,
+          turno: turno.promise,
+        }),
+      );
+      const deps = makeDeps({ config, onSolicitudA2A });
+      const { createServer, getListener } = makeFakeA2AHttpServer();
+
+      const handle = await startServer(deps, createServer);
+      postSendMessage(getListener(), "req-1");
+      // Deja avanzar la cola de microtareas para que `onSolicitudA2A`
+      // resuelva y el turno quede registrado en `enVuelo` antes de llamar
+      // `close()` — mismo motivo que `web/server.test.ts:750-754`.
+      await vi.advanceTimersByTimeAsync(0);
+
+      let closed = false;
+      const closePromise = handle.close().then(() => {
+        closed = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(closed).toBe(false);
+
+      turno.resolver();
+      await closePromise;
+
+      expect(closed).toBe(true);
+    });
+
+    it("close() resolves after A2A_CLOSE_TIMEOUT_MS even if a turn never settles, and logs a2a-servidor-cierre-con-turnos-en-vuelo — never rejects", async () => {
+      const config = makeConfig({ maxEnVuelo: 4 });
+      const turno = turnoControlable();
+      const onSolicitudA2A = vi.fn(
+        async (input: SolicitudA2AEntrada): Promise<SolicitudA2AAceptada> => ({
+          estado: "TASK_STATE_SUBMITTED",
+          contextId: input.a2aTaskId,
+          updatedAt: NOW,
+          turno: turno.promise,
+        }),
+      );
+      const logEvent = vi.fn();
+      const deps = makeDeps({ config, onSolicitudA2A, logEvent });
+      const { createServer, getListener } = makeFakeA2AHttpServer();
+
+      const handle = await startServer(deps, createServer);
+      postSendMessage(getListener(), "req-1");
+      await vi.advanceTimersByTimeAsync(0);
+
+      let closed = false;
+      const closePromise = handle.close().then(() => {
+        closed = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(A2A_CLOSE_TIMEOUT_MS);
+      await closePromise;
+
+      expect(closed).toBe(true);
+      expect(logEvent).toHaveBeenCalledWith(
+        A2A_SERVER_LOG_CORRELATION_ID,
+        "a2a-servidor-cierre-con-turnos-en-vuelo",
+        expect.objectContaining({ enVuelo: 1 }),
+      );
+    });
+
+    it("close() never rejects, even when the in-flight turn itself rejects", async () => {
+      const config = makeConfig({ maxEnVuelo: 4 });
+      const turno = turnoControlable();
+      const onSolicitudA2A = vi.fn(
+        async (input: SolicitudA2AEntrada): Promise<SolicitudA2AAceptada> => ({
+          estado: "TASK_STATE_SUBMITTED",
+          contextId: input.a2aTaskId,
+          updatedAt: NOW,
+          turno: turno.promise,
+        }),
+      );
+      const deps = makeDeps({ config, onSolicitudA2A });
+      const { createServer, getListener } = makeFakeA2AHttpServer();
+
+      const handle = await startServer(deps, createServer);
+      postSendMessage(getListener(), "req-1");
+      await vi.advanceTimersByTimeAsync(0);
+
+      let rechazoRecibido = false;
+      const closePromise = handle.close().catch(() => {
+        rechazoRecibido = true;
+      });
+
+      turno.rechazar(new Error("el turno se cayo"));
+      await vi.advanceTimersByTimeAsync(0);
+      await closePromise;
+
+      expect(rechazoRecibido).toBe(false);
     });
   });
 });

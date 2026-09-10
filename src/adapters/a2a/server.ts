@@ -1,11 +1,15 @@
 /**
- * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-12, design.md
- * §6.3 — partes 1a, 1b, 1c y 2b: tipos + auth + body + ruteo por método+ruta +
- * Agent Card + sobre JSON-RPC + los cinco errores base + el despacho REAL de
- * los tres métodos (`SendMessage`/`GetTask`/`CancelTask`, ADR 94, ADR 100). El
- * tope de turnos en vuelo y el drenaje (`startServer`, tarea 13) NO están acá
- * todavía: `hayCupo` viaja fijo en `true` desde esta tarea, a inyectar
- * correctamente por la tarea 13 (design.md ADR 99).
+ * Listener HTTP del Servidor A2A entrante (Hito 7, tareas 8-13, design.md
+ * §6.3 — partes 1a, 1b, 1c, 2b y 2c: tipos + auth + body + ruteo por
+ * método+ruta + Agent Card + sobre JSON-RPC + los cinco errores base + el
+ * despacho REAL de los tres métodos (`SendMessage`/`GetTask`/`CancelTask`,
+ * ADR 94, ADR 100) + `startServer` con el tope de turnos en vuelo, el
+ * drenaje al cerrar y el puerto efectivo (ADR 99, ADR 101). El `hayCupo:
+ * true` fijo que ve `handleSolicitudJsonRpc` es sólo el valor por defecto
+ * cuando `createRequestListener` se invoca directo (sin pasar por
+ * `startServer`, p. ej. en los tests de las tareas 8-12): `startServer`
+ * envuelve `deps.onSolicitudA2A` y sobrescribe ese campo con el valor real
+ * (tarea 13, ADR 99 pto 3) antes de que el composition root lo vea.
  *
  * Recorte estructural DUPLICADO a propósito de `web/http.ts` y
  * `webhooks/server.ts:30-51` (ADR 13 — **tercer servidor HTTP de la misma
@@ -35,15 +39,18 @@
  * soportados. El despacho real de esos tres métodos llega en la tarea 12,
  * sin reabrir esta.
  */
+import { createServer as createHttpServer } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   TASK_STATE_CANCELED,
   TASK_STATE_COMPLETED,
   TASK_STATE_FAILED,
   TASK_STATE_REJECTED,
+  TASK_STATE_SUBMITTED,
 } from "../../core/agents/a2a-contract.js";
 import { construirAgentCard } from "./agent-card.js";
 import {
+  A2A_CLOSE_TIMEOUT_MS,
   A2A_ERROR_TASK_NOT_CANCELABLE,
   A2A_ERROR_TASK_NOT_FOUND,
   A2A_SERVER_LOG_CORRELATION_ID,
@@ -522,7 +529,9 @@ async function handleSolicitudJsonRpc(
 
     const a2aTaskId = deps.newTaskId?.() ?? randomUUID();
     try {
-      // `hayCupo` fijo en `true` hasta la tarea 13 (`startServer`, ADR 99).
+      // `hayCupo: true` es el default de esta llamada directa al listener;
+      // `startServer` (tarea 13, ADR 99) sobrescribe el campo con el valor
+      // real antes de que `deps.onSolicitudA2A` lo reciba.
       const resultado = await deps.onSolicitudA2A({ a2aTaskId, texto, origenTransporte, hayCupo: true });
       const vista: SolicitudA2AEntranteVista = {
         a2aTaskId,
@@ -701,4 +710,116 @@ export function construirTask(vista: SolicitudA2AEntranteVista): TaskJson {
   }
 
   return { id: a2aTaskId, contextId, status };
+}
+
+/**
+ * Handle devuelto por `startServer` (Hito 7, tarea 13, design.md §6.3,
+ * ADR 101). `port` es el puerto EFECTIVO — el que asignó el SO cuando
+ * `deps.config.port === 0` — no el configurado (asimetría deliberada
+ * respecto de `WebServerHandle`/`WebhookServerHandle`, RD-42).
+ */
+export interface A2AServerHandle {
+  readonly port: number;
+  /** Deja de aceptar, drena los turnos en vuelo con techo `A2A_CLOSE_TIMEOUT_MS`, resuelve. NUNCA rechaza. */
+  close(): Promise<void>;
+}
+
+/**
+ * Monta el listener sobre un servidor HTTP (Hito 7, tarea 13, design.md
+ * §6.3 parte 2c, ADR 99, ADR 101). `createServer` se inyecta (default:
+ * `http.createServer` real) para que ningún test del suite por defecto abra
+ * un puerto — mismo criterio que `web/server.ts:504-508`.
+ *
+ * `const enVuelo = new Set<Promise<void>>()` es a la vez el contador del
+ * tope y el conjunto de drenaje (ADR 99 pto 1) — cero estado duplicado.
+ * `startServer` envuelve `deps.onSolicitudA2A` (molde LITERAL de
+ * `onSoporteConDrenaje`, `web/server.ts:515-523`, incluido el
+ * `.then(olvidar, olvidar)` en vez de `.finally`): calcula `hayCupo` a
+ * partir de `enVuelo.size` **antes** de invocar al composition root, y
+ * registra `resultado.turno` en `enVuelo` **sólo** cuando
+ * `estado === TASK_STATE_SUBMITTED` — el tipo de `SolicitudA2AAceptada`
+ * (ADR 99 pto 4) hace imposible registrar un turno que la rama `REJECTED`
+ * no trae.
+ *
+ * `address()` resuelve el puerto EFECTIVO dentro del callback de `listen`
+ * (ADR 101), con fallback a `deps.config.port` si el doble de test no
+ * implementa `address()`. `close()` drena `enVuelo` con `Promise.allSettled`
+ * en carrera contra `A2A_CLOSE_TIMEOUT_MS` — igual que
+ * `web/server.ts:547-565` — y NUNCA rechaza; agotado el techo, loguea
+ * `a2a-servidor-cierre-con-turnos-en-vuelo`.
+ */
+export function startServer(
+  deps: A2AServerDeps,
+  createServer: CreateA2AServerFn = (listener) =>
+    createHttpServer((req, res) => listener(req as unknown as A2ARequest, res)),
+): Promise<A2AServerHandle> {
+  const enVuelo = new Set<Promise<void>>();
+
+  const onSolicitudConTopeYDrenaje = async (
+    input: Omit<SolicitudA2AEntrada, "hayCupo">,
+  ): Promise<SolicitudA2AAceptada> => {
+    const resultado = await deps.onSolicitudA2A({
+      ...input,
+      hayCupo: enVuelo.size < deps.config.maxEnVuelo,
+    });
+    if (resultado.estado === TASK_STATE_SUBMITTED) {
+      enVuelo.add(resultado.turno);
+      const olvidar = (): void => {
+        enVuelo.delete(resultado.turno);
+      };
+      resultado.turno.then(olvidar, olvidar);
+    }
+    return resultado;
+  };
+
+  const listener = createRequestListener({ ...deps, onSolicitudA2A: onSolicitudConTopeYDrenaje });
+  const server = createServer(listener);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    server.on("error", (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
+
+    server.listen(deps.config.port, () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+
+      const direccion = server.address();
+      const puertoEfectivo =
+        typeof direccion === "object" && direccion !== null ? direccion.port : deps.config.port;
+
+      const handle: A2AServerHandle = {
+        port: puertoEfectivo,
+        close(): Promise<void> {
+          return new Promise((resolveClose) => {
+            server.close(() => {
+              const drenaje = Promise.allSettled([...enVuelo]).then(() => undefined);
+              const timeout = new Promise<"timeout">((resolveTimeout) => {
+                setTimeout(() => resolveTimeout("timeout"), A2A_CLOSE_TIMEOUT_MS);
+              });
+
+              void Promise.race([drenaje.then(() => "drenado" as const), timeout]).then((resultado) => {
+                if (resultado === "timeout") {
+                  deps.logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-servidor-cierre-con-turnos-en-vuelo", {
+                    enVuelo: enVuelo.size,
+                  });
+                }
+                resolveClose();
+              });
+            });
+          });
+        },
+      };
+
+      resolve(handle);
+    });
+  });
 }
