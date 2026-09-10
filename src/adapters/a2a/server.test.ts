@@ -6,6 +6,7 @@ import {
   A2A_ERROR_TASK_NOT_CANCELABLE,
   A2A_ERROR_TASK_NOT_FOUND,
   A2A_SERVER_LOG_CORRELATION_ID,
+  A2A_TURNO_EN_VUELO_MAX_MS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
@@ -809,6 +810,24 @@ describe("createRequestListener — despacho real de SendMessage, GetTask y Canc
       expect(sobre.error.code).toBe(JSONRPC_INTERNAL_ERROR);
     });
 
+    it("passes params.id trimmed to onConsultarTarea when it has incidental surrounding whitespace (Hallazgo 3 Reviewer, Hito 7)", async () => {
+      const onConsultarTarea = vi.fn().mockReturnValue(VISTA_WORKING);
+      const deps = makeDeps({ onConsultarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({
+          jsonrpc: "2.0",
+          method: METODO_GET_TASK,
+          id: "req-12",
+          params: { id: " task-1 " },
+        }),
+      );
+      await esperarRespuesta(res);
+
+      expect(onConsultarTarea).toHaveBeenCalledWith("task-1");
+    });
+
     it("never awaits: a single microtask flush after the body settles is enough to reach res.end — onConsultarTarea is synchronous (ADR 100, mechanical check, no vi.waitFor polling)", async () => {
       const onConsultarTarea = vi.fn().mockReturnValue(VISTA_WORKING);
       const deps = makeDeps({ onConsultarTarea });
@@ -915,6 +934,24 @@ describe("createRequestListener — despacho real de SendMessage, GetTask y Canc
       expect(onCancelarTarea).toHaveBeenCalledTimes(0);
     });
 
+    it("passes params.id trimmed to onCancelarTarea when it has incidental surrounding whitespace (Hallazgo 3 Reviewer, Hito 7)", async () => {
+      const onCancelarTarea = vi.fn().mockReturnValue({ resultado: "no-encontrada" });
+      const deps = makeDeps({ onCancelarTarea });
+
+      const { res } = postJsonRpc(
+        deps,
+        jsonBody({
+          jsonrpc: "2.0",
+          method: METODO_CANCEL_TASK,
+          id: "req-17",
+          params: { id: " task-2 " },
+        }),
+      );
+      await esperarRespuesta(res);
+
+      expect(onCancelarTarea).toHaveBeenCalledWith("task-2");
+    });
+
     it("responds -32603 without a stack trace in the body when onCancelarTarea throws", async () => {
       const onCancelarTarea = vi.fn(() => {
         throw new Error("boom sincrono cancel");
@@ -965,6 +1002,7 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
       close: ReturnType<typeof vi.fn>;
       on: ReturnType<typeof vi.fn>;
       address: ReturnType<typeof vi.fn>;
+      closeIdleConnections: ReturnType<typeof vi.fn>;
     };
     createServer: CreateA2AServerFn;
     getListener: () => (req: A2ARequest, res: A2AResponse) => void;
@@ -979,6 +1017,7 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
       }),
       on: vi.fn(),
       address: vi.fn(() => direccion),
+      closeIdleConnections: vi.fn(),
     };
     const createServer = vi.fn((listener: (req: A2ARequest, res: A2AResponse) => void) => {
       capturedListener = listener;
@@ -1056,6 +1095,7 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
             listener(error);
           }
         }),
+        closeIdleConnections: vi.fn(),
       });
 
       await expect(startServer(deps, createServer)).rejects.toBe(error);
@@ -1253,6 +1293,81 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
       await closePromise;
 
       expect(rechazoRecibido).toBe(false);
+    });
+
+    it("close() invokes server.closeIdleConnections() before waiting on the server.close() callback (Hallazgo 5 Reviewer, Hito 7)", async () => {
+      const deps = makeDeps({ onSolicitudA2A: vi.fn() });
+      const { createServer, server } = makeFakeA2AHttpServer();
+
+      const handle = await startServer(deps, createServer);
+      await handle.close();
+
+      expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("desalojo de enVuelo por timeout (Hallazgo 2 Reviewer, Hito 7)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("un turno que nunca resuelve libera su slot tras A2A_TURNO_EN_VUELO_MAX_MS (hayCupo vuelve a true), sin cancelar la promesa real, y logea a2a-turno-en-vuelo-desalojado-por-timeout", async () => {
+      const config = makeConfig({ maxEnVuelo: 1 });
+      const turno = turnoControlable();
+      const onSolicitudA2A = vi.fn(
+        async (input: SolicitudA2AEntrada): Promise<SolicitudA2AAceptada> => {
+          if (!input.hayCupo) {
+            return { estado: "TASK_STATE_REJECTED", contextId: input.a2aTaskId, updatedAt: NOW };
+          }
+          return {
+            estado: "TASK_STATE_SUBMITTED",
+            contextId: input.a2aTaskId,
+            updatedAt: NOW,
+            turno: turno.promise,
+          };
+        },
+      );
+      const logEvent = vi.fn();
+      const deps = makeDeps({ config, onSolicitudA2A, logEvent });
+      const { createServer, getListener } = makeFakeA2AHttpServer();
+
+      await startServer(deps, createServer);
+      const listener = getListener();
+
+      const { res: res1 } = postSendMessage(listener, "req-1");
+      await esperarRespuesta(res1);
+      expect(resultState(res1)).toBe("TASK_STATE_SUBMITTED");
+      const [inputRegistrado] = onSolicitudA2A.mock.calls[0] as [SolicitudA2AEntrada];
+
+      // `maxEnVuelo: 1` y el turno del `req-1` nunca resuelve: sin el
+      // desalojo, este segundo `SendMessage` vería `hayCupo: false` para
+      // siempre — el síntoma exacto del Hallazgo 2.
+      const { res: res2 } = postSendMessage(listener, "req-2");
+      await esperarRespuesta(res2);
+      expect(resultState(res2)).toBe("TASK_STATE_REJECTED");
+
+      let turnoResuelto = false;
+      void turno.promise.then(() => {
+        turnoResuelto = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(A2A_TURNO_EN_VUELO_MAX_MS);
+
+      expect(logEvent).toHaveBeenCalledWith(
+        A2A_SERVER_LOG_CORRELATION_ID,
+        "a2a-turno-en-vuelo-desalojado-por-timeout",
+        expect.objectContaining({ a2aTaskId: inputRegistrado.a2aTaskId }),
+      );
+      // El desalojo NO cancela ni resuelve la promesa real del turno.
+      expect(turnoResuelto).toBe(false);
+
+      const { res: res3 } = postSendMessage(listener, "req-3");
+      await esperarRespuesta(res3);
+      expect(resultState(res3)).toBe("TASK_STATE_SUBMITTED");
     });
   });
 });

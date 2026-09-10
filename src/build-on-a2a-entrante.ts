@@ -254,30 +254,43 @@ export function buildOnA2AEntrante(deps: BuildOnA2AEntranteDeps): A2AEntranteHan
       return { estado: TASK_STATE_REJECTED, contextId: input.a2aTaskId, updatedAt: timestamp };
     }
 
-    // Paso (b): PROPAGA si falla — sin caso no hay nada que correlacionar.
+    // Pasos (b) + (c) en UNA transacción `better-sqlite3` (Hallazgo 4
+    // Reviewer, Hito 7; molde EXACTO de `createCasoConActividad`,
+    // `adapters/memory/repository.ts`): antes, `createCaso` e
+    // `insertSolicitudA2AEntrante` eran dos escrituras separadas — si la
+    // segunda fallaba (p. ej. colisión de `a2a_task_id`,
+    // `SolicitudA2AEntranteYaExisteError`), el `caso` recién creado quedaba
+    // huérfano, sin ninguna fila de `solicitudes_a2a_entrantes` que lo
+    // referencie. `db.transaction` envuelve una función SÍNCRONA y es
+    // atómica: si cualquier paso de adentro lanza, SQLite hace rollback de
+    // TODO lo que la transacción hizo hasta ahí, y el mismo error propaga
+    // afuera (no se traga acá) — "sin caso no hay nada que correlacionar" y
+    // "sin fila no hay trazabilidad" (pasos (b)/(c) originales) se vuelven
+    // literalmente ciertos los dos juntos, no una aspiración. Todo esto es
+    // síncrono, sin ningún `await`: la fila (y el caso) existen ANTES de que
+    // la promesa de `onSolicitudA2A` resuelva (spec, requirement "Ciclo de
+    // vida completo").
     const casoId = newId();
-    createCaso(db, {
-      id: casoId,
-      tipo: CASO_TIPO_A2A_ENTRANTE,
-      estado: CASO_ESTADO_ACTIVO,
-      createdAt: timestamp,
-      updatedAt: timestamp,
+    const crearCasoConSolicitud = db.transaction((): void => {
+      createCaso(db, {
+        id: casoId,
+        tipo: CASO_TIPO_A2A_ENTRANTE,
+        estado: CASO_ESTADO_ACTIVO,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      insertSolicitudA2AEntrante(db, {
+        id: newId(),
+        a2aTaskId: input.a2aTaskId,
+        casoId,
+        origenTransporte: input.origenTransporte,
+        mensajeRecibido,
+        estado: TASK_STATE_SUBMITTED,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
     });
-
-    // Paso (c): PROPAGA si falla — sin fila no hay trazabilidad. Todo lo de
-    // arriba es síncrono, sin ningún `await` previo: la fila existe ANTES de
-    // que la promesa de `onSolicitudA2A` resuelva (spec, requirement "Ciclo
-    // de vida completo").
-    insertSolicitudA2AEntrante(db, {
-      id: newId(),
-      a2aTaskId: input.a2aTaskId,
-      casoId,
-      origenTransporte: input.origenTransporte,
-      mensajeRecibido,
-      estado: TASK_STATE_SUBMITTED,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    crearCasoConSolicitud();
 
     // Paso (d): invocado, NO awaiteado — `ejecutarTurno` nunca rechaza.
     const turno = ejecutarTurno(casoId, input.a2aTaskId, mensajeRecibido);

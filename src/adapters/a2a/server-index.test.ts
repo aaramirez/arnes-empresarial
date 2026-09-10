@@ -61,6 +61,7 @@ function makeSuccessfulServer(): { createServer: CreateA2AServerFn; fakeServer: 
     }),
     address: vi.fn(() => ({ port: ENABLED_CONFIG.port })),
     on: vi.fn(),
+    closeIdleConnections: vi.fn(),
   };
   const createServer = vi.fn(
     (_listener: (req: A2ARequest, res: A2AResponse) => void) => fakeServer,
@@ -88,6 +89,7 @@ function makeFailingServer(error: Error): { createServer: CreateA2AServerFn } {
         errorListener = listener;
       }
     }),
+    closeIdleConnections: vi.fn(),
   };
   const createServer = vi.fn(
     (_listener: (req: A2ARequest, res: A2AResponse) => void) => fakeServer,

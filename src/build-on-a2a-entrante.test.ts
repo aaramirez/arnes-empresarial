@@ -29,7 +29,11 @@ import { buildSolicitudA2APrompt } from "./core/agents/a2a-entrante-prompt.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
 import { DEFAULT_AGENT_MODEL, type AgentDefinition } from "./core/agents/definitions.js";
 import { openDatabase } from "./adapters/memory/db.js";
-import { getCasoById, getSolicitudA2AEntrantePorTaskId } from "./adapters/memory/repository.js";
+import {
+  getCasoById,
+  getSolicitudA2AEntrantePorTaskId,
+  insertSolicitudA2AEntrante,
+} from "./adapters/memory/repository.js";
 import type { MemoryPort, HandleTurnResult } from "./core/turn-selector/handle-turn.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
@@ -315,6 +319,49 @@ describe("buildOnA2AEntrante — onSolicitudA2A", () => {
 
       const eventos = parsedLines(logDeps.lines);
       expect(eventos.some((e) => e.event === "a2a-turno-entrante-descartado")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("si insertSolicitudA2AEntrante falla (colisión real de a2a_task_id), el caso recién creado NO queda insertado — rollback real de la transacción, no sólo la promesa rechazada (Hallazgo 4 Reviewer, Hito 7)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      // Fila preexistente con el MISMO `a2aTaskId`: la segunda inserción que
+      // hace `onSolicitudA2A` (ya con un `casoId` nuevo) choca contra la
+      // constraint `UNIQUE(a2a_task_id)` — un fallo REAL de SQLite
+      // (`SolicitudA2AEntranteYaExisteError`), no un doble/mock inyectado.
+      insertSolicitudA2AEntrante(db, {
+        id: "fila-previa",
+        a2aTaskId: "task-duplicado",
+        origenTransporte: "203.0.113.5",
+        mensajeRecibido: "ya existe",
+        estado: TASK_STATE_SUBMITTED,
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      });
+
+      const newId = makeCounterNewId("caso");
+      const handlers = buildOnA2AEntrante(makeBaseDeps(db, { newId, now: () => TIMESTAMP }));
+
+      await expect(
+        handlers.onSolicitudA2A({
+          a2aTaskId: "task-duplicado",
+          texto: "consulta cualquiera",
+          origenTransporte: "203.0.113.5",
+          hayCupo: true,
+        }),
+      ).rejects.toThrow();
+
+      // `newId` es un contador determinista: el primer valor que
+      // `onSolicitudA2A` pide es el `casoId` — "caso-1". Sin la
+      // transacción, ese `caso` sobrevivía huérfano pese al `INSERT`
+      // fallido de `solicitudes_a2a_entrantes`.
+      expect(getCasoById(db, "caso-1")).toBeUndefined();
+
+      const countCasos = db.prepare("SELECT COUNT(*) as c FROM casos").get() as { c: number };
+      expect(countCasos.c).toBe(0);
+      expect(mockedHandleTurn).not.toHaveBeenCalled();
     } finally {
       db.close();
     }

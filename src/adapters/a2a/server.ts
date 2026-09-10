@@ -54,6 +54,7 @@ import {
   A2A_ERROR_TASK_NOT_CANCELABLE,
   A2A_ERROR_TASK_NOT_FOUND,
   A2A_SERVER_LOG_CORRELATION_ID,
+  A2A_TURNO_EN_VUELO_MAX_MS,
   JSONRPC_INTERNAL_ERROR,
   JSONRPC_INVALID_PARAMS,
   JSONRPC_INVALID_REQUEST,
@@ -91,6 +92,17 @@ export interface A2AHttpServerLike {
   /** ★ NUEVO respecto de los otros dos: puerto EFECTIVO con `listen(0)` (ADR 101). */
   address(): { readonly port: number } | string | null;
   on(event: "error", listener: (error: Error) => void): unknown;
+  /**
+   * ★ NUEVO respecto de los otros dos (Hallazgo 5 Reviewer, Hito 7): fuerza
+   * el cierre de conexiones keep-alive OCIOSAS (Node 18.2+), sin afectar
+   * las que tienen una request en curso. Sin esto, `close()` puede colgar
+   * detrás de un cliente keep-alive que nunca cierra su conexión, porque
+   * Node no invoca el callback de `server.close()` hasta que TODAS las
+   * conexiones activas terminan — patrón preexistente idéntico en
+   * `web/server.ts`/`webhooks/server.ts` (no es una regresión de este
+   * hito; el fix queda acotado a este adaptador, ver AGENTS.md).
+   */
+  closeIdleConnections(): unknown;
 }
 
 export type CreateA2AServerFn = (
@@ -438,15 +450,19 @@ function extraerTextoSendMessage(params: unknown): string | undefined {
 }
 
 /**
- * `params.id` como string no vacío (sin espacios), o `undefined` — usado por
- * `GetTask`/`CancelTask` (design.md §6.3, fila `-32602` de ambos métodos).
+ * `params.id` como string no vacío (sin espacios), RECORTADO, o `undefined`
+ * — usado por `GetTask`/`CancelTask` (design.md §6.3, fila `-32602` de ambos
+ * métodos). Devuelve `id.trim()`, no el `id` crudo (Hallazgo 3 Reviewer,
+ * Hito 7): la validación ya recortaba para decidir "no vacío", pero
+ * retornaba el valor SIN recortar, así que un id con espacios incidentales
+ * llegaba tal cual a `onConsultarTarea`/`onCancelarTarea`.
  */
 function extraerIdDeParams(params: unknown): string | undefined {
   if (typeof params !== "object" || params === null) {
     return undefined;
   }
   const { id } = params as { readonly id?: unknown };
-  return typeof id === "string" && id.trim() !== "" ? id : undefined;
+  return typeof id === "string" && id.trim() !== "" ? id.trim() : undefined;
 }
 
 /**
@@ -767,7 +783,11 @@ export interface A2AServerHandle {
  * registra `resultado.turno` en `enVuelo` **sólo** cuando
  * `estado === TASK_STATE_SUBMITTED` — el tipo de `SolicitudA2AAceptada`
  * (ADR 99 pto 4) hace imposible registrar un turno que la rama `REJECTED`
- * no trae.
+ * no trae. Cada entrada registrada corre además contra un techo de
+ * DESALOJO (`A2A_TURNO_EN_VUELO_MAX_MS`, Hallazgo 2 Reviewer): si el turno
+ * nunca resuelve ni rechaza, cumplido el techo se libera igual el slot
+ * (evento `a2a-turno-en-vuelo-desalojado-por-timeout`) SIN cancelar la
+ * promesa real, que sigue corriendo en segundo plano.
  *
  * `address()` resuelve el puerto EFECTIVO dentro del callback de `listen`
  * (ADR 101), con fallback a `deps.config.port` si el doble de test no
@@ -792,7 +812,35 @@ export function startServer(
     });
     if (resultado.estado === TASK_STATE_SUBMITTED) {
       enVuelo.add(resultado.turno);
+
+      // Hallazgo 2 Reviewer (Hito 7): techo de DESALOJO del slot — ver
+      // `A2A_TURNO_EN_VUELO_MAX_MS`. `desalojado` evita la carrera entre
+      // "el turno resuelve justo cuando el timeout dispara": sólo UNA de
+      // las dos ramas (`olvidar` u "onTimeout") toca `enVuelo`/limpia el
+      // timer, nunca las dos. `.unref()` (Node): este timer es pura
+      // contabilidad de cupo, no una obligación real del proceso — si el
+      // proceso está por salir sin nada más pendiente, no hace falta que
+      // este timer solo lo mantenga vivo.
+      let desalojado = false;
+      const onTimeout = (): void => {
+        if (desalojado) {
+          return;
+        }
+        desalojado = true;
+        enVuelo.delete(resultado.turno);
+        deps.logEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-turno-en-vuelo-desalojado-por-timeout", {
+          a2aTaskId: input.a2aTaskId,
+        });
+      };
+      const desalojoTimeout = setTimeout(onTimeout, A2A_TURNO_EN_VUELO_MAX_MS);
+      desalojoTimeout.unref?.();
+
       const olvidar = (): void => {
+        if (desalojado) {
+          return;
+        }
+        desalojado = true;
+        clearTimeout(desalojoTimeout);
         enVuelo.delete(resultado.turno);
       };
       resultado.turno.then(olvidar, olvidar);
@@ -828,6 +876,13 @@ export function startServer(
         port: puertoEfectivo,
         close(): Promise<void> {
           return new Promise((resolveClose) => {
+            // Hallazgo 5 Reviewer (Hito 7): fuerza el cierre de conexiones
+            // keep-alive OCIOSAS ANTES de esperar el callback de
+            // `server.close()` — sin esto, ese callback no llega hasta que
+            // TODAS las conexiones activas cierran, así que un solo
+            // cliente keep-alive que nunca cierra la suya cuelga el
+            // drenaje entero detrás de un socket, no de un turno real.
+            server.closeIdleConnections();
             server.close(() => {
               const drenaje = Promise.allSettled([...enVuelo]).then(() => undefined);
               const timeout = new Promise<"timeout">((resolveTimeout) => {

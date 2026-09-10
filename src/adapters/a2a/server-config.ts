@@ -37,6 +37,33 @@ export const A2A_CLOSE_TIMEOUT_MS = 5_000;
  */
 export const A2A_SERVER_LOG_CORRELATION_ID = "a2a-servidor";
 
+/**
+ * Techo de DESALOJO de una entrada de `enVuelo` cuando el turno real nunca
+ * resuelve ni rechaza (Hallazgo 2 Reviewer, Hito 7): sin esto, un turno
+ * colgado (no hay ningún timeout/`AbortController` en la cadena real hasta
+ * `invokeModel`, fuera de alcance de este arreglo puntual — ver AGENTS.md)
+ * deja su entrada en `enVuelo` para siempre, y tras `maxEnVuelo` turnos
+ * colgados el servidor rechaza todo `SendMessage` nuevo hasta reiniciar el
+ * proceso. Cumplido el techo, `startServer` saca la entrada de `enVuelo`
+ * IGUAL (libera el slot), pero NO cancela ni toca la promesa real del
+ * turno, que sigue corriendo en segundo plano y sigue escribiendo su
+ * resultado eventual vía `actualizarSolicitudA2AEnCurso` — deja de contar
+ * contra el tope, nada más.
+ *
+ * Constante, NO env var — mismo criterio que `A2A_CLOSE_TIMEOUT_MS`:
+ * presupuesto de capacidad/UX, no un hecho del entorno.
+ *
+ * Valor: `120_000` (2 minutos) — mismo orden de magnitud que los otros dos
+ * techos ya existentes en el repo para un turno/tarea de agente de
+ * duración "normal pero acotada": `SOPORTE_TIMEOUT_MS` (`adapters/web/config.ts`)
+ * y `DEFAULT_A2A_TASK_TIMEOUT_MS` (`adapters/a2a/config.ts`, el timeout del
+ * Cliente A2A saliente del Hito 6). Deliberadamente HOLGADO respecto de la
+ * duración típica de un turno: el objetivo es blindar el tope de slots
+ * contra un turno realmente colgado, no recortar turnos legítimos que
+ * simplemente tardan.
+ */
+export const A2A_TURNO_EN_VUELO_MAX_MS = 120_000;
+
 export const RUTA_AGENT_CARD = "/.well-known/agent-card.json";
 export const RUTA_JSONRPC = "/a2a";
 
@@ -120,7 +147,15 @@ function normalizeUrl(url: string): string {
  */
 export function resolveA2AServerConfig(env: NodeJS.ProcessEnv = process.env): A2AServerConfig {
   return {
-    token: env.HARNESS_A2A_ENTRANTE_TOKEN ?? "",
+    // `.trim()` acá (no sólo en `isA2AServerEnabled`, Hallazgo 1 Reviewer,
+    // Hito 7): `esAutorizado` (`server.ts`) compara el header `Bearer`
+    // contra `config.token` CRUDO. Si el token de entorno tenía espacios
+    // incidentales, `isA2AServerEnabled` ya decidía "habilitado" con el
+    // criterio recortado, pero el servidor comparaba contra el valor SIN
+    // recortar y rechazaba (401) a todo cliente legítimo que mandara el
+    // token ya recortado. Recortar acá, una sola vez, en el punto de
+    // resolución, alinea ambos criterios.
+    token: (env.HARNESS_A2A_ENTRANTE_TOKEN ?? "").trim(),
     port: resolvePositiveNumber(env.HARNESS_A2A_ENTRANTE_PORT, DEFAULT_A2A_ENTRANTE_PORT),
     publicUrl: normalizeUrl(env.HARNESS_A2A_ENTRANTE_PUBLIC_URL ?? DEFAULT_A2A_ENTRANTE_PUBLIC_URL),
     maxBodyBytes: resolvePositiveNumber(

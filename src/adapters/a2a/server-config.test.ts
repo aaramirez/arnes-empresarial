@@ -102,6 +102,12 @@ describe("resolveA2AServerConfig", () => {
       }),
     ).not.toThrow();
   });
+
+  it("recorta espacios incidentales del token antes de guardarlo en config.token (Hallazgo 1 Reviewer, Hito 7)", () => {
+    const config = resolveA2AServerConfig({ HARNESS_A2A_ENTRANTE_TOKEN: " secreto " });
+
+    expect(config.token).toBe("secreto");
+  });
 });
 
 describe("isA2AServerEnabled", () => {
