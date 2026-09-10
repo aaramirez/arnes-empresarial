@@ -2473,3 +2473,242 @@ export function descartarPropuestaCambio(
     resultado: "descartada",
   });
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+ * `solicitudes_a2a_entrantes` (Hito 7, tarea 7, migración `0011`, design.md
+ * §7.2, ADR 87 pto 5-7, 89, 94) — dirección OPUESTA de `delegaciones_a2a`
+ * (`0010`): esa tabla registra tareas que NOSOTROS delegamos afuera, esta
+ * registra tareas que un agente externo nos delega a NOSOTROS. Mismo estilo
+ * del archivo: `*SqlRow` privada + `rowTo*` privada + función exportada,
+ * literales de `TASK_STATE_*` en el SQL (este módulo no importa el
+ * vocabulario del núcleo).
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export interface InsertSolicitudA2AEntranteInput {
+  readonly id: string;
+  readonly a2aTaskId: string;
+  readonly casoId?: string;
+  readonly origenTransporte: string;
+  readonly mensajeRecibido: string;
+  readonly estado: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Colisión de `a2a_task_id` (`SQLITE_CONSTRAINT_UNIQUE`) — molde de
+ * `VentaAlreadyExistsError`, con el nombre de constructor y el formato de
+ * mensaje calcados; la constraint que dispara acá es `UNIQUE`
+ * (`VentaTokenDuplicadoError`), no `PRIMARYKEY`, porque `a2a_task_id` no es
+ * la clave primaria de la tabla.
+ */
+export class SolicitudA2AEntranteYaExisteError extends Error {
+  constructor(a2aTaskId: string) {
+    super(`Solicitud A2A entrante already exists: ${a2aTaskId}`);
+    this.name = "SolicitudA2AEntranteYaExisteError";
+  }
+}
+
+/**
+ * Inserta una fila ANTES de invocar al modelo (ADR 87 pto 5): `resultado`
+ * nace SIEMPRE en `NULL` (sólo se llena en `TASK_STATE_COMPLETED`), y
+ * `agente_externo_url` nace SIEMPRE en `NULL` — el protocolo A2A v1.0.0 no
+ * transporta la identidad del emisor (ADR 89) y no hay forma de poblarla
+ * desde este hito. `casoId` ausente ⇒ `caso_id` `NULL` (la única fila sin
+ * caso es `TASK_STATE_REJECTED` por tope de turnos en vuelo, ADR 90 pto 4).
+ */
+export function insertSolicitudA2AEntrante(
+  db: Database.Database,
+  input: InsertSolicitudA2AEntranteInput,
+): void {
+  try {
+    db.prepare(
+      `INSERT INTO solicitudes_a2a_entrantes
+         (id, a2a_task_id, agente_externo_url, origen_transporte, caso_id, mensaje_recibido, estado, resultado, created_at, updated_at)
+       VALUES (@id, @a2aTaskId, NULL, @origenTransporte, @casoId, @mensajeRecibido, @estado, NULL, @createdAt, @updatedAt)`,
+    ).run({
+      id: input.id,
+      a2aTaskId: input.a2aTaskId,
+      origenTransporte: input.origenTransporte,
+      casoId: input.casoId ?? null,
+      mensajeRecibido: input.mensajeRecibido,
+      estado: input.estado,
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt,
+    });
+  } catch (error) {
+    if (isSqliteConstraintError(error, "SQLITE_CONSTRAINT_UNIQUE")) {
+      throw new SolicitudA2AEntranteYaExisteError(input.a2aTaskId);
+    }
+    throw error;
+  }
+}
+
+export interface SolicitudA2AEntranteRow {
+  readonly id: string;
+  readonly a2aTaskId: string;
+  readonly agenteExternoUrl?: string;
+  readonly origenTransporte: string;
+  readonly casoId?: string;
+  readonly mensajeRecibido: string;
+  readonly estado: string;
+  readonly resultado?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface SolicitudA2AEntranteSqlRow {
+  id: string;
+  a2a_task_id: string;
+  agente_externo_url: string | null;
+  origen_transporte: string;
+  caso_id: string | null;
+  mensaje_recibido: string;
+  estado: string;
+  resultado: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const SOLICITUD_A2A_ENTRANTE_SELECT_COLUMNS =
+  "id, a2a_task_id, agente_externo_url, origen_transporte, caso_id, mensaje_recibido, estado, resultado, created_at, updated_at";
+
+function rowToSolicitudA2AEntrante(row: SolicitudA2AEntranteSqlRow): SolicitudA2AEntranteRow {
+  return {
+    id: row.id,
+    a2aTaskId: row.a2a_task_id,
+    ...(row.agente_externo_url !== null ? { agenteExternoUrl: row.agente_externo_url } : {}),
+    origenTransporte: row.origen_transporte,
+    ...(row.caso_id !== null ? { casoId: row.caso_id } : {}),
+    mensajeRecibido: row.mensaje_recibido,
+    estado: row.estado,
+    ...(row.resultado !== null ? { resultado: row.resultado } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Lookup de `GetTask`/`CancelTask` (ADR 100: SÍNCRONA, `better-sqlite3` no
+ * necesita `Promise`). `undefined` si no existe.
+ */
+export function getSolicitudA2AEntrantePorTaskId(
+  db: Database.Database,
+  a2aTaskId: string,
+): SolicitudA2AEntranteRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT ${SOLICITUD_A2A_ENTRANTE_SELECT_COLUMNS} FROM solicitudes_a2a_entrantes WHERE a2a_task_id = ?`,
+    )
+    .get(a2aTaskId) as SolicitudA2AEntranteSqlRow | undefined;
+  return row ? rowToSolicitudA2AEntrante(row) : undefined;
+}
+
+export interface ActualizarSolicitudA2AEnCursoInput {
+  readonly a2aTaskId: string;
+  readonly estado: string;
+  readonly resultado?: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * El `UPDATE` CONDICIONAL del que depende el ADR 94 pto 5: `WHERE
+ * a2a_task_id = @a2aTaskId AND estado IN ('TASK_STATE_SUBMITTED',
+ * 'TASK_STATE_WORKING')`. Devuelve `changes > 0`: `false` significa "la fila
+ * ya no está en curso" (un `CancelTask` ganó la carrera) y el llamador
+ * DESCARTA el resultado. **NO lanza** por `changes === 0` — a diferencia de
+ * `actualizarDelegacionA2A`, acá el cero es un desenlace ESPERADO (una
+ * cancelación legítima que llegó antes), no un bug. `resultado` con
+ * `COALESCE(@resultado, resultado)`, molde de `updateCaso`, para no pisarlo
+ * cuando el llamador no lo pasa (p. ej. la transición a `WORKING`).
+ */
+export function actualizarSolicitudA2AEnCurso(
+  db: Database.Database,
+  input: ActualizarSolicitudA2AEnCursoInput,
+): boolean {
+  const { changes } = db
+    .prepare(
+      `UPDATE solicitudes_a2a_entrantes
+          SET estado = @estado,
+              resultado = COALESCE(@resultado, resultado),
+              updated_at = @updatedAt
+        WHERE a2a_task_id = @a2aTaskId
+          AND estado IN ('TASK_STATE_SUBMITTED', 'TASK_STATE_WORKING')`,
+    )
+    .run({
+      a2aTaskId: input.a2aTaskId,
+      estado: input.estado,
+      resultado: input.resultado ?? null,
+      updatedAt: input.updatedAt,
+    });
+
+  return changes > 0;
+}
+
+/** Las cuatro ramas de `cancelarSolicitudA2AEntrante` (ADR 94), discriminadas. */
+export type CancelacionA2ARepoResultado = "cancelada" | "ya-cancelada" | "no-cancelable" | "no-encontrada";
+
+/**
+ * Las cuatro ramas del ADR 94 en una función: `SELECT` del estado actual, y
+ * `UPDATE` guardado SÓLO si el estado no es terminal. Sin transacción:
+ * `better-sqlite3` es SÍNCRONO y dos sentencias no se interleavan dentro del
+ * proceso (ADR 87 pto 5) — no hay ventana real entre el `SELECT` y el
+ * `UPDATE` en este proceso.
+ *
+ * - `"no-encontrada"`: el `a2aTaskId` no existe.
+ * - `"ya-cancelada"`: ya estaba `TASK_STATE_CANCELED` — éxito idempotente,
+ *   la fila NO se toca (ni `updated_at`).
+ * - `"no-cancelable"`: está en un terminal de éxito/fracaso
+ *   (`COMPLETED`/`FAILED`/`REJECTED`) — la fila NO se toca.
+ * - `"cancelada"`: estaba `SUBMITTED`/`WORKING` — se persiste `CANCELED`.
+ */
+export function cancelarSolicitudA2AEntrante(
+  db: Database.Database,
+  input: { readonly a2aTaskId: string; readonly updatedAt: string },
+): CancelacionA2ARepoResultado {
+  const actual = db
+    .prepare("SELECT estado FROM solicitudes_a2a_entrantes WHERE a2a_task_id = ?")
+    .get(input.a2aTaskId) as { estado: string } | undefined;
+
+  if (!actual) {
+    return "no-encontrada";
+  }
+
+  if (actual.estado === "TASK_STATE_CANCELED") {
+    return "ya-cancelada";
+  }
+
+  if (
+    actual.estado === "TASK_STATE_COMPLETED" ||
+    actual.estado === "TASK_STATE_FAILED" ||
+    actual.estado === "TASK_STATE_REJECTED"
+  ) {
+    return "no-cancelable";
+  }
+
+  db.prepare(
+    `UPDATE solicitudes_a2a_entrantes
+        SET estado = 'TASK_STATE_CANCELED',
+            updated_at = @updatedAt
+      WHERE a2a_task_id = @a2aTaskId
+        AND estado NOT IN ('TASK_STATE_CANCELED', 'TASK_STATE_COMPLETED', 'TASK_STATE_FAILED', 'TASK_STATE_REJECTED')`,
+  ).run({ a2aTaskId: input.a2aTaskId, updatedAt: input.updatedAt });
+
+  return "cancelada";
+}
+
+/** Lectura de evidencia (design.md §7.1/§7.2): las solicitudes entrantes de un caso, en orden. */
+export function listSolicitudesA2AEntrantesPorCaso(
+  db: Database.Database,
+  casoId: string,
+): readonly SolicitudA2AEntranteRow[] {
+  const rows = db
+    .prepare(
+      `SELECT ${SOLICITUD_A2A_ENTRANTE_SELECT_COLUMNS}
+         FROM solicitudes_a2a_entrantes
+        WHERE caso_id = ?
+        ORDER BY created_at`,
+    )
+    .all(casoId) as SolicitudA2AEntranteSqlRow[];
+  return rows.map(rowToSolicitudA2AEntrante);
+}

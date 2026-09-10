@@ -1,6 +1,8 @@
 /**
- * Vocabulario del Cliente A2A saliente (Hito 6, tarea 1, design.md §5.1,
- * ADR 71 pto 5, 72, 73 pto 2, 75 pto 1, 77, 84).
+ * Vocabulario del protocolo A2A, en sus dos direcciones (Hito 6, tarea 1,
+ * design.md §5.1, ADR 71 pto 5, 72, 73 pto 2, 75 pto 1, 77, 84; Hito 7,
+ * tarea 5, design.md §0 — el Servidor A2A entrante reusa este mismo
+ * vocabulario crudo, sin bifurcar un segundo contrato).
  *
  * `TASK_STATE_*` persiste el vocabulario CRUDO del protocolo A2A v1.0.0
  * (`TaskState`), sin traducir a minúscula-con-guion. La especificación real

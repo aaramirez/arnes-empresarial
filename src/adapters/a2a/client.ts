@@ -185,8 +185,13 @@ function extraerNombreAgente(card: unknown): string {
  * `additionalInterfaces`). Cualquier otro campo del card se ignora sin
  * fallar. `undefined` si el array está ausente, vacío, o sin ninguna
  * entrada `"JSONRPC"`.
+ *
+ * Exportada (Hito 7, tarea 4, ADR 96 pto 4): el test del Agent Card servidor
+ * (`agent-card.test.ts`) verifica `supportedInterfaces` pasándole el `url`
+ * construido a esta misma función real, en vez de reimplementar el
+ * requirement — un solo lugar de la verdad para ambos lados del protocolo.
  */
-function extraerEndpointJsonRpc(card: unknown): string | undefined {
+export function extraerEndpointJsonRpc(card: unknown): string | undefined {
   if (typeof card !== "object" || card === null) {
     return undefined;
   }

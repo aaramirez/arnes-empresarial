@@ -13,16 +13,19 @@ import {
   DelegacionNotFoundError,
   SesionAgenteAlreadyExistsError,
   SesionAgenteInvalidCasoError,
+  SolicitudA2AEntranteYaExisteError,
   SolicitudAlreadyExistsError,
   VentaAlreadyExistsError,
   VentaTokenDuplicadoError,
   actualizarDelegacionA2A,
+  actualizarSolicitudA2AEnCurso,
   adjuntarDictamenSolicitud,
   aplicarPropuestaCambio,
   aprobarEscalacionReembolso,
   aprobarReembolso,
   aprobarSolicitudInterna,
   buscarCredencialEmpleado,
+  cancelarSolicitudA2AEntrante,
   completarDelegacion,
   confirmarVentaConComision,
   crearSolicitudConCaso,
@@ -40,18 +43,21 @@ import {
   getLatestSesionAgente,
   getPropuestaCambio,
   getProyectoById,
+  getSolicitudA2AEntrantePorTaskId,
   getVentaById,
   insertAccionEmpleado,
   insertCredencialEmpleado,
   insertDelegacion,
   insertDelegacionA2A,
   insertPropuestaCambio,
+  insertSolicitudA2AEntrante,
   listAccionesEmpleadoPorVenta,
   listComisionesPorPeriodo,
   listDelegacionesA2APorCaso,
   listDelegacionesPorCaso,
   listEscalacionesReembolso,
   listPropuestasCambio,
+  listSolicitudesA2AEntrantesPorCaso,
   listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
   reabrirEscalacionReembolso,
@@ -73,6 +79,7 @@ import {
   type CrearSolicitudConCasoInput,
   type InsertDelegacionA2AInput,
   type InsertDelegacionInput,
+  type InsertSolicitudA2AEntranteInput,
   type ResolucionPropuestaDbInput,
 } from "./repository.js";
 
@@ -2530,6 +2537,246 @@ describe("repository", () => {
 
       const filas = listDelegacionesA2APorCaso(db, "caso-1");
       expect(filas.map((fila) => fila.id)).toEqual(["delegacion-a2a-a", "delegacion-a2a-z"]);
+    });
+  });
+
+  describe("solicitudes_a2a_entrantes (migración 0011)", () => {
+    it("crea la tabla solicitudes_a2a_entrantes y el índice idx_solicitudes_a2a_entrantes_caso", () => {
+      db = openDatabase(":memory:");
+
+      const tableNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      const indexNames = (
+        db!
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(tableNames).toContain("solicitudes_a2a_entrantes");
+      expect(indexNames).toContain("idx_solicitudes_a2a_entrantes_caso");
+    });
+  });
+
+  describe("insertSolicitudA2AEntrante / actualizarSolicitudA2AEnCurso / cancelarSolicitudA2AEntrante / getSolicitudA2AEntrantePorTaskId / listSolicitudesA2AEntrantesPorCaso (migración 0011, Hito 7, tarea 7)", () => {
+    function insertSolicitudA2AEntranteDePrueba(
+      overrides: Partial<InsertSolicitudA2AEntranteInput> = {},
+    ) {
+      insertSolicitudA2AEntrante(db!, {
+        id: "solicitud-a2a-1",
+        a2aTaskId: "task-1",
+        casoId: "caso-1",
+        origenTransporte: "127.0.0.1",
+        mensajeRecibido: "¿En qué estado está el proyecto X?",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-09T00:00:00.000Z",
+        updatedAt: "2026-09-09T00:00:00.000Z",
+        ...overrides,
+      });
+    }
+
+    it("insertSolicitudA2AEntrante deja agente_externo_url y resultado en NULL", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba();
+
+      const fila = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+      expect(fila).toEqual({
+        id: "solicitud-a2a-1",
+        a2aTaskId: "task-1",
+        origenTransporte: "127.0.0.1",
+        casoId: "caso-1",
+        mensajeRecibido: "¿En qué estado está el proyecto X?",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-09T00:00:00.000Z",
+        updatedAt: "2026-09-09T00:00:00.000Z",
+      });
+      expect(fila!.agenteExternoUrl).toBeUndefined();
+      expect(fila!.resultado).toBeUndefined();
+    });
+
+    it("casoId ausente ⇒ caso_id NULL (fila REJECTED, sin turno)", () => {
+      db = openDatabase(":memory:");
+      insertSolicitudA2AEntrante(db, {
+        id: "solicitud-a2a-rechazada",
+        a2aTaskId: "task-rechazada",
+        origenTransporte: "127.0.0.1",
+        mensajeRecibido: "¿En qué estado está el proyecto X?",
+        estado: "TASK_STATE_REJECTED",
+        createdAt: "2026-09-09T00:00:00.000Z",
+        updatedAt: "2026-09-09T00:00:00.000Z",
+      });
+
+      const fila = getSolicitudA2AEntrantePorTaskId(db, "task-rechazada");
+      expect(fila!.casoId).toBeUndefined();
+      expect(fila!.estado).toBe("TASK_STATE_REJECTED");
+    });
+
+    it("colisión de a2a_task_id lanza SolicitudA2AEntranteYaExisteError", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba();
+
+      expect(() =>
+        insertSolicitudA2AEntranteDePrueba({ id: "solicitud-a2a-otra" }),
+      ).toThrow(SolicitudA2AEntranteYaExisteError);
+    });
+
+    it("getSolicitudA2AEntrantePorTaskId de un id inexistente devuelve undefined", () => {
+      db = openDatabase(":memory:");
+
+      expect(getSolicitudA2AEntrantePorTaskId(db, "task-inexistente")).toBeUndefined();
+    });
+
+    it("actualizarSolicitudA2AEnCurso sobre una fila CANCELED devuelve false y no pisa el estado (guarda del WHERE)", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba();
+      const resultado = cancelarSolicitudA2AEntrante(db, {
+        a2aTaskId: "task-1",
+        updatedAt: "2026-09-09T00:01:00.000Z",
+      });
+      expect(resultado).toBe("cancelada");
+
+      const actualizoAlgo = actualizarSolicitudA2AEnCurso(db, {
+        a2aTaskId: "task-1",
+        estado: "TASK_STATE_COMPLETED",
+        resultado: "texto que no debería persistirse",
+        updatedAt: "2026-09-09T00:02:00.000Z",
+      });
+
+      expect(actualizoAlgo).toBe(false);
+      const fila = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+      expect(fila!.estado).toBe("TASK_STATE_CANCELED");
+      expect(fila!.resultado).toBeUndefined();
+    });
+
+    it("actualizarSolicitudA2AEnCurso sobre SUBMITTED/WORKING escribe el nuevo estado y resultado", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba();
+
+      const actualizo = actualizarSolicitudA2AEnCurso(db, {
+        a2aTaskId: "task-1",
+        estado: "TASK_STATE_COMPLETED",
+        resultado: "el proyecto está en revisión",
+        updatedAt: "2026-09-09T00:01:00.000Z",
+      });
+
+      expect(actualizo).toBe(true);
+      const fila = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+      expect(fila!.estado).toBe("TASK_STATE_COMPLETED");
+      expect(fila!.resultado).toBe("el proyecto está en revisión");
+    });
+
+    it("cancelarSolicitudA2AEntrante sobre WORKING devuelve 'cancelada' y la fila queda CANCELED", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba({ estado: "TASK_STATE_SUBMITTED" });
+      actualizarSolicitudA2AEnCurso(db, {
+        a2aTaskId: "task-1",
+        estado: "TASK_STATE_WORKING",
+        updatedAt: "2026-09-09T00:00:30.000Z",
+      });
+
+      const resultado = cancelarSolicitudA2AEntrante(db, {
+        a2aTaskId: "task-1",
+        updatedAt: "2026-09-09T00:01:00.000Z",
+      });
+
+      expect(resultado).toBe("cancelada");
+      const fila = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+      expect(fila!.estado).toBe("TASK_STATE_CANCELED");
+      expect(fila!.updatedAt).toBe("2026-09-09T00:01:00.000Z");
+    });
+
+    it("cancelarSolicitudA2AEntrante sobre CANCELED devuelve 'ya-cancelada', idempotente, sin tocar updated_at", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba();
+      cancelarSolicitudA2AEntrante(db, {
+        a2aTaskId: "task-1",
+        updatedAt: "2026-09-09T00:01:00.000Z",
+      });
+      const filaAntes = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+
+      const resultado = cancelarSolicitudA2AEntrante(db, {
+        a2aTaskId: "task-1",
+        updatedAt: "2026-09-09T00:02:00.000Z",
+      });
+
+      expect(resultado).toBe("ya-cancelada");
+      const filaDespues = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+      expect(filaDespues).toEqual(filaAntes);
+      expect(filaDespues!.updatedAt).toBe("2026-09-09T00:01:00.000Z");
+    });
+
+    it.each(["TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_REJECTED"])(
+      "cancelarSolicitudA2AEntrante sobre %s devuelve 'no-cancelable' y no toca la fila",
+      (estadoTerminal) => {
+        db = openDatabase(":memory:");
+        createCaso(db, buildCaso());
+        insertSolicitudA2AEntranteDePrueba({ estado: estadoTerminal });
+        const filaAntes = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+
+        const resultado = cancelarSolicitudA2AEntrante(db, {
+          a2aTaskId: "task-1",
+          updatedAt: "2026-09-09T00:05:00.000Z",
+        });
+
+        expect(resultado).toBe("no-cancelable");
+        const filaDespues = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+        expect(filaDespues).toEqual(filaAntes);
+      },
+    );
+
+    it("cancelarSolicitudA2AEntrante sobre un a2aTaskId inexistente devuelve 'no-encontrada'", () => {
+      db = openDatabase(":memory:");
+
+      const resultado = cancelarSolicitudA2AEntrante(db, {
+        a2aTaskId: "task-inexistente",
+        updatedAt: "2026-09-09T00:05:00.000Z",
+      });
+
+      expect(resultado).toBe("no-encontrada");
+    });
+
+    it("listSolicitudesA2AEntrantesPorCaso devuelve las filas de un caso ordenadas por created_at", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntrante(db, {
+        id: "solicitud-a2a-segunda",
+        a2aTaskId: "task-2",
+        casoId: "caso-1",
+        origenTransporte: "127.0.0.1",
+        mensajeRecibido: "segunda consulta",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-09T00:00:02.000Z",
+        updatedAt: "2026-09-09T00:00:02.000Z",
+      });
+      insertSolicitudA2AEntranteDePrueba({
+        id: "solicitud-a2a-primera",
+        a2aTaskId: "task-1",
+        createdAt: "2026-09-09T00:00:00.000Z",
+        updatedAt: "2026-09-09T00:00:00.000Z",
+      });
+
+      const filas = listSolicitudesA2AEntrantesPorCaso(db, "caso-1");
+      expect(filas.map((fila) => fila.id)).toEqual([
+        "solicitud-a2a-primera",
+        "solicitud-a2a-segunda",
+      ]);
+    });
+
+    it("el estado persistido y leído de vuelta es TASK_STATE_* crudo, nunca traducido", () => {
+      db = openDatabase(":memory:");
+      createCaso(db, buildCaso());
+      insertSolicitudA2AEntranteDePrueba({ estado: "TASK_STATE_WORKING" });
+
+      const fila = getSolicitudA2AEntrantePorTaskId(db, "task-1");
+      expect(fila!.estado).toBe("TASK_STATE_WORKING");
     });
   });
 

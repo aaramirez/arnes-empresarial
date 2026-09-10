@@ -88,6 +88,8 @@ import { resolveVentasConfig, type VentasConfig } from "./core/ventas/ventas-con
 import { createNotificadorAdapter } from "./adapters/notificaciones/index.js";
 import { createA2AAdapter } from "./adapters/a2a/index.js";
 import { isA2ASalienteEnabled } from "./adapters/a2a/config.js";
+import { startA2AServer, type A2AServerAdapter } from "./adapters/a2a/server-index.js";
+import { A2A_SERVER_LOG_CORRELATION_ID } from "./adapters/a2a/server-config.js";
 import { resolveWebConfig, WEB_LOG_CORRELATION_ID } from "./adapters/web/config.js";
 import { buildOnVenta, createConsultaRiesgoCredito } from "./build-on-venta.js";
 import { buildOnSoporte } from "./build-on-soporte.js";
@@ -97,6 +99,7 @@ import { hashPassword, verificarPassword } from "./adapters/crypto/password.js";
 import { buildOnComandoEmpleado } from "./build-on-comando-empleado.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
+import { buildOnA2AEntrante } from "./build-on-a2a-entrante.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -453,6 +456,37 @@ void gitAdapter.barrido
     }),
   );
 
+// 5e. Cuarta fuente de turnos (Hito 7, ADR 88/91, design.md §7.3 — ese
+//     design.md rotula este bloque "5d"; se etiqueta acá "5e" porque ese
+//     rótulo ya lo ocupa el barrido de worktrees huérfanos de arriba, Hito
+//     5.1 tarea 34 — choque de numeración entre los design.md de dos hitos
+//     distintos, sin relación funcional entre ambos bloques). El Servidor
+//     A2A entrante: OPT-IN por TOKEN — sin HARNESS_A2A_ENTRANTE_TOKEN no se
+//     abre NINGÚN puerto (`startA2AServer` devuelve `undefined` y loguea
+//     `a2a-servidor-deshabilitado`), y el proceso se comporta EXACTAMENTE
+//     como `v2.2.0`. Comparte `db`/`memory`/`hooks`/`agents`/`createKnowledge`
+//     con la TUI, los webhooks y el canal web — la MISMA fábrica por
+//     `casoId` (R1 de Hito 3, no reintroducido). Mismo criterio de wiring
+//     que los bloques de webhooks y web de arriba: PROPIO `try`/`catch`, un
+//     `EADDRINUSE` se loguea como `a2a-servidor-arranque-fallido` y el
+//     proceso sigue sin Servidor A2A — que el puerto esté ocupado no puede
+//     impedir que el empleado use la TUI (R9 de la propuesta, precedente
+//     `webhooks/index.ts:46-49`).
+const a2aEntrante = buildOnA2AEntrante({ db, memory, hooks, agents, createKnowledge });
+
+let a2aServidor: A2AServerAdapter | undefined;
+try {
+  a2aServidor = await startA2AServer({
+    ...a2aEntrante, // onSolicitudA2A · onConsultarTarea · onCancelarTarea
+    logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
+  });
+} catch (error) {
+  logTurnEvent(A2A_SERVER_LOG_CORRELATION_ID, "a2a-servidor-arranque-fallido", {
+    message: toErrorMessage(error),
+  });
+  a2aServidor = undefined;
+}
+
 // 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
 //    defecto) y recién ahí cierra el servidor web (si arrancó), el servidor
@@ -501,6 +535,20 @@ try {
       // (`WebhookAdapter.close()`, `src/adapters/webhooks/index.ts`): si
       // algún día lo violara, no puede impedir que `db.close()` corra.
       console.error(`No se pudo cerrar el servidor de webhooks: ${toErrorMessage(error)}`);
+    }
+  }
+  // Tercera guarda del mismo molde (design.md §7.3, Hito 7): el Servidor A2A
+  // entrante drena y cierra ANTES de `db.close()`, mismo criterio ADR 10 que
+  // web/webhooks de arriba — un turno entrante a mitad de camino escribiría
+  // contra una base ya cerrada.
+  if (a2aServidor !== undefined) {
+    try {
+      await a2aServidor.close();
+    } catch (error) {
+      // Red de seguridad sobre `A2AServerAdapter.close()`
+      // (`src/adapters/a2a/server-index.ts`), que ya promete no rechazar vía
+      // `startServer`'s `Promise.allSettled` de drenaje.
+      console.error(`No se pudo cerrar el Servidor A2A: ${toErrorMessage(error)}`);
     }
   }
   try {
