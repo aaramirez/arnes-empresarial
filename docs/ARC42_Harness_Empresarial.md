@@ -289,7 +289,7 @@ Extremos: Núcleo de Orquestación ↔ puerto *ModelProvider*.
 
 **Colabora con**: Selector de Turno.
 
-**Ubicación**: *src/core/skills/*
+**Ubicación**: dos ubicaciones distintas, no una — corrección de `definicion-skills` (ADR 104 pto 1) a lo que esta entrada afirmaba antes. El **código** del cargador vive en *src/core/skills/* (`skill-frontmatter.ts`, `descubrir-skills.ts`, `skills-habilitadas.ts`); el **contenido** de cada skill vive en *.claude/skills/\<nombre\>/SKILL.md*, fuera de `src/`. La ubicación única bajo `src/core/skills/*` que esta entrada daba a entender antes era incorrecta contra el SDK real: un `SKILL.md` ahí nunca sería descubierto, por bien escrito que esté el cargador — el SDK sólo escanea `.claude/skills/` (y `~/.claude/skills/`, acotado luego por `settingSources: ["project"]`).
 
 **Requerimiento satisfecho**: objetivo 6 — "Definición de Skills".
 
@@ -656,6 +656,12 @@ Cierre: con el Servidor A2A entrante del Hito 7 (v3.0.0), el adaptador queda eje
 Descripción: el Escenario de calidad 5 (sección de requerimientos de calidad) usa una medida cualitativa por falta de pruebas de usuario; se aceptó conscientemente para el alcance del MVP.
 
 Plan: validar con el tutor u otro usuario real una vez que la TUI esté operativa.
+
+**Deuda 4: Definición de Skills del objetivo específico 6 sin implementar — CERRADA en v3.1**
+
+Descripción: el objetivo específico 6 del alcance ("Crear el arnés básico con TUI que maneje... Definición de Skills") lista Skills junto con agentes/subagentes, comandos, hooks y A2A. De esos cinco, Agentes/subagentes (v2.0.0), Comandos (v1.4.0), Hooks (Motor de Hooks propio, Hito 1 tarea 6, invocado en `invoke-model.ts`) y A2A (cliente v2.2.0, servidor v3.0) están implementados y ejercitados. **Skills nunca se implementó**: `Options.skills` del Claude Agent SDK no se lee ni se popula en ningún punto de `src/core` — confirmado por auditoría (grep completo sobre `src/core`) y por el propio comentario de `invoke-model.test.ts` ("`skills`, `plugins`, `uuid`... que `invokeModel` nunca lee").
+
+Cierre: con `definicion-skills` (v3.1.0), el Registro de Skills queda implementado y ejercitado de punta a punta. El cargador (`src/core/skills/skill-frontmatter.ts` + `descubrir-skills.ts` + `skills-habilitadas.ts`) descubre `.claude/skills/<nombre>/SKILL.md` desde disco real, con DI de filesystem (molde `turn-logger.ts`) y valida el frontmatter contra una whitelist de exactamente dos campos (`name`/`description`, tope 1024 — más estricta que el SDK, a propósito, ADR 110). Es el **tercer** registro que fija `bootstrapHarness` (después de Agentes y Hooks), con la misma semántica degrada/aborta que el resto del arnés (`HarnessBootstrapError`, ADR 111). `toQueryOptions`/`invokeModel` (`src/core/turn-selector/invoke-model.ts`) emiten `skills` y `settingSources: ["project"]` dentro del literal inicial de `Options` — nunca detrás de un `if`, nunca `'all'`, nunca omitidos (ADR 108). Al menos una skill real y versionada (`citar-conocimiento`, `.claude/skills/citar-conocimiento/SKILL.md`) queda entregada dentro de este mismo change, sujeta a los tres límites del ADR 106. `src/test/integration/skills.integration.test.ts` ejercita el invariante negativo contra disco real (una skill plantada fuera de `.claude/skills/` nunca aparece habilitada) y verifica RD-48 (que `process.cwd()` y la raíz derivada de `import.meta.url` resuelven la misma base). Ya no queda ninguna de las cinco capacidades del objetivo específico 6 sin implementar.
 
 # Glosario
 
