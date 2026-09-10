@@ -7,6 +7,8 @@
 Esta nota documenta, en el momento en que se descubrieron (fase de propuesta y tarea 1 de este hito), dos correcciones: (1) una afirmación del Plan de Implementación original que resultó ser incorrecta al verificarla contra la especificación real del protocolo A2A (`a2aproject/A2A`, tag `v1.0.0`), y (2) el hallazgo real de los dos códigos de error A2A-específicos verificados en la tarea 1. Ver [`proposal.md`](../../../openspec/changes/hito-3.0-a2a-servidor/proposal.md) (ADR 89) y [`design.md`](../../../openspec/changes/hito-3.0-a2a-servidor/design.md) §7.1 para el detalle completo de las decisiones de diseño.
 
 > **Nota de alcance**: esta carpeta queda incompleta a propósito hasta que corra la tarea 21. La tarea 20 sólo aporta esta nota de corrección; la evidencia de cierre del hito (checklist de `AGENTS.md`, tráfico JSON-RPC capturado, volcado de `solicitudes_a2a_entrantes` en sus cinco estados, la corrida de concurrencia del Riesgo 2, verificación manual de los 17 pasos de `design.md` §11) se agrega junto a esta nota cuando se ejecute la tarea 21 — no se anticipa ni se inventa acá.
+>
+> **Actualización — tarea 21 ejecutada**: ver [`evidencia-verificacion-manual.md`](evidencia-verificacion-manual.md) — 16/17 pasos de `design.md` §11 pasaron contra el arnés real (`npm run dev`, no dobles de test); el paso 15 (cierre elegante por Ctrl+C) no pudo reproducirse tal cual en este entorno Windows, con la causa raíz documentada como hallazgo transversal (no específico de A2A).
 
 ## Corrección 1 — `agente_externo_url` no puede ser `NOT NULL`: el protocolo A2A no transporta la identidad del emisor
 
