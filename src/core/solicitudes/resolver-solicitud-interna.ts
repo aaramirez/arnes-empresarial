@@ -53,14 +53,28 @@ export interface ResolverSolicitudDeps {
   readonly limiteListado?: number;
 }
 
+/**
+ * `switch` con guarda de exhaustividad, NO un ternario (ADR 129, R5). Un
+ * ternario con un tercer valor futuro hace que caiga silenciosamente en la
+ * última rama con los tipos en verde. El `const _exhaustivo: never = accion`
+ * convierte cualquier valor sin rama propia en un error de `tsc --noEmit`.
+ * Refactor puro: mismo comportamiento, todavía sólo 2 miembros de `AccionSolicitud`.
+ */
 function aplicarCas(
   store: SolicitudStorePort,
   accion: AccionSolicitud,
   input: ResolucionSolicitudInput,
 ): SolicitudInterna | undefined {
-  return accion === ACCION_APROBAR_SOLICITUD
-    ? store.aprobarSolicitud(input)
-    : store.rechazarSolicitud(input);
+  switch (accion) {
+    case ACCION_APROBAR_SOLICITUD:
+      return store.aprobarSolicitud(input);
+    case ACCION_RECHAZAR_SOLICITUD:
+      return store.rechazarSolicitud(input);
+    default: {
+      const _exhaustivo: never = accion;
+      throw new Error(`AccionSolicitud no soportada: ${String(_exhaustivo)}`);
+    }
+  }
 }
 
 /**
