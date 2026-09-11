@@ -18,9 +18,10 @@ export const COMANDO_LOG_CORRELATION_ID = "tui-comando";
 export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
 
 /**
- * Unión discriminada de los QUINCE comandos (ADR 21, 34, 56, 69 + uno de
- * Hito 6, ADR 85). `ayuda` no es un comando más: es también el sumidero de
- * todo lo malformado, y por eso el parser NO tiene una rama de error.
+ * Unión discriminada de los DIECISÉIS comandos (ADR 21, 34, 56, 69, 85 + uno
+ * de `comando-reporte-comisiones`, ADR 117/119). `ayuda` no es un comando
+ * más: es también el sumidero de todo lo malformado, y por eso el parser NO
+ * tiene una rama de error.
  *
  * ★ `login.password` es el ÚNICO campo SECRETO de todo el núcleo. ★ No se
  *   loguea, no se persiste, no se devuelve en ningún `TuiTurnResult`, y no
@@ -56,6 +57,12 @@ export type ComandoEmpleado =
   /** Brazo NUEVO de Hito 6 (ADR 85). Molde exacto de `soporte`: un solo
    *  campo, el resto entero de la línea, obligatorio. */
   | { readonly tipo: "consultar_kpi"; readonly consulta: string }
+  /** Brazo NUEVO de `comando-reporte-comisiones` (ADR 117, 119). Mismo
+   *  patrón que `ver_propuesta`: `periodo` es OPCIONAL y su formato NO se
+   *  valida acá (ADR 123 pto 1) — eso vive en `resolverPeriodoReporte`, en
+   *  otra capa. La ausencia se resuelve al mes corriente en el handler, no
+   *  en este parser puro y sin reloj. */
+  | { readonly tipo: "reporte_comisiones"; readonly periodo?: string }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -83,8 +90,19 @@ export interface DescriptorComando {
  *
  * `"id_opcional_propuesta"` (ADR 69) es el mismo precedente otra vez: clave
  * de payload `propuestaId`, para `/ver-propuesta`.
+ *
+ * `"id_opcional_periodo"` (ADR 119, `comando-reporte-comisiones`) es el
+ * mismo precedente otra vez: clave de payload `periodo`, para
+ * `/reporte-comisiones`. El formato de `periodo` NO se valida acá (ADR 123
+ * pto 1) — eso vive en `resolverPeriodoReporte`, en otra capa.
  */
-type Forma = "sin_argumentos" | "id_opcional" | "id_mas_resto" | "id_opcional_solicitud" | "id_opcional_propuesta";
+type Forma =
+  | "sin_argumentos"
+  | "id_opcional"
+  | "id_mas_resto"
+  | "id_opcional_solicitud"
+  | "id_opcional_propuesta"
+  | "id_opcional_periodo";
 
 interface DescriptorInterno extends DescriptorComando {
   readonly forma: Forma;
@@ -93,10 +111,11 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los quince descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
- * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85), en el orden en
- * que `/ayuda` los imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue
- * último — los descriptores existentes no cambian de orden ni de forma.
+ * Los dieciséis descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
+ * `comando-reporte-comisiones`, ADR 117/119), en el orden en que `/ayuda` los
+ * imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los
+ * descriptores existentes no cambian de orden ni de forma.
  */
 const DESCRIPTORES = [
   {
@@ -234,6 +253,19 @@ const DESCRIPTORES = [
     tipo: "consultar_kpi",
   },
   {
+    nombre: "/reporte-comisiones",
+    uso: "/reporte-comisiones [periodo]",
+    ayuda: "Muestra el reporte mensual de comisiones (mes corriente si se omite el periodo).",
+    // `privilegiado: true` (ADR 117) — mismo criterio que `/consultar-kpi` y
+    // `/ver-propuesta` arriba: es de solo lectura, pero expone información
+    // de negocio (comisiones, ventas en reembolso pendiente) que solo debe
+    // ver un empleado con sesión vigente.
+    privilegiado: true,
+    secreto: false,
+    forma: "id_opcional_periodo",
+    tipo: "reporte_comisiones",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -245,9 +277,10 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los quince descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
- * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85), en el orden en
- * que `/ayuda` los imprime.
+ * Los dieciséis descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
+ * `comando-reporte-comisiones`, ADR 117/119), en el orden en que `/ayuda` los
+ * imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
 
@@ -289,7 +322,7 @@ function splitPrimerEspacio(texto: string): { readonly primero: string; readonly
 }
 
 /**
- * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56, 69):
+ * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56, 69, 119):
  *  1. `texto.trimStart()` no empieza con `/`  → `undefined` (turno conversacional).
  *  2. Primer token → busca descriptor por `nombre`. No matchea → `{ ayuda, "desconocido", comando }`.
  *  3. Parseo por forma:
@@ -297,6 +330,8 @@ function splitPrimerEspacio(texto: string): { readonly primero: string; readonly
  *     · id opcional (`ventaId`): primer token del resto, o campo ausente si el resto está vacío.
  *     · id opcional de solicitud (`solicitudId`, ADR 56): mismo patrón que "id opcional", clave de payload distinta.
  *     · id opcional de propuesta (`propuestaId`, ADR 69): mismo patrón otra vez, para `/ver-propuesta`.
+ *     · id opcional de periodo (`periodo`, ADR 119): mismo patrón otra vez, para `/reporte-comisiones` — el
+ *       formato de `periodo` NO se valida acá (ADR 123 pto 1).
  *     · id + resto: `split` en el PRIMER espacio; el resto entero con `trim` de bordes.
  *  4. Argumento obligatorio ausente o vacío → `{ ayuda, "argumentos", comando }`.
  *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/devolucion` (token), `/solicitar` (los DOS),
@@ -365,6 +400,19 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     // `as const satisfies readonly DescriptorInterno[]` — sin ningún cast.
     const tipo = descriptor.tipo;
     return propuestaId === undefined ? { tipo } : { tipo, propuestaId };
+  }
+
+  if (descriptor.forma === "id_opcional_periodo") {
+    const periodo = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
+    // Mismo razonamiento que las ramas "id_opcional"/"id_opcional_solicitud"/
+    // "id_opcional_propuesta" de arriba (ADR 119): el narrowing de
+    // `descriptor.tipo` al único literal real de forma
+    // "id_opcional_periodo" ("reporte_comisiones") sale gratis de `as const
+    // satisfies readonly DescriptorInterno[]` — sin ningún cast. El formato
+    // de `periodo` NO se valida acá (ADR 123 pto 1): eso es responsabilidad
+    // de `resolverPeriodoReporte`, en otra capa.
+    const tipo = descriptor.tipo;
+    return periodo === undefined ? { tipo } : { tipo, periodo };
   }
 
   // forma === "id_mas_resto": /login, /soporte, /devolucion, /solicitar,
