@@ -12,6 +12,7 @@ import type Database from "better-sqlite3";
 import {
   buildOnComandoEmpleado,
   createSolicitudStore,
+  createSolicitudA2AEntranteStore,
   type BuildOnComandoEmpleadoDeps,
 } from "./build-on-comando-empleado.js";
 import { COMANDOS } from "./core/commands/comando-empleado.js";
@@ -60,6 +61,7 @@ import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-dele
 import type { DelegacionA2AStorePort } from "./core/turn-selector/dispatch-delegation-a2a.js";
 import {
   TASK_STATE_COMPLETED,
+  TASK_STATE_WORKING,
   type ClienteA2APort,
   type MotivoDelegacionA2ANoCompletada,
   type ResultadoA2A,
@@ -76,6 +78,7 @@ import {
   escalarReembolso,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
+  insertSolicitudA2AEntrante,
 } from "./adapters/memory/repository.js";
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
@@ -2314,6 +2317,102 @@ describe("createSolicitudStore", () => {
       }).not.toThrow();
 
       expect(cancelada?.estado).toBe(SOLICITUD_ESTADO_CANCELADA);
+    });
+  });
+});
+
+/**
+ * `toPortSolicitudA2AEntrante`/`createSolicitudA2AEntranteStore`
+ * (comando-visibilidad-a2a-entrante, tarea 4, ADR 141) — molde de la suite
+ * `createSolicitudStore` de arriba: `toPortSolicitudA2AEntrante` NO se
+ * exporta (mismo criterio que `toPortSolicitud`/`toPortPropuesta`, nunca
+ * testeadas en forma directa en este archivo), así que se ejercita
+ * INDIRECTAMENTE a través de `createSolicitudA2AEntranteStore(db)` sobre
+ * SQLite real — mismo patrón que el test de
+ * `SolicitudTipoEstadoInvalidoError` arriba (`:2264`), que tampoco llama a
+ * `toPortSolicitud` en forma directa.
+ */
+describe("createSolicitudA2AEntranteStore / toPortSolicitudA2AEntrante (comando-visibilidad-a2a-entrante, tarea 4)", () => {
+  function withDb<T>(fn: (db: Database.Database) => T): T {
+    const db = openDatabase(":memory:");
+    try {
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  }
+
+  function seedA2AEntrante(
+    db: Database.Database,
+    overrides: { readonly id: string; readonly a2aTaskId: string; readonly estado: string },
+  ): void {
+    insertSolicitudA2AEntrante(db, {
+      id: overrides.id,
+      a2aTaskId: overrides.a2aTaskId,
+      origenTransporte: "https://externo.example.test/rpc",
+      mensajeRecibido: "hola",
+      estado: overrides.estado,
+      createdAt: TIMESTAMP,
+      updatedAt: TIMESTAMP,
+    });
+  }
+
+  it("obtenerPorTaskId: estado 'BASURA' (no conocido) devuelve { conocido: false, valor: 'BASURA' } sin lanzar", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-1", a2aTaskId: "task-basura", estado: "BASURA" });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      let vista: ReturnType<typeof store.obtenerPorTaskId>;
+      expect(() => {
+        vista = store.obtenerPorTaskId("task-basura");
+      }).not.toThrow();
+
+      expect(vista?.estado).toEqual({ conocido: false, valor: "BASURA" });
+    });
+  });
+
+  it("obtenerPorTaskId: estado TASK_STATE_WORKING (conocido) devuelve { conocido: true, valor: 'TASK_STATE_WORKING' }", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-2", a2aTaskId: "task-working", estado: TASK_STATE_WORKING });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      const vista = store.obtenerPorTaskId("task-working");
+
+      expect(vista?.estado).toEqual({ conocido: true, valor: TASK_STATE_WORKING });
+    });
+  });
+
+  it("R1 estructural: la vista nunca expone 'agenteExternoUrl' ni 'id', ni siquiera en runtime (ADR 139 pto 3)", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-3", a2aTaskId: "task-r1", estado: TASK_STATE_WORKING });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      const vista = store.obtenerPorTaskId("task-r1");
+
+      expect(vista).toBeDefined();
+      expect("agenteExternoUrl" in (vista as object)).toBe(false);
+      expect("id" in (vista as object)).toBe(false);
+    });
+  });
+
+  it("listarPorEstados + obtenerPorTaskId: ida y vuelta sobre SQLite real con la tarea 3 (listSolicitudesA2AEntrantesPorEstado)", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-4", a2aTaskId: "task-en-curso", estado: TASK_STATE_WORKING });
+      seedA2AEntrante(db, { id: "sol-a2a-5", a2aTaskId: "task-completada", estado: TASK_STATE_COMPLETED });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      const listado = store.listarPorEstados({ estados: [TASK_STATE_WORKING] });
+
+      expect(listado.hayMas).toBe(false);
+      expect(listado.items).toHaveLength(1);
+      expect(listado.items[0]?.a2aTaskId).toBe("task-en-curso");
+      expect(listado.items[0]?.estado).toEqual({ conocido: true, valor: TASK_STATE_WORKING });
+
+      const detalle = store.obtenerPorTaskId("task-completada");
+      expect(detalle?.a2aTaskId).toBe("task-completada");
+      expect(detalle?.estado).toEqual({ conocido: true, valor: TASK_STATE_COMPLETED });
+
+      expect(store.obtenerPorTaskId("no-existe")).toBeUndefined();
     });
   });
 });

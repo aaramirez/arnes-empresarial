@@ -177,9 +177,16 @@ import {
 import {
   DelegacionA2ANoCompletadaError,
   DESTINO_A2A_KPI_INCIDENTE,
+  esTaskStateConocido,
   type ClienteA2APort,
   type MotivoDelegacionA2ANoCompletada,
 } from "./core/agents/a2a-contract.js";
+import {
+  LIMITE_LISTADO_A2A_ENTRANTES,
+  type EstadoSolicitudA2AEntrante,
+  type SolicitudA2AEntranteStorePort,
+  type SolicitudA2AEntranteVista,
+} from "./core/agents/a2a-entrante-contract.js";
 import { type InsumoDelegado } from "./core/agents/subagents.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { createVentaStore, createDelegacionA2AStore } from "./build-on-venta.js";
@@ -206,8 +213,11 @@ import {
   descartarPropuestaCambio,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
+  getSolicitudA2AEntrantePorTaskId,
+  listSolicitudesA2AEntrantesPorEstado,
   type SolicitudRow,
   type PropuestaRow,
+  type SolicitudA2AEntranteRow,
 } from "./adapters/memory/repository.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
 
@@ -300,6 +310,12 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly solicitudStore?: SolicitudStorePort;
   /** Tarea 31 — default: `createPropuestaStore(db)` (más abajo). */
   readonly propuestaStore?: PropuestaStorePort;
+  /**
+   * v3.4.0, `comando-visibilidad-a2a-entrante` tarea 4 — default:
+   * `createSolicitudA2AEntranteStore(db)` (más abajo). Opcional para no
+   * romper ningún fake existente de `Deps` en tests actuales.
+   */
+  readonly solicitudA2AEntranteStore?: SolicitudA2AEntranteStorePort;
   /**
    * Tarea 32, ADR 64 — default: `createGitAdapter({ repoRoot: process.cwd(), ... }).aplicarPatch`
    * (más abajo), construido con la config real resuelta de env
@@ -552,6 +568,58 @@ export function createPropuestaStore(db: Database.Database): PropuestaStorePort 
     descartarPropuesta(input) {
       const row = descartarPropuestaCambio(db, input);
       return row ? toPortPropuesta(row) : undefined;
+    },
+  };
+}
+
+/**
+ * Traduce un `SolicitudA2AEntranteRow` de `repository.ts` a la
+ * `SolicitudA2AEntranteVista` del puerto (v3.4.0, `comando-visibilidad-
+ * a2a-entrante` tarea 4, ADR 141) — ★ donde vive el guard de vocabulario:
+ * `esTaskStateConocido(row.estado)` decide la unión discriminada
+ * `EstadoSolicitudA2AEntrante`. A diferencia de `toPortSolicitud`/
+ * `toPortPropuesta` (arriba), **NO lanza**: éste es un camino de LECTURA
+ * PURA y diagnóstico, no el CAS de escritura — un `throw` haría que una
+ * sola fila corrupta apague el listado entero, exactamente el escenario
+ * para el que este comando existe (ADR 141 pto 3). `agenteExternoUrl` e
+ * `id` NO se copian: no están en el tipo del puerto (ADR 139 pto 3, R1
+ * estructural).
+ */
+function toPortSolicitudA2AEntrante(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVista {
+  const estado: EstadoSolicitudA2AEntrante = esTaskStateConocido(row.estado)
+    ? { conocido: true, valor: row.estado }
+    : { conocido: false, valor: row.estado };
+  return {
+    a2aTaskId: row.a2aTaskId,
+    estado,
+    origenTransporte: row.origenTransporte,
+    ...(row.casoId !== undefined ? { casoId: row.casoId } : {}),
+    mensajeRecibido: row.mensajeRecibido,
+    ...(row.resultado !== undefined ? { resultado: row.resultado } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+/**
+ * `SolicitudA2AEntranteStorePort` por closures sobre `repository.ts`
+ * (v3.4.0, tarea 4) — molde exacto de `createPropuestaStore` de arriba:
+ * delegaciones directas sin lógica de negocio propia, sólo traducción vía
+ * `toPortSolicitudA2AEntrante`. `obtenerPorTaskId` envuelve
+ * `getSolicitudA2AEntrantePorTaskId` — cero SQL nuevo (ADR 136).
+ */
+export function createSolicitudA2AEntranteStore(db: Database.Database): SolicitudA2AEntranteStorePort {
+  return {
+    listarPorEstados(filtro) {
+      const { items, hayMas } = listSolicitudesA2AEntrantesPorEstado(db, {
+        estados: filtro.estados,
+        limite: filtro.limite ?? LIMITE_LISTADO_A2A_ENTRANTES,
+      });
+      return { items: items.map(toPortSolicitudA2AEntrante), hayMas };
+    },
+    obtenerPorTaskId(a2aTaskId) {
+      const row = getSolicitudA2AEntrantePorTaskId(db, a2aTaskId);
+      return row ? toPortSolicitudA2AEntrante(row) : undefined;
     },
   };
 }
