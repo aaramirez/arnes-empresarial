@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MOTIVO_CAS, MOTIVO_NO_ENCONTRADA } from "../hitl/hitl-contract.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
   SOLICITUD_TIPO_VACACIONES,
@@ -11,6 +12,7 @@ import {
 } from "./solicitudes-contract.js";
 import {
   ACCION_APROBAR_SOLICITUD,
+  ACCION_CANCELAR_SOLICITUD,
   ACCION_RECHAZAR_SOLICITUD,
   resolverSolicitudInterna,
   type ResolverSolicitudDeps,
@@ -255,4 +257,81 @@ describe("resolverSolicitudInterna", () => {
       empleadoId: "ana",
     });
   });
+
+  it("confirmado:true (cancelar) → store.cancelarSolicitud, nunca aprobarSolicitud/rechazarSolicitud, evento solicitud-cancelada (R5)", () => {
+    const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "ana" });
+    const resuelta = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", estado: SOLICITUD_ESTADO_CANCELADA });
+    const logEvent = vi.fn();
+    const store = makeStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      cancelarSolicitud: vi.fn(() => resuelta),
+    });
+    const deps = makeDeps({ store, logEvent });
+
+    const resultado = resolverSolicitudInterna(
+      { accion: ACCION_CANCELAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+
+    expect(store.cancelarSolicitud).toHaveBeenCalledTimes(1);
+    expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+    expect(resultado.resultado).toBe("aplicada");
+    if (resultado.resultado === "aplicada") {
+      expect(resultado.estadoFinal).toBe(SOLICITUD_ESTADO_CANCELADA);
+    }
+    expect(logEvent).toHaveBeenCalledWith("caso-9", "solicitud-cancelada", {
+      solicitudId: "solicitud-1",
+      empleadoId: "ana",
+    });
+  });
+
+  it("cancelar sobre una solicitud ajena → no_es_dueno, sin item, cero llamadas CAS, evento solicitud-cancelacion-no-autorizada (R6)", () => {
+    const solicitud = buildSolicitud({ id: "solicitud-1", solicitanteId: "emp-otro" });
+    const logEvent = vi.fn();
+    const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const deps = makeDeps({ store, logEvent });
+    const sesionYo: SesionEmpleado = { empleadoId: "emp-yo", iniciadaEn: "2026-09-07T09:00:00.000Z" };
+
+    const resultado = resolverSolicitudInterna(
+      { accion: ACCION_CANCELAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: false, sesion: sesionYo },
+      deps,
+    );
+
+    expect(resultado).toEqual({ resultado: "no_es_dueno", accion: ACCION_CANCELAR_SOLICITUD, itemId: "solicitud-1" });
+    expect("item" in resultado).toBe(false);
+    expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+    expect(store.cancelarSolicitud).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("tui-comando", "solicitud-cancelacion-no-autorizada", {
+      accion: ACCION_CANCELAR_SOLICITUD,
+      solicitudId: "solicitud-1",
+      empleadoId: "emp-yo",
+    });
+  });
+
+  describe.each([
+    ["aprobar", ACCION_APROBAR_SOLICITUD],
+    ["rechazar", ACCION_RECHAZAR_SOLICITUD],
+  ] as const)(
+    "chequeo de dueño gateado por acción (R1): %s sobre solicitud ajena sigue pidiendo confirmación",
+    (_nombre, accion) => {
+      it("devuelve requiere_confirmacion, NO no_es_dueno", () => {
+        const solicitud = buildSolicitud({ id: "solicitud-1", solicitanteId: "emp-otro" });
+        const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+        const deps = makeDeps({ store });
+        const sesionYo: SesionEmpleado = { empleadoId: "emp-yo", iniciadaEn: "2026-09-07T09:00:00.000Z" };
+
+        const resultado = resolverSolicitudInterna(
+          { accion, solicitudId: "solicitud-1", confirmado: false, sesion: sesionYo },
+          deps,
+        );
+
+        expect(resultado).toEqual({ resultado: "requiere_confirmacion", accion, item: solicitud });
+        expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+        expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+        expect(store.cancelarSolicitud).not.toHaveBeenCalled();
+      });
+    },
+  );
 });

@@ -35,9 +35,25 @@ import type { SesionEmpleado } from "../auth/sesion.js";
 
 export const ACCION_APROBAR_SOLICITUD = "aprobar";
 export const ACCION_RECHAZAR_SOLICITUD = "rechazar";
-export type AccionSolicitud = typeof ACCION_APROBAR_SOLICITUD | typeof ACCION_RECHAZAR_SOLICITUD;
+export const ACCION_CANCELAR_SOLICITUD = "cancelar";
+export type AccionSolicitud =
+  | typeof ACCION_APROBAR_SOLICITUD
+  | typeof ACCION_RECHAZAR_SOLICITUD
+  | typeof ACCION_CANCELAR_SOLICITUD;
 
-export type ResolverSolicitudResult = ResolucionHitlResult<SolicitudInterna, AccionSolicitud, SolicitudEstado>;
+/**
+ * Genérico + lo propio de este dominio (ADR 126 consecuencia, ADR 130).
+ * `hitl-contract.ts` NO se toca. La variante `no_es_dueno` NO lleva `item`:
+ * el handler no puede filtrar el `detalle` de una solicitud ajena porque no
+ * lo recibe (R6, garantía estructural, no de disciplina).
+ */
+export type ResolverSolicitudResult =
+  | ResolucionHitlResult<SolicitudInterna, AccionSolicitud, SolicitudEstado>
+  | {
+      readonly resultado: "no_es_dueno";
+      readonly accion: AccionSolicitud;
+      readonly itemId: string;
+    };
 
 export interface ResolverSolicitudDeps {
   readonly store: SolicitudStorePort;
@@ -56,6 +72,7 @@ export interface ResolverSolicitudDeps {
 const EVENTO_SOLICITUD_APLICADA: Record<AccionSolicitud, string> = {
   [ACCION_APROBAR_SOLICITUD]: "solicitud-aprobada",
   [ACCION_RECHAZAR_SOLICITUD]: "solicitud-rechazada",
+  [ACCION_CANCELAR_SOLICITUD]: "solicitud-cancelada",
 };
 
 /**
@@ -75,6 +92,8 @@ function aplicarCas(
       return store.aprobarSolicitud(input);
     case ACCION_RECHAZAR_SOLICITUD:
       return store.rechazarSolicitud(input);
+    case ACCION_CANCELAR_SOLICITUD:
+      return store.cancelarSolicitud(input);
     default: {
       const _exhaustivo: never = accion;
       throw new Error(`AccionSolicitud no soportada: ${String(_exhaustivo)}`);
@@ -134,6 +153,18 @@ export function resolverSolicitudInterna(
       motivo: MOTIVO_NO_ENCONTRADA,
     });
     return { resultado: "no_aplicable", accion, motivo: MOTIVO_NO_ENCONTRADA, itemId: solicitudId };
+  }
+
+  // GATEADO por acción: `/aprobar-solicitud` y `/rechazar-solicitud` conservan
+  // intacto el requirement `solicitud-interna-hitl:72` (R1). Acá, antes del
+  // `if (!confirmado)`, cubre los DOS pasos con una sola línea.
+  if (accion === ACCION_CANCELAR_SOLICITUD && solicitud.solicitanteId !== sesion.empleadoId) {
+    logEvent("tui-comando", "solicitud-cancelacion-no-autorizada", {
+      accion,
+      solicitudId,
+      empleadoId: sesion.empleadoId,
+    });
+    return { resultado: "no_es_dueno", accion, itemId: solicitudId };
   }
 
   if (!confirmado) {
