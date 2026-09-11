@@ -23,10 +23,13 @@ import type { AuthConfig } from "./core/auth/auth-config.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import {
   COMANDO_CONSULTAR_KPI,
+  COMANDO_REPORTE_COMISIONES,
   RESULTADO_ATENDIDA,
   RESULTADO_FALLIDA,
   type RegistroAccionesEmpleadoPort,
 } from "./core/commands/registro-acciones-contract.js";
+import { agruparReporteMensual, formatearReporteMensual } from "./core/ventas/reporte.js";
+import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
   SOLICITUD_ESTADO_PENDIENTE,
@@ -60,7 +63,14 @@ import { createHookEngine } from "./core/hooks/hook-engine.js";
 import type { SoporteResult } from "./build-on-soporte.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
 import { openDatabase } from "./adapters/memory/db.js";
-import { createCaso } from "./adapters/memory/repository.js";
+import {
+  createCaso,
+  createVentaConCaso,
+  confirmarVentaConComision,
+  escalarReembolso,
+  listComisionesPorPeriodo,
+  listVentasEnReembolsoPendiente,
+} from "./adapters/memory/repository.js";
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
 const PASSWORD = "secreto-super-largo-123";
@@ -333,6 +343,28 @@ function contarFilasRegistro(db: Database.Database, comando: string): number {
 function contarCasos(db: Database.Database): number {
   const row = db.prepare("SELECT count(*) as total FROM casos").get() as { total: number };
   return row.total;
+}
+
+/** Molde de `makeStore`/`makeSolicitudStore`: spy en las dos lecturas (comando-reporte-comisiones, tarea 4). */
+function makeReporteStore(overrides: Partial<ReporteStorePort> = {}): ReporteStorePort {
+  return {
+    listComisionesPorPeriodo: vi.fn(() => []),
+    listVentasEnReembolsoPendiente: vi.fn(() => []),
+    ...overrides,
+  };
+}
+
+/** Snapshot de las tres tablas de negocio — usado para afirmar que `/reporte-comisiones` no escribe nada de negocio. */
+function snapshotTablasNegocio(db: Database.Database): {
+  readonly ventas: unknown;
+  readonly comisiones: unknown;
+  readonly casos: unknown;
+} {
+  return {
+    ventas: db.prepare("SELECT * FROM ventas ORDER BY id").all(),
+    comisiones: db.prepare("SELECT * FROM comisiones ORDER BY id").all(),
+    casos: db.prepare("SELECT * FROM casos ORDER BY id").all(),
+  };
 }
 
 describe("buildOnComandoEmpleado — delegación al camino conversacional", () => {
@@ -1729,6 +1761,237 @@ describe("buildOnComandoEmpleado — /consultar-kpi (Hito 6, tarea 20, ADR 85)",
 
       expect(resultado.responseText).not.toContain(SECRETO);
       expect(JSON.stringify(writes)).not.toContain(SECRETO);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * `/reporte-comisiones [periodo]` (comando-reporte-comisiones, tarea 4,
+ * ADR 117, 121, 123, 124). Mismo molde de fixture que `/consultar-kpi`
+ * (`makeKpiDeps`, `db` REAL): `manejarReporteComisiones` lee vía
+ * `reporteStore` (default: closure sobre `listComisionesPorPeriodo`/
+ * `listVentasEnReembolsoPendiente`, `repository.ts`) — sin doble hay que
+ * ejercitar el SQL real para la igualdad byte a byte (§6 de `design.md`).
+ */
+describe("buildOnComandoEmpleado — /reporte-comisiones (comando-reporte-comisiones, tarea 4)", () => {
+  /** Venta CONFIRMADA + su comisión, mismo molde que `repository.test.ts` (`createVentaConCaso` + `confirmarVentaConComision`). */
+  function seedComisionConfirmada(
+    db: Database.Database,
+    input: {
+      readonly ventaId: string;
+      readonly vendedorId: string;
+      readonly vendedorNombre: string;
+      readonly clienteId: string;
+      readonly monto: number;
+      readonly comisionMonto: number;
+      readonly periodo: string;
+      readonly casoId: string;
+    },
+  ): void {
+    createVentaConCaso(db, {
+      vendedor: { id: input.vendedorId, nombre: input.vendedorNombre },
+      caso: { id: input.casoId, tipo: "venta", estado: "pendiente_confirmacion", createdAt: TIMESTAMP, updatedAt: TIMESTAMP },
+      venta: {
+        id: input.ventaId,
+        clienteId: input.clienteId,
+        planNuevo: "plan-x",
+        monto: input.monto,
+        estado: "pendiente_confirmacion",
+        tokenConfirmacion: `tok-${input.ventaId}`,
+      },
+      timestamp: TIMESTAMP,
+    });
+    confirmarVentaConComision(db, {
+      ventaId: input.ventaId,
+      comisionId: `comision-${input.ventaId}`,
+      comisionMonto: input.comisionMonto,
+      periodo: input.periodo,
+      ahora: TIMESTAMP,
+    });
+  }
+
+  /** Venta escalada a `reembolso_pendiente` (con su comisión ya generada) — mismo molde que `repository.test.ts` (`escalarReembolso`). */
+  function seedVentaReembolsoPendiente(
+    db: Database.Database,
+    input: {
+      readonly ventaId: string;
+      readonly vendedorId: string;
+      readonly vendedorNombre: string;
+      readonly clienteId: string;
+      readonly monto: number;
+      readonly periodo: string;
+      readonly casoId: string;
+    },
+  ): void {
+    seedComisionConfirmada(db, { ...input, comisionMonto: input.monto * 0.1 });
+    escalarReembolso(db, { ventaId: input.ventaId, casoId: input.casoId, ahora: TIMESTAMP });
+  }
+
+  it("sin sesión pide /login, cero lecturas (spy en reporteStore) y cero fila", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const reporteStore = makeReporteStore();
+      const deps = makeKpiDeps(db, reloj, { reporteStore });
+      const handler = buildOnComandoEmpleado(deps);
+
+      const resultado = await handler("/reporte-comisiones 2026-08");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+      expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
+      expect(reporteStore.listVentasEnReembolsoPendiente).not.toHaveBeenCalled();
+      expect(contarFilasRegistro(db, COMANDO_REPORTE_COMISIONES)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("con sesión y periodo inválido responde el mensaje de uso, cero lecturas, cero fila", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const reporteStore = makeReporteStore();
+      const deps = makeKpiDeps(db, reloj, { reporteStore });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/reporte-comisiones 2026-13");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toBe("Periodo inválido. Formato esperado: YYYY-MM.");
+      expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
+      expect(reporteStore.listVentasEnReembolsoPendiente).not.toHaveBeenCalled();
+      expect(contarFilasRegistro(db, COMANDO_REPORTE_COMISIONES)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("con sesión y periodo válido sin datos: 'sin comisiones en el periodo' y fila atendida con venta_id/caso_id NULL", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {}); // reporteStore default: closure real sobre `db`, vacío
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/reporte-comisiones 2026-08");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("Reporte de comisiones - periodo 2026-08");
+      expect(resultado.responseText).toContain("sin comisiones en el periodo");
+      const fila = db
+        .prepare("SELECT resultado, venta_id, caso_id FROM registro_acciones_empleado WHERE comando = ?")
+        .get(COMANDO_REPORTE_COMISIONES) as { resultado: string; venta_id: string | null; caso_id: string | null } | undefined;
+      expect(fila?.resultado).toBe(RESULTADO_ATENDIDA);
+      expect(fila?.venta_id).toBeNull();
+      expect(fila?.caso_id).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("sin argumento, reporta el mes corriente con el reloj inyectado (no el reloj real)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: "2026-09-10T12:00:00.000Z" };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/reporte-comisiones");
+
+      expect(resultado.responseText).toContain("Reporte de comisiones - periodo 2026-09");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("ventas/comisiones/casos quedan idénticas antes y después, en cualquier desenlace", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      seedComisionConfirmada(db, {
+        ventaId: "venta-inv-1",
+        vendedorId: "vend-inv-1",
+        vendedorNombre: "Ana Invariante",
+        clienteId: "cliente-inv-1",
+        monto: 100,
+        comisionMonto: 10,
+        periodo: "2026-08",
+        casoId: "caso-inv-1",
+      });
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+
+      const antesSinSesion = snapshotTablasNegocio(db);
+      await handler("/reporte-comisiones 2026-08");
+      expect(snapshotTablasNegocio(db)).toEqual(antesSinSesion);
+
+      await login(handler);
+
+      const antesInvalido = snapshotTablasNegocio(db);
+      await handler("/reporte-comisiones 2026-13");
+      expect(snapshotTablasNegocio(db)).toEqual(antesInvalido);
+
+      const antesValido = snapshotTablasNegocio(db);
+      await handler("/reporte-comisiones 2026-08");
+      expect(snapshotTablasNegocio(db)).toEqual(antesValido);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("igualdad byte a byte: el mismo responseText que agruparReporteMensual+formatearReporteMensual sobre la misma base (Success Criteria proposal.md:227)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      seedComisionConfirmada(db, {
+        ventaId: "venta-byte-1",
+        vendedorId: "vend-byte-1",
+        vendedorNombre: "Ana Byte",
+        clienteId: "cliente-byte-1",
+        monto: 100,
+        comisionMonto: 10,
+        periodo: "2026-08",
+        casoId: "caso-byte-1",
+      });
+      seedComisionConfirmada(db, {
+        ventaId: "venta-byte-2",
+        vendedorId: "vend-byte-2",
+        vendedorNombre: "Beto Byte",
+        clienteId: "cliente-byte-2",
+        monto: 200,
+        comisionMonto: 25,
+        periodo: "2026-08",
+        casoId: "caso-byte-2",
+      });
+      seedVentaReembolsoPendiente(db, {
+        ventaId: "venta-byte-3",
+        vendedorId: "vend-byte-3",
+        vendedorNombre: "Cami Byte",
+        clienteId: "cliente-byte-3",
+        monto: 300,
+        periodo: "2026-08",
+        casoId: "caso-byte-3",
+      });
+
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/reporte-comisiones 2026-08");
+      const salidaA = resultado.responseText;
+
+      const comisiones = listComisionesPorPeriodo(db, "2026-08");
+      const reembolsosPendientes = listVentasEnReembolsoPendiente(db);
+      const reporte = agruparReporteMensual({ periodo: "2026-08", comisiones, reembolsosPendientes });
+      const salidaB = formatearReporteMensual(reporte);
+
+      expect(salidaA).toBe(salidaB);
     } finally {
       db.close();
     }

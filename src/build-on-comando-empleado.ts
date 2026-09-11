@@ -87,6 +87,7 @@ import {
   COMANDO_REABRIR_REEMBOLSO,
   COMANDO_RECHAZAR_REEMBOLSO,
   COMANDO_RECHAZAR_SOLICITUD,
+  COMANDO_REPORTE_COMISIONES,
   COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
   RESULTADO_ATENDIDA,
@@ -121,7 +122,13 @@ import {
 } from "./core/ventas/ventas-contract.js";
 import { MOTIVO_CAS } from "./core/hitl/hitl-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
-import { formatMoney } from "./core/ventas/reporte.js";
+import {
+  agruparReporteMensual,
+  formatMoney,
+  formatearReporteMensual,
+  resolverPeriodoReporte,
+} from "./core/ventas/reporte.js";
+import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import { crearSolicitudInterna } from "./core/solicitudes/crear-solicitud-interna.js";
 import {
@@ -193,6 +200,8 @@ import {
   listPropuestasCambio,
   aplicarPropuestaCambio,
   descartarPropuestaCambio,
+  listComisionesPorPeriodo,
+  listVentasEnReembolsoPendiente,
   type SolicitudRow,
   type PropuestaRow,
 } from "./adapters/memory/repository.js";
@@ -307,6 +316,13 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly clienteA2A?: ClienteA2APort;
   /** Costura de test — default: `createDelegacionA2AStore(db)` (`build-on-venta.ts`, tarea 16). */
   readonly delegacionA2AStore?: DelegacionA2AStorePort;
+  /**
+   * `comando-reporte-comisiones`, ADR 121 pto 1 (RD-55) — default: closure
+   * inline sobre `listComisionesPorPeriodo`/`listVentasEnReembolsoPendiente`
+   * (`repository.ts`), MISMO molde que `credenciales`/`registro` más abajo
+   * (sin `createXStore`: no hay traducción de filas que hacer).
+   */
+  readonly reporteStore?: ReporteStorePort;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -655,6 +671,13 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     };
   const registro: RegistroAccionesEmpleadoPort =
     deps.registro ?? { registrarAccion: (accion) => insertAccionEmpleado(db, accion) };
+  /** `comando-reporte-comisiones`, ADR 121 pto 1 (RD-55) — mismo molde inline que `credenciales`/`registro`. */
+  const reporteStore: ReporteStorePort =
+    deps.reporteStore ??
+    {
+      listComisionesPorPeriodo: (periodo) => listComisionesPorPeriodo(db, periodo),
+      listVentasEnReembolsoPendiente: () => listVentasEnReembolsoPendiente(db),
+    };
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
   const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
@@ -1382,6 +1405,40 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     );
   }
 
+  /**
+   * `/reporte-comisiones [periodo]` (comando-reporte-comisiones, ADR
+   * 117/121/123/124). UN SOLO PASO, de solo lectura — mismo molde que
+   * `manejarVerPropuesta`: nunca toca `confirmacionPendiente`, nunca es
+   * `async` (sin `await` al modelo, sin transacción). `privilegiado: true`
+   * ya lo garantizó el preámbulo (paso 6, guarda de privilegio) — no se
+   * duplica acá.
+   *
+   * `resolverPeriodoReporte` corre ANTES de cualquier lectura: un período
+   * inválido responde con su propio mensaje de uso y NO deja fila (ADR 123
+   * pto 4) — mismo criterio que `manejarConsultarKpi` cuando `clienteA2A
+   * === undefined` ("SIN caso, SIN fila").
+   *
+   * Devuelve LITERALMENTE `formatearReporteMensual(...)` sin envolver
+   * (ADR 124): cualquier texto agregado del lado del comando rompería el
+   * Success Criteria de igualdad byte a byte contra `npm run reporte:mensual`.
+   */
+  function manejarReporteComisiones(
+    comando: Extract<ComandoEmpleado, { tipo: "reporte_comisiones" }>,
+    ahora: string,
+  ): TuiTurnResult {
+    const resuelto = resolverPeriodoReporte(comando.periodo, ahora);
+    if (!resuelto.ok) {
+      return sistema(resuelto.mensaje); // SIN fila (ADR 123 pto 4) — corte ANTES de cualquier lectura.
+    }
+
+    const comisiones = reporteStore.listComisionesPorPeriodo(resuelto.periodo);
+    const reembolsosPendientes = reporteStore.listVentasEnReembolsoPendiente();
+    const reporte = agruparReporteMensual({ periodo: resuelto.periodo, comisiones, reembolsosPendientes });
+
+    registrar({ comando: COMANDO_REPORTE_COMISIONES, resultado: RESULTADO_ATENDIDA }, ahora);
+    return sistema(formatearReporteMensual(reporte));
+  }
+
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
     if (comando.motivo === "solicitada") {
       return sistema(formatearAyuda());
@@ -1456,6 +1513,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionPropuesta(ACCION_APLICAR_PROPUESTA, comando.propuestaId, undefined, ahora);
       case "descartar_propuesta":
         return manejarResolucionPropuesta(ACCION_DESCARTAR_PROPUESTA, comando.propuestaId, comando.motivo, ahora);
+      case "reporte_comisiones":
+        return manejarReporteComisiones(comando, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }
