@@ -344,6 +344,19 @@ describe("parsearComando", () => {
     });
   });
 
+  it("/reporte-comisiones 2026-08 → tipo reporte_comisiones con periodo presente (comando-reporte-comisiones, tarea 3)", () => {
+    expect(parsearComando("/reporte-comisiones 2026-08")).toEqual({
+      tipo: "reporte_comisiones",
+      periodo: "2026-08",
+    });
+  });
+
+  it("/reporte-comisiones sin argumento → tipo reporte_comisiones sin campo periodo, sin validar formato acá (ADR 123 pto 1)", () => {
+    const resultado = parsearComando("/reporte-comisiones");
+    expect(resultado).toEqual({ tipo: "reporte_comisiones" });
+    expect(resultado && "periodo" in resultado).toBe(false);
+  });
+
   it("/ayuda explícito → motivo 'solicitada', sin campo comando", () => {
     expect(parsearComando("/ayuda")).toEqual({ tipo: "ayuda", motivo: "solicitada" });
   });
@@ -364,9 +377,9 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los quince descriptores (catorce comandos + ayuda) — once de v2.0.0 + los tres de la tarea 29 (ADR 69) + uno de Hito 6 (ADR 85)", () => {
+  it("lista los dieciséis descriptores (quince previos + /reporte-comisiones, comando-reporte-comisiones tarea 3)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(15);
+    expect(COMANDOS).toHaveLength(16);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
@@ -375,6 +388,11 @@ describe("formatearAyuda", () => {
   it("incluye la línea de /consultar-kpi (ADR 85)", () => {
     const texto = formatearAyuda();
     expect(texto).toContain("/consultar-kpi <consulta>");
+  });
+
+  it("incluye la línea de /reporte-comisiones (comando-reporte-comisiones, tarea 3)", () => {
+    const texto = formatearAyuda();
+    expect(texto).toContain("/reporte-comisiones [periodo]");
   });
 });
 
@@ -395,6 +413,10 @@ describe("esComandoPrivilegiado", () => {
 
   it("consultar_kpi es privilegiado (ADR 85, manda contexto de la empresa a un tercero externo)", () => {
     expect(esComandoPrivilegiado("consultar_kpi")).toBe(true);
+  });
+
+  it("reporte_comisiones es privilegiado (ADR 117, comando-reporte-comisiones tarea 3)", () => {
+    expect(esComandoPrivilegiado("reporte_comisiones")).toBe(true);
   });
 });
 
@@ -431,10 +453,6 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("hay quince descriptores en total (catorce + uno de Hito 6, ADR 85)", () => {
-    expect(descriptores).toHaveLength(15);
-  });
-
   it("los tres descriptores nuevos ocupan los índices 10-12, en el orden de design.md §5.9 / ADR 69", () => {
     expect(descriptores.slice(10, 13).map((d) => [d.nombre, d.forma] as const)).toEqual([
       ["/ver-propuesta", "id_opcional_propuesta"],
@@ -443,8 +461,9 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
     ]);
   });
 
-  it("/ayuda sigue último (índice 14)", () => {
-    expect(descriptores[14]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  it("/ayuda sigue último (índice 15, tras la incorporación de /reporte-comisiones en comando-reporte-comisiones tarea 3)", () => {
+    expect(descriptores).toHaveLength(16);
+    expect(descriptores[15]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
   });
 });
 
@@ -457,11 +476,27 @@ describe("regresión — el descriptor nuevo de la tarea 19 va antes de /ayuda, 
   });
 });
 
+describe("regresión — el descriptor nuevo de comando-reporte-comisiones (tarea 3) va antes de /ayuda, que sigue último (ADR 117, 119)", () => {
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("/reporte-comisiones ocupa el índice 14, en el orden de design.md §3 / ADR 119", () => {
+    expect(descriptores[14]).toMatchObject({ nombre: "/reporte-comisiones", forma: "id_opcional_periodo" });
+  });
+});
+
 describe("comando-empleado.ts source", () => {
   it("no tiene declaraciones import — módulo puro, sin dependencias", () => {
     const sourcePath = fileURLToPath(new URL("./comando-empleado.ts", import.meta.url));
     const source = readFileSync(sourcePath, "utf-8");
 
     expect(source).not.toMatch(/\bimport\b/);
+  });
+
+  it("no referencia ningún reloj (Date) — el default de /reporte-comisiones sin periodo se resuelve en otra capa (ADR 119, 123)", () => {
+    const sourcePath = fileURLToPath(new URL("./comando-empleado.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/\bDate\b/);
   });
 });

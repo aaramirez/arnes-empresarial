@@ -27,7 +27,7 @@ import {
   VENTA_ESTADO_REEMBOLSADA,
   VENTA_ESTADO_REEMBOLSO_PENDIENTE,
 } from "./ventas-contract.js";
-import { calcularComision } from "./comision.js";
+import { calcularComision, periodoDeConfirmacion } from "./comision.js";
 
 /** Fila de comisión ya cruzada con su venta, tal como la lectura SQL la entrega (§6.2). */
 export interface ComisionConVenta {
@@ -66,6 +66,45 @@ export interface ReporteMensual {
   readonly filas: readonly FilaVendedor[];
   readonly totalComisionado: number;
   readonly reembolsosPendientes: readonly VentaPendienteReembolso[];
+}
+
+/**
+ * DUPLICADO literal de `PERIODO_REGEX` en `src/reporte-mensual.ts:51` —
+ * NO se importa (ADR 118 prohíbe tocar/importar ese archivo desde
+ * `src/core/`; ADR 121 pto 3, ADR 123 pto 2 de
+ * `comando-reporte-comisiones/design.md`).
+ */
+const PERIODO_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+export type ResolverPeriodoReporteResult =
+  | { readonly ok: true; readonly periodo: string }
+  | { readonly ok: false; readonly mensaje: string };
+
+/**
+ * Resuelve el `periodo` de `/reporte-comisiones [periodo]` (ADR 123, RD-57
+ * de `comando-reporte-comisiones/design.md`). PURA: `ahora` se recibe como
+ * parámetro (ISO 8601, ya resuelto por el dispatcher), nunca `new Date()`
+ * acá adentro.
+ *
+ * - `argumento` ausente ⇒ mes corriente (`periodoDeConfirmacion(ahora)`, el
+ *   mismo `slice(0, 7)` de `./comision.js` — mismo lado de la frontera
+ *   hexagonal que este módulo, sin ninguna razón para no reusarlo).
+ * - `argumento` con formato `YYYY-MM` válido ⇒ se acepta tal cual.
+ * - cualquier otro formato ⇒ `ok:false` con el mensaje de uso propio del
+ *   comando (no el de `reporte-mensual.ts` — ADR 123 pto 3).
+ *
+ * Regex DUPLICADO de `parsePeriodo` (`reporte-mensual.ts`), NO compartido
+ * (ADR 118, ADR 121 pto 3) — esa es la única duplicación intencional acá.
+ * `reporte.test.ts` trae el test de equivalencia que mitiga R6.
+ */
+export function resolverPeriodoReporte(argumento: string | undefined, ahora: string): ResolverPeriodoReporteResult {
+  if (argumento === undefined) {
+    return { ok: true, periodo: periodoDeConfirmacion(ahora) };
+  }
+  if (!PERIODO_REGEX.test(argumento)) {
+    return { ok: false, mensaje: "Periodo inválido. Formato esperado: YYYY-MM." };
+  }
+  return { ok: true, periodo: argumento };
 }
 
 /**
