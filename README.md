@@ -199,6 +199,18 @@ Comandos TUI privilegiados (Hito 5.1) para revisar el diff que produjo el Develo
 | `/aplicar-propuesta` | `/aplicar-propuesta <propuestaId>` | Aplica el patch de una propuesta de cambio aprobada. |
 | `/descartar-propuesta` | `/descartar-propuesta <propuestaId> [motivo]` | Descarta una propuesta de cambio pendiente sin aplicarla. |
 
+### Skills (`.claude/skills/`)
+
+El arnés descubre skills en `.claude/skills/<nombre>/SKILL.md` — no en `src/core/skills/` (ese directorio es el cargador en TypeScript; el contenido de cada skill vive en el árbol versionado del repo, fuera de `src/`). Una skill empaqueta un procedimiento opcional que el modelo puede elegir invocar durante el turno; a diferencia de `allowedTools`, habilitarla no concede ninguna herramienta nueva.
+
+**Cómo se agrega una skill**: crear una carpeta bajo `.claude/skills/` con un `SKILL.md` cuyo frontmatter declare exactamente dos campos — `name` (idéntico al nombre de la carpeta) y `description` (hasta 1024 caracteres, la única señal que el modelo ve antes de decidir si invoca). Ningún otro campo de frontmatter está permitido: `allowed-tools`, `model`, `license`, `metadata` o cualquier otro aborta el arranque del arnés. Agregar una skill no requiere ninguna edición en `src/core/` — el cargador la descubre sola, al arrancar.
+
+**Los tres límites de contenido (ADR 106)** — toda skill nueva se revisa contra estos tres antes de mergear:
+
+1. **Nada del camino del dinero**: cero menciones a comisiones, reembolsos, confirmación de venta o escalaciones; cero referencias a `src/core/ventas/`.
+2. **Ninguna herramienta que el agente invocante no tenga ya**: una skill empaqueta un procedimiento sobre herramientas/contexto que el agente ya tiene concedidos, nunca amplía su `allowedTools`.
+3. **Cero secretos**: ninguna credencial, token ni ruta de datos real dentro del `SKILL.md`.
+
 ## Hoja de ruta
 
 Entrega incremental en tres hitos mayores, cada uno cerrando con un tag semántico y una carpeta `docs/progreso/vX.Y-nombre/`. La columna **Estado** refleja únicamente los tags reales del repositorio (`git tag --list`) — un hito solo se marca cerrado si tiene su tag semántico correspondiente:

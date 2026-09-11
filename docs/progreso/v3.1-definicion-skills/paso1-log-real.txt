@@ -1,0 +1,1 @@
+5686:{"cantidad":1,"nombres":["citar-conocimiento"],"casoId":"arranque-skills","event":"skills-registro-cargado","timestamp":"2026-09-11T02:23:57.477Z"}

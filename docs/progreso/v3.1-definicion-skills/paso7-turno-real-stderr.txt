@@ -1,0 +1,64 @@
+=== PREGUNTA ===
+Segun la documentacion interna del proyecto, como se agrega una nueva skill al arnes? Cita la fuente.
+=== AGENTE RESUELTO === agente-conversacional
+HARNESS_DEBUG_OPTIONS_DUMP: {
+  "agent": "agente-conversacional",
+  "agentIds": [
+    "agente-conversacional",
+    "planner",
+    "developer",
+    "reviewer",
+    "validador-solicitudes"
+  ],
+  "settingSources": [
+    "project"
+  ],
+  "skills": [
+    "citar-conocimiento"
+  ],
+  "hasMcpServers": true,
+  "mcpServerNames": [
+    "knowledge"
+  ],
+  "allowedTools": [
+    "mcp__knowledge__query_knowledge_base"
+  ]
+}
+LOG conocimiento-consulta-inicio { questionLength: 41 }
+LOG conocimiento-consulta-ok { durationMs: 1123, nodes: 7 }
+LOG conocimiento-consulta-inicio { questionLength: 144 }
+LOG conocimiento-consulta-ok { durationMs: 1032, nodes: 13 }
+LOG conocimiento-consulta-inicio { questionLength: 140 }
+LOG conocimiento-consulta-ok { durationMs: 1047, nodes: 11 }
+LOG conocimiento-consulta-inicio { questionLength: 133 }
+LOG conocimiento-consulta-ok { durationMs: 1084, nodes: 15 }
+LOG conocimiento-consulta-inicio { questionLength: 160 }
+LOG conocimiento-consulta-ok { durationMs: 1083, nodes: 18 }
+LOG conocimiento-guardado { nodes: 20 }
+=== RESPUESTA ===
+Ahora sí tengo suficiente para responder con precisión, citando fuentes.
+
+## Cómo se agrega una nueva skill al arnés
+
+Según la especificación interna, el proceso es:
+
+1. **Crear la carpeta y el `SKILL.md`**: cada skill vive en su propia carpeta, con un archivo `SKILL.md` que contiene el frontmatter.
+   *(fuente: `openspec/changes/definicion-skills/specs/registro-skills/spec.md`, loc L1–L7)*
+
+2. **Frontmatter con exactamente dos campos permitidos**: `name` y `description` (whitelist estricta, definida en `CAMPOS_PERMITIDOS`), con un tope de 1024 caracteres. El validador es intencionalmente **más estricto que el SDK** (ADR 110, RD-45 resuelto).
+   *(fuente: `openspec/changes/definicion-skills/design.md`, loc L101; `src/core/skills/skill-frontmatter.ts`, loc L5)*
+
+3. **`name` debe coincidir obligatoriamente con el nombre del directorio**. Si el frontmatter incluye un `name` explícito, ese valor gana sobre el nombre del directorio, pero deben ser iguales.
+   *(fuente: `openspec/changes/definicion-skills/specs/registro-skills/spec.md`, loc L33)*
+
+4. **Semántica de arranque**: al arrancar el sistema recorre la carpeta de skills.
+   - Si la carpeta está ausente o vacía → degrada (no rompe el arranque).
+   - Si un `SKILL.md` es inválido → **aborta**.
+   *(fuente: `openspec/changes/definicion-skills/specs/registro-skills/spec.md`, loc L52)*
+
+5. **Descubrimiento e implementación**: el escaneo y parseo lo hace `descubrirSkills()` en `src/core/skills/descubrir-skills.ts` (loc L63), apoyándose en el validador de frontmatter (`src/core/skills/skill-frontmatter.ts`).
+
+6. **Habilitación por turno**: una vez registrada, la skill se habilita/deshabilita a nivel de turno vía `src/core/skills/skills-habilitadas.ts`.
+
+⚠️ Nota: la base de conocimiento me devolvió el grafo truncado (solo 15-18 de +300 nodos por consulta), así que puede haber requisitos adicionales del spec `registro-skills/spec.md` que no vi (por ejemplo, el detalle completo del escenario de arranque o validaciones extra). Si necesitás el detalle exhaustivo, puedo acotar la consulta a una sección puntual del spec.
+=== AGENT LABEL === agente-conversacional

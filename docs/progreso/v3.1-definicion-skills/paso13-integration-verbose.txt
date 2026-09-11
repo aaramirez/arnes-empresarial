@@ -1,0 +1,12 @@
+
+ RUN  v4.1.11 C:/Users/Windows/Documents/UCAB/11 intensivo agosto 2026/Pasantia/arnes_empresarial
+
+ ✓ src/test/integration/skills.integration.test.ts > Registro de Skills — integración con disco real (definicion-skills, tarea 8) > descubrirSkills con DEPS_FS real sobre un directorio temporal encuentra exactamente el paquete válido — el invariante negativo con disco real 6ms
+ ✓ src/test/integration/skills.integration.test.ts > Registro de Skills — integración con disco real (definicion-skills, tarea 8) > descubrirSkills() con los defaults reales, corrido desde la raíz del repo, encuentra citar-conocimiento validada por el parser real 1ms
+ ✓ src/test/integration/skills.integration.test.ts > Registro de Skills — integración con disco real (definicion-skills, tarea 8) > RD-48: process.cwd() y la raíz derivada de import.meta.url resuelven la MISMA ruta base — dos testigos independientes 0ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  22:27:29
+   Duration  224ms (transform 30ms, setup 0ms, import 48ms, tests 8ms, environment 0ms)
+

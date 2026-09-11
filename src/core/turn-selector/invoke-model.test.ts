@@ -145,8 +145,22 @@ describe("invokeModel", () => {
 
     // subagentes: [] — isolates this test's exact-match assertion from the
     // Hito 5 tarea 9 default (listSubagentDefinitions()), which is covered
-    // by its own dedicated tests below.
-    await invokeModel(agent, context, "prompt de prueba", hookEngine, queryFn, undefined, []);
+    // by its own dedicated tests below. skills: [] (9º parámetro, tras un
+    // cwd omitido) hace lo mismo para el default real de
+    // `listarSkillsHabilitadas()` (definicion-skills, tarea 6) — sin este
+    // override, esta aserción exacta dependería del contenido real de
+    // `.claude/skills/` del repo.
+    await invokeModel(
+      agent,
+      context,
+      "prompt de prueba",
+      hookEngine,
+      queryFn,
+      undefined,
+      [],
+      undefined,
+      [],
+    );
 
     expect(queryFn).toHaveBeenCalledWith({
       prompt: "prompt de prueba",
@@ -162,6 +176,10 @@ describe("invokeModel", () => {
             model: "sonnet",
           },
         },
+        // definicion-skills, tarea 6 (ADR 108): siempre presentes, dentro
+        // del literal inicial.
+        settingSources: ["project"],
+        skills: [],
         // Hito 2, tarea 8 (ADR 4): a non-empty allowedTools now also
         // populates top-level options.allowedTools (auto-approval),
         // distinct from agents[id].tools (Fix 1's restriction mechanism)
@@ -486,6 +504,205 @@ describe("invokeModel", () => {
 
       const callArgs = queryFn.mock.calls[0]?.[0];
       expect(callArgs?.options?.cwd).toBe("/tmp/harness/worktrees/wt-1");
+    });
+  });
+
+  // definicion-skills, tarea 6 — `skills`/`settingSources` como 6º/9º
+  // parámetro trailing (ADR 108). A diferencia de mcpServers/subagentes/cwd
+  // arriba, estas dos claves NUNCA se omiten — ver invoke-model.ts §ADR 108
+  // pto 1 y la spec `habilitacion-skills-turno`.
+  describe("skills / settingSources (definicion-skills, tarea 6, ADR 108/113)", () => {
+    it("options.settingSources es exactamente ['project'], nunca 'all' ni 'user', en toda invocación", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-settings"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-settings"),
+      ]);
+
+      await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+      const settingSources = queryFn.mock.calls[0]?.[0]?.options?.settingSources;
+      expect(settingSources).toEqual(["project"]);
+      expect(settingSources).not.toContain("all");
+      expect(settingSources).not.toContain("user");
+    });
+
+    it("options.skills refleja exactamente la lista inyectada, incluso vacía — la clave nunca se omite", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+
+      const queryFnConSkill = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-con-skill"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-con-skill"),
+      ]);
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFnConSkill,
+        undefined,
+        [],
+        undefined,
+        ["citar-conocimiento"],
+      );
+      expect(queryFnConSkill.mock.calls[0]?.[0]?.options?.skills).toEqual(["citar-conocimiento"]);
+
+      const queryFnSinSkills = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-sin-skills"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-sin-skills"),
+      ]);
+      await invokeModel(agent, context, "hola", hookEngine, queryFnSinSkills, undefined, [], undefined, []);
+      const callArgsVacio = queryFnSinSkills.mock.calls[0]?.[0];
+      expect(callArgsVacio?.options?.skills).toEqual([]);
+      expect(callArgsVacio?.options).toHaveProperty("skills");
+    });
+
+    it("'skills' y 'settingSources' están presentes en options sin importar los demás parámetros", async () => {
+      const agent = makeAgent({ allowedTools: ["algo"] });
+      const context = makeContext({ resumeSessionId: "sesion-previa" });
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-combo"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-combo"),
+      ]);
+
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFn,
+        undefined,
+        listSubagentDefinitions(),
+        "/tmp/algun/cwd",
+        [],
+      );
+
+      const options = queryFn.mock.calls[0]?.[0]?.options;
+      expect(options).toHaveProperty("skills");
+      expect(options).toHaveProperty("settingSources");
+    });
+
+    it("options.skills y options.settingSources son copias — no el mismo array entre dos llamadas ni el del caller", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const skillsInyectadas = ["citar-conocimiento"];
+
+      const queryFn1 = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-1"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-1"),
+      ]);
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFn1,
+        undefined,
+        [],
+        undefined,
+        skillsInyectadas,
+      );
+
+      const queryFn2 = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-2"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-2"),
+      ]);
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFn2,
+        undefined,
+        [],
+        undefined,
+        skillsInyectadas,
+      );
+
+      const skills1 = queryFn1.mock.calls[0]?.[0]?.options?.skills;
+      const skills2 = queryFn2.mock.calls[0]?.[0]?.options?.skills;
+      const settingSources1 = queryFn1.mock.calls[0]?.[0]?.options?.settingSources;
+      const settingSources2 = queryFn2.mock.calls[0]?.[0]?.options?.settingSources;
+
+      expect(skills1).toEqual(skillsInyectadas);
+      expect(skills1).not.toBe(skillsInyectadas);
+      expect(skills1).not.toBe(skills2);
+      expect(settingSources1).not.toBe(settingSources2);
+      expect(settingSources1).toEqual(settingSources2);
+    });
+
+    it("options.skills no cambia según el cwd pasado — el filtro no deriva del worktree (ADR 113 pto 1)", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const skillsInyectadas = ["citar-conocimiento"];
+
+      const queryFnSinCwd = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-sin-cwd"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-sin-cwd"),
+      ]);
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFnSinCwd,
+        undefined,
+        [],
+        undefined,
+        skillsInyectadas,
+      );
+
+      const queryFnConCwd = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-con-cwd"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-con-cwd"),
+      ]);
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFnConCwd,
+        undefined,
+        [],
+        "/tmp/harness/worktrees/wt-9",
+        skillsInyectadas,
+      );
+
+      expect(queryFnSinCwd.mock.calls[0]?.[0]?.options?.skills).toEqual(
+        queryFnConCwd.mock.calls[0]?.[0]?.options?.skills,
+      );
+      expect(queryFnConCwd.mock.calls[0]?.[0]?.options?.cwd).toBe("/tmp/harness/worktrees/wt-9");
+    });
+
+    it("una skill que no está en la lista inyectada nunca aparece en options.skills, sin importar el disco real", async () => {
+      const agent = makeAgent();
+      const context = makeContext();
+      const hookEngine = createHookEngine();
+      const queryFn = fakeQueryFn([
+        fakeSystemInitMessage("sdk-session-invariante"),
+        fakeResultSuccessMessage("respuesta", "sdk-session-invariante"),
+      ]);
+
+      await invokeModel(
+        agent,
+        context,
+        "hola",
+        hookEngine,
+        queryFn,
+        undefined,
+        [],
+        undefined,
+        ["solo-esta-skill"],
+      );
+
+      expect(queryFn.mock.calls[0]?.[0]?.options?.skills).toEqual(["solo-esta-skill"]);
     });
   });
 

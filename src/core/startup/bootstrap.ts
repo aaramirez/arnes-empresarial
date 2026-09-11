@@ -4,12 +4,12 @@
  *
  * Nota de alcance: el arc42 (líneas 506-508) señala que Registro de
  * Agentes, Registro de Comandos, Motor de Hooks y Registro de Skills se
- * cargan "al iniciar el arnés" sin que ningún lado fije el orden. En Hito 1
- * solo existen dos de esos cuatro registros — Registro de Comandos y
- * Registro de Skills son de hitos futuros y no se ejercitan acá. Esta
- * función fija el orden entre los dos que sí existen hoy: Registro de
- * Agentes primero, Motor de Hooks después (ver justificación en los
- * comentarios de `bootstrapHarness` más abajo).
+ * cargan "al iniciar el arnés" sin que ningún lado fije el orden.
+ * `bootstrapHarness` fija el orden de tres de esos cuatro: Registro de
+ * Agentes primero, Motor de Hooks después, Registro de Skills tercero (ver
+ * justificación en los comentarios de `bootstrapHarness` más abajo). El
+ * Registro de Comandos vive fuera de esta secuencia, en
+ * `core/commands/comando-empleado.ts`, con su propio wiring.
  *
  * Esto NO es el entrypoint real del proceso — no hay todavía ningún
  * `src/index.ts`/`src/main.ts` en el repo. Ese entrypoint es la
@@ -19,6 +19,13 @@
 
 import { listAgentDefinitions, type AgentDefinition } from "../agents/definitions.js";
 import { hookEngine as defaultHookEngine, type HookEngine } from "../hooks/hook-engine.js";
+import { logTurnEvent } from "../logging/turn-logger.js";
+import type { ResultadoDescubrimiento } from "../skills/descubrir-skills.js";
+import { SkillInvalidaError } from "../skills/skill-frontmatter.js";
+import {
+  descubrirSkillsHabilitadas,
+  SKILLS_LOG_CORRELATION_ID,
+} from "../skills/skills-habilitadas.js";
 
 /**
  * Raised when the harness cannot complete its startup sequence. The
@@ -37,6 +44,7 @@ export class HarnessBootstrapError extends Error {
 export interface HarnessRegistries {
   readonly agents: readonly AgentDefinition[];
   readonly hooks: HookEngine;
+  readonly skills: readonly string[];
 }
 
 /**
@@ -52,6 +60,9 @@ export interface HarnessRegistries {
 export function bootstrapHarness(
   listAgents: () => readonly AgentDefinition[] = listAgentDefinitions,
   hooks: HookEngine = defaultHookEngine,
+  descubrir: () => ResultadoDescubrimiento = () => descubrirSkillsHabilitadas(),
+  log: (event: string, fields?: Readonly<Record<string, unknown>>) => void = (event, fields) =>
+    logTurnEvent(SKILLS_LOG_CORRELATION_ID, event, fields),
 ): HarnessRegistries {
   // 1. Registro de Agentes primero: nada más en este hito depende de que
   //    exista todavía, y un arnés sin ningún agente definido no puede
@@ -79,5 +90,44 @@ export function bootstrapHarness(
   //    en Hito 1 el motor mínimo no tiene esa dependencia real todavía
   //    (registro vacío, ver hook-engine.ts), pero el orden queda fijado acá
   //    para cuando sí la tenga.
-  return { agents, hooks };
+
+  // 3. Registro de Skills tercero, después de Hooks — ninguna skill
+  //    inspecciona hooks ni agentes, así que entrar al final es el diff
+  //    mínimo (ADR 115 pto 1). `descubrir()` puede lanzar `SkillInvalidaError`
+  //    (clase propia de `skills/skill-frontmatter.ts`, para no forzar un
+  //    ciclo de imports entre `core/skills/` y `core/startup/`) — acá se
+  //    envuelve en `HarnessBootstrapError`, con el mismo molde que el paso 1
+  //    (ADR 111 pto 2).
+  let resultadoDescubrimiento: ResultadoDescubrimiento;
+  try {
+    resultadoDescubrimiento = descubrir();
+  } catch (error) {
+    const motivo =
+      error instanceof SkillInvalidaError
+        ? `rechazó ${error.ruta}: ${error.motivo}`
+        : `falló al cargar: ${error instanceof Error ? error.message : String(error)}`;
+    throw new HarnessBootstrapError(`el Registro de Skills ${motivo}`);
+  }
+
+  if (resultadoDescubrimiento.baseAusente) {
+    log("skills-carpeta-ausente");
+  } else {
+    for (const directorio of resultadoDescubrimiento.omitidos) {
+      log("skill-omitida-sin-skill-md", { directorio });
+    }
+    if (resultadoDescubrimiento.skills.length === 0) {
+      log("skills-registro-vacio");
+    } else {
+      log("skills-registro-cargado", {
+        cantidad: resultadoDescubrimiento.skills.length,
+        nombres: resultadoDescubrimiento.skills.map((skill) => skill.nombre),
+      });
+    }
+  }
+
+  return {
+    agents,
+    hooks,
+    skills: resultadoDescubrimiento.skills.map((skill) => skill.nombre),
+  };
 }

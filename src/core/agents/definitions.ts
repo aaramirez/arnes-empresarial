@@ -79,8 +79,19 @@ export const CONVERSATIONAL_AGENT_ID = "agente-conversacional";
  * because I2 (consulta de conocimiento) is an active business capability of
  * Hito 2 — the agent must answer questions about company policy, process,
  * or internal documentation from the real knowledge base instead of
- * guessing. A2A (I4) is still not active and Comandos/Skills are still not
- * exercised in this hito, so no other tool is granted.
+ * guessing. This note is scoped to `CONVERSATIONAL_AGENT` alone — it does
+ * NOT mean A2A/Comandos/Skills are inactive or that this is the only agent
+ * whose `allowedTools` matters when reasoning about tool exposure (a claim
+ * this comment used to make, corrected in `definicion-skills`, tarea 7, ADR
+ * 114): A2A (I4) has been active since `hito-3.0-a2a-servidor`, Comandos
+ * since `v1.4.0`, and Skills since `definicion-skills` itself. `PLANNER_AGENT`,
+ * `DEVELOPER_AGENT`, and `REVIEWER_AGENT` below all carry a static `Read` in
+ * their own `allowedTools`, not an empty set — and, per that same ADR 114,
+ * the three of them sometimes run as the *main* agent (not only as
+ * delegated subagents: `build-on-activity.ts`/`build-on-comando-empleado.ts`
+ * pass them as `invokeModel`'s first argument), so `Options.skills` reaches
+ * them too. What every agent shares without exception is that none of them
+ * has `Bash` in `allowedTools`.
  *
  * Consecuencia de seguridad (ADR 4): listing a tool in `allowedTools`
  * auto-approves every call the model makes to it — there is no per-call

@@ -172,7 +172,17 @@ import {
 import type { AgentDefinition } from "../agents/definitions.js";
 import { listSubagentDefinitions } from "../agents/definitions.js";
 import type { HookContext, HookEngine } from "../hooks/hook-engine.js";
+import { listarSkillsHabilitadas } from "../skills/skills-habilitadas.js";
 import type { AssembledContext } from "./assemble-context.js";
+
+/**
+ * El arnés SIEMPRE emite `settingSources: ["project"]`, nunca `["user"]` ni
+ * `"all"` (ADR 105, ADR 108 pto 2) — así el turno nunca hereda configuración
+ * de `~/.claude/` del operador que corre el proceso. Constante con nombre,
+ * copiada por spread en cada llamada a `toQueryOptions` (nunca pasada por
+ * referencia — mismo motivo que `skills: [...skills]` más abajo).
+ */
+const SETTING_SOURCES_DEL_ARNES = ["project"] as const;
 
 /**
  * The slice of `typeof query`'s shape this module actually depends on. See
@@ -314,6 +324,25 @@ function toSdkAgentDefinition(agent: AgentDefinition): SdkAgentDefinition {
  * la hay) viene de la combinación de `allowedTools`/`tools` (qué puede
  * invocarse) y del propio límite de filesystem del worktree que lo aloja
  * (qué existe para ser alcanzado) — nunca de `cwd` por sí solo.
+ *
+ * `definicion-skills`, tarea 6 — `settingSources`/`skills` (ADR 108): a
+ * diferencia de `resume`/`allowedTools`/`mcpServers`/`cwd` arriba, estas dos
+ * claves van DENTRO del literal inicial de `options`, nunca detrás de un
+ * `if`: con cero skills el arnés emite `skills: []` explícito, nunca omite
+ * la clave — el `.d.ts` es textual en que omitirla **no es** "skills
+ * apagadas" (línea 2058-2059). Ambas claves viajan por COPIA (`[...skills]`,
+ * `[...SETTING_SOURCES_DEL_ARNES]`), nunca por alias: el `.d.ts` las tipa
+ * mutables, y entregarle al SDK un alias de una constante o de un array del
+ * caller es entregarle la posibilidad de que un turno modifique la
+ * configuración del siguiente.
+ *
+ * **Nota de honestidad, obligatoria (ADR 108/113 pto 1)**: `options.skills`
+ * es un **filtro de contexto, no un sandbox** — los `SKILL.md` habilitados
+ * siguen en disco, alcanzables por cualquier agente con `Read` en su
+ * `allowedTools` (ADR 114), y no se guardan secretos en ellos (ADR 106
+ * límite 3). El filtro tampoco deriva del worktree: `skills` sale siempre
+ * de `listarSkillsHabilitadas()` sobre `main` — no hay firma por la que un
+ * `cwd`/`wt.ruta` pueda alcanzarlo (ADR 113 pto 1).
  */
 function toQueryOptions(
   agent: AgentDefinition,
@@ -321,6 +350,7 @@ function toQueryOptions(
   mcpServers?: Options["mcpServers"],
   subagentes: readonly AgentDefinition[] = listSubagentDefinitions(),
   cwd?: string,
+  skills: readonly string[] = listarSkillsHabilitadas(),
 ): Options {
   const options: Options = {
     agent: agent.id,
@@ -328,6 +358,8 @@ function toQueryOptions(
       [agent.id]: toSdkAgentDefinition(agent),
       ...Object.fromEntries(subagentes.map((s) => [s.id, toSdkAgentDefinition(s)])),
     },
+    settingSources: [...SETTING_SOURCES_DEL_ARNES],
+    skills: [...skills],
   };
 
   if (context.resumeSessionId !== undefined) {
@@ -381,6 +413,13 @@ function toQueryOptions(
  * also where the mandatory RD-10 honesty note about `cwd` lives (see that
  * function's doc).
  *
+ * `skills` (`definicion-skills`, tarea 6, ADR 108 pto 3) is a further
+ * optional trailing parameter, added after `cwd` for the exact same reason
+ * — every call site before this task keeps compiling and behaving
+ * unchanged. Default `listarSkillsHabilitadas()` (the process-memoized list
+ * from the Registro de Skills). Forwarded as-is to `toQueryOptions`, which
+ * is also where the ADR 108/113 honesty note about `skills` lives.
+ *
  * Throws `ModelResponseIncompleteError` if the turn ends without a usable
  * session id + response text. Lets any `queryFn` rejection propagate
  * unwrapped (error policy deferred to Hito 1, tarea 11).
@@ -394,8 +433,9 @@ export async function invokeModel(
   mcpServers?: Options["mcpServers"],
   subagentes: readonly AgentDefinition[] = listSubagentDefinitions(),
   cwd?: string,
+  skills: readonly string[] = listarSkillsHabilitadas(),
 ): Promise<InvokeModelResult> {
-  const options = toQueryOptions(agent, context, mcpServers, subagentes, cwd);
+  const options = toQueryOptions(agent, context, mcpServers, subagentes, cwd, skills);
 
   let sdkSessionId: string | undefined;
   let responseText: string | undefined;
