@@ -91,6 +91,7 @@ import {
   COMANDO_REPORTE_COMISIONES,
   COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
+  COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
@@ -184,6 +185,7 @@ import {
 import {
   LIMITE_LISTADO_A2A_ENTRANTES,
   LINEAS_PAGINA_A2A,
+  TASK_STATES_EN_CURSO,
   type EstadoSolicitudA2AEntrante,
   type ListadoSolicitudesA2AEntrantes,
   type SolicitudA2AEntranteStorePort,
@@ -865,6 +867,9 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     logTurnEvent(casoId, event, fields, logDeps);
   const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
   const propuestaStore: PropuestaStorePort = deps.propuestaStore ?? createPropuestaStore(db);
+  /** v3.4.0, `comando-visibilidad-a2a-entrante` tarea 8 — default: `createSolicitudA2AEntranteStore(db)`. */
+  const solicitudA2AEntranteStore: SolicitudA2AEntranteStorePort =
+    deps.solicitudA2AEntranteStore ?? createSolicitudA2AEntranteStore(db);
   // Hito 6, tarea 20 (ADR 85 + ADR 82): `clienteA2A` NO tiene default — su
   // ausencia ES el interruptor apagado, resuelto una sola vez en `main.ts`.
   const { clienteA2A } = deps;
@@ -1339,6 +1344,47 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   }
 
   /**
+   * `/ver-solicitudes-a2a [a2aTaskId]` (v3.4.0, `comando-visibilidad-a2a-
+   * entrante` tarea 8, ADR 134/143). Molde LITERAL de `manejarVerPropuesta`
+   * de arriba: UN SOLO PASO, SÍNCRONO, sin `await`, sin `createCaso`, y
+   * NUNCA lee ni escribe `confirmacionPendiente` — mostrar filas que ya
+   * existen es una lectura, punto. `privilegiado: true` ya lo garantizó la
+   * guarda del preámbulo (paso 6): no se duplica acá.
+   *
+   * ÚNICA diferencia con el molde: `registrar(...)` (ADR 143, revertido por
+   * el checkpoint) — `RESULTADO_ATENDIDA` cuando hay algo que mostrar
+   * (listado o detalle encontrado), `RESULTADO_NO_APLICABLE` cuando el id
+   * no existe, para que la auditoría distinga una divulgación de contenido
+   * de un id mal tipeado (ADR 138 pto 2). `casoId` viaja SOLO en modo
+   * detalle (varias filas en el listado, ninguna es "el" caso).
+   */
+  function manejarVerSolicitudesA2A(
+    comando: Extract<ComandoEmpleado, { tipo: "ver_solicitudes_a2a" }>,
+    ahora: string,
+  ): TuiTurnResult {
+    if (comando.a2aTaskId === undefined) {
+      const listado = solicitudA2AEntranteStore.listarPorEstados({ estados: TASK_STATES_EN_CURSO });
+      registrar({ comando: COMANDO_VER_SOLICITUDES_A2A, resultado: RESULTADO_ATENDIDA }, ahora);
+      return sistema(formatearListadoSolicitudesA2A(listado));
+    }
+
+    const vista = solicitudA2AEntranteStore.obtenerPorTaskId(comando.a2aTaskId);
+    if (vista === undefined) {
+      registrar({ comando: COMANDO_VER_SOLICITUDES_A2A, resultado: RESULTADO_NO_APLICABLE }, ahora);
+      return sistema(`No existe ninguna solicitud A2A ${comando.a2aTaskId}.`);
+    }
+    registrar(
+      {
+        comando: COMANDO_VER_SOLICITUDES_A2A,
+        ...(vista.casoId !== undefined ? { casoId: vista.casoId } : {}),
+        resultado: RESULTADO_ATENDIDA,
+      },
+      ahora,
+    );
+    return sistema(formatearDetalleSolicitudA2A(vista));
+  }
+
+  /**
    * `/consultar-kpi <consulta>` (Hito 6, tarea 20, ADR 85). UN SOLO PASO —
    * NUNCA lee ni escribe `confirmacionPendiente`, igual que
    * `manejarVerPropuesta`/`manejarSolicitud`. `privilegiado: true` ya lo
@@ -1697,6 +1743,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_CANCELAR_SOLICITUD, comando.solicitudId, ahora);
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
+      case "ver_solicitudes_a2a":
+        return manejarVerSolicitudesA2A(comando, ahora);
       case "consultar_kpi":
         return manejarConsultarKpi(comando, ahora);
       case "aplicar_propuesta":
