@@ -1,0 +1,13 @@
+
+> arnes-empresarial@0.1.0 test
+> vitest run
+
+
+ RUN  v4.1.11 C:/Users/Windows/Documents/UCAB/11 intensivo agosto 2026/Pasantia/arnes_empresarial
+
+
+ Test Files  114 passed | 1 skipped (115)
+      Tests  1881 passed | 3 skipped (1884)
+   Start at  22:28:01
+   Duration  6.82s (transform 8.18s, setup 0ms, import 21.43s, tests 29.14s, environment 42ms)
+

@@ -1,0 +1,1 @@
+No se pudo inicializar el arnés: el Registro de Skills rechazó .claude/skills/citar-conocimiento/SKILL.md: campo no permitido: 'allowed-tools'

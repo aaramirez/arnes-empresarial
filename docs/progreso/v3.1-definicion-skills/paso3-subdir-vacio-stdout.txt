@@ -1,0 +1,90 @@
+[1;1H[0J  _      _       _     _
+ | |    (_)     | |   | |
+ | |     _  __ _| |__ | |_
+ | |    | |/ _` | '_ \| __|
+ | |____| | (_| | | | | |_
+ |______|_|\__, |_| |_|\__|
+            __/ |
+           |___/
+arnés empresarial de IA
+┌──────────────────────────────────────────────────────────────────────────────┐
+│>                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+[2K[1A[2K[1A[2K[1A[2K[G
+ | |    (_)     | |   | |
+ | |     _  __ _| |__ | |_
+ | |    | |/ _` | '_ \| __|
+ | |____| | (_| | | | | |_
+ |______|_|\__, |_| |_|\__|
+            __/ |
+           |___/
+arnés empresarial de IA
+
+  ERROR Raw mode is not supported on the current process.stdin, which Ink uses
+       as input stream by default.
+       Read about how to prevent this error on
+       https://github.com/vadimdemedes/ink/#israwmodesupported
+
+ - Read about how to prevent this error on
+   https://github.com/vadimdemedes/ink/#israwmodesupported
+ -handleSetRawM (file:///C:/Users/Windows/Documents/UCAB/11%20intensivo%20agost
+  ode          o%202026/Pasantia/arnes_empresarial/node_modules/ink/build/compo
+               nents/App.js:108:23)
+ - (file:///C:/Users/Windows/Documents/UCAB/11%20intensivo%20agosto%202026/Pasa
+  ntia/arnes_empresarial/node_modules/ink/build/hooks/use-input.js:36:9)
+ -commitHookEffectLis (node_modules/react-reconciler/cjs/react-reconciler.devel
+  Mount              opment.js:14817:26)
+ -commitPassiveMountO (node_modules/react-reconciler/cjs/react-reconciler.devel
+  Fiber              opment.js:16648:11)
+ -commitPassiveMountEffect (node_modules/react-reconciler/cjs/react-reconciler.
+  _complete               development.js:16608:9)
+ -commitPassiveMountEffe (node_modules/react-reconciler/cjs/react-reconciler.de
+  ts_begin              velopment.js:16595:7)
+ -commitPassiveMountE (node_modules/react-reconciler/cjs/react-reconciler.devel
+  fects              opment.js:16583:3)
+ -flushPassiveEffect (node_modules/react-reconciler/cjs/react-reconciler.develo
+  Impl              pment.js:19221:3)
+ -flushPassiveEff (node_modules/react-reconciler/cjs/react-reconciler.developme
+  cts            nt.js:19166:14)
+ -performSyncWorkOn (node_modules/react-reconciler/cjs/react-reconciler.develop
+  oot              ment.js:18223:3)
+
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+ | |    (_)     | |   | |
+ | |     _  __ _| |__ | |_
+ | |    | |/ _` | '_ \| __|
+ | |____| | (_| | | | | |_
+ |______|_|\__, |_| |_|\__|
+            __/ |
+           |___/
+arnés empresarial de IA
+
+  ERROR Raw mode is not supported on the current process.stdin, which Ink uses
+       as input stream by default.
+       Read about how to prevent this error on
+       https://github.com/vadimdemedes/ink/#israwmodesupported
+
+ - Read about how to prevent this error on
+   https://github.com/vadimdemedes/ink/#israwmodesupported
+ -handleSetRawM (file:///C:/Users/Windows/Documents/UCAB/11%20intensivo%20agost
+  ode          o%202026/Pasantia/arnes_empresarial/node_modules/ink/build/compo
+               nents/App.js:108:23)
+ - (file:///C:/Users/Windows/Documents/UCAB/11%20intensivo%20agosto%202026/Pasa
+  ntia/arnes_empresarial/node_modules/ink/build/hooks/use-input.js:36:9)
+ -commitHookEffectLis (node_modules/react-reconciler/cjs/react-reconciler.devel
+  Mount              opment.js:14817:26)
+ -commitPassiveMountO (node_modules/react-reconciler/cjs/react-reconciler.devel
+  Fiber              opment.js:16648:11)
+ -commitPassiveMountEffect (node_modules/react-reconciler/cjs/react-reconciler.
+  _complete               development.js:16608:9)
+ -commitPassiveMountEffe (node_modules/react-reconciler/cjs/react-reconciler.de
+  ts_begin              velopment.js:16595:7)
+ -commitPassiveMountE (node_modules/react-reconciler/cjs/react-reconciler.devel
+  fects              opment.js:16583:3)
+ -flushPassiveEffect (node_modules/react-reconciler/cjs/react-reconciler.develo
+  Impl              pment.js:19221:3)
+ -flushPassiveEff (node_modules/react-reconciler/cjs/react-reconciler.developme
+  cts            nt.js:19166:14)
+ -performSyncWorkOn (node_modules/react-reconciler/cjs/react-reconciler.develop
+  oot              ment.js:18223:3)
+

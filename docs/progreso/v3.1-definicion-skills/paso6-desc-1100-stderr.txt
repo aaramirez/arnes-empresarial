@@ -1,0 +1,1 @@
+No se pudo inicializar el arnés: el Registro de Skills rechazó .claude/skills/citar-conocimiento/SKILL.md: el campo 'description' supera el tope de 1024 caracteres
