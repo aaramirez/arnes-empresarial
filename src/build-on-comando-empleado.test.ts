@@ -1063,6 +1063,116 @@ describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hi
   });
 });
 
+describe("buildOnComandoEmpleado — /cancelar-solicitud (comando-cancelar-solicitud, tarea 10)", () => {
+  function depsConSolicitudPropia(reloj: Reloj, overrides: Partial<BuildOnComandoEmpleadoDeps> = {}) {
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "ana" });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      cancelarSolicitud: vi.fn(() =>
+        makeSolicitudCreada({ id: "sol-1", solicitanteId: "ana", estado: SOLICITUD_ESTADO_CANCELADA }),
+      ),
+    });
+    return {
+      deps: makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true), ...overrides }),
+      solicitudStore,
+      registro,
+    };
+  }
+
+  it("primer /cancelar-solicitud sol-1: eco con el detalle propio y CERO escrituras; segundo: aplica el CAS y deja la ranura libre", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const { deps, solicitudStore, registro } = depsConSolicitudPropia(reloj);
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const primero = await handler("/cancelar-solicitud sol-1");
+    expect(primero.responseText.toLowerCase()).toContain("confirm");
+    expect(primero.responseText).toContain("una semana en marzo"); // detalle PROPIO
+    expect(solicitudStore.cancelarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+
+    const segundo = await handler("/cancelar-solicitud sol-1");
+    expect(solicitudStore.cancelarSolicitud).toHaveBeenCalledTimes(1);
+    expect(segundo.responseText).toBe("Listo: la solicitud sol-1 quedó cancelada.");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+
+    // La ranura de confirmación quedó en `undefined`: repetir pide eco de
+    // nuevo, no re-ejecuta el CAS (mismo molde que /aprobar-solicitud).
+    const tercero = await handler("/cancelar-solicitud sol-1");
+    expect(tercero.responseText.toLowerCase()).toContain("confirm");
+    expect(solicitudStore.cancelarSolicitud).toHaveBeenCalledTimes(1);
+  });
+
+  it("un eco pendiente de /aprobar-solicitud sol-1 no es consumido por un /cancelar-solicitud sol-1 posterior", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const { deps, solicitudStore } = depsConSolicitudPropia(reloj);
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const ecoAprobar = await handler("/aprobar-solicitud sol-1");
+    expect(ecoAprobar.responseText.toLowerCase()).toContain("confirm");
+
+    // La clave de confirmación incluye la acción: /cancelar-solicitud no
+    // coincide con el eco de /aprobar-solicitud pendiente, así que pide SU
+    // PROPIO eco en vez de ejecutar directamente.
+    const ecoCancelar = await handler("/cancelar-solicitud sol-1");
+    expect(ecoCancelar.responseText.toLowerCase()).toContain("confirm");
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(solicitudStore.cancelarSolicitud).not.toHaveBeenCalled();
+  });
+
+  it("un tercero no puede cancelar: respuesta explicativa, sin confirmacionPendiente armada y sin el detalle ajeno en la respuesta", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitudAjena = makeSolicitudCreada({
+      id: "sol-1",
+      casoId: "caso-sol-9",
+      solicitanteId: "emp-otro",
+      detalle: "detalle-secreto-del-dueno",
+    });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitudAjena]) });
+    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler); // "ana", no es la dueña de sol-1
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const primero = await handler("/cancelar-solicitud sol-1");
+    expect(primero.responseText.toLowerCase()).toContain("no es tuya");
+    expect(primero.responseText).not.toContain("detalle-secreto-del-dueno");
+    expect(solicitudStore.cancelarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+
+    // Sin `confirmacionPendiente` armada: repetir el mismo comando vuelve a
+    // rechazar en vez de "consumir" una confirmación fantasma.
+    const segundo = await handler("/cancelar-solicitud sol-1");
+    expect(segundo.responseText.toLowerCase()).toContain("no es tuya");
+    expect(segundo.responseText).not.toContain("detalle-secreto-del-dueno");
+    expect(solicitudStore.cancelarSolicitud).not.toHaveBeenCalled();
+  });
+
+  it("solicitudId inexistente responde el mensaje nuevo de cancelar; /aprobar-solicitud sobre el mismo id conserva el mensaje actual", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
+    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const cancelar = await handler("/cancelar-solicitud fantasma");
+    expect(cancelar.responseText).toBe(
+      "No hay ninguna solicitud fantasma tuya pendiente de cancelación. Si ya fue aprobada o rechazada, no se puede retirar.",
+    );
+
+    const aprobar = await handler("/aprobar-solicitud fantasma");
+    expect(aprobar.responseText).toBe("No hay ninguna solicitud fantasma pendiente de resolución.");
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+});
+
 describe("buildOnComandoEmpleado — /ver-propuesta (Hito 5.1, tarea 31, ADR 60 pto 1, ADR 69)", () => {
   /**
    * Nota de alcance declarada (tarea 31, mismo criterio que la nota de la

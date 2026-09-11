@@ -573,6 +573,20 @@ const ACCION_SOLICITUD_COMANDO: Record<AccionSolicitud, string> = {
 };
 
 /**
+ * Mensaje de "no encontrada" por `AccionSolicitud` (ADR 132, ADR 130 pto 5).
+ * `aprobar`/`rechazar` reproducen el literal previo BYTE POR BYTE — cambiarlo
+ * regresionaría sus tests actuales, que no se tocan. `cancelar` evita sugerir
+ * "no existe": el mismo texto cubre tanto "no existe" como "ya fue resuelta"
+ * (ADR 125 — sin lector sin filtro de estado que los distinga).
+ */
+const MENSAJE_SOLICITUD_NO_ENCONTRADA: Record<AccionSolicitud, (id: string) => string> = {
+  [ACCION_APROBAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
+  [ACCION_RECHAZAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
+  [ACCION_CANCELAR_SOLICITUD]: (id) =>
+    `No hay ninguna solicitud ${id} tuya pendiente de cancelación. Si ya fue aprobada o rechazada, no se puede retirar.`,
+};
+
+/**
  * `comando` de `registro_acciones_empleado` para cada `AccionPropuesta`
  * (Hito 5.1, tarea 32) — mismo criterio que `ACCION_SOLICITUD_COMANDO`: la
  * transición CAS + fila de auditoría del camino feliz la resuelve
@@ -1042,7 +1056,12 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       );
 
       if (resultado.resultado === "no_aplicable") {
-        return sistema(`No hay ninguna solicitud ${solicitudIdInput} pendiente de resolución.`);
+        return sistema(MENSAJE_SOLICITUD_NO_ENCONTRADA[accion](solicitudIdInput));
+      }
+      // Chequeo de dueño (ADR 130): corre ANTES de armar el eco, así que
+      // cubre este paso Y el paso confirmado con una sola rama acá.
+      if (resultado.resultado === "no_es_dueno") {
+        return sistema(`La solicitud ${resultado.itemId} no es tuya: sólo quien la creó puede cancelarla.`);
       }
       if (resultado.resultado !== "requiere_confirmacion") {
         return sistema("No se pudo procesar ese comando.");
@@ -1085,6 +1104,14 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         );
       }
       return sistema("Esa solicitud ya no está pendiente: no se aplicó nada.");
+    }
+
+    // Inalcanzable en la práctica: el eco sólo se arma para el dueño (rama de
+    // arriba), así que nunca hay una `confirmacionPendiente` de un tercero
+    // que llegue hasta acá. Se maneja explícito de todos modos — más barato
+    // que razonarlo en cada revisión.
+    if (resultado.resultado === "no_es_dueno") {
+      return sistema(`La solicitud ${resultado.itemId} no es tuya: sólo quien la creó puede cancelarla.`);
     }
 
     return sistema("No se pudo procesar ese comando.");
@@ -1519,6 +1546,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_APROBAR_SOLICITUD, comando.solicitudId, ahora);
       case "rechazar_solicitud":
         return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
+      case "cancelar_solicitud":
+        return manejarResolucionSolicitud(ACCION_CANCELAR_SOLICITUD, comando.solicitudId, ahora);
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
       case "consultar_kpi":
