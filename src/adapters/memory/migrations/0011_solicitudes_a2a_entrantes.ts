@@ -33,9 +33,11 @@
  * `resultado` NULLABLE: sólo se llena en `TASK_STATE_COMPLETED`. Sin ella,
  * `GetTask` no tendría nada que devolver (ADR 87).
  *
- * Un solo índice: hay un único patrón de lectura real — la evidencia de
- * `docs/progreso/` y el volcado por caso (`listSolicitudesA2AEntrantesPorCaso`,
- * §7.2). Ninguna pantalla ni comando filtra por `estado`.
+ * Un solo índice, sobre `caso_id`: era el único patrón de lectura real al
+ * momento de esta migración — la evidencia de `docs/progreso/` y el volcado
+ * por caso (`listSolicitudesA2AEntrantesPorCaso`, §7.2). La migración 0012
+ * agrega el índice sobre `estado` cuando comando-visibilidad-a2a-entrante
+ * introduce el filtro por estado.
  */
 export const migration0011SolicitudesA2AEntrantes = {
   id: "0011_solicitudes_a2a_entrantes",

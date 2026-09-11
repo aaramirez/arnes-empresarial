@@ -2541,8 +2541,8 @@ describe("repository", () => {
     });
   });
 
-  describe("solicitudes_a2a_entrantes (migración 0011)", () => {
-    it("crea la tabla solicitudes_a2a_entrantes y el índice idx_solicitudes_a2a_entrantes_caso", () => {
+  describe("solicitudes_a2a_entrantes (migraciones 0011, 0012)", () => {
+    it("crea la tabla solicitudes_a2a_entrantes y los índices idx_solicitudes_a2a_entrantes_caso e idx_solicitudes_a2a_entrantes_estado", () => {
       db = openDatabase(":memory:");
 
       const tableNames = (
@@ -2558,6 +2558,38 @@ describe("repository", () => {
 
       expect(tableNames).toContain("solicitudes_a2a_entrantes");
       expect(indexNames).toContain("idx_solicitudes_a2a_entrantes_caso");
+      expect(indexNames).toContain("idx_solicitudes_a2a_entrantes_estado");
+
+      const pragmaIndexNames = (
+        db!
+          .prepare("PRAGMA index_list(solicitudes_a2a_entrantes)")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      expect(pragmaIndexNames).toEqual(
+        expect.arrayContaining([
+          "idx_solicitudes_a2a_entrantes_caso",
+          "idx_solicitudes_a2a_entrantes_estado",
+        ]),
+      );
+    });
+
+    it("correr las migraciones dos veces seguidas no falla (IF NOT EXISTS)", () => {
+      db = openDatabase(":memory:");
+
+      const indexNamesAntes = (
+        db!
+          .prepare("PRAGMA index_list(solicitudes_a2a_entrantes)")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(() => runMigrations(db!)).not.toThrow();
+
+      const indexNamesDespues = (
+        db!
+          .prepare("PRAGMA index_list(solicitudes_a2a_entrantes)")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      expect(indexNamesDespues).toEqual(indexNamesAntes);
     });
   });
 
