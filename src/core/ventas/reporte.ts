@@ -27,7 +27,7 @@ import {
   VENTA_ESTADO_REEMBOLSADA,
   VENTA_ESTADO_REEMBOLSO_PENDIENTE,
 } from "./ventas-contract.js";
-import { calcularComision } from "./comision.js";
+import { calcularComision, periodoDeConfirmacion } from "./comision.js";
 
 /** Fila de comisión ya cruzada con su venta, tal como la lectura SQL la entrega (§6.2). */
 export interface ComisionConVenta {
@@ -86,18 +86,20 @@ export type ResolverPeriodoReporteResult =
  * parámetro (ISO 8601, ya resuelto por el dispatcher), nunca `new Date()`
  * acá adentro.
  *
- * - `argumento` ausente ⇒ mes corriente (`ahora.slice(0, 7)`).
+ * - `argumento` ausente ⇒ mes corriente (`periodoDeConfirmacion(ahora)`, el
+ *   mismo `slice(0, 7)` de `./comision.js` — mismo lado de la frontera
+ *   hexagonal que este módulo, sin ninguna razón para no reusarlo).
  * - `argumento` con formato `YYYY-MM` válido ⇒ se acepta tal cual.
  * - cualquier otro formato ⇒ `ok:false` con el mensaje de uso propio del
  *   comando (no el de `reporte-mensual.ts` — ADR 123 pto 3).
  *
- * Regex y default DUPLICADOS de `parsePeriodo` (`reporte-mensual.ts`), no
- * compartidos (ADR 118, ADR 121 pto 3). `reporte.test.ts` trae el test de
- * equivalencia que mitiga R6.
+ * Regex DUPLICADO de `parsePeriodo` (`reporte-mensual.ts`), NO compartido
+ * (ADR 118, ADR 121 pto 3) — esa es la única duplicación intencional acá.
+ * `reporte.test.ts` trae el test de equivalencia que mitiga R6.
  */
 export function resolverPeriodoReporte(argumento: string | undefined, ahora: string): ResolverPeriodoReporteResult {
   if (argumento === undefined) {
-    return { ok: true, periodo: ahora.slice(0, 7) };
+    return { ok: true, periodo: periodoDeConfirmacion(ahora) };
   }
   if (!PERIODO_REGEX.test(argumento)) {
     return { ok: false, mensaje: "Periodo inválido. Formato esperado: YYYY-MM." };
