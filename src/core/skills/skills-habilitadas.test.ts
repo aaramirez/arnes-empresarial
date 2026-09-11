@@ -63,3 +63,29 @@ describe("listarSkillsHabilitadas", () => {
     expect(mockedDescubrirSkills).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("descubrirSkillsHabilitadas — memo compartida con listarSkillsHabilitadas (Reviewer finding 1)", () => {
+  it("descubrirSkillsHabilitadas() puebla la memo que listarSkillsHabilitadas() después reutiliza, sin reinvocar descubrirSkills", async () => {
+    mockedDescubrirSkills.mockReturnValue(resultado(["demo"]));
+    const { descubrirSkillsHabilitadas, listarSkillsHabilitadas } = await import(
+      "./skills-habilitadas.js"
+    );
+
+    const resultadoCompleto = descubrirSkillsHabilitadas();
+
+    expect(resultadoCompleto.skills.map((skill) => skill.nombre)).toEqual(["demo"]);
+    expect(listarSkillsHabilitadas()).toEqual(["demo"]);
+    expect(mockedDescubrirSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it("listarSkillsHabilitadas() puebla la memo que descubrirSkillsHabilitadas() después reutiliza — comparten memo en cualquier orden", async () => {
+    mockedDescubrirSkills.mockReturnValue(resultado(["demo"]));
+    const { descubrirSkillsHabilitadas, listarSkillsHabilitadas } = await import(
+      "./skills-habilitadas.js"
+    );
+
+    expect(listarSkillsHabilitadas()).toEqual(["demo"]);
+    expect(descubrirSkillsHabilitadas().skills.map((skill) => skill.nombre)).toEqual(["demo"]);
+    expect(mockedDescubrirSkills).toHaveBeenCalledTimes(1);
+  });
+});

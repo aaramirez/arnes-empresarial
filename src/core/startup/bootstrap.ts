@@ -20,9 +20,12 @@
 import { listAgentDefinitions, type AgentDefinition } from "../agents/definitions.js";
 import { hookEngine as defaultHookEngine, type HookEngine } from "../hooks/hook-engine.js";
 import { logTurnEvent } from "../logging/turn-logger.js";
-import { descubrirSkills, type ResultadoDescubrimiento } from "../skills/descubrir-skills.js";
+import type { ResultadoDescubrimiento } from "../skills/descubrir-skills.js";
 import { SkillInvalidaError } from "../skills/skill-frontmatter.js";
-import { SKILLS_LOG_CORRELATION_ID } from "../skills/skills-habilitadas.js";
+import {
+  descubrirSkillsHabilitadas,
+  SKILLS_LOG_CORRELATION_ID,
+} from "../skills/skills-habilitadas.js";
 
 /**
  * Raised when the harness cannot complete its startup sequence. The
@@ -57,7 +60,7 @@ export interface HarnessRegistries {
 export function bootstrapHarness(
   listAgents: () => readonly AgentDefinition[] = listAgentDefinitions,
   hooks: HookEngine = defaultHookEngine,
-  descubrir: () => ResultadoDescubrimiento = () => descubrirSkills(),
+  descubrir: () => ResultadoDescubrimiento = () => descubrirSkillsHabilitadas(),
   log: (event: string, fields?: Readonly<Record<string, unknown>>) => void = (event, fields) =>
     logTurnEvent(SKILLS_LOG_CORRELATION_ID, event, fields),
 ): HarnessRegistries {
