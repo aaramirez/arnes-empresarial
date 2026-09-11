@@ -47,6 +47,7 @@ function makeStore(overrides: Partial<SolicitudStorePort> = {}): SolicitudStoreP
     listarSolicitudesPendientes: vi.fn(() => [buildSolicitud()]),
     aprobarSolicitud: vi.fn(() => undefined),
     rechazarSolicitud: vi.fn(() => undefined),
+    cancelarSolicitud: vi.fn(() => undefined),
     ...overrides,
   };
 }

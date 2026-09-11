@@ -194,6 +194,7 @@ import {
   listSolicitudesInternas,
   aprobarSolicitudInterna,
   rechazarSolicitudInterna,
+  cancelarSolicitudInterna,
   getCasoById,
   CasoNotFoundError,
   insertPropuestaCambio,
@@ -464,6 +465,10 @@ export function createSolicitudStore(db: Database.Database): SolicitudStorePort 
     },
     rechazarSolicitud(input) {
       const row = rechazarSolicitudInterna(db, input);
+      return row ? toPortSolicitud(row) : undefined;
+    },
+    cancelarSolicitud(input) {
+      const row = cancelarSolicitudInterna(db, input);
       return row ? toPortSolicitud(row) : undefined;
     },
   };

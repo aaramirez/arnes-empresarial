@@ -219,6 +219,20 @@ describe("SolicitudStorePort", () => {
         solicitudes[idx] = actualizada;
         return actualizada;
       },
+      cancelarSolicitud(input: ResolucionSolicitudInput) {
+        const idx = solicitudes.findIndex(
+          (s) => s.id === input.solicitudId && s.estado === SOLICITUD_ESTADO_PENDIENTE,
+        );
+        if (idx === -1) return undefined;
+        const actualizada: SolicitudInterna = {
+          ...solicitudes[idx]!,
+          estado: SOLICITUD_ESTADO_CANCELADA,
+          resueltaPor: input.empleadoId,
+          resueltaAt: input.ahora,
+        };
+        solicitudes[idx] = actualizada;
+        return actualizada;
+      },
     };
 
     return { store, solicitudes };

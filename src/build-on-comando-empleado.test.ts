@@ -179,6 +179,7 @@ function makeSolicitudStore(overrides: Partial<SolicitudStorePort> = {}): Solici
     listarSolicitudesPendientes: vi.fn(() => []),
     aprobarSolicitud: vi.fn(() => undefined),
     rechazarSolicitud: vi.fn(() => undefined),
+    cancelarSolicitud: vi.fn(() => undefined),
     ...overrides,
   };
 }
@@ -2037,6 +2038,36 @@ describe("createSolicitudStore", () => {
       expect(() =>
         store.adjuntarDictamen({ solicitudId: "sol-1", dictamen: "ok", ahora: TIMESTAMP }),
       ).not.toThrow();
+    });
+  });
+
+  it("cancelarSolicitud: transiciona una fila pendiente a cancelada sin lanzar (comando-cancelar-solicitud, tarea 7)", () => {
+    withDb((db) => {
+      const store = createSolicitudStore(db);
+      const creada = store.crearSolicitudConCaso({
+        caso: { id: "caso-1", tipo: "solicitud_interna", estado: SOLICITUD_ESTADO_PENDIENTE },
+        solicitud: {
+          id: "sol-1",
+          solicitanteId: "emp-1",
+          tipo: SOLICITUD_TIPO_VACACIONES,
+          detalle: "detalle",
+          estado: SOLICITUD_ESTADO_PENDIENTE,
+        },
+        timestamp: TIMESTAMP,
+      });
+
+      let cancelada: SolicitudInterna | undefined;
+      expect(() => {
+        cancelada = store.cancelarSolicitud({
+          solicitudId: creada.id,
+          casoId: creada.casoId,
+          empleadoId: "emp-1",
+          accionId: "accion-1",
+          ahora: TIMESTAMP,
+        });
+      }).not.toThrow();
+
+      expect(cancelada?.estado).toBe(SOLICITUD_ESTADO_CANCELADA);
     });
   });
 });

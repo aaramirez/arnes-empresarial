@@ -64,7 +64,7 @@ export interface SolicitudInterna {
   /** `undefined` = el subagente validador no corrió o falló — la ausencia es la traza del fallo, no un bug. */
   readonly dictamen?: string;
   readonly dictaminadaAt?: string;
-  /** Solo escritos por el CAS de `/aprobar-solicitud`/`/rechazar-solicitud`. */
+  /** Escritos por el CAS de `/aprobar-solicitud`/`/rechazar-solicitud`/`/cancelar-solicitud` (ADR 131: cancelar también es una resolución, el autor queda como `resueltaPor`). */
   readonly resueltaPor?: string;
   readonly resueltaAt?: string;
   readonly createdAt: string;
@@ -107,6 +107,9 @@ export interface SolicitudStorePort {
 
   /** Idéntico a `aprobarSolicitud`, transiciona a `SOLICITUD_ESTADO_RECHAZADA`. */
   rechazarSolicitud(input: ResolucionSolicitudInput): SolicitudInterna | undefined;
+
+  /** Idéntico a `aprobarSolicitud`, transiciona a `SOLICITUD_ESTADO_CANCELADA`. */
+  cancelarSolicitud(input: ResolucionSolicitudInput): SolicitudInterna | undefined;
 }
 
 export interface CrearSolicitudConCasoInput {
