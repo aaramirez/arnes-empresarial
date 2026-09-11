@@ -18,10 +18,11 @@ export const COMANDO_LOG_CORRELATION_ID = "tui-comando";
 export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
 
 /**
- * Unión discriminada de los DIECISÉIS comandos (ADR 21, 34, 56, 69, 85 + uno
- * de `comando-reporte-comisiones`, ADR 117/119). `ayuda` no es un comando
- * más: es también el sumidero de todo lo malformado, y por eso el parser NO
- * tiene una rama de error.
+ * Unión discriminada de los DIECISIETE comandos (ADR 21, 34, 56, 69, 85 + uno
+ * de `comando-reporte-comisiones`, ADR 117/119 + uno de
+ * `comando-cancelar-solicitud`, ADR 127). `ayuda` no es un comando más: es
+ * también el sumidero de todo lo malformado, y por eso el parser NO tiene
+ * una rama de error.
  *
  * ★ `login.password` es el ÚNICO campo SECRETO de todo el núcleo. ★ No se
  *   loguea, no se persiste, no se devuelve en ningún `TuiTurnResult`, y no
@@ -51,6 +52,10 @@ export type ComandoEmpleado =
   | { readonly tipo: "solicitar"; readonly tipoSolicitud: string; readonly detalle: string }
   | { readonly tipo: "aprobar_solicitud"; readonly solicitudId?: string }
   | { readonly tipo: "rechazar_solicitud"; readonly solicitudId?: string }
+  /** Brazo NUEVO de `comando-cancelar-solicitud` (ADR 127). Mismo shape que
+   *  `aprobar_solicitud`/`rechazar_solicitud`: `solicitudId` OPCIONAL, forma
+   *  `id_opcional_solicitud` reusada sin cambios. */
+  | { readonly tipo: "cancelar_solicitud"; readonly solicitudId?: string }
   | { readonly tipo: "ver_propuesta"; readonly propuestaId?: string }
   | { readonly tipo: "aplicar_propuesta"; readonly propuestaId: string }
   | { readonly tipo: "descartar_propuesta"; readonly propuestaId: string; readonly motivo?: string }
@@ -111,9 +116,10 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los dieciséis descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * Los diecisiete descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
  * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
- * `comando-reporte-comisiones`, ADR 117/119), en el orden en que `/ayuda` los
+ * `comando-reporte-comisiones`, ADR 117/119 + uno de
+ * `comando-cancelar-solicitud`, ADR 127), en el orden en que `/ayuda` los
  * imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los
  * descriptores existentes no cambian de orden ni de forma.
  */
@@ -266,6 +272,15 @@ const DESCRIPTORES = [
     tipo: "reporte_comisiones",
   },
   {
+    nombre: "/cancelar-solicitud",
+    uso: "/cancelar-solicitud [solicitudId]",
+    ayuda: "Retira una solicitud propia que todavía está pendiente (lista las pendientes si se omite el id).",
+    privilegiado: true, // ADR 127
+    secreto: false,
+    forma: "id_opcional_solicitud", // reusada (ADR 56) — el SHAPE `{ solicitudId }` ya existe
+    tipo: "cancelar_solicitud",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -277,9 +292,10 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los dieciséis descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * Los diecisiete descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
  * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
- * `comando-reporte-comisiones`, ADR 117/119), en el orden en que `/ayuda` los
+ * `comando-reporte-comisiones`, ADR 117/119 + uno de
+ * `comando-cancelar-solicitud`, ADR 127), en el orden en que `/ayuda` los
  * imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
