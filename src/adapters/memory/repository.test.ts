@@ -26,6 +26,7 @@ import {
   aprobarSolicitudInterna,
   buscarCredencialEmpleado,
   cancelarSolicitudA2AEntrante,
+  cancelarSolicitudInterna,
   completarDelegacion,
   confirmarVentaConComision,
   crearSolicitudConCaso,
@@ -3473,6 +3474,73 @@ describe("repository", () => {
           .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
           .get("accion-1");
         expect(filaAccion).toBeUndefined();
+      });
+    });
+
+    describe("cancelarSolicitudInterna (comando-cancelar-solicitud, tarea 6)", () => {
+      it("CAS a cancelada + caso resuelto + UNA fila '/cancelar-solicitud'/'cancelada', resuelta_por es el propio solicitante", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        const solicitud = cancelarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "empleado-1",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+        });
+
+        expect(solicitud?.estado).toBe("cancelada");
+        expect(solicitud?.resueltaPor).toBe("empleado-1");
+        expect(solicitud?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+        expect(getCasoById(db, "caso-1")?.estado).toBe("resuelto");
+
+        const filas = db!
+          .prepare(
+            "SELECT id, empleado_id, comando, resultado, caso_id FROM registro_acciones_empleado WHERE caso_id = ?",
+          )
+          .all("caso-1") as { id: string; empleado_id: string; comando: string; resultado: string; caso_id: string }[];
+        expect(filas).toHaveLength(1);
+        expect(filas[0]).toEqual({
+          id: "accion-1",
+          empleado_id: "empleado-1",
+          comando: "/cancelar-solicitud",
+          resultado: "cancelada",
+          caso_id: "caso-1",
+        });
+      });
+
+      it("sobre una solicitud ya aprobada devuelve undefined y las tres tablas quedan identicas (snapshot antes/despues)", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        aprobarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-previa",
+          ahora: "2026-09-07T00:30:00.000Z",
+        });
+
+        const snapshotAntes = {
+          solicitudes: db!.prepare("SELECT * FROM solicitudes_internas").all(),
+          casos: db!.prepare("SELECT * FROM casos").all(),
+          acciones: db!.prepare("SELECT * FROM registro_acciones_empleado").all(),
+        };
+
+        const resultado = cancelarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "empleado-1",
+          accionId: "accion-cancelar",
+          ahora: "2026-09-07T02:00:00.000Z",
+        });
+
+        expect(resultado).toBeUndefined();
+        expect({
+          solicitudes: db!.prepare("SELECT * FROM solicitudes_internas").all(),
+          casos: db!.prepare("SELECT * FROM casos").all(),
+          acciones: db!.prepare("SELECT * FROM registro_acciones_empleado").all(),
+        }).toEqual(snapshotAntes);
       });
     });
   });

@@ -2192,6 +2192,20 @@ export function rechazarSolicitudInterna(
   });
 }
 
+/** CAS `pendiente_aprobacion_humana → cancelada` + `casos.estado → resuelto` + fila `cancelada`. */
+export function cancelarSolicitudInterna(
+  db: Database.Database,
+  input: ResolucionSolicitudDbInput,
+): SolicitudRow | undefined {
+  return resolverSolicitudTransaccional(db, input, {
+    estadoOrigen: "pendiente_aprobacion_humana",
+    estadoDestino: "cancelada",
+    estadoCaso: "resuelto",
+    comando: "/cancelar-solicitud",
+    resultado: "cancelada",
+  });
+}
+
 /**
  * Public shape of `propuestas_cambio`, camelCase — field-for-field the same
  * as `PropuestaCambio` in `src/core/propuestas/propuestas-contract.ts`
