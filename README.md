@@ -199,6 +199,19 @@ Comandos TUI privilegiados (Hito 5.1) para revisar el diff que produjo el Develo
 | `/aplicar-propuesta` | `/aplicar-propuesta <propuestaId>` | Aplica el patch de una propuesta de cambio aprobada. |
 | `/descartar-propuesta` | `/descartar-propuesta <propuestaId> [motivo]` | Descarta una propuesta de cambio pendiente sin aplicarla. |
 
+### Reporte de comisiones: dos vías
+
+Desde v3.2.0 hay dos formas de generar el mismo reporte mensual, y conviven a propósito (ADR 118) — no una reemplaza a la otra:
+
+| Vía | Cuándo usarla | Requiere sesión |
+| --- | --- | --- |
+| `npm run reporte:mensual -- --periodo <YYYY-MM>` | Operar la máquina: SSH, un `cron` del sistema operativo, un pipe a un archivo, o cualquier caso sin la TUI montada. | No |
+| `/reporte-comisiones [periodo]` (comando TUI privilegiado) | Operar el negocio: un empleado con sesión (`/login`) consulta el reporte durante su turno conversacional. | Sí |
+
+Sin argumento, ambas resuelven al mes corriente. Las dos vías reusan exactamente las mismas funciones puras y los mismos lectores del repositorio, así que no pueden divergir.
+
+> **Ancho de terminal**: el reporte usa un layout de 77 columnas fijas; en terminales más angostas Ink lo envuelve línea por línea. Recomendado: terminal ≥80 columnas al usar `/reporte-comisiones`.
+
 ### Skills (`.claude/skills/`)
 
 El arnés descubre skills en `.claude/skills/<nombre>/SKILL.md` — no en `src/core/skills/` (ese directorio es el cargador en TypeScript; el contenido de cada skill vive en el árbol versionado del repo, fuera de `src/`). Una skill empaqueta un procedimiento opcional que el modelo puede elegir invocar durante el turno; a diferencia de `allowedTools`, habilitarla no concede ninguna herramienta nueva.
