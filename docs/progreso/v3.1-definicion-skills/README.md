@@ -48,9 +48,26 @@ No se pudo inicializar el arnés: el Registro de Skills rechazó .claude/skills/
 
 Tope portable **1024** confirmado en ejecución real, no solo en el test unitario (`skill-frontmatter.test.ts`).
 
-## Paso 7 — Turno real desde la TUI citando con `citar-conocimiento`
+## Paso 7 — Turno real citando con `citar-conocimiento` ✅
 
-**PENDIENTE — requiere ejecución humana.** Este paso invoca el modelo real vía Claude Agent SDK (costo de API real, y requiere leer la respuesta e interactuar con la TUI interactiva) — no lo ejecuté sin tu confirmación explícita. Los pasos 1-6, 8-13 ya prueban de forma determinística y sin costo que `options.skills`/`options.settingSources` llegan correctos al SDK (`invoke-model.test.ts:532-705`, cubre exactamente este contrato con dobles). Falta la demostración end-to-end: hacer una pregunta de política real desde la TUI y confirmar visualmente que la respuesta cita con el formato de `citar-conocimiento/SKILL.md`.
+**Desviación declarada del paso literal**: en vez de tipear en la TUI interactiva (Ink, modo raw, no automatizable de forma confiable desde este entorno), invoqué el mismo `onSubmit` (`SubmitPromptHandler`) que `main.ts` le pasa a la TUI — `buildOnSubmit(caso.id, memory, hooks, agents, undefined, createKnowledgeAdapter(...))` — con el arnés bootstrapeado real (`bootstrapHarness()`, `openDatabase("data/harness.db")`, `createCaso` real). Es el mismo camino de producción (`resolveTurn` → `handleTurn` → `invokeModel` → SDK real), solo sin la capa de renderizado de Ink en el medio. Llamada real al modelo, costo de API real — corrida con tu autorización explícita.
+
+Pregunta real: *"Segun la documentacion interna del proyecto, como se agrega una nueva skill al arnes? Cita la fuente."* Respuesta completa en [`paso7-turno-real-stderr.txt`](paso7-turno-real-stderr.txt).
+
+**`Options` volcado del turno real** (instrumentación temporal en `toQueryOptions`, revertida apenas terminó la corrida — `git diff` confirmado limpio después):
+```json
+{
+  "agent": "agente-conversacional",
+  "settingSources": ["project"],
+  "skills": ["citar-conocimiento"],
+  "hasMcpServers": true,
+  "mcpServerNames": ["knowledge"],
+  "allowedTools": ["mcp__knowledge__query_knowledge_base"]
+}
+```
+`skills`/`settingSources` llegan exactamente como el diseño promete, en un turno real, no en un test con dobles.
+
+**Citación real, con matiz honesto**: el modelo citó consistentemente con `src` y `loc` — p. ej. *"(fuente: `openspec/changes/definicion-skills/specs/registro-skills/spec.md`, loc L1–L7)"* — pero **no reprodujo el formato literal del ejemplo de `citar-conocimiento/SKILL.md`** (`"(docs/politicas.md, L10)"`, sin la palabra "fuente:" ni el prefijo "loc", con un número de línea único en vez de un rango). El modelo demostrablemente USÓ la skill (cita con src/loc en cada afirmación, nunca inventó una fuente, avisó explícitamente que el grafo venía truncado en vez de rellenar con conocimiento propio — exactamente la sección "Cuando el vault no trae nada" del `SKILL.md`, aplicada de forma parcial y correcta) pero el estilo exacto de la cita varía turno a turno, como es esperable de una skill que es guía de estilo, no una plantilla forzada por código. Vale como evidencia de que el mecanismo funciona end-to-end; no vale como prueba de que el modelo copia el formato carácter por carácter — eso no es lo que `citar-conocimiento` garantiza (es contexto para el modelo, no un validador de salida).
 
 ## Paso 8 — Aclaración 2: skill fuera de `.claude/skills/` del repo no se habilita ✅
 
@@ -92,8 +109,9 @@ Resolución de RD-48 (`design.md` línea 517): *"Base relativa `.claude/skills` 
 
 | Paso | Estado |
 |---|---|
-| 1-6, 8-13 | ✅ Verificados con ejecución real, evidencia en esta carpeta |
-| 7 (turno real TUI) | ⏳ Pendiente — requiere ejecución humana (costo real de API) |
+| 1-13 | ✅ Verificados con ejecución real, evidencia en esta carpeta |
 | 14 | ✅ Esta carpeta + citas ya versionadas en `proposal.md`/`design.md` |
+
+**Los 14 pasos de `design.md` §8 están completos.**
 
 **Las 4 preguntas de `design.md` §13 para el checkpoint humano** (ADR 114 como enmienda vs. ADR nuevo; rigidez de la whitelist del ADR 110 pto 2; modestia deliberada de `citar-conocimiento`; costo de los dos escaneos del ADR 115 pto 4 — **hoy reducidos a uno solo por la corrección del hallazgo 1 del Reviewer**, RD-49 queda desactualizado y debería revisarse) siguen abiertas y no las resuelve esta verificación.
