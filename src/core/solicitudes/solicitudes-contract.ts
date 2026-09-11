@@ -41,10 +41,13 @@ export type SolicitudTipo = (typeof SOLICITUD_TIPOS)[number];
 export const SOLICITUD_ESTADO_PENDIENTE = CASO_ESTADO_PENDIENTE_APROBACION_HUMANA;
 export const SOLICITUD_ESTADO_APROBADA = "aprobada";
 export const SOLICITUD_ESTADO_RECHAZADA = "rechazada";
+/** Retiro por el propio autor, distinto de `rechazada` (auditoría: `resuelta_por` = el autor, no un tercero). */
+export const SOLICITUD_ESTADO_CANCELADA = "cancelada";
 export type SolicitudEstado =
   | typeof SOLICITUD_ESTADO_PENDIENTE
   | typeof SOLICITUD_ESTADO_APROBADA
-  | typeof SOLICITUD_ESTADO_RECHAZADA;
+  | typeof SOLICITUD_ESTADO_RECHAZADA
+  | typeof SOLICITUD_ESTADO_CANCELADA;
 
 /** Tope del listado sin argumento, espejo de `LIMITE_LISTADO_ESCALACIONES` (`ventas-contract.ts`). */
 export const LIMITE_LISTADO_SOLICITUDES = 20;

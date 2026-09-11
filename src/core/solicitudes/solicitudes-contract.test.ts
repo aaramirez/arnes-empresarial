@@ -5,6 +5,7 @@ import { CASO_ESTADO_PENDIENTE_APROBACION_HUMANA } from "../hitl/hitl-contract.j
 import {
   LIMITE_LISTADO_SOLICITUDES,
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
   SOLICITUD_TIPO_GASTO,
@@ -58,14 +59,26 @@ describe("SOLICITUD_ESTADO_APROBADA y SOLICITUD_ESTADO_RECHAZADA", () => {
     expect(SOLICITUD_ESTADO_RECHAZADA).toBe("rechazada");
   });
 
-  it("SolicitudEstado acepta los tres literales declarados", () => {
+  it("SolicitudEstado acepta los cuatro literales declarados", () => {
     const estados: readonly SolicitudEstado[] = [
       SOLICITUD_ESTADO_PENDIENTE,
       SOLICITUD_ESTADO_APROBADA,
       SOLICITUD_ESTADO_RECHAZADA,
+      SOLICITUD_ESTADO_CANCELADA,
     ];
 
-    expect(estados).toEqual(["pendiente_aprobacion_humana", "aprobada", "rechazada"]);
+    expect(estados).toEqual([
+      "pendiente_aprobacion_humana",
+      "aprobada",
+      "rechazada",
+      "cancelada",
+    ]);
+  });
+});
+
+describe("SOLICITUD_ESTADO_CANCELADA", () => {
+  it("es 'cancelada'", () => {
+    expect(SOLICITUD_ESTADO_CANCELADA).toBe("cancelada");
   });
 });
 
