@@ -322,6 +322,28 @@ function splitPrimerEspacio(texto: string): { readonly primero: string; readonly
 }
 
 /**
+ * Payload común a las 4 formas "id opcional de <algo>" (`id_opcional`,
+ * `id_opcional_solicitud`, `id_opcional_propuesta`, `id_opcional_periodo`;
+ * ADR 56, 69, 119): primer token del resto de la línea bajo la clave de
+ * payload `key`, o solo `{ tipo }` si no hay resto. `tipo` se recibe ya
+ * resuelto por quien llama — `descriptor.tipo` es la ÚNICA fuente de verdad
+ * (viene de DESCRIPTORES, igual que `esComandoPrivilegiado`) — gracias a que
+ * `DESCRIPTORES` está tipado como `as const satisfies readonly
+ * DescriptorInterno[]`, TypeScript narrowea `descriptor.tipo` a los
+ * literales reales de cada forma en el sitio de la llamada, sin necesitar
+ * ningún cast ahí. El formato de `key` (p. ej. `periodo`, ADR 123 pto 1) NO
+ * se valida acá: eso es responsabilidad de otra capa.
+ */
+function idOpcionalPayload<T extends string, K extends string>(
+  tipo: T,
+  restoLinea: string | undefined,
+  key: K,
+): { readonly tipo: T } | ({ readonly tipo: T } & Record<K, string>) {
+  const valor = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
+  return valor === undefined ? { tipo } : ({ tipo, [key]: valor } as { readonly tipo: T } & Record<K, string>);
+}
+
+/**
  * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56, 69, 119):
  *  1. `texto.trimStart()` no empieza con `/`  → `undefined` (turno conversacional).
  *  2. Primer token → busca descriptor por `nombre`. No matchea → `{ ayuda, "desconocido", comando }`.
@@ -366,53 +388,19 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
   }
 
   if (descriptor.forma === "id_opcional") {
-    const ventaId = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
-    // `descriptor.tipo` es la ÚNICA fuente de verdad (viene de DESCRIPTORES,
-    // igual que `esComandoPrivilegiado`) — no se reconstruye comparando
-    // `descriptor.nombre` contra una cadena de literales. Gracias a que
-    // `DESCRIPTORES` está tipado como `as const satisfies readonly
-    // DescriptorInterno[]`, TypeScript narrowea `descriptor.tipo` a los
-    // literales reales de los comandos con `forma: "id_opcional"`
-    // ("aprobar_reembolso" | "rechazar_reembolso" | "reabrir_reembolso") sin
-    // necesitar ningún cast — si un descriptor `id_opcional` nuevo tuviera
-    // una forma incompatible con `ComandoEmpleado`, el compilador lo
-    // rechaza acá mismo, en vez de dejarlo pasar silenciosamente.
-    const tipo = descriptor.tipo;
-    return ventaId === undefined ? { tipo } : { tipo, ventaId };
+    return idOpcionalPayload(descriptor.tipo, restoLinea, "ventaId");
   }
 
   if (descriptor.forma === "id_opcional_solicitud") {
-    const solicitudId = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
-    // Mismo razonamiento que la rama "id_opcional" de arriba (ADR 56): el
-    // narrowing de `descriptor.tipo` a los literales reales de los
-    // comandos con `forma: "id_opcional_solicitud"` ("aprobar_solicitud" |
-    // "rechazar_solicitud") sale gratis de `as const satisfies readonly
-    // DescriptorInterno[]` — sin ningún cast.
-    const tipo = descriptor.tipo;
-    return solicitudId === undefined ? { tipo } : { tipo, solicitudId };
+    return idOpcionalPayload(descriptor.tipo, restoLinea, "solicitudId");
   }
 
   if (descriptor.forma === "id_opcional_propuesta") {
-    const propuestaId = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
-    // Mismo razonamiento que las ramas "id_opcional"/"id_opcional_solicitud"
-    // de arriba (ADR 69): el narrowing de `descriptor.tipo` al único literal
-    // real de forma "id_opcional_propuesta" ("ver_propuesta") sale gratis de
-    // `as const satisfies readonly DescriptorInterno[]` — sin ningún cast.
-    const tipo = descriptor.tipo;
-    return propuestaId === undefined ? { tipo } : { tipo, propuestaId };
+    return idOpcionalPayload(descriptor.tipo, restoLinea, "propuestaId");
   }
 
   if (descriptor.forma === "id_opcional_periodo") {
-    const periodo = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
-    // Mismo razonamiento que las ramas "id_opcional"/"id_opcional_solicitud"/
-    // "id_opcional_propuesta" de arriba (ADR 119): el narrowing de
-    // `descriptor.tipo` al único literal real de forma
-    // "id_opcional_periodo" ("reporte_comisiones") sale gratis de `as const
-    // satisfies readonly DescriptorInterno[]` — sin ningún cast. El formato
-    // de `periodo` NO se valida acá (ADR 123 pto 1): eso es responsabilidad
-    // de `resolverPeriodoReporte`, en otra capa.
-    const tipo = descriptor.tipo;
-    return periodo === undefined ? { tipo } : { tipo, periodo };
+    return idOpcionalPayload(descriptor.tipo, restoLinea, "periodo");
   }
 
   // forma === "id_mas_resto": /login, /soporte, /devolucion, /solicitar,
