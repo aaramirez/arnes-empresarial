@@ -199,6 +199,18 @@ Comandos TUI privilegiados (Hito 5.1) para revisar el diff que produjo el Develo
 | `/aplicar-propuesta` | `/aplicar-propuesta <propuestaId>` | Aplica el patch de una propuesta de cambio aprobada. |
 | `/descartar-propuesta` | `/descartar-propuesta <propuestaId> [motivo]` | Descarta una propuesta de cambio pendiente sin aplicarla. |
 
+### Comandos de solicitud interna
+
+Comandos TUI privilegiados para resolver una solicitud interna (`/solicitar`) mientras está `pendiente_aprobacion_humana`:
+
+| Comando | Uso | Descripción |
+| --- | --- | --- |
+| `/aprobar-solicitud` | `/aprobar-solicitud [solicitudId]` | Aprueba una solicitud interna pendiente (lista las pendientes si se omite el id). |
+| `/rechazar-solicitud` | `/rechazar-solicitud [solicitudId]` | Rechaza una solicitud interna pendiente (lista las pendientes si se omite el id). |
+| `/cancelar-solicitud` | `/cancelar-solicitud [solicitudId]` | Retira una solicitud propia que todavía está pendiente (lista las pendientes si se omite el id). |
+
+`/aprobar-solicitud` y `/rechazar-solicitud` los ejecuta cualquier empleado autorizado sobre solicitudes de otros. `/cancelar-solicitud`, en cambio, sólo lo puede ejecutar el propio solicitante (`solicitud.solicitanteId === sesion.empleadoId`) — un tercero recibe un rechazo sin ver el `detalle` de la solicitud. Los tres comandos sólo alcanzan una solicitud en estado `pendiente_aprobacion_humana`: una ya `aprobada`, `rechazada` o `cancelada` responde igual que un id inexistente. No existe `/reabrir-solicitud`: cancelar deja la solicitud en un estado terminal.
+
 ### Reporte de comisiones: dos vías
 
 Desde v3.2.0 hay dos formas de generar el mismo reporte mensual, y conviven a propósito (ADR 118) — no una reemplaza a la otra:

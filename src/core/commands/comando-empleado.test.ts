@@ -197,9 +197,10 @@ describe("parsearComando", () => {
     });
   });
 
-  it.each<["aprobar_solicitud" | "rechazar_solicitud", string]>([
+  it.each<["aprobar_solicitud" | "rechazar_solicitud" | "cancelar_solicitud", string]>([
     ["aprobar_solicitud", "/aprobar-solicitud"],
     ["rechazar_solicitud", "/rechazar-solicitud"],
+    ["cancelar_solicitud", "/cancelar-solicitud"],
   ])("%s sin id → solicitudId ausente", (tipo, prefijo) => {
     expect(parsearComando(prefijo)).toEqual({ tipo });
   });
@@ -238,6 +239,20 @@ describe("parsearComando", () => {
       tipo: "rechazar_solicitud",
       solicitudId: "sol-9",
     });
+  });
+
+  it("/cancelar-solicitud <solicitudId> → solicitudId presente (comando-cancelar-solicitud, tarea 9, ADR 127)", () => {
+    expect(parsearComando("/cancelar-solicitud S-7")).toEqual({
+      tipo: "cancelar_solicitud",
+      solicitudId: "S-7",
+    });
+  });
+
+  it("Forma id_opcional_solicitud reusada: el descriptor de /cancelar-solicitud NO agrega una forma propia (spec cancelacion-solicitud-interna)", () => {
+    const cancelar = (COMANDOS as unknown as readonly { readonly nombre: string; readonly forma: string }[]).find(
+      (d) => d.nombre === "/cancelar-solicitud",
+    );
+    expect(cancelar?.forma).toBe("id_opcional_solicitud");
   });
 
   it("/ver-propuesta sin propuestaId → propuestaId ausente (ADR 69)", () => {
@@ -377,9 +392,9 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los dieciséis descriptores (quince previos + /reporte-comisiones, comando-reporte-comisiones tarea 3)", () => {
+  it("lista los diecisiete descriptores (dieciséis previos + /cancelar-solicitud, comando-cancelar-solicitud tarea 9)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(16);
+    expect(COMANDOS).toHaveLength(17);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
@@ -417,6 +432,10 @@ describe("esComandoPrivilegiado", () => {
 
   it("reporte_comisiones es privilegiado (ADR 117, comando-reporte-comisiones tarea 3)", () => {
     expect(esComandoPrivilegiado("reporte_comisiones")).toBe(true);
+  });
+
+  it("cancelar_solicitud es privilegiado (ADR 127, comando-cancelar-solicitud tarea 9 — sin sesión el comando se rechaza antes de leer nada)", () => {
+    expect(esComandoPrivilegiado("cancelar_solicitud")).toBe(true);
   });
 });
 
@@ -461,9 +480,9 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
     ]);
   });
 
-  it("/ayuda sigue último (índice 15, tras la incorporación de /reporte-comisiones en comando-reporte-comisiones tarea 3)", () => {
-    expect(descriptores).toHaveLength(16);
-    expect(descriptores[15]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  it("/ayuda sigue último (índice 16, tras la incorporación de /cancelar-solicitud en comando-cancelar-solicitud tarea 9)", () => {
+    expect(descriptores).toHaveLength(17);
+    expect(descriptores[16]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
   });
 });
 
@@ -482,6 +501,32 @@ describe("regresión — el descriptor nuevo de comando-reporte-comisiones (tare
 
   it("/reporte-comisiones ocupa el índice 14, en el orden de design.md §3 / ADR 119", () => {
     expect(descriptores[14]).toMatchObject({ nombre: "/reporte-comisiones", forma: "id_opcional_periodo" });
+  });
+});
+
+describe("regresión — el descriptor nuevo de la tarea 9 (comando-cancelar-solicitud) va antes de /ayuda, que sigue último (ADR 127)", () => {
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("/cancelar-solicitud ocupa el índice 15, forma reusada id_opcional_solicitud (comando-cancelar-solicitud, tarea 9)", () => {
+    expect(descriptores[15]).toMatchObject({ nombre: "/cancelar-solicitud", forma: "id_opcional_solicitud" });
+  });
+});
+
+describe("Forma no gana un miembro nuevo (comando-cancelar-solicitud, tarea 9 — reusa id_opcional_solicitud, no crea una forma propia)", () => {
+  // `Forma` es un tipo privado de comando-empleado.ts, no exportado: se
+  // verifica en runtime sobre el conjunto de valores `forma` realmente en
+  // uso en COMANDOS, que es la proyección observable del tipo. El número de
+  // referencia es 6 (no 7): al momento de esta tarea, `id_opcional_periodo`
+  // ya fue incorporado por `comando-reporte-comisiones` (mergeado a main
+  // antes que este change), así que la unión ya tenía seis miembros -- no
+  // cinco -- antes de esta tarea.
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("el conjunto de formas distintas en uso sigue teniendo seis miembros (no siete) tras agregar /cancelar-solicitud", () => {
+    const formasDistintas = new Set(descriptores.map((d) => d.forma));
+    expect(formasDistintas.size).toBe(6);
   });
 });
 

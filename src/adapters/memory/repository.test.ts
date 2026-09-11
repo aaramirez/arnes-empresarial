@@ -26,6 +26,7 @@ import {
   aprobarSolicitudInterna,
   buscarCredencialEmpleado,
   cancelarSolicitudA2AEntrante,
+  cancelarSolicitudInterna,
   completarDelegacion,
   confirmarVentaConComision,
   crearSolicitudConCaso,
@@ -3402,6 +3403,103 @@ describe("repository", () => {
 
         expect(filtradas.map((s) => s.id)).toEqual(["solicitud-2"]);
       });
+
+      // ADR 144 pto 1 / design.md §6-bis fila 1 — spec cancelacion-solicitud-interna,
+      // escenario "Solicitudes ajenas no consumen el tope del listado (el bug del LIMIT)".
+      // Prueba que el hallazgo del Reviewer era un bug FUNCIONAL, no sólo cosmético: sin
+      // filtrar por solicitanteId en el SQL, el LIMIT se aplica ANTES de saber de quién es
+      // cada solicitud, así que 25 solicitudes ajenas más antiguas se comen el cupo entero
+      // y la propia de E, aunque exista, nunca llega a la respuesta.
+      it("no descarta la solicitud propia de E aunque 25 solicitudes ajenas mas antiguas llenen el LIMIT (bug del LIMIT)", () => {
+        db = openDatabase(":memory:");
+        for (let i = 0; i < 25; i += 1) {
+          crearSolicitudConCaso(
+            db!,
+            buildSolicitudConCasoInput({
+              caso: {
+                id: `caso-ajena-${i}`,
+                tipo: "solicitud_interna",
+                estado: "pendiente_aprobacion_humana",
+              },
+              solicitud: {
+                id: `solicitud-ajena-${i}`,
+                solicitanteId: "empleado-ajeno",
+                tipo: "vacaciones",
+                detalle: `solicitud ajena ${i}`,
+                estado: "pendiente_aprobacion_humana",
+              },
+              timestamp: `2026-09-07T00:00:${String(i).padStart(2, "0")}.000Z`,
+            }),
+          );
+        }
+        crearSolicitudConCaso(
+          db,
+          buildSolicitudConCasoInput({
+            caso: { id: "caso-propia-e", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+            solicitud: {
+              id: "solicitud-propia-e",
+              solicitanteId: "empleado-e",
+              tipo: "gasto",
+              detalle: "propia de E",
+              estado: "pendiente_aprobacion_humana",
+            },
+            // Creada DESPUES que las 25 ajenas, respetando ORDER BY created_at.
+            timestamp: "2026-09-07T00:01:00.000Z",
+          }),
+        );
+
+        const propias = listSolicitudesInternas(db, { solicitanteId: "empleado-e", limite: 20 });
+
+        expect(propias.map((s) => s.id)).toEqual(["solicitud-propia-e"]);
+      });
+
+      it("filtro combinado {solicitudId, solicitanteId}: matchea ambos o no devuelve nada", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        crearSegundaSolicitud();
+
+        // solicitud-1 existe pero es de empleado-1, no de empleado-2: el predicado
+        // combinado no puede matchear un id con el solicitante de otra fila.
+        const idPeroOtroSolicitante = listSolicitudesInternas(db, {
+          solicitudId: "solicitud-1",
+          solicitanteId: "empleado-2",
+        });
+        expect(idPeroOtroSolicitante).toEqual([]);
+
+        const idYSolicitanteCorrectos = listSolicitudesInternas(db, {
+          solicitudId: "solicitud-2",
+          solicitanteId: "empleado-2",
+        });
+        expect(idYSolicitanteCorrectos.map((s) => s.id)).toEqual(["solicitud-2"]);
+      });
+
+      it("LIMIT sigue aplicandose despues del filtro por solicitanteId: 21 solicitudes propias devuelven solo las `limite` mas antiguas", () => {
+        db = openDatabase(":memory:");
+        for (let i = 0; i < 21; i += 1) {
+          crearSolicitudConCaso(
+            db!,
+            buildSolicitudConCasoInput({
+              caso: { id: `caso-propia-${i}`, tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: `solicitud-propia-${i}`,
+                solicitanteId: "empleado-e",
+                tipo: "vacaciones",
+                detalle: `propia ${i}`,
+                estado: "pendiente_aprobacion_humana",
+              },
+              timestamp: `2026-09-07T00:00:${String(i).padStart(2, "0")}.000Z`,
+            }),
+          );
+        }
+
+        const propias = listSolicitudesInternas(db, { solicitanteId: "empleado-e", limite: 20 });
+
+        expect(propias).toHaveLength(20);
+        // ORDER BY created_at: las 20 mas antiguas (0..19), la 20 (mas nueva) queda afuera.
+        expect(propias.map((s) => s.id)).toEqual(
+          Array.from({ length: 20 }, (_, i) => `solicitud-propia-${i}`),
+        );
+      });
     });
 
     describe("aprobarSolicitudInterna / rechazarSolicitudInterna", () => {
@@ -3473,6 +3571,73 @@ describe("repository", () => {
           .prepare("SELECT id FROM registro_acciones_empleado WHERE id = ?")
           .get("accion-1");
         expect(filaAccion).toBeUndefined();
+      });
+    });
+
+    describe("cancelarSolicitudInterna (comando-cancelar-solicitud, tarea 6)", () => {
+      it("CAS a cancelada + caso resuelto + UNA fila '/cancelar-solicitud'/'cancelada', resuelta_por es el propio solicitante", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+        const solicitud = cancelarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "empleado-1",
+          accionId: "accion-1",
+          ahora: "2026-09-07T01:00:00.000Z",
+        });
+
+        expect(solicitud?.estado).toBe("cancelada");
+        expect(solicitud?.resueltaPor).toBe("empleado-1");
+        expect(solicitud?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+        expect(getCasoById(db, "caso-1")?.estado).toBe("resuelto");
+
+        const filas = db!
+          .prepare(
+            "SELECT id, empleado_id, comando, resultado, caso_id FROM registro_acciones_empleado WHERE caso_id = ?",
+          )
+          .all("caso-1") as { id: string; empleado_id: string; comando: string; resultado: string; caso_id: string }[];
+        expect(filas).toHaveLength(1);
+        expect(filas[0]).toEqual({
+          id: "accion-1",
+          empleado_id: "empleado-1",
+          comando: "/cancelar-solicitud",
+          resultado: "cancelada",
+          caso_id: "caso-1",
+        });
+      });
+
+      it("sobre una solicitud ya aprobada devuelve undefined y las tres tablas quedan identicas (snapshot antes/despues)", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        aprobarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "ana",
+          accionId: "accion-previa",
+          ahora: "2026-09-07T00:30:00.000Z",
+        });
+
+        const snapshotAntes = {
+          solicitudes: db!.prepare("SELECT * FROM solicitudes_internas").all(),
+          casos: db!.prepare("SELECT * FROM casos").all(),
+          acciones: db!.prepare("SELECT * FROM registro_acciones_empleado").all(),
+        };
+
+        const resultado = cancelarSolicitudInterna(db, {
+          solicitudId: "solicitud-1",
+          casoId: "caso-1",
+          empleadoId: "empleado-1",
+          accionId: "accion-cancelar",
+          ahora: "2026-09-07T02:00:00.000Z",
+        });
+
+        expect(resultado).toBeUndefined();
+        expect({
+          solicitudes: db!.prepare("SELECT * FROM solicitudes_internas").all(),
+          casos: db!.prepare("SELECT * FROM casos").all(),
+          acciones: db!.prepare("SELECT * FROM registro_acciones_empleado").all(),
+        }).toEqual(snapshotAntes);
       });
     });
   });

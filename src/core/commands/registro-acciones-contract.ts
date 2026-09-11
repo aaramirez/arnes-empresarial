@@ -19,6 +19,7 @@ export const COMANDO_APLICAR_PROPUESTA = "/aplicar-propuesta";
 export const COMANDO_DESCARTAR_PROPUESTA = "/descartar-propuesta";
 export const COMANDO_CONSULTAR_KPI = "/consultar-kpi"; // Hito 6, ADR 85
 export const COMANDO_REPORTE_COMISIONES = "/reporte-comisiones"; // comando-reporte-comisiones, ADR 117
+export const COMANDO_CANCELAR_SOLICITUD = "/cancelar-solicitud"; // v3.3.0
 
 /* ── Vocabulario de `registro_acciones_empleado.resultado` (tabla del ADR 27) ── */
 export const RESULTADO_EXITOSA = "exitosa"; // /login
@@ -33,6 +34,7 @@ export const RESULTADO_CREADA = "creada"; // /solicitar
 export const RESULTADO_APLICADA = "aplicada"; // /aplicar-propuesta
 export const RESULTADO_DESCARTADA = "descartada"; // /descartar-propuesta
 export const RESULTADO_NO_APLICABLE = "no_aplicable";
+export const RESULTADO_CANCELADA = "cancelada"; // /cancelar-solicitud (ADR 132/133)
 
 /**
  * Una fila del registro. `ventaId`/`casoId`/`propuestaId` son OPCIONALES

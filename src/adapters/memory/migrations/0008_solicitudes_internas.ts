@@ -26,7 +26,8 @@
  * es la traza del fallo, no un bug.
  *
  * `resuelta_por`/`resuelta_at` NULLABLE, sin FK: sólo las escribe el CAS de
- * `/aprobar-solicitud`/`/rechazar-solicitud`.
+ * `/aprobar-solicitud`/`/rechazar-solicitud`/`/cancelar-solicitud` — en la
+ * cancelación, `resuelta_por` es el propio `solicitante_id` (ADR 131).
  *
  * SIN columna `monto` y SIN `proyecto_id`, a propósito — es el punto entero
  * del ADR 43; ninguna solicitud de este hito lleva una cantidad de dinero

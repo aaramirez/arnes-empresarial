@@ -5,6 +5,7 @@ import { CASO_ESTADO_PENDIENTE_APROBACION_HUMANA } from "../hitl/hitl-contract.j
 import {
   LIMITE_LISTADO_SOLICITUDES,
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
   SOLICITUD_TIPO_GASTO,
@@ -58,14 +59,26 @@ describe("SOLICITUD_ESTADO_APROBADA y SOLICITUD_ESTADO_RECHAZADA", () => {
     expect(SOLICITUD_ESTADO_RECHAZADA).toBe("rechazada");
   });
 
-  it("SolicitudEstado acepta los tres literales declarados", () => {
+  it("SolicitudEstado acepta los cuatro literales declarados", () => {
     const estados: readonly SolicitudEstado[] = [
       SOLICITUD_ESTADO_PENDIENTE,
       SOLICITUD_ESTADO_APROBADA,
       SOLICITUD_ESTADO_RECHAZADA,
+      SOLICITUD_ESTADO_CANCELADA,
     ];
 
-    expect(estados).toEqual(["pendiente_aprobacion_humana", "aprobada", "rechazada"]);
+    expect(estados).toEqual([
+      "pendiente_aprobacion_humana",
+      "aprobada",
+      "rechazada",
+      "cancelada",
+    ]);
+  });
+});
+
+describe("SOLICITUD_ESTADO_CANCELADA", () => {
+  it("es 'cancelada'", () => {
+    expect(SOLICITUD_ESTADO_CANCELADA).toBe("cancelada");
   });
 });
 
@@ -172,7 +185,10 @@ describe("SolicitudStorePort", () => {
         return actualizada;
       },
       listarSolicitudesPendientes(filtro) {
-        const pendientes = solicitudes.filter((s) => s.estado === SOLICITUD_ESTADO_PENDIENTE);
+        let pendientes = solicitudes.filter((s) => s.estado === SOLICITUD_ESTADO_PENDIENTE);
+        if (filtro?.solicitanteId !== undefined) {
+          pendientes = pendientes.filter((s) => s.solicitanteId === filtro.solicitanteId);
+        }
         if (filtro?.solicitudId !== undefined) {
           return pendientes.filter((s) => s.id === filtro.solicitudId);
         }
@@ -200,6 +216,20 @@ describe("SolicitudStorePort", () => {
         const actualizada: SolicitudInterna = {
           ...solicitudes[idx]!,
           estado: SOLICITUD_ESTADO_RECHAZADA,
+          resueltaPor: input.empleadoId,
+          resueltaAt: input.ahora,
+        };
+        solicitudes[idx] = actualizada;
+        return actualizada;
+      },
+      cancelarSolicitud(input: ResolucionSolicitudInput) {
+        const idx = solicitudes.findIndex(
+          (s) => s.id === input.solicitudId && s.estado === SOLICITUD_ESTADO_PENDIENTE,
+        );
+        if (idx === -1) return undefined;
+        const actualizada: SolicitudInterna = {
+          ...solicitudes[idx]!,
+          estado: SOLICITUD_ESTADO_CANCELADA,
           resueltaPor: input.empleadoId,
           resueltaAt: input.ahora,
         };
@@ -299,5 +329,48 @@ describe("SolicitudStorePort", () => {
 
     const vacias = store.listarSolicitudesPendientes({ solicitudId: "no-existe" });
     expect(vacias).toHaveLength(0);
+  });
+
+  // ADR 144 pto 1 — el fake debe honrar `solicitanteId`, y el filtro combinado
+  // ({ solicitudId, solicitanteId } a la vez) no debe romper nada.
+  it("listarSolicitudesPendientes honra solicitanteId, solo o combinado con solicitudId", () => {
+    const { store } = crearStoreFalso();
+    store.crearSolicitudConCaso({
+      caso: { id: "caso-1", tipo: "solicitud_interna", estado: SOLICITUD_ESTADO_PENDIENTE },
+      solicitud: {
+        id: "solicitud-1",
+        solicitanteId: "empleado-1",
+        tipo: SOLICITUD_TIPO_VACACIONES,
+        detalle: "una semana en marzo",
+        estado: SOLICITUD_ESTADO_PENDIENTE,
+      },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    store.crearSolicitudConCaso({
+      caso: { id: "caso-2", tipo: "solicitud_interna", estado: SOLICITUD_ESTADO_PENDIENTE },
+      solicitud: {
+        id: "solicitud-2",
+        solicitanteId: "empleado-2",
+        tipo: SOLICITUD_TIPO_GASTO,
+        detalle: "viatico de marzo",
+        estado: SOLICITUD_ESTADO_PENDIENTE,
+      },
+      timestamp: "2026-01-01T00:00:01.000Z",
+    });
+
+    const propias = store.listarSolicitudesPendientes({ solicitanteId: "empleado-1" });
+    expect(propias.map((s) => s.id)).toEqual(["solicitud-1"]);
+
+    const combinadoPropio = store.listarSolicitudesPendientes({
+      solicitudId: "solicitud-1",
+      solicitanteId: "empleado-1",
+    });
+    expect(combinadoPropio.map((s) => s.id)).toEqual(["solicitud-1"]);
+
+    const combinadoAjeno = store.listarSolicitudesPendientes({
+      solicitudId: "solicitud-1",
+      solicitanteId: "empleado-2",
+    });
+    expect(combinadoAjeno).toHaveLength(0);
   });
 });

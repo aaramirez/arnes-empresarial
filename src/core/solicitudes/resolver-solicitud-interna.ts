@@ -35,9 +35,30 @@ import type { SesionEmpleado } from "../auth/sesion.js";
 
 export const ACCION_APROBAR_SOLICITUD = "aprobar";
 export const ACCION_RECHAZAR_SOLICITUD = "rechazar";
-export type AccionSolicitud = typeof ACCION_APROBAR_SOLICITUD | typeof ACCION_RECHAZAR_SOLICITUD;
+export const ACCION_CANCELAR_SOLICITUD = "cancelar";
+export type AccionSolicitud =
+  | typeof ACCION_APROBAR_SOLICITUD
+  | typeof ACCION_RECHAZAR_SOLICITUD
+  | typeof ACCION_CANCELAR_SOLICITUD;
 
-export type ResolverSolicitudResult = ResolucionHitlResult<SolicitudInterna, AccionSolicitud, SolicitudEstado>;
+/** Única fuente de verdad para el gateo por acción (soloPropias + chequeo de dueño). */
+function esAccionAutoservicio(accion: AccionSolicitud): boolean {
+  return accion === ACCION_CANCELAR_SOLICITUD;
+}
+
+/**
+ * Genérico + lo propio de este dominio (ADR 126 consecuencia, ADR 130).
+ * `hitl-contract.ts` NO se toca. La variante `no_es_dueno` NO lleva `item`:
+ * el handler no puede filtrar el `detalle` de una solicitud ajena porque no
+ * lo recibe (R6, garantía estructural, no de disciplina).
+ */
+export type ResolverSolicitudResult =
+  | ResolucionHitlResult<SolicitudInterna, AccionSolicitud, SolicitudEstado>
+  | {
+      readonly resultado: "no_es_dueno";
+      readonly accion: AccionSolicitud;
+      readonly itemId: string;
+    };
 
 export interface ResolverSolicitudDeps {
   readonly store: SolicitudStorePort;
@@ -53,14 +74,36 @@ export interface ResolverSolicitudDeps {
   readonly limiteListado?: number;
 }
 
+const EVENTO_SOLICITUD_APLICADA: Record<AccionSolicitud, string> = {
+  [ACCION_APROBAR_SOLICITUD]: "solicitud-aprobada",
+  [ACCION_RECHAZAR_SOLICITUD]: "solicitud-rechazada",
+  [ACCION_CANCELAR_SOLICITUD]: "solicitud-cancelada",
+};
+
+/**
+ * `switch` con guarda de exhaustividad, NO un ternario (ADR 129, R5). Un
+ * ternario con un tercer valor futuro hace que caiga silenciosamente en la
+ * última rama con los tipos en verde. El `const _exhaustivo: never = accion`
+ * convierte cualquier valor sin rama propia en un error de `tsc --noEmit`.
+ * Refactor puro: mismo comportamiento, los 3 miembros de `AccionSolicitud`.
+ */
 function aplicarCas(
   store: SolicitudStorePort,
   accion: AccionSolicitud,
   input: ResolucionSolicitudInput,
 ): SolicitudInterna | undefined {
-  return accion === ACCION_APROBAR_SOLICITUD
-    ? store.aprobarSolicitud(input)
-    : store.rechazarSolicitud(input);
+  switch (accion) {
+    case ACCION_APROBAR_SOLICITUD:
+      return store.aprobarSolicitud(input);
+    case ACCION_RECHAZAR_SOLICITUD:
+      return store.rechazarSolicitud(input);
+    case ACCION_CANCELAR_SOLICITUD:
+      return store.cancelarSolicitud(input);
+    default: {
+      const _exhaustivo: never = accion;
+      throw new Error(`AccionSolicitud no soportada: ${String(_exhaustivo)}`);
+    }
+  }
 }
 
 /**
@@ -100,8 +143,19 @@ export function resolverSolicitudInterna(
 
   if (solicitudId === undefined) {
     const limite = deps.limiteListado ?? LIMITE_LISTADO_SOLICITUDES;
-    const items = store.listarSolicitudesPendientes({ limite });
-    logEvent("tui-comando", "solicitud-listada", { accion, cantidad: items.length });
+    // GATEADO por acción, misma fórmula del chequeo de dueño (ADR 130 pto 4).
+    // `aprobar`/`rechazar` pasan `{ limite }` BYTE POR BYTE como antes — sin la
+    // clave nueva, ni siquiera con `undefined`: los tests existentes quedan
+    // verdes sin tocarse, evidencia de que `:72` no se derogó (ADR 144 pto 2).
+    const soloPropias = esAccionAutoservicio(accion);
+    const items = store.listarSolicitudesPendientes(
+      soloPropias ? { limite, solicitanteId: sesion.empleadoId } : { limite },
+    );
+    logEvent("tui-comando", "solicitud-listada", {
+      accion,
+      cantidad: items.length,
+      ...(soloPropias ? { soloPropias: true } : {}),
+    });
     return { resultado: "listado", accion, items };
   }
 
@@ -115,6 +169,18 @@ export function resolverSolicitudInterna(
       motivo: MOTIVO_NO_ENCONTRADA,
     });
     return { resultado: "no_aplicable", accion, motivo: MOTIVO_NO_ENCONTRADA, itemId: solicitudId };
+  }
+
+  // GATEADO por acción: `/aprobar-solicitud` y `/rechazar-solicitud` conservan
+  // intacto el requirement `solicitud-interna-hitl:72` (R1). Acá, antes del
+  // `if (!confirmado)`, cubre los DOS pasos con una sola línea.
+  if (esAccionAutoservicio(accion) && solicitud.solicitanteId !== sesion.empleadoId) {
+    logEvent("tui-comando", "solicitud-cancelacion-no-autorizada", {
+      accion,
+      solicitudId,
+      empleadoId: sesion.empleadoId,
+    });
+    return { resultado: "no_es_dueno", accion, itemId: solicitudId };
   }
 
   if (!confirmado) {
@@ -147,8 +213,7 @@ export function resolverSolicitudInterna(
     };
   }
 
-  const evento = accion === ACCION_APROBAR_SOLICITUD ? "solicitud-aprobada" : "solicitud-rechazada";
-  logEvent(solicitud.casoId, evento, { solicitudId, empleadoId: sesion.empleadoId });
+  logEvent(solicitud.casoId, EVENTO_SOLICITUD_APLICADA[accion], { solicitudId, empleadoId: sesion.empleadoId });
 
   return { resultado: "aplicada", accion, item: solicitud, estadoFinal: aplicada.estado };
 }

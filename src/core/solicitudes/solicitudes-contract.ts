@@ -41,10 +41,13 @@ export type SolicitudTipo = (typeof SOLICITUD_TIPOS)[number];
 export const SOLICITUD_ESTADO_PENDIENTE = CASO_ESTADO_PENDIENTE_APROBACION_HUMANA;
 export const SOLICITUD_ESTADO_APROBADA = "aprobada";
 export const SOLICITUD_ESTADO_RECHAZADA = "rechazada";
+/** Retiro por el propio autor, distinto de `rechazada` (auditoría: `resuelta_por` = el autor, no un tercero). */
+export const SOLICITUD_ESTADO_CANCELADA = "cancelada";
 export type SolicitudEstado =
   | typeof SOLICITUD_ESTADO_PENDIENTE
   | typeof SOLICITUD_ESTADO_APROBADA
-  | typeof SOLICITUD_ESTADO_RECHAZADA;
+  | typeof SOLICITUD_ESTADO_RECHAZADA
+  | typeof SOLICITUD_ESTADO_CANCELADA;
 
 /** Tope del listado sin argumento, espejo de `LIMITE_LISTADO_ESCALACIONES` (`ventas-contract.ts`). */
 export const LIMITE_LISTADO_SOLICITUDES = 20;
@@ -61,7 +64,7 @@ export interface SolicitudInterna {
   /** `undefined` = el subagente validador no corrió o falló — la ausencia es la traza del fallo, no un bug. */
   readonly dictamen?: string;
   readonly dictaminadaAt?: string;
-  /** Solo escritos por el CAS de `/aprobar-solicitud`/`/rechazar-solicitud`. */
+  /** Escritos por el CAS de `/aprobar-solicitud`/`/rechazar-solicitud`/`/cancelar-solicitud` (ADR 131: cancelar también es una resolución, el autor queda como `resueltaPor`). */
   readonly resueltaPor?: string;
   readonly resueltaAt?: string;
   readonly createdAt: string;
@@ -89,9 +92,18 @@ export interface SolicitudStorePort {
     readonly ahora: string;
   }): SolicitudInterna | undefined;
 
-  /** `estado = SOLICITUD_ESTADO_PENDIENTE`, filtrable por id (ADR 38 de `v1.4.0`: nunca un lector por id sin filtro de estado). Default `LIMITE_LISTADO_SOLICITUDES`. */
+  /**
+   * `estado = SOLICITUD_ESTADO_PENDIENTE`, filtrable por id (ADR 38 de `v1.4.0`:
+   * nunca un lector por id sin filtro de estado) y, desde ADR 144, por
+   * `solicitanteId`. Ese filtro lo usa SÓLO el listado sin id de
+   * `/cancelar-solicitud`: la búsqueda POR ID no lo pasa nunca, porque necesita
+   * encontrar la solicitud ajena para que el chequeo de dueño devuelva
+   * `no_es_dueno` en vez de `no_encontrada` (ADR 126, alternativa rechazada 3).
+   * Default `LIMITE_LISTADO_SOLICITUDES`.
+   */
   listarSolicitudesPendientes(filtro?: {
     readonly solicitudId?: string;
+    readonly solicitanteId?: string; // ★ ADR 144
     readonly limite?: number;
   }): readonly SolicitudInterna[];
 
@@ -104,6 +116,9 @@ export interface SolicitudStorePort {
 
   /** Idéntico a `aprobarSolicitud`, transiciona a `SOLICITUD_ESTADO_RECHAZADA`. */
   rechazarSolicitud(input: ResolucionSolicitudInput): SolicitudInterna | undefined;
+
+  /** Idéntico a `aprobarSolicitud`, transiciona a `SOLICITUD_ESTADO_CANCELADA`. */
+  cancelarSolicitud(input: ResolucionSolicitudInput): SolicitudInterna | undefined;
 }
 
 export interface CrearSolicitudConCasoInput {

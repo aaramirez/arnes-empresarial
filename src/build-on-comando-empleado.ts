@@ -80,6 +80,7 @@ import {
   COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_CANCELAR_SOLICITUD,
   COMANDO_CONSULTAR_KPI,
   COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
@@ -133,6 +134,7 @@ import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.
 import { crearSolicitudInterna } from "./core/solicitudes/crear-solicitud-interna.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
   SOLICITUD_TIPOS,
@@ -143,6 +145,7 @@ import {
 } from "./core/solicitudes/solicitudes-contract.js";
 import {
   ACCION_APROBAR_SOLICITUD,
+  ACCION_CANCELAR_SOLICITUD,
   ACCION_RECHAZAR_SOLICITUD,
   resolverSolicitudInterna,
   type AccionSolicitud,
@@ -193,6 +196,7 @@ import {
   listSolicitudesInternas,
   aprobarSolicitudInterna,
   rechazarSolicitudInterna,
+  cancelarSolicitudInterna,
   getCasoById,
   CasoNotFoundError,
   insertPropuestaCambio,
@@ -394,7 +398,12 @@ function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
 }
 
 /** Vocabulario de `estado` para validar contra la base — mismo criterio que `SOLICITUD_TIPOS`. */
-const SOLICITUD_ESTADOS = [SOLICITUD_ESTADO_PENDIENTE, SOLICITUD_ESTADO_APROBADA, SOLICITUD_ESTADO_RECHAZADA] as const;
+const SOLICITUD_ESTADOS = [
+  SOLICITUD_ESTADO_PENDIENTE,
+  SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_RECHAZADA,
+  SOLICITUD_ESTADO_CANCELADA,
+] as const;
 
 /**
  * Lanzado por `toPortSolicitud` cuando una fila de `solicitudes_internas`
@@ -458,6 +467,10 @@ export function createSolicitudStore(db: Database.Database): SolicitudStorePort 
     },
     rechazarSolicitud(input) {
       const row = rechazarSolicitudInterna(db, input);
+      return row ? toPortSolicitud(row) : undefined;
+    },
+    cancelarSolicitud(input) {
+      const row = cancelarSolicitudInterna(db, input);
       return row ? toPortSolicitud(row) : undefined;
     },
   };
@@ -556,6 +569,21 @@ export function createPropuestaStore(db: Database.Database): PropuestaStorePort 
 const ACCION_SOLICITUD_COMANDO: Record<AccionSolicitud, string> = {
   [ACCION_APROBAR_SOLICITUD]: COMANDO_APROBAR_SOLICITUD,
   [ACCION_RECHAZAR_SOLICITUD]: COMANDO_RECHAZAR_SOLICITUD,
+  [ACCION_CANCELAR_SOLICITUD]: COMANDO_CANCELAR_SOLICITUD,
+};
+
+/**
+ * Mensaje de "no encontrada" por `AccionSolicitud` (ADR 132, ADR 130 pto 5).
+ * `aprobar`/`rechazar` reproducen el literal previo BYTE POR BYTE — cambiarlo
+ * regresionaría sus tests actuales, que no se tocan. `cancelar` evita sugerir
+ * "no existe": el mismo texto cubre tanto "no existe" como "ya fue resuelta"
+ * (ADR 125 — sin lector sin filtro de estado que los distinga).
+ */
+const MENSAJE_SOLICITUD_NO_ENCONTRADA: Record<AccionSolicitud, (id: string) => string> = {
+  [ACCION_APROBAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
+  [ACCION_RECHAZAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
+  [ACCION_CANCELAR_SOLICITUD]: (id) =>
+    `No hay ninguna solicitud ${id} tuya pendiente de cancelación. Si ya fue aprobada, rechazada o cancelada, no se puede retirar.`,
 };
 
 /**
@@ -585,9 +613,26 @@ function formatearLineaSolicitud(s: SolicitudInterna): string {
   return s.dictamen === undefined ? base : `${base} | dictamen ${s.dictamen}`;
 }
 
-function formatearListadoSolicitudes(items: readonly SolicitudInterna[]): string {
+/**
+ * Mensaje del listado sin id cuando `items` viene vacío, por `AccionSolicitud`
+ * (ADR 144 pto 4). `aprobar`/`rechazar` reproducen el literal histórico byte
+ * por byte — listan toda la organización (`:72` no derogado, ADR 144 pto 2),
+ * así que "no hay solicitudes para listar" sigue siendo la lectura correcta.
+ * `cancelar` es distinto a propósito: desde la tarea 16 su listado ya viene
+ * filtrado por `solicitanteId` (`soloPropias`), así que un `items` vacío acá
+ * NO significa que no haya solicitudes en la organización — sólo que el
+ * propio empleado no tiene ninguna pendiente. Reusar el mensaje genérico
+ * insinuaría lo primero.
+ */
+const MENSAJE_LISTADO_SOLICITUDES_VACIO: Record<AccionSolicitud, string> = {
+  [ACCION_APROBAR_SOLICITUD]: "No hay solicitudes para listar.",
+  [ACCION_RECHAZAR_SOLICITUD]: "No hay solicitudes para listar.",
+  [ACCION_CANCELAR_SOLICITUD]: "No tenés solicitudes pendientes para cancelar.",
+};
+
+function formatearListadoSolicitudes(items: readonly SolicitudInterna[], accion: AccionSolicitud): string {
   if (items.length === 0) {
-    return "No hay solicitudes para listar.";
+    return MENSAJE_LISTADO_SOLICITUDES_VACIO[accion];
   }
   return items.map(formatearLineaSolicitud).join("\n");
 }
@@ -1011,7 +1056,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       if (resultado.resultado !== "listado") {
         return sistema("No se pudo listar las solicitudes.");
       }
-      return sistema(formatearListadoSolicitudes(resultado.items));
+      return sistema(formatearListadoSolicitudes(resultado.items, accion));
     }
 
     const coincide =
@@ -1028,7 +1073,12 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       );
 
       if (resultado.resultado === "no_aplicable") {
-        return sistema(`No hay ninguna solicitud ${solicitudIdInput} pendiente de resolución.`);
+        return sistema(MENSAJE_SOLICITUD_NO_ENCONTRADA[accion](solicitudIdInput));
+      }
+      // Chequeo de dueño (ADR 130): corre ANTES de armar el eco, así que
+      // cubre este paso Y el paso confirmado con una sola rama acá.
+      if (resultado.resultado === "no_es_dueno") {
+        return sistema(`La solicitud ${resultado.itemId} no es tuya: sólo quien la creó puede cancelarla.`);
       }
       if (resultado.resultado !== "requiere_confirmacion") {
         return sistema("No se pudo procesar ese comando.");
@@ -1505,6 +1555,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_APROBAR_SOLICITUD, comando.solicitudId, ahora);
       case "rechazar_solicitud":
         return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
+      case "cancelar_solicitud":
+        return manejarResolucionSolicitud(ACCION_CANCELAR_SOLICITUD, comando.solicitudId, ahora);
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
       case "consultar_kpi":

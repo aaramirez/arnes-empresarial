@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MOTIVO_CAS, MOTIVO_NO_ENCONTRADA } from "../hitl/hitl-contract.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
   SOLICITUD_TIPO_VACACIONES,
@@ -11,6 +12,7 @@ import {
 } from "./solicitudes-contract.js";
 import {
   ACCION_APROBAR_SOLICITUD,
+  ACCION_CANCELAR_SOLICITUD,
   ACCION_RECHAZAR_SOLICITUD,
   resolverSolicitudInterna,
   type ResolverSolicitudDeps,
@@ -47,6 +49,7 @@ function makeStore(overrides: Partial<SolicitudStorePort> = {}): SolicitudStoreP
     listarSolicitudesPendientes: vi.fn(() => [buildSolicitud()]),
     aprobarSolicitud: vi.fn(() => undefined),
     rechazarSolicitud: vi.fn(() => undefined),
+    cancelarSolicitud: vi.fn(() => undefined),
     ...overrides,
   };
 }
@@ -252,6 +255,166 @@ describe("resolverSolicitudInterna", () => {
     expect(logEvent).toHaveBeenCalledWith("caso-9", "solicitud-aprobada", {
       solicitudId: "solicitud-1",
       empleadoId: "ana",
+    });
+  });
+
+  it("confirmado:true (cancelar) → store.cancelarSolicitud, nunca aprobarSolicitud/rechazarSolicitud, evento solicitud-cancelada (R5)", () => {
+    const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "ana" });
+    const resuelta = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", estado: SOLICITUD_ESTADO_CANCELADA });
+    const logEvent = vi.fn();
+    const store = makeStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      cancelarSolicitud: vi.fn(() => resuelta),
+    });
+    const deps = makeDeps({ store, logEvent });
+
+    const resultado = resolverSolicitudInterna(
+      { accion: ACCION_CANCELAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+
+    expect(store.cancelarSolicitud).toHaveBeenCalledTimes(1);
+    expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+    expect(resultado.resultado).toBe("aplicada");
+    if (resultado.resultado === "aplicada") {
+      expect(resultado.estadoFinal).toBe(SOLICITUD_ESTADO_CANCELADA);
+    }
+    expect(logEvent).toHaveBeenCalledWith("caso-9", "solicitud-cancelada", {
+      solicitudId: "solicitud-1",
+      empleadoId: "ana",
+    });
+  });
+
+  it("cancelar sobre una solicitud ajena → no_es_dueno, sin item, cero llamadas CAS, evento solicitud-cancelacion-no-autorizada (R6)", () => {
+    const solicitud = buildSolicitud({ id: "solicitud-1", solicitanteId: "emp-otro" });
+    const logEvent = vi.fn();
+    const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const deps = makeDeps({ store, logEvent });
+    const sesionYo: SesionEmpleado = { empleadoId: "emp-yo", iniciadaEn: "2026-09-07T09:00:00.000Z" };
+
+    const resultado = resolverSolicitudInterna(
+      { accion: ACCION_CANCELAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: false, sesion: sesionYo },
+      deps,
+    );
+
+    expect(resultado).toEqual({ resultado: "no_es_dueno", accion: ACCION_CANCELAR_SOLICITUD, itemId: "solicitud-1" });
+    expect("item" in resultado).toBe(false);
+    expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+    expect(store.cancelarSolicitud).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith("tui-comando", "solicitud-cancelacion-no-autorizada", {
+      accion: ACCION_CANCELAR_SOLICITUD,
+      solicitudId: "solicitud-1",
+      empleadoId: "emp-yo",
+    });
+  });
+
+  describe.each([
+    ["aprobar", ACCION_APROBAR_SOLICITUD],
+    ["rechazar", ACCION_RECHAZAR_SOLICITUD],
+  ] as const)(
+    "chequeo de dueño gateado por acción (R1): %s sobre solicitud ajena sigue pidiendo confirmación",
+    (_nombre, accion) => {
+      it("devuelve requiere_confirmacion, NO no_es_dueno", () => {
+        const solicitud = buildSolicitud({ id: "solicitud-1", solicitanteId: "emp-otro" });
+        const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+        const deps = makeDeps({ store });
+        const sesionYo: SesionEmpleado = { empleadoId: "emp-yo", iniciadaEn: "2026-09-07T09:00:00.000Z" };
+
+        const resultado = resolverSolicitudInterna(
+          { accion, solicitudId: "solicitud-1", confirmado: false, sesion: sesionYo },
+          deps,
+        );
+
+        expect(resultado).toEqual({ resultado: "requiere_confirmacion", accion, item: solicitud });
+        expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+        expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+        expect(store.cancelarSolicitud).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  describe.each([
+    ["cancelar", ACCION_CANCELAR_SOLICITUD, true],
+    ["aprobar", ACCION_APROBAR_SOLICITUD, false],
+    ["rechazar", ACCION_RECHAZAR_SOLICITUD, false],
+  ] as const)(
+    "listado sin id gateado por acción (R1, ADR 144 pto 2): %s",
+    (_nombre, accion, esperaSoloPropias) => {
+      it(
+        esperaSoloPropias
+          ? "llama a store.listarSolicitudesPendientes con { limite, solicitanteId: sesion.empleadoId }"
+          : "llama a store.listarSolicitudesPendientes con { limite } EXACTO, sin solicitanteId",
+        () => {
+          const store = makeStore();
+          const deps = makeDeps({ store });
+
+          resolverSolicitudInterna({ accion, confirmado: false, sesion: SESION }, deps);
+
+          if (esperaSoloPropias) {
+            expect(store.listarSolicitudesPendientes).toHaveBeenCalledWith({
+              limite: 20,
+              solicitanteId: SESION.empleadoId,
+            });
+          } else {
+            expect(store.listarSolicitudesPendientes).toHaveBeenCalledWith({ limite: 20 });
+          }
+        },
+      );
+    },
+  );
+
+  it(
+    "ANTI-REGRESIÓN (R8, ADR 144 pto 3): la búsqueda por id de una solicitud ajena NO se filtra por dueño en " +
+      "el store — sigue llamando listarSolicitudesPendientes con { solicitudId } SIN solicitanteId, y el " +
+      "resultado sigue siendo no_es_dueno, NO no_aplicable/no_encontrada. Este test es el candado explícito " +
+      "contra 'unificar' las dos llamadas a listarSolicitudesPendientes (rama A y rama B) por error.",
+    () => {
+      const solicitud = buildSolicitud({ id: "solicitud-1", solicitanteId: "emp-otro" });
+      const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+      const deps = makeDeps({ store });
+      const sesionYo: SesionEmpleado = { empleadoId: "emp-yo", iniciadaEn: "2026-09-07T09:00:00.000Z" };
+
+      const resultado = resolverSolicitudInterna(
+        { accion: ACCION_CANCELAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: false, sesion: sesionYo },
+        deps,
+      );
+
+      expect(store.listarSolicitudesPendientes).toHaveBeenCalledWith({ solicitudId: "solicitud-1" });
+      expect(store.listarSolicitudesPendientes).not.toHaveBeenCalledWith(
+        expect.objectContaining({ solicitanteId: expect.anything() }),
+      );
+      expect(resultado.resultado).toBe("no_es_dueno");
+      expect(resultado.resultado).not.toBe("no_aplicable");
+    },
+  );
+
+  describe("evento solicitud-listada y soloPropias (ADR 144 pto 5)", () => {
+    it("cancelar sin id emite soloPropias: true", () => {
+      const logEvent = vi.fn();
+      const store = makeStore();
+      const deps = makeDeps({ store, logEvent });
+
+      resolverSolicitudInterna({ accion: ACCION_CANCELAR_SOLICITUD, confirmado: false, sesion: SESION }, deps);
+
+      expect(logEvent).toHaveBeenCalledWith("tui-comando", "solicitud-listada", {
+        accion: ACCION_CANCELAR_SOLICITUD,
+        cantidad: 1,
+        soloPropias: true,
+      });
+    });
+
+    it("aprobar sin id emite el payload EXACTO { accion, cantidad } SIN la clave soloPropias", () => {
+      const logEvent = vi.fn();
+      const store = makeStore();
+      const deps = makeDeps({ store, logEvent });
+
+      resolverSolicitudInterna({ accion: ACCION_APROBAR_SOLICITUD, confirmado: false, sesion: SESION }, deps);
+
+      const llamada = logEvent.mock.calls.find(([, evento]) => evento === "solicitud-listada");
+      expect(llamada?.[2]).toEqual({ accion: ACCION_APROBAR_SOLICITUD, cantidad: 1 });
+      expect(llamada?.[2]).not.toHaveProperty("soloPropias");
     });
   });
 });
