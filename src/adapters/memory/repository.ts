@@ -2735,3 +2735,60 @@ export function listSolicitudesA2AEntrantesPorCaso(
     .all(casoId) as SolicitudA2AEntranteSqlRow[];
   return rows.map(rowToSolicitudA2AEntrante);
 }
+
+export interface ListadoSolicitudesA2AEntrantesRows {
+  readonly items: readonly SolicitudA2AEntranteRow[];
+  readonly hayMas: boolean;
+}
+
+/**
+ * Listado por estados (v3.4.0, `comando-visibilidad-a2a-entrante` tarea 3,
+ * design.md §3, ADR 140), molde de `listPropuestasCambio` (`:2346`) con su
+ * misma lección de eficiencia (Reviewer finding, `:2334-2344`): la cláusula
+ * se arma en JS y entra al SQL como una PERTENENCIA SIMPLE que
+ * `idx_solicitudes_a2a_entrantes_estado` (migración `0012`) sí resuelve con
+ * `SEARCH` — NUNCA un `(@x IS NULL OR estado IN ...)`, que el planner no
+ * puede resolver por índice. Verificado con `EXPLAIN QUERY PLAN` en el test
+ * de este archivo (R4).
+ *
+ * ★ Placeholders NOMBRADOS y no `?`: `better-sqlite3` NO permite mezclar
+ * parámetros nombrados y posicionales en una misma sentencia, y el `LIMIT`
+ * ya usa `@limite`. Mezclarlos falla en `all()`, no en `prepare()`.
+ *
+ * ★ `LIMIT @limite + 1` con descarte de la última: sin la fila extra, recibir
+ * `limite` filas es indistinguible de "hay exactamente `limite`" y de "hay
+ * cientos", y no se podría avisar del truncado sin mentir (R7).
+ *
+ * Orden `updated_at ASC`: el huérfano del Hallazgo 2 es la fila cuyo
+ * `updated_at` quedó CONGELADO en una sesión anterior; una tarea viva es la
+ * más reciente. Con `DESC`, el `LIMIT` descartaría exactamente las filas que
+ * el comando existe para mostrar (ADR 140 pto 4).
+ *
+ * `estados` son `string[]`, no `TaskState[]`: el vocabulario canónico vive en
+ * el núcleo y el SQL no lo conoce (`0011:29-31`, ADR 71 pto 5).
+ */
+export function listSolicitudesA2AEntrantesPorEstado(
+  db: Database.Database,
+  filtro: { readonly estados: readonly string[]; readonly limite: number },
+): ListadoSolicitudesA2AEntrantesRows {
+  // `IN ()` es un ERROR DE SINTAXIS en SQLite, no una lista vacía.
+  if (filtro.estados.length === 0) {
+    return { items: [], hayMas: false };
+  }
+
+  const placeholders = filtro.estados.map((_, i) => `@estado${i}`).join(", ");
+  const bindsEstados = Object.fromEntries(filtro.estados.map((estado, i) => [`estado${i}`, estado]));
+
+  const rows = db
+    .prepare(
+      `SELECT ${SOLICITUD_A2A_ENTRANTE_SELECT_COLUMNS}
+         FROM solicitudes_a2a_entrantes
+        WHERE estado IN (${placeholders})
+        ORDER BY updated_at
+        LIMIT @limite`,
+    )
+    .all({ ...bindsEstados, limite: filtro.limite + 1 }) as SolicitudA2AEntranteSqlRow[];
+
+  const hayMas = rows.length > filtro.limite;
+  return { items: rows.slice(0, filtro.limite).map(rowToSolicitudA2AEntrante), hayMas };
+}
