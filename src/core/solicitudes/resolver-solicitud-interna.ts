@@ -53,6 +53,11 @@ export interface ResolverSolicitudDeps {
   readonly limiteListado?: number;
 }
 
+const EVENTO_SOLICITUD_APLICADA: Record<AccionSolicitud, string> = {
+  [ACCION_APROBAR_SOLICITUD]: "solicitud-aprobada",
+  [ACCION_RECHAZAR_SOLICITUD]: "solicitud-rechazada",
+};
+
 /**
  * `switch` con guarda de exhaustividad, NO un ternario (ADR 129, R5). Un
  * ternario con un tercer valor futuro hace que caiga silenciosamente en la
@@ -161,8 +166,7 @@ export function resolverSolicitudInterna(
     };
   }
 
-  const evento = accion === ACCION_APROBAR_SOLICITUD ? "solicitud-aprobada" : "solicitud-rechazada";
-  logEvent(solicitud.casoId, evento, { solicitudId, empleadoId: sesion.empleadoId });
+  logEvent(solicitud.casoId, EVENTO_SOLICITUD_APLICADA[accion], { solicitudId, empleadoId: sesion.empleadoId });
 
   return { resultado: "aplicada", accion, item: solicitud, estadoFinal: aplicada.estado };
 }
