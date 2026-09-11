@@ -273,6 +273,8 @@ Extremos: Núcleo de Orquestación ↔ puerto *ModelProvider*.
 
 **Requerimiento satisfecho**: objetivo 6 — "Definición de comandos".
 
+**Nota (v3.2.0)**: `/reporte-comisiones` (comando-reporte-comisiones, ADR 116) es el primer comando privilegiado que expone un flujo de negocio de solo lectura ya existente fuera de la TUI (`npm run reporte:mensual`) — el reporte de comisiones deja de ser el único flujo de negocio del arnés que corre por fuera de este registro.
+
 ### Caja Blanca bloque de construcción 4: Motor de Hooks
 
 **Responsabilidad**: registra funciones que se disparan en puntos del ciclo de vida del turno (antes/después de una tool call, antes/después del turno completo), sobre el sistema de hooks nativo del Claude Agent SDK.
