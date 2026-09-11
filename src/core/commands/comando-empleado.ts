@@ -18,9 +18,10 @@ export const COMANDO_LOG_CORRELATION_ID = "tui-comando";
 export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
 
 /**
- * Unión discriminada de los DIECISIETE comandos (ADR 21, 34, 56, 69, 85 + uno
+ * Unión discriminada de los DIECIOCHO comandos (ADR 21, 34, 56, 69, 85 + uno
  * de `comando-reporte-comisiones`, ADR 117/119 + uno de
- * `comando-cancelar-solicitud`, ADR 127). `ayuda` no es un comando más: es
+ * `comando-cancelar-solicitud`, ADR 127 + uno de
+ * `comando-visibilidad-a2a-entrante`, ADR 138). `ayuda` no es un comando más: es
  * también el sumidero de todo lo malformado, y por eso el parser NO tiene
  * una rama de error.
  *
@@ -68,6 +69,11 @@ export type ComandoEmpleado =
    *  otra capa. La ausencia se resuelve al mes corriente en el handler, no
    *  en este parser puro y sin reloj. */
   | { readonly tipo: "reporte_comisiones"; readonly periodo?: string }
+  /** Brazo NUEVO de `comando-visibilidad-a2a-entrante` (ADR 56/138). Mismo
+   *  patrón que `ver_propuesta`/`reporte_comisiones`: `a2aTaskId` es
+   *  OPCIONAL — su ausencia lista las solicitudes A2A entrantes en curso,
+   *  su presencia muestra el detalle de una. */
+  | { readonly tipo: "ver_solicitudes_a2a"; readonly a2aTaskId?: string }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -100,6 +106,10 @@ export interface DescriptorComando {
  * mismo precedente otra vez: clave de payload `periodo`, para
  * `/reporte-comisiones`. El formato de `periodo` NO se valida acá (ADR 123
  * pto 1) — eso vive en `resolverPeriodoReporte`, en otra capa.
+ *
+ * `"id_opcional_a2a_task"` (ADR 56/138, `comando-visibilidad-a2a-entrante`)
+ * es el mismo precedente otra vez: clave de payload `a2aTaskId`, para
+ * `/ver-solicitudes-a2a`.
  */
 type Forma =
   | "sin_argumentos"
@@ -107,7 +117,8 @@ type Forma =
   | "id_mas_resto"
   | "id_opcional_solicitud"
   | "id_opcional_propuesta"
-  | "id_opcional_periodo";
+  | "id_opcional_periodo"
+  | "id_opcional_a2a_task";
 
 interface DescriptorInterno extends DescriptorComando {
   readonly forma: Forma;
@@ -116,11 +127,12 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los diecisiete descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * Los dieciocho descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
  * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
  * `comando-reporte-comisiones`, ADR 117/119 + uno de
- * `comando-cancelar-solicitud`, ADR 127), en el orden en que `/ayuda` los
- * imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los
+ * `comando-cancelar-solicitud`, ADR 127 + uno de
+ * `comando-visibilidad-a2a-entrante`, ADR 138), en el orden en que `/ayuda`
+ * los imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los
  * descriptores existentes no cambian de orden ni de forma.
  */
 const DESCRIPTORES = [
@@ -281,6 +293,19 @@ const DESCRIPTORES = [
     tipo: "cancelar_solicitud",
   },
   {
+    nombre: "/ver-solicitudes-a2a",
+    uso: "/ver-solicitudes-a2a [a2aTaskId]",
+    ayuda: "Muestra las solicitudes A2A entrantes en curso (o el detalle de una, si se pasa el id de tarea).",
+    // `privilegiado: true` (ADR 138) — mismo criterio ya escrito para
+    // `/ver-propuesta`, `/consultar-kpi` y `/reporte-comisiones` arriba: el
+    // `resultado` de una tarea COMPLETED es la respuesta real que el arnés
+    // le dio a un tercero, construida sobre datos de la empresa.
+    privilegiado: true,
+    secreto: false,
+    forma: "id_opcional_a2a_task",
+    tipo: "ver_solicitudes_a2a",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -292,11 +317,12 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los diecisiete descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
+ * Los dieciocho descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
  * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
  * `comando-reporte-comisiones`, ADR 117/119 + uno de
- * `comando-cancelar-solicitud`, ADR 127), en el orden en que `/ayuda` los
- * imprime.
+ * `comando-cancelar-solicitud`, ADR 127 + uno de
+ * `comando-visibilidad-a2a-entrante`, ADR 138), en el orden en que `/ayuda`
+ * los imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
 
@@ -338,17 +364,18 @@ function splitPrimerEspacio(texto: string): { readonly primero: string; readonly
 }
 
 /**
- * Payload común a las 4 formas "id opcional de <algo>" (`id_opcional`,
- * `id_opcional_solicitud`, `id_opcional_propuesta`, `id_opcional_periodo`;
- * ADR 56, 69, 119): primer token del resto de la línea bajo la clave de
- * payload `key`, o solo `{ tipo }` si no hay resto. `tipo` se recibe ya
- * resuelto por quien llama — `descriptor.tipo` es la ÚNICA fuente de verdad
- * (viene de DESCRIPTORES, igual que `esComandoPrivilegiado`) — gracias a que
- * `DESCRIPTORES` está tipado como `as const satisfies readonly
- * DescriptorInterno[]`, TypeScript narrowea `descriptor.tipo` a los
- * literales reales de cada forma en el sitio de la llamada, sin necesitar
- * ningún cast ahí. El formato de `key` (p. ej. `periodo`, ADR 123 pto 1) NO
- * se valida acá: eso es responsabilidad de otra capa.
+ * Payload común a las 5 formas "id opcional de <algo>" (`id_opcional`,
+ * `id_opcional_solicitud`, `id_opcional_propuesta`, `id_opcional_periodo`,
+ * `id_opcional_a2a_task`; ADR 56, 69, 119, 138): primer token del resto de
+ * la línea bajo la clave de payload `key`, o solo `{ tipo }` si no hay
+ * resto. `tipo` se recibe ya resuelto por quien llama — `descriptor.tipo`
+ * es la ÚNICA fuente de verdad (viene de DESCRIPTORES, igual que
+ * `esComandoPrivilegiado`) — gracias a que `DESCRIPTORES` está tipado como
+ * `as const satisfies readonly DescriptorInterno[]`, TypeScript narrowea
+ * `descriptor.tipo` a los literales reales de cada forma en el sitio de la
+ * llamada, sin necesitar ningún cast ahí. El formato de `key` (p. ej.
+ * `periodo`, ADR 123 pto 1) NO se valida acá: eso es responsabilidad de
+ * otra capa.
  */
 function idOpcionalPayload<T extends string, K extends string>(
   tipo: T,
@@ -360,7 +387,7 @@ function idOpcionalPayload<T extends string, K extends string>(
 }
 
 /**
- * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56, 69, 119):
+ * PURA, sin I/O, sin reloj. Reglas, en orden (ADR 34, 56, 69, 119, 138):
  *  1. `texto.trimStart()` no empieza con `/`  → `undefined` (turno conversacional).
  *  2. Primer token → busca descriptor por `nombre`. No matchea → `{ ayuda, "desconocido", comando }`.
  *  3. Parseo por forma:
@@ -370,12 +397,14 @@ function idOpcionalPayload<T extends string, K extends string>(
  *     · id opcional de propuesta (`propuestaId`, ADR 69): mismo patrón otra vez, para `/ver-propuesta`.
  *     · id opcional de periodo (`periodo`, ADR 119): mismo patrón otra vez, para `/reporte-comisiones` — el
  *       formato de `periodo` NO se valida acá (ADR 123 pto 1).
+ *     · id opcional de tarea A2A (`a2aTaskId`, ADR 56/138): mismo patrón otra vez, para `/ver-solicitudes-a2a`.
  *     · id + resto: `split` en el PRIMER espacio; el resto entero con `trim` de bordes.
  *  4. Argumento obligatorio ausente o vacío → `{ ayuda, "argumentos", comando }`.
  *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/devolucion` (token), `/solicitar` (los DOS),
  *     `/aplicar-propuesta` (propuestaId), `/descartar-propuesta` (propuestaId).
  *     `motivo` de `/devolucion` y `/descartar-propuesta`, `ventaId` de los tres de reembolso, `solicitudId` de
- *     los dos de solicitud y `propuestaId` de `/ver-propuesta` son OPCIONALES.
+ *     los dos de solicitud, `propuestaId` de `/ver-propuesta` y `a2aTaskId` de `/ver-solicitudes-a2a` son
+ *     OPCIONALES.
  *  5. `/ayuda` explícito → `{ ayuda, "solicitada" }`.
  *
  * LÍMITE CONOCIDO Y TESTEADO (R4, resuelto por ADR 34): una contraseña con
@@ -417,6 +446,10 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
 
   if (descriptor.forma === "id_opcional_periodo") {
     return idOpcionalPayload(descriptor.tipo, restoLinea, "periodo");
+  }
+
+  if (descriptor.forma === "id_opcional_a2a_task") {
+    return idOpcionalPayload(descriptor.tipo, restoLinea, "a2aTaskId");
   }
 
   // forma === "id_mas_resto": /login, /soporte, /devolucion, /solicitar,
