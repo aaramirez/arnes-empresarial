@@ -1,4 +1,6 @@
 > Nota de proceso: mismo criterio sin herramienta de shell documentado en `proposal.md` de este change. No hay spec previa de esta capability — es un spec completo, no una delta. Cubre ADR 125 (alcance sólo `PENDIENTE`, garantizado por las dos cerraduras estructurales del ADR 38 y el CAS), ADR 126 (chequeo de dueño, modelado fuera de `MotivoNoAplicableHitl`), ADR 127 (`privilegiado: true`, sin categoría nueva) y ADR 128 (confirmación en dos pasos reusando `manejarResolucionSolicitud`, sin ampliar `confirmacionPendiente`) de `proposal.md`. Molde de formato: `openspec/changes/hito-3.0-a2a-servidor/specs/solicitud-a2a-entrante/spec.md`.
+>
+> **★ Segunda ronda (ADR 144, `design.md` §2-bis/§10).** Corrió sin herramienta de shell disponible (sólo `Read`/`Edit`/`Write`/`Grep`/`Glob`), mismo criterio documentado en `design.md` de esta misma ronda. Fuente única: `design.md` §2-bis (ADR 144) y §10 punto 1 y 2, que enumeran textualmente los escenarios exigidos. Cubre el hueco que el Reviewer encontró: `/cancelar-solicitud` **sin id** reusaba el listado sin filtrar por dueño (bug funcional — el `LIMIT 20` se comía las ajenas antes de cualquier filtro — más fuga de `detalle`/`solicitanteId`). El requirement nuevo de abajo y el escenario agregado a "Sólo el propio solicitante puede cancelar…" son los dos puntos que `design.md` §10 dejó pendientes para esta fase.
 
 # Cancelación de Solicitud Interna Specification
 
@@ -51,6 +53,37 @@ El sistema SHALL verificar `solicitud.solicitanteId === sesion.empleadoId` despu
 - GIVEN una solicitud pendiente de otro empleado
 - WHEN un tercero ejecuta `/cancelar-solicitud` con ese id
 - THEN recibe un rechazo explicativo, sin `confirmacionPendiente` armada y sin el `detalle` en la respuesta
+
+#### Scenario: La búsqueda por id de una solicitud ajena sigue encontrándola — no se filtra por dueño (ADR 144 pto 3)
+- GIVEN una solicitud pendiente de otro empleado, con id conocido
+- WHEN un tercero ejecuta `/cancelar-solicitud` con ese id explícito
+- THEN el sistema SHALL NOT excluirla de la búsqueda por dueño — la encuentra igual que al día de hoy
+- AND la respuesta SHALL seguir siendo `no_es_dueno` ("no es tuya…"), no la misma respuesta que un id inexistente
+
+### Requirement: El listado sin id (`/cancelar-solicitud` sin argumento) muestra únicamente las solicitudes pendientes del propio solicitante
+
+El sistema SHALL filtrar `listarSolicitudesPendientes` por `solicitanteId` **en el store** (parámetro SQL, no un recorte en memoria posterior) cuando la acción es `cancelar`. El límite del listado SHALL aplicarse **después** de ese filtro, de modo que solicitudes ajenas pendientes NUNCA consuman el cupo del listado propio. Cuando el filtro por dueño no deja resultados, el sistema SHALL mostrar un mensaje propio de la acción `cancelar`, distinto del mensaje genérico de listado vacío que usan `/aprobar-solicitud`/`/rechazar-solicitud`.
+
+#### Scenario: El listado sin id devuelve sólo las solicitudes propias
+- GIVEN el solicitante E tiene solicitudes propias pendientes y existen también solicitudes pendientes de otros empleados
+- WHEN E ejecuta `/cancelar-solicitud` sin id
+- THEN el listado devuelto contiene únicamente solicitudes con `solicitanteId === E`
+
+#### Scenario: Una solicitud ajena pendiente no aparece ni expone su detalle
+- GIVEN existen solicitudes pendientes de otros empleados junto con las propias de E
+- WHEN E ejecuta `/cancelar-solicitud` sin id
+- THEN ninguna solicitud ajena aparece en el listado
+- AND el `detalle` y el `solicitanteId` de las solicitudes ajenas no están presentes en la respuesta
+
+#### Scenario: Solicitudes ajenas no consumen el tope del listado (el bug del `LIMIT`)
+- GIVEN hay 25 solicitudes pendientes de otros empleados creadas antes que la única solicitud pendiente de E
+- WHEN E ejecuta `/cancelar-solicitud` sin id
+- THEN el listado devuelto incluye la solicitud propia de E, sin importar cuántas solicitudes ajenas la preceden en orden de creación
+
+#### Scenario: Sin solicitudes propias pendientes, mensaje propio de la acción cancelar
+- GIVEN E no tiene ninguna solicitud pendiente, aunque existan solicitudes pendientes de otros empleados
+- WHEN E ejecuta `/cancelar-solicitud` sin id
+- THEN el sistema responde con un mensaje que indica que E no tiene solicitudes pendientes propias, distinto del mensaje genérico "No hay solicitudes para listar." que usan `/aprobar-solicitud`/`/rechazar-solicitud`
 
 ### Requirement: Confirmación en dos pasos reusando `manejarResolucionSolicitud`, sin ampliar `confirmacionPendiente`
 
