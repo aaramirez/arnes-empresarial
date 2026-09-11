@@ -224,6 +224,18 @@ Sin argumento, ambas resuelven al mes corriente. Las dos vías reusan exactament
 
 > **Ancho de terminal**: el reporte usa un layout de 77 columnas fijas; en terminales más angostas Ink lo envuelve línea por línea. Recomendado: terminal ≥80 columnas al usar `/reporte-comisiones`.
 
+### Comandos de visibilidad A2A entrante
+
+Desde v3.4.0, comando TUI privilegiado (`privilegiado: true`) de solo lectura sobre las solicitudes A2A que otros agentes externos enviaron al arnés:
+
+| Comando | Uso | Descripción |
+| --- | --- | --- |
+| `/ver-solicitudes-a2a` | `/ver-solicitudes-a2a [a2aTaskId]` | Sin argumento, lista las solicitudes A2A entrantes en curso; con `a2aTaskId`, muestra el detalle de una. |
+
+El protocolo A2A v1.0.0 no transporta la identidad del agente externo que envió la solicitud: la columna correspondiente se rotula **"origen de transporte"**, nunca "agente" ni "solicitante" — es la dirección de red por la que llegó el mensaje, no una identidad verificada. `agente_externo_url` es siempre `NULL` en este hito.
+
+`/ver-solicitudes-a2a` es de **sólo lectura**: si una fila queda huérfana (por ejemplo, en `TASK_STATE_WORKING` porque el proceso que la atendía terminó sin actualizar su estado), este comando la hace visible pero no actúa sobre ella. Cancelarla o reconciliarla con un barrido de arranque queda fuera de su alcance.
+
 ### Skills (`.claude/skills/`)
 
 El arnés descubre skills en `.claude/skills/<nombre>/SKILL.md` — no en `src/core/skills/` (ese directorio es el cargador en TypeScript; el contenido de cada skill vive en el árbol versionado del repo, fuera de `src/`). Una skill empaqueta un procedimiento opcional que el modelo puede elegir invocar durante el turno; a diferencia de `allowedTools`, habilitarla no concede ninguna herramienta nueva.
