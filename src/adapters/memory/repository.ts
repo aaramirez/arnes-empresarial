@@ -2078,19 +2078,28 @@ const LIMITE_LISTADO_SOLICITUDES_DEFAULT = 20;
  */
 export function listSolicitudesInternas(
   db: Database.Database,
-  filtro: { readonly solicitudId?: string; readonly limite?: number } = {},
+  filtro: {
+    readonly solicitudId?: string;
+    readonly solicitanteId?: string; // ★ ADR 144
+    readonly limite?: number;
+  } = {},
 ): readonly SolicitudRow[] {
   const rows = db
     .prepare(
+      // `estado = '…'` queda como literal FIJO y sin envolver: es el predicado
+      // que usa `idx_solicitudes_estado`, y envolverlo en `(@x IS NULL OR …)`
+      // lo inutilizaría — lección ya pagada en `listPropuestasCambio` (:2370).
       `SELECT ${SOLICITUD_SELECT_COLUMNS}
          FROM solicitudes_internas
         WHERE estado = 'pendiente_aprobacion_humana'
           AND (@solicitudId IS NULL OR id = @solicitudId)
+          AND (@solicitanteId IS NULL OR solicitante_id = @solicitanteId)
         ORDER BY created_at
         LIMIT @limite`,
     )
     .all({
       solicitudId: filtro.solicitudId ?? null,
+      solicitanteId: filtro.solicitanteId ?? null,
       limite: filtro.limite ?? LIMITE_LISTADO_SOLICITUDES_DEFAULT,
     }) as SolicitudInternaSqlRow[];
   return rows.map(rowToSolicitud);

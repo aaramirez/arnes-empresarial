@@ -92,9 +92,18 @@ export interface SolicitudStorePort {
     readonly ahora: string;
   }): SolicitudInterna | undefined;
 
-  /** `estado = SOLICITUD_ESTADO_PENDIENTE`, filtrable por id (ADR 38 de `v1.4.0`: nunca un lector por id sin filtro de estado). Default `LIMITE_LISTADO_SOLICITUDES`. */
+  /**
+   * `estado = SOLICITUD_ESTADO_PENDIENTE`, filtrable por id (ADR 38 de `v1.4.0`:
+   * nunca un lector por id sin filtro de estado) y, desde ADR 144, por
+   * `solicitanteId`. Ese filtro lo usa SÓLO el listado sin id de
+   * `/cancelar-solicitud`: la búsqueda POR ID no lo pasa nunca, porque necesita
+   * encontrar la solicitud ajena para que el chequeo de dueño devuelva
+   * `no_es_dueno` en vez de `no_encontrada` (ADR 126, alternativa rechazada 3).
+   * Default `LIMITE_LISTADO_SOLICITUDES`.
+   */
   listarSolicitudesPendientes(filtro?: {
     readonly solicitudId?: string;
+    readonly solicitanteId?: string; // ★ ADR 144
     readonly limite?: number;
   }): readonly SolicitudInterna[];
 

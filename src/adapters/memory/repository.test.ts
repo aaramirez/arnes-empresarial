@@ -3403,6 +3403,55 @@ describe("repository", () => {
 
         expect(filtradas.map((s) => s.id)).toEqual(["solicitud-2"]);
       });
+
+      // ADR 144 pto 1 / design.md §6-bis fila 1 — spec cancelacion-solicitud-interna,
+      // escenario "Solicitudes ajenas no consumen el tope del listado (el bug del LIMIT)".
+      // Prueba que el hallazgo del Reviewer era un bug FUNCIONAL, no sólo cosmético: sin
+      // filtrar por solicitanteId en el SQL, el LIMIT se aplica ANTES de saber de quién es
+      // cada solicitud, así que 25 solicitudes ajenas más antiguas se comen el cupo entero
+      // y la propia de E, aunque exista, nunca llega a la respuesta.
+      it("no descarta la solicitud propia de E aunque 25 solicitudes ajenas mas antiguas llenen el LIMIT (bug del LIMIT)", () => {
+        db = openDatabase(":memory:");
+        for (let i = 0; i < 25; i += 1) {
+          crearSolicitudConCaso(
+            db!,
+            buildSolicitudConCasoInput({
+              caso: {
+                id: `caso-ajena-${i}`,
+                tipo: "solicitud_interna",
+                estado: "pendiente_aprobacion_humana",
+              },
+              solicitud: {
+                id: `solicitud-ajena-${i}`,
+                solicitanteId: "empleado-ajeno",
+                tipo: "vacaciones",
+                detalle: `solicitud ajena ${i}`,
+                estado: "pendiente_aprobacion_humana",
+              },
+              timestamp: `2026-09-07T00:00:${String(i).padStart(2, "0")}.000Z`,
+            }),
+          );
+        }
+        crearSolicitudConCaso(
+          db,
+          buildSolicitudConCasoInput({
+            caso: { id: "caso-propia-e", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+            solicitud: {
+              id: "solicitud-propia-e",
+              solicitanteId: "empleado-e",
+              tipo: "gasto",
+              detalle: "propia de E",
+              estado: "pendiente_aprobacion_humana",
+            },
+            // Creada DESPUES que las 25 ajenas, respetando ORDER BY created_at.
+            timestamp: "2026-09-07T00:01:00.000Z",
+          }),
+        );
+
+        const propias = listSolicitudesInternas(db, { solicitanteId: "empleado-e", limite: 20 });
+
+        expect(propias.map((s) => s.id)).toEqual(["solicitud-propia-e"]);
+      });
     });
 
     describe("aprobarSolicitudInterna / rechazarSolicitudInterna", () => {
