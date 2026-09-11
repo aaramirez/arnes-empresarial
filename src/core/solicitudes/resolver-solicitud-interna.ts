@@ -138,8 +138,19 @@ export function resolverSolicitudInterna(
 
   if (solicitudId === undefined) {
     const limite = deps.limiteListado ?? LIMITE_LISTADO_SOLICITUDES;
-    const items = store.listarSolicitudesPendientes({ limite });
-    logEvent("tui-comando", "solicitud-listada", { accion, cantidad: items.length });
+    // GATEADO por acción, misma fórmula del chequeo de dueño (ADR 130 pto 4).
+    // `aprobar`/`rechazar` pasan `{ limite }` BYTE POR BYTE como antes — sin la
+    // clave nueva, ni siquiera con `undefined`: los tests existentes quedan
+    // verdes sin tocarse, evidencia de que `:72` no se derogó (ADR 144 pto 2).
+    const soloPropias = accion === ACCION_CANCELAR_SOLICITUD;
+    const items = store.listarSolicitudesPendientes(
+      soloPropias ? { limite, solicitanteId: sesion.empleadoId } : { limite },
+    );
+    logEvent("tui-comando", "solicitud-listada", {
+      accion,
+      cantidad: items.length,
+      ...(soloPropias ? { soloPropias: true } : {}),
+    });
     return { resultado: "listado", accion, items };
   }
 
