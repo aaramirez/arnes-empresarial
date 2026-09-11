@@ -189,7 +189,7 @@ import {
   type EstadoSolicitudA2AEntrante,
   type ListadoSolicitudesA2AEntrantes,
   type SolicitudA2AEntranteStorePort,
-  type SolicitudA2AEntranteVista,
+  type SolicitudA2AEntranteVistaEmpleado,
 } from "./core/agents/a2a-entrante-contract.js";
 import { type InsumoDelegado } from "./core/agents/subagents.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
@@ -578,7 +578,7 @@ export function createPropuestaStore(db: Database.Database): PropuestaStorePort 
 
 /**
  * Traduce un `SolicitudA2AEntranteRow` de `repository.ts` a la
- * `SolicitudA2AEntranteVista` del puerto (v3.4.0, `comando-visibilidad-
+ * `SolicitudA2AEntranteVistaEmpleado` del puerto (v3.4.0, `comando-visibilidad-
  * a2a-entrante` tarea 4, ADR 141) — ★ donde vive el guard de vocabulario:
  * `esTaskStateConocido(row.estado)` decide la unión discriminada
  * `EstadoSolicitudA2AEntrante`. A diferencia de `toPortSolicitud`/
@@ -589,7 +589,7 @@ export function createPropuestaStore(db: Database.Database): PropuestaStorePort 
  * `id` NO se copian: no están en el tipo del puerto (ADR 139 pto 3, R1
  * estructural).
  */
-function toPortSolicitudA2AEntrante(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVista {
+function toPortSolicitudA2AEntrante(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVistaEmpleado {
   const estado: EstadoSolicitudA2AEntrante = esTaskStateConocido(row.estado)
     ? { conocido: true, valor: row.estado }
     : { conocido: false, valor: row.estado };
@@ -636,7 +636,7 @@ export function createSolicitudA2AEntranteStore(db: Database.Database): Solicitu
  * la usa `formatearListadoSolicitudesA2A`, mismo criterio que
  * `formatearLineaPropuesta`/`formatearListadoPropuestas`.
  */
-function formatearLineaSolicitudA2A(vista: SolicitudA2AEntranteVista): string {
+function formatearLineaSolicitudA2A(vista: SolicitudA2AEntranteVistaEmpleado): string {
   return `- tarea ${vista.a2aTaskId} | estado ${vista.estado.valor} | origen de transporte ${vista.origenTransporte} | recibida ${vista.createdAt} | actualizada ${vista.updatedAt}`;
 }
 
@@ -689,7 +689,7 @@ function formatearSeccionPaginadaA2A(etiqueta: string, contenido: string): strin
  * ADR 142 pto 3). Exportada por el mismo motivo que
  * `formatearListadoSolicitudesA2A` — ver comentario de esa función.
  */
-export function formatearDetalleSolicitudA2A(vista: SolicitudA2AEntranteVista): string {
+export function formatearDetalleSolicitudA2A(vista: SolicitudA2AEntranteVistaEmpleado): string {
   const resumen = `solicitud A2A ${vista.a2aTaskId} · estado ${vista.estado.valor} · origen de transporte ${vista.origenTransporte} · recibida ${vista.createdAt} · actualizada ${vista.updatedAt}`;
   const mensaje = formatearSeccionPaginadaA2A("mensaje recibido", vista.mensajeRecibido);
   const resultado = vista.resultado !== undefined ? formatearSeccionPaginadaA2A("resultado", vista.resultado) : "";

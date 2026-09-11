@@ -30,7 +30,7 @@ Primer puerto de núcleo de `solicitudes_a2a_entrantes`, segundo índice de la t
  │                                     `a2a-entrante-prompt.ts`, familia   │
  │                                     `a2a-entrante-*` YA EXISTENTE       │
  │                                     · `SolicitudA2AEntranteStorePort`   │
- │                                     · `SolicitudA2AEntranteVista`       │
+ │                                     · `SolicitudA2AEntranteVistaEmpleado`       │
  │                                     · `EstadoSolicitudA2AEntrante` ★    │
  │                                       (unión discriminada, ADR 141)     │
  │                                     · `TASK_STATES_EN_CURSO` DERIVADO   │
@@ -207,7 +207,7 @@ export type EstadoSolicitudA2AEntrante =
  * `origenTransporte` es una DIRECCIÓN DE RED, no una identidad de agente
  * (`0011:18-20`), y el formateador la rotula así (ADR 142 pto 1).
  */
-export interface SolicitudA2AEntranteVista {
+export interface SolicitudA2AEntranteVistaEmpleado {
   readonly a2aTaskId: string;
   readonly estado: EstadoSolicitudA2AEntrante;
   readonly origenTransporte: string;
@@ -221,7 +221,7 @@ export interface SolicitudA2AEntranteVista {
 /** `hayMas` sale del `LIMIT limite + 1` (ADR 140 pto 5): sin él no se puede
  *  avisar del truncado sin mentir ni pagar un `COUNT(*)`. */
 export interface ListadoSolicitudesA2AEntrantes {
-  readonly items: readonly SolicitudA2AEntranteVista[];
+  readonly items: readonly SolicitudA2AEntranteVistaEmpleado[];
   readonly hayMas: boolean;
 }
 
@@ -237,7 +237,7 @@ export interface SolicitudA2AEntranteStorePort {
     readonly limite?: number;
   }): ListadoSolicitudesA2AEntrantes;
   /** Envuelve `getSolicitudA2AEntrantePorTaskId` — CERO SQL nuevo (ADR 136). */
-  obtenerPorTaskId(a2aTaskId: string): SolicitudA2AEntranteVista | undefined;
+  obtenerPorTaskId(a2aTaskId: string): SolicitudA2AEntranteVistaEmpleado | undefined;
 }
 ```
 
@@ -388,7 +388,7 @@ if (descriptor.forma === "id_opcional_a2a_task") {
  *  lectura de diagnóstico, y un throw haría que UNA fila corrupta apague el
  *  listado entero — el comando se rompería justo en el escenario para el que
  *  existe. Degrada a `conocido: false` y el formateador la rotula. */
-function toPortSolicitudA2AEntrante(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVista {
+function toPortSolicitudA2AEntrante(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVistaEmpleado {
   const estado: EstadoSolicitudA2AEntrante = esTaskStateConocido(row.estado)
     ? { conocido: true, valor: row.estado }
     : { conocido: false, valor: row.estado };
@@ -524,7 +524,7 @@ listSolicitudesA2AEntrantesPorEstado   ┌────────────�
 
 | Archivo | Acción | Qué cambia |
 |---|---|---|
-| `src/core/agents/a2a-entrante-contract.ts` | **★ Nuevo (ADR 139/141)** | Puerto, `SolicitudA2AEntranteVista`, `EstadoSolicitudA2AEntrante`, `TASK_STATES_EN_CURSO` derivado, dos constantes |
+| `src/core/agents/a2a-entrante-contract.ts` | **★ Nuevo (ADR 139/141)** | Puerto, `SolicitudA2AEntranteVistaEmpleado`, `EstadoSolicitudA2AEntrante`, `TASK_STATES_EN_CURSO` derivado, dos constantes |
 | `src/adapters/memory/migrations/0012_idx_…_estado.ts` | **Nuevo (ADR 137)** | Un `CREATE INDEX IF NOT EXISTS`. Molde de `0002` |
 | `src/adapters/memory/migrations/index.ts` | Modificado | Un `import` + un elemento **al final** del array |
 | `src/adapters/memory/migrations/0011_…ts` | **Doc-comment, no DDL** | `:36-38` reescrito (R2). **Cero SQL** |

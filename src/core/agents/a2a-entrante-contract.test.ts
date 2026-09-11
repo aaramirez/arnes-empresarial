@@ -19,7 +19,7 @@ import {
   TASK_STATES_EN_CURSO,
   type EstadoSolicitudA2AEntrante,
   type SolicitudA2AEntranteStorePort,
-  type SolicitudA2AEntranteVista,
+  type SolicitudA2AEntranteVistaEmpleado,
 } from "./a2a-entrante-contract.js";
 
 describe("TASK_STATES_EN_CURSO", () => {
@@ -103,7 +103,7 @@ describe("LINEAS_PAGINA_A2A", () => {
 
 describe("SolicitudA2AEntranteStorePort", () => {
   it("es inyectable y testeable con un doble plano, sin ninguna dependencia de better-sqlite3", () => {
-    const vista: SolicitudA2AEntranteVista = {
+    const vista: SolicitudA2AEntranteVistaEmpleado = {
       a2aTaskId: "task-1",
       estado: { conocido: true, valor: TASK_STATE_WORKING },
       origenTransporte: "203.0.113.7",

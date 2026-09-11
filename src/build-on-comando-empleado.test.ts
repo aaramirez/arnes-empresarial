@@ -75,7 +75,7 @@ import {
 import {
   LINEAS_PAGINA_A2A,
   type ListadoSolicitudesA2AEntrantes,
-  type SolicitudA2AEntranteVista,
+  type SolicitudA2AEntranteVistaEmpleado,
 } from "./core/agents/a2a-entrante-contract.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
@@ -2437,7 +2437,7 @@ describe("createSolicitudA2AEntranteStore / toPortSolicitudA2AEntrante (comando-
  * necesita el handler para ejercitar `createSolicitudA2AEntranteStore`.
  */
 describe("formatearListadoSolicitudesA2A / formatearDetalleSolicitudA2A (comando-visibilidad-a2a-entrante, tarea 7)", () => {
-  function makeVistaA2A(overrides: Partial<SolicitudA2AEntranteVista> = {}): SolicitudA2AEntranteVista {
+  function makeVistaA2A(overrides: Partial<SolicitudA2AEntranteVistaEmpleado> = {}): SolicitudA2AEntranteVistaEmpleado {
     return {
       a2aTaskId: "task-1",
       estado: { conocido: true, valor: TASK_STATE_WORKING },
