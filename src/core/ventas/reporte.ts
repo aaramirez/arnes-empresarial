@@ -69,6 +69,43 @@ export interface ReporteMensual {
 }
 
 /**
+ * DUPLICADO literal de `PERIODO_REGEX` en `src/reporte-mensual.ts:51` —
+ * NO se importa (ADR 118 prohíbe tocar/importar ese archivo desde
+ * `src/core/`; ADR 121 pto 3, ADR 123 pto 2 de
+ * `comando-reporte-comisiones/design.md`).
+ */
+const PERIODO_REGEX = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+export type ResolverPeriodoReporteResult =
+  | { readonly ok: true; readonly periodo: string }
+  | { readonly ok: false; readonly mensaje: string };
+
+/**
+ * Resuelve el `periodo` de `/reporte-comisiones [periodo]` (ADR 123, RD-57
+ * de `comando-reporte-comisiones/design.md`). PURA: `ahora` se recibe como
+ * parámetro (ISO 8601, ya resuelto por el dispatcher), nunca `new Date()`
+ * acá adentro.
+ *
+ * - `argumento` ausente ⇒ mes corriente (`ahora.slice(0, 7)`).
+ * - `argumento` con formato `YYYY-MM` válido ⇒ se acepta tal cual.
+ * - cualquier otro formato ⇒ `ok:false` con el mensaje de uso propio del
+ *   comando (no el de `reporte-mensual.ts` — ADR 123 pto 3).
+ *
+ * Regex y default DUPLICADOS de `parsePeriodo` (`reporte-mensual.ts`), no
+ * compartidos (ADR 118, ADR 121 pto 3). `reporte.test.ts` trae el test de
+ * equivalencia que mitiga R6.
+ */
+export function resolverPeriodoReporte(argumento: string | undefined, ahora: string): ResolverPeriodoReporteResult {
+  if (argumento === undefined) {
+    return { ok: true, periodo: ahora.slice(0, 7) };
+  }
+  if (!PERIODO_REGEX.test(argumento)) {
+    return { ok: false, mensaje: "Periodo inválido. Formato esperado: YYYY-MM." };
+  }
+  return { ok: true, periodo: argumento };
+}
+
+/**
  * Redondea a 2 decimales con la MISMA regla que `calcularComision` (ADR 16):
  * `calcularComision(x, 1) === Math.round(x * 1 * 100) / 100 === Math.round(x
  * * 100) / 100`. Reuso literal de la función ya testeada en vez de reimplementar

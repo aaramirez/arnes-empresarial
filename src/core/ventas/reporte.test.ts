@@ -8,9 +8,14 @@ import {
 import {
   agruparReporteMensual,
   formatearReporteMensual,
+  resolverPeriodoReporte,
   type ComisionConVenta,
   type VentaPendienteReembolso,
 } from "./reporte.js";
+// Import SOLO de test (tarea 2, ADR 118/121 pto 3): `reporte.ts` nunca importa
+// de `reporte-mensual.ts` — este import existe únicamente para el test de
+// equivalencia (R6) de más abajo.
+import { parsePeriodo } from "../../reporte-mensual.js";
 
 function comision(overrides: Partial<ComisionConVenta> = {}): ComisionConVenta {
   return {
@@ -294,5 +299,49 @@ describe("formatearReporteMensual", () => {
     expect(texto).not.toMatch(/configuraci[oó]n/i);
     expect(texto).not.toMatch(/registro_acciones_empleado|auditor[ií]a/i);
     expect(texto).not.toMatch(/\brol(es)?\b|permisos?/i);
+  });
+});
+
+describe("resolverPeriodoReporte", () => {
+  const AHORA_FIJO = "2026-09-10T12:00:00Z";
+
+  it("sin argumento, con reloj fijo, resuelve al mes corriente", () => {
+    expect(resolverPeriodoReporte(undefined, AHORA_FIJO)).toEqual({ ok: true, periodo: "2026-09" });
+  });
+
+  it("un periodo YYYY-MM valido se acepta tal cual", () => {
+    expect(resolverPeriodoReporte("2026-08", AHORA_FIJO)).toEqual({ ok: true, periodo: "2026-08" });
+  });
+
+  it.each(["2026-13", "26-08", ""])("un formato invalido (%s) devuelve ok:false con el mensaje de uso", (valor) => {
+    expect(resolverPeriodoReporte(valor, AHORA_FIJO)).toEqual({
+      ok: false,
+      mensaje: "Periodo inválido. Formato esperado: YYYY-MM.",
+    });
+  });
+});
+
+describe("equivalencia resolverPeriodoReporte / parsePeriodo (R6)", () => {
+  const AHORA_FIJO = "2026-09-10T12:00:00Z";
+
+  const TABLA_PERIODOS: ReadonlyArray<{ readonly label: string; readonly valor: string | undefined }> = [
+    { label: "2026-08 (valido)", valor: "2026-08" },
+    { label: "2026-13 (mes fuera de rango)", valor: "2026-13" },
+    { label: "26-08 (anio de 2 digitos)", valor: "26-08" },
+    { label: "cadena vacia", valor: "" },
+    { label: "ausente", valor: undefined },
+  ];
+
+  describe.each(TABLA_PERIODOS)("$label", ({ valor }) => {
+    it("resolverPeriodoReporte y parsePeriodo coinciden en el veredicto ok", () => {
+      const argv = valor === undefined ? [] : ["--periodo", valor];
+      const resultadoParsePeriodo = parsePeriodo(argv, () => AHORA_FIJO);
+      const resultadoResolverPeriodoReporte = resolverPeriodoReporte(valor, AHORA_FIJO);
+
+      expect(resultadoResolverPeriodoReporte.ok).toBe(resultadoParsePeriodo.ok);
+      if (resultadoParsePeriodo.ok && resultadoResolverPeriodoReporte.ok) {
+        expect(resultadoResolverPeriodoReporte.periodo).toBe(resultadoParsePeriodo.periodo);
+      }
+    });
   });
 });
