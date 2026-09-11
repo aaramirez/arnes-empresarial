@@ -613,9 +613,26 @@ function formatearLineaSolicitud(s: SolicitudInterna): string {
   return s.dictamen === undefined ? base : `${base} | dictamen ${s.dictamen}`;
 }
 
-function formatearListadoSolicitudes(items: readonly SolicitudInterna[]): string {
+/**
+ * Mensaje del listado sin id cuando `items` viene vacío, por `AccionSolicitud`
+ * (ADR 144 pto 4). `aprobar`/`rechazar` reproducen el literal histórico byte
+ * por byte — listan toda la organización (`:72` no derogado, ADR 144 pto 2),
+ * así que "no hay solicitudes para listar" sigue siendo la lectura correcta.
+ * `cancelar` es distinto a propósito: desde la tarea 16 su listado ya viene
+ * filtrado por `solicitanteId` (`soloPropias`), así que un `items` vacío acá
+ * NO significa que no haya solicitudes en la organización — sólo que el
+ * propio empleado no tiene ninguna pendiente. Reusar el mensaje genérico
+ * insinuaría lo primero.
+ */
+const MENSAJE_LISTADO_SOLICITUDES_VACIO: Record<AccionSolicitud, string> = {
+  [ACCION_APROBAR_SOLICITUD]: "No hay solicitudes para listar.",
+  [ACCION_RECHAZAR_SOLICITUD]: "No hay solicitudes para listar.",
+  [ACCION_CANCELAR_SOLICITUD]: "No tenés solicitudes pendientes para cancelar.",
+};
+
+function formatearListadoSolicitudes(items: readonly SolicitudInterna[], accion: AccionSolicitud): string {
   if (items.length === 0) {
-    return "No hay solicitudes para listar.";
+    return MENSAJE_LISTADO_SOLICITUDES_VACIO[accion];
   }
   return items.map(formatearLineaSolicitud).join("\n");
 }
@@ -1039,7 +1056,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       if (resultado.resultado !== "listado") {
         return sistema("No se pudo listar las solicitudes.");
       }
-      return sistema(formatearListadoSolicitudes(resultado.items));
+      return sistema(formatearListadoSolicitudes(resultado.items, accion));
     }
 
     const coincide =
