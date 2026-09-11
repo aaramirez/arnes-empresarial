@@ -583,7 +583,7 @@ const MENSAJE_SOLICITUD_NO_ENCONTRADA: Record<AccionSolicitud, (id: string) => s
   [ACCION_APROBAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
   [ACCION_RECHAZAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
   [ACCION_CANCELAR_SOLICITUD]: (id) =>
-    `No hay ninguna solicitud ${id} tuya pendiente de cancelación. Si ya fue aprobada o rechazada, no se puede retirar.`,
+    `No hay ninguna solicitud ${id} tuya pendiente de cancelación. Si ya fue aprobada, rechazada o cancelada, no se puede retirar.`,
 };
 
 /**
@@ -1121,14 +1121,6 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         );
       }
       return sistema("Esa solicitud ya no está pendiente: no se aplicó nada.");
-    }
-
-    // Inalcanzable en la práctica: el eco sólo se arma para el dueño (rama de
-    // arriba), así que nunca hay una `confirmacionPendiente` de un tercero
-    // que llegue hasta acá. Se maneja explícito de todos modos — más barato
-    // que razonarlo en cada revisión.
-    if (resultado.resultado === "no_es_dueno") {
-      return sistema(`La solicitud ${resultado.itemId} no es tuya: sólo quien la creó puede cancelarla.`);
     }
 
     return sistema("No se pudo procesar ese comando.");
