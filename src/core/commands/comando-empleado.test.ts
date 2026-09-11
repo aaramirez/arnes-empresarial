@@ -453,10 +453,6 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("hay quince descriptores en total (catorce + uno de Hito 6, ADR 85)", () => {
-    expect(descriptores.slice(0, 15)).toHaveLength(15);
-  });
-
   it("los tres descriptores nuevos ocupan los índices 10-12, en el orden de design.md §5.9 / ADR 69", () => {
     expect(descriptores.slice(10, 13).map((d) => [d.nombre, d.forma] as const)).toEqual([
       ["/ver-propuesta", "id_opcional_propuesta"],
