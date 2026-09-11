@@ -3452,6 +3452,54 @@ describe("repository", () => {
 
         expect(propias.map((s) => s.id)).toEqual(["solicitud-propia-e"]);
       });
+
+      it("filtro combinado {solicitudId, solicitanteId}: matchea ambos o no devuelve nada", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        crearSegundaSolicitud();
+
+        // solicitud-1 existe pero es de empleado-1, no de empleado-2: el predicado
+        // combinado no puede matchear un id con el solicitante de otra fila.
+        const idPeroOtroSolicitante = listSolicitudesInternas(db, {
+          solicitudId: "solicitud-1",
+          solicitanteId: "empleado-2",
+        });
+        expect(idPeroOtroSolicitante).toEqual([]);
+
+        const idYSolicitanteCorrectos = listSolicitudesInternas(db, {
+          solicitudId: "solicitud-2",
+          solicitanteId: "empleado-2",
+        });
+        expect(idYSolicitanteCorrectos.map((s) => s.id)).toEqual(["solicitud-2"]);
+      });
+
+      it("LIMIT sigue aplicandose despues del filtro por solicitanteId: 21 solicitudes propias devuelven solo las `limite` mas antiguas", () => {
+        db = openDatabase(":memory:");
+        for (let i = 0; i < 21; i += 1) {
+          crearSolicitudConCaso(
+            db!,
+            buildSolicitudConCasoInput({
+              caso: { id: `caso-propia-${i}`, tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: `solicitud-propia-${i}`,
+                solicitanteId: "empleado-e",
+                tipo: "vacaciones",
+                detalle: `propia ${i}`,
+                estado: "pendiente_aprobacion_humana",
+              },
+              timestamp: `2026-09-07T00:00:${String(i).padStart(2, "0")}.000Z`,
+            }),
+          );
+        }
+
+        const propias = listSolicitudesInternas(db, { solicitanteId: "empleado-e", limite: 20 });
+
+        expect(propias).toHaveLength(20);
+        // ORDER BY created_at: las 20 mas antiguas (0..19), la 20 (mas nueva) queda afuera.
+        expect(propias.map((s) => s.id)).toEqual(
+          Array.from({ length: 20 }, (_, i) => `solicitud-propia-${i}`),
+        );
+      });
     });
 
     describe("aprobarSolicitudInterna / rechazarSolicitudInterna", () => {
