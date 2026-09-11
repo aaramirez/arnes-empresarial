@@ -9,7 +9,11 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import { buildOnComandoEmpleado, type BuildOnComandoEmpleadoDeps } from "./build-on-comando-empleado.js";
+import {
+  buildOnComandoEmpleado,
+  createSolicitudStore,
+  type BuildOnComandoEmpleadoDeps,
+} from "./build-on-comando-empleado.js";
 import { COMANDOS } from "./core/commands/comando-empleado.js";
 import {
   VENTA_ESTADO_CONFIRMADA,
@@ -32,7 +36,9 @@ import { agruparReporteMensual, formatearReporteMensual } from "./core/ventas/re
 import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
+  SOLICITUD_TIPO_VACACIONES,
   type SolicitudInterna,
   type SolicitudStorePort,
 } from "./core/solicitudes/solicitudes-contract.js";
@@ -1995,5 +2001,42 @@ describe("buildOnComandoEmpleado — /reporte-comisiones (comando-reporte-comisi
     } finally {
       db.close();
     }
+  });
+});
+
+describe("createSolicitudStore", () => {
+  function withDb<T>(fn: (db: Database.Database) => T): T {
+    const db = openDatabase(":memory:");
+    try {
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  }
+
+  it("adjuntarDictamen: no lanza SolicitudTipoEstadoInvalidoError cuando la fila tiene estado 'cancelada' (ADR 133, hallazgo 3)", () => {
+    withDb((db) => {
+      const store = createSolicitudStore(db);
+      store.crearSolicitudConCaso({
+        caso: { id: "caso-1", tipo: "solicitud_interna", estado: SOLICITUD_ESTADO_PENDIENTE },
+        solicitud: {
+          id: "sol-1",
+          solicitanteId: "emp-1",
+          tipo: SOLICITUD_TIPO_VACACIONES,
+          detalle: "detalle",
+          estado: SOLICITUD_ESTADO_PENDIENTE,
+        },
+        timestamp: TIMESTAMP,
+      });
+      // Simula la transición real de `cancelarSolicitudInterna` (tarea 6, todavía
+      // no implementada) escribiendo directo por SQL — sólo el `estado`, mismo
+      // criterio que `build-on-activity.test.ts` para forzar un valor sin pasar
+      // por ningún CAS.
+      db.prepare("UPDATE solicitudes_internas SET estado = ? WHERE id = ?").run(SOLICITUD_ESTADO_CANCELADA, "sol-1");
+
+      expect(() =>
+        store.adjuntarDictamen({ solicitudId: "sol-1", dictamen: "ok", ahora: TIMESTAMP }),
+      ).not.toThrow();
+    });
   });
 });

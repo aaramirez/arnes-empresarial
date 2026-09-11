@@ -133,6 +133,7 @@ import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.
 import { crearSolicitudInterna } from "./core/solicitudes/crear-solicitud-interna.js";
 import {
   SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
   SOLICITUD_TIPOS,
@@ -394,7 +395,12 @@ function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
 }
 
 /** Vocabulario de `estado` para validar contra la base — mismo criterio que `SOLICITUD_TIPOS`. */
-const SOLICITUD_ESTADOS = [SOLICITUD_ESTADO_PENDIENTE, SOLICITUD_ESTADO_APROBADA, SOLICITUD_ESTADO_RECHAZADA] as const;
+const SOLICITUD_ESTADOS = [
+  SOLICITUD_ESTADO_PENDIENTE,
+  SOLICITUD_ESTADO_APROBADA,
+  SOLICITUD_ESTADO_RECHAZADA,
+  SOLICITUD_ESTADO_CANCELADA,
+] as const;
 
 /**
  * Lanzado por `toPortSolicitud` cuando una fila de `solicitudes_internas`
