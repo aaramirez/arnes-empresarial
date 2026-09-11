@@ -41,6 +41,11 @@ export type AccionSolicitud =
   | typeof ACCION_RECHAZAR_SOLICITUD
   | typeof ACCION_CANCELAR_SOLICITUD;
 
+/** Única fuente de verdad para el gateo por acción (soloPropias + chequeo de dueño). */
+function esAccionAutoservicio(accion: AccionSolicitud): boolean {
+  return accion === ACCION_CANCELAR_SOLICITUD;
+}
+
 /**
  * Genérico + lo propio de este dominio (ADR 126 consecuencia, ADR 130).
  * `hitl-contract.ts` NO se toca. La variante `no_es_dueno` NO lleva `item`:
@@ -80,7 +85,7 @@ const EVENTO_SOLICITUD_APLICADA: Record<AccionSolicitud, string> = {
  * ternario con un tercer valor futuro hace que caiga silenciosamente en la
  * última rama con los tipos en verde. El `const _exhaustivo: never = accion`
  * convierte cualquier valor sin rama propia en un error de `tsc --noEmit`.
- * Refactor puro: mismo comportamiento, todavía sólo 2 miembros de `AccionSolicitud`.
+ * Refactor puro: mismo comportamiento, los 3 miembros de `AccionSolicitud`.
  */
 function aplicarCas(
   store: SolicitudStorePort,
@@ -142,7 +147,7 @@ export function resolverSolicitudInterna(
     // `aprobar`/`rechazar` pasan `{ limite }` BYTE POR BYTE como antes — sin la
     // clave nueva, ni siquiera con `undefined`: los tests existentes quedan
     // verdes sin tocarse, evidencia de que `:72` no se derogó (ADR 144 pto 2).
-    const soloPropias = accion === ACCION_CANCELAR_SOLICITUD;
+    const soloPropias = esAccionAutoservicio(accion);
     const items = store.listarSolicitudesPendientes(
       soloPropias ? { limite, solicitanteId: sesion.empleadoId } : { limite },
     );
@@ -169,7 +174,7 @@ export function resolverSolicitudInterna(
   // GATEADO por acción: `/aprobar-solicitud` y `/rechazar-solicitud` conservan
   // intacto el requirement `solicitud-interna-hitl:72` (R1). Acá, antes del
   // `if (!confirmado)`, cubre los DOS pasos con una sola línea.
-  if (accion === ACCION_CANCELAR_SOLICITUD && solicitud.solicitanteId !== sesion.empleadoId) {
+  if (esAccionAutoservicio(accion) && solicitud.solicitanteId !== sesion.empleadoId) {
     logEvent("tui-comando", "solicitud-cancelacion-no-autorizada", {
       accion,
       solicitudId,
