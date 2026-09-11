@@ -11,7 +11,11 @@ function resultadoVacioPorAusencia(): ResultadoDescubrimiento {
 
 describe("bootstrapHarness", () => {
   it("loads the real Agent Registry and the default shared Hook Engine when called with no arguments", () => {
-    const registries = bootstrapHarness();
+    // Reviewer finding 2: `descubrir`/`log` inyectados a propósito — sin
+    // esto, este test (que solo prueba Agentes/Hooks) caía en los defaults
+    // reales de Skills: escaneaba `.claude/skills/` del disco y escribía en
+    // `data/harness.log`, el log de producción real.
+    const registries = bootstrapHarness(undefined, undefined, resultadoVacioPorAusencia, vi.fn());
 
     expect(registries.agents.length).toBeGreaterThan(0);
     expect(registries.agents[0]?.id).toBe("agente-conversacional");
@@ -21,7 +25,13 @@ describe("bootstrapHarness", () => {
   it("uses an injected hook engine instead of the default shared singleton", () => {
     const fakeHookEngine = createHookEngine();
 
-    const registries = bootstrapHarness(undefined, fakeHookEngine);
+    // Reviewer finding 2: mismo motivo que el test anterior.
+    const registries = bootstrapHarness(
+      undefined,
+      fakeHookEngine,
+      resultadoVacioPorAusencia,
+      vi.fn(),
+    );
 
     expect(registries.hooks).toBe(fakeHookEngine);
     expect(registries.hooks).not.toBe(hookEngine);
