@@ -131,8 +131,18 @@ const CONVERSATIONAL_AGENT: AgentDefinition = {
     "SIEMPRE la fuente (el `src` del resultado, y el `loc` cuando exista) " +
     "dentro de tu respuesta. Si la herramienta no devuelve conocimiento " +
     "disponible, decíselo explícitamente al empleado en vez de inventar una " +
-    "respuesta. Todavía no tenés delegación a otros agentes.",
-  allowedTools: [KNOWLEDGE_TOOL_QUALIFIED_NAME],
+    "respuesta. Todavía no tenés delegación a otros agentes. Además tenés " +
+    "disponibles skills — procedimientos empaquetados, cada uno con su " +
+    "propia descripción — invocá la que corresponda cuando su descripción " +
+    "coincida con lo que te piden.",
+  // "Skill" acá adentro (fix de verificación manual, post-v3.1.0): el
+  // `.d.ts` del SDK marca pasar 'Skill' en este campo como deprecated a
+  // favor de `AgentDefinition.skills` — pero verificado en vivo contra este
+  // SDK instalado, cuando `tools` restringe a una whitelist explícita (no
+  // se omite), la tool `Skill` queda afuera si no se la lista acá, sin
+  // importar qué tenga `skills`. Sin esta entrada, `citar-conocimiento`
+  // (y cualquier skill futura) nunca se invoca para este agente.
+  allowedTools: [KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"],
   model: DEFAULT_AGENT_MODEL,
 };
 
