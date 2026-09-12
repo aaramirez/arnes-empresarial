@@ -275,6 +275,8 @@ Extremos: Núcleo de Orquestación ↔ puerto *ModelProvider*.
 
 **Nota (v3.2.0)**: `/reporte-comisiones` (comando-reporte-comisiones, ADR 116) es el primer comando privilegiado que expone un flujo de negocio de solo lectura ya existente fuera de la TUI (`npm run reporte:mensual`) — el reporte de comisiones deja de ser el único flujo de negocio del arnés que corre por fuera de este registro.
 
+**Nota (v3.4.0)**: `/ver-solicitudes-a2a [a2aTaskId]` (comando-visibilidad-a2a-entrante, ADR 139-143) es un comando privilegiado de sólo lectura sobre `solicitudes_a2a_entrantes`. Sin argumento lista las solicitudes A2A entrantes en curso; con `a2aTaskId` muestra el detalle de una. El protocolo A2A v1.0.0 no transporta la identidad del agente externo que originó la solicitud, así que la columna correspondiente se rotula "origen de transporte" — nunca "agente" ni "solicitante" — y `agente_externo_url` es siempre `NULL` en este hito. El comando es puramente de lectura: no ofrece ningún remedio activo sobre una fila huérfana (cancelarla, o un barrido de arranque que la reconcilie), eso queda fuera de su alcance.
+
 ### Caja Blanca bloque de construcción 4: Motor de Hooks
 
 **Responsabilidad**: registra funciones que se disparan en puntos del ciclo de vida del turno (antes/después de una tool call, antes/después del turno completo), sobre el sistema de hooks nativo del Claude Agent SDK.
@@ -370,6 +372,8 @@ Extremos: Núcleo de Orquestación ↔ puerto *ModelProvider*.
 **Ubicación:** *src/adapters/a2a/server.ts*
 
 **Nota de versión:** implementado en v3 (Hito 7) — `startA2AServer` (`src/adapters/a2a/server-index.ts`) es opt-in por token (`HARNESS_A2A_ENTRANTE_TOKEN`): sin token, ningún puerto se abre y el comportamiento es idéntico al de `v2.2.0`.
+
+**Nota (v3.4.0)**: este bloque describe únicamente el camino de **escritura** de `solicitudes_a2a_entrantes` (lo que el Servidor A2A recibe y persiste). Desde v3.4.0 existe además un camino de **lectura** sobre la misma tabla — `/ver-solicitudes-a2a [a2aTaskId]` — pero ese comando vive en el Registro de Comandos (bloque de construcción 3, no éste) y no toca nada de lo descripto acá: `startA2AServer`, `src/adapters/a2a/server.ts` y `src/build-on-a2a-entrante.ts` permanecen sin cambios. Ver la nota v3.4.0 del bloque 3.
 
 # Vista de Ejecución
 

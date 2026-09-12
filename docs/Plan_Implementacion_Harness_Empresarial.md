@@ -24,6 +24,25 @@ Cada hito incluye: los casos de uso que demuestra, los componentes del arc42 que
 
 *Cada hito cierra con su tag semántico y su carpeta docs/progreso/vX.Y-nombre/, conforme al ADR 1 y a la Restricción Organizacional de la Sección 2 del arc42.*
 
+## Estado real de ejecución (actualizado 2026-09-11)
+
+Este plan fija 7 hitos con su numeración de tag prevista. En la ejecución real, dos hitos se desviaron de lo previsto acá y aparecieron hitos adicionales no contemplados en el diseño original. Tabla de correlación:
+
+| Hito del plan | Tag previsto | Tag real | Estado | Observación |
+| --- | --- | --- | --- | --- |
+| 1 — Esqueleto conversacional | v1.0.0 | v1.0.0 | ✅ cerrado | Sin desvíos |
+| 2 — Consulta de conocimiento | v1.1.0 | v1.1.0 | ✅ cerrado | Sin desvíos |
+| 3 — Bot de revisión de PRs | v1.2.0 | v1.2.0 | ✅ cerrado | Sin desvíos |
+| 4 — Ventas y comisiones | v1.3.0 | **ninguno** | ⚠️ código completo, cierre descartado | El checkpoint humano determinó que el resultado no cumplía el estándar del Reviewer y no lo tagueó como hito independiente. El entregable quedó demostrado dentro de la evidencia de `v1.4.0`. Detalle: [`openspec/changes/hito-1.3-ventas-comisiones/NOTA-CIERRE.md`](../openspec/changes/hito-1.3-ventas-comisiones/NOTA-CIERRE.md). |
+| — (no contemplado) | — | v1.4.0 | ✅ cerrado | `tui-canal-empleado` — absorbió y demostró el entregable de ventas/comisiones como parte de su propia verificación. |
+| 5 — Delegación a subagentes | v2.0.0 | v2.0.0 | ✅ cerrado | Sin desvíos de numeración. |
+| — (no contemplado) | — | v2.1.0 | ✅ cerrado | `hito-2.1-escritura-delegada`, insertado entre los hitos 5 y 6 de este plan — corre la numeración de los tags siguientes. |
+| 6 — Comunicación A2A saliente | v2.1.0 | v2.2.0 | ✅ cerrado | Tag real corrido por la inserción de `escritura-delegada` (ver fila anterior). Carpeta real: `docs/progreso/v2.2-a2a-cliente/`. |
+| 7 — Comunicación A2A entrante | v3.0.0 | v3.0.0 | ✅ cerrado | Sin desvíos de numeración. |
+| — (no contemplado, post-plan) | — | v3.1.0 – v3.4.0 | ver detalle | `definicion-skills` (v3.1.0), `comando-reporte-comisiones` (v3.2.0), `comando-cancelar-solicitud` (v3.3.0) cerrados; `comando-visibilidad-a2a-entrante` (v3.4.0) en curso a la fecha de esta nota — código y tareas completos, falta `verify-report.md` del change y tag. |
+
+**Pendiente de este plan**: no documenta ningún hito más allá del 7 — los cuatro hitos v3.1-v3.4 son extensión real del alcance (fase v3 "grafo" del ADR 1) que todavía no se formalizó acá como hitos propios con caso de uso empresarial declarado.
+
 # Casos de Uso Empresariales
 
 Los 12 casos de uso que demuestra el plan, agrupados por hito:
@@ -280,7 +299,7 @@ CREATE INDEX idx_comisiones_periodo ON comisiones(periodo);
 
 **Entregable funcional:** El cliente confirma la compra por la página web; el agente actualiza estadísticas y calcula comisiones; a fin de mes genera el reporte comparativo por vendedor.
 
-**Tag / carpeta de progreso:** *v1.3.0 — docs/progreso/v1.3-ventas-comisiones/*
+**Tag / carpeta de progreso:** *v1.3.0 — docs/progreso/v1.3-ventas-comisiones/* — **nunca se creó** (ver [Estado real de ejecución](#estado-real-de-ejecución-actualizado-2026-09-11)): el checkpoint humano descartó el cierre independiente de este hito; el entregable quedó demostrado dentro de `v1.4.0`.
 
 ## Hito 5: Delegación a subagentes
 
@@ -363,7 +382,7 @@ CREATE TABLE delegaciones_a2a (
 
 **Entregable funcional:** El agente delega parte del diagnóstico o la consulta a un agente externo y recibe su resultado (Escenario de ejecución 4 del arc42).
 
-**Tag / carpeta de progreso:** *v2.1.0 — docs/progreso/v2.1-a2a-cliente/*
+**Tag / carpeta de progreso:** *v2.1.0 — docs/progreso/v2.1-a2a-cliente/* — el tag real terminó siendo **v2.2.0** (carpeta `docs/progreso/v2.2-a2a-cliente/`), porque `v2.1.0` quedó tomado por un hito insertado no contemplado en este plan (`hito-2.1-escritura-delegada`). Ver [Estado real de ejecución](#estado-real-de-ejecución-actualizado-2026-09-11).
 
 ## Hito 7: Comunicación A2A entrante
 

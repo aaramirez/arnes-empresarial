@@ -372,6 +372,39 @@ describe("parsearComando", () => {
     expect(resultado && "periodo" in resultado).toBe(false);
   });
 
+  it("/ver-solicitudes-a2a X → tipo ver_solicitudes_a2a con a2aTaskId presente (comando-visibilidad-a2a-entrante, tarea 5, ADR 56/138)", () => {
+    expect(parsearComando("/ver-solicitudes-a2a X")).toEqual({
+      tipo: "ver_solicitudes_a2a",
+      a2aTaskId: "X",
+    });
+  });
+
+  it("/ver-solicitudes-a2a sin argumento → tipo ver_solicitudes_a2a sin a2aTaskId (comando-visibilidad-a2a-entrante, tarea 5)", () => {
+    const resultado = parsearComando("/ver-solicitudes-a2a");
+    expect(resultado).toEqual({ tipo: "ver_solicitudes_a2a" });
+    expect(resultado && "a2aTaskId" in resultado).toBe(false);
+  });
+
+  describe("forma id_opcional_a2a_task — el tipo se lee del descriptor, no de una cadena de nombres (comando-visibilidad-a2a-entrante, tarea 5, ADR 56/138)", () => {
+    // Mismo criterio que los describes de "forma id_opcional*" de arriba:
+    // recorre DESCRIPTORES dinámicamente vía COMANDOS, sin hardcodear nombres.
+    type DescriptorConTipo = { readonly nombre: string; readonly tipo: string; readonly forma: string };
+    const descriptoresIdOpcionalA2ATask = (COMANDOS as unknown as readonly DescriptorConTipo[]).filter(
+      (d) => d.forma === "id_opcional_a2a_task",
+    );
+
+    it("hay al menos un descriptor de forma id_opcional_a2a_task (no testear un array vacío)", () => {
+      expect(descriptoresIdOpcionalA2ATask.length).toBeGreaterThan(0);
+    });
+
+    it.each(descriptoresIdOpcionalA2ATask.map((d) => [d.nombre, d.tipo] as const))(
+      "%s sin a2aTaskId → tipo devuelto == descriptor.tipo declarado (%s)",
+      (nombre, tipoDeclarado) => {
+        expect(parsearComando(nombre)).toEqual({ tipo: tipoDeclarado });
+      },
+    );
+  });
+
   it("/ayuda explícito → motivo 'solicitada', sin campo comando", () => {
     expect(parsearComando("/ayuda")).toEqual({ tipo: "ayuda", motivo: "solicitada" });
   });
@@ -392,9 +425,9 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los diecisiete descriptores (dieciséis previos + /cancelar-solicitud, comando-cancelar-solicitud tarea 9)", () => {
+  it("lista los dieciocho descriptores (diecisiete previos + /ver-solicitudes-a2a, comando-visibilidad-a2a-entrante tarea 5)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(17);
+    expect(COMANDOS).toHaveLength(18);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
@@ -436,6 +469,10 @@ describe("esComandoPrivilegiado", () => {
 
   it("cancelar_solicitud es privilegiado (ADR 127, comando-cancelar-solicitud tarea 9 — sin sesión el comando se rechaza antes de leer nada)", () => {
     expect(esComandoPrivilegiado("cancelar_solicitud")).toBe(true);
+  });
+
+  it("ver_solicitudes_a2a es privilegiado (ADR 138, comando-visibilidad-a2a-entrante tarea 5 — el resultado de una tarea COMPLETED es la respuesta real que el arnés dio a un tercero)", () => {
+    expect(esComandoPrivilegiado("ver_solicitudes_a2a")).toBe(true);
   });
 });
 
@@ -480,9 +517,9 @@ describe("regresión — los tres descriptores nuevos de la tarea 29 van antes d
     ]);
   });
 
-  it("/ayuda sigue último (índice 16, tras la incorporación de /cancelar-solicitud en comando-cancelar-solicitud tarea 9)", () => {
-    expect(descriptores).toHaveLength(17);
-    expect(descriptores[16]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  it("/ayuda sigue último (índice 17, tras la incorporación de /ver-solicitudes-a2a en comando-visibilidad-a2a-entrante tarea 5)", () => {
+    expect(descriptores).toHaveLength(18);
+    expect(descriptores[17]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
   });
 });
 
@@ -513,20 +550,31 @@ describe("regresión — el descriptor nuevo de la tarea 9 (comando-cancelar-sol
   });
 });
 
-describe("Forma no gana un miembro nuevo (comando-cancelar-solicitud, tarea 9 — reusa id_opcional_solicitud, no crea una forma propia)", () => {
-  // `Forma` es un tipo privado de comando-empleado.ts, no exportado: se
-  // verifica en runtime sobre el conjunto de valores `forma` realmente en
-  // uso en COMANDOS, que es la proyección observable del tipo. El número de
-  // referencia es 6 (no 7): al momento de esta tarea, `id_opcional_periodo`
-  // ya fue incorporado por `comando-reporte-comisiones` (mergeado a main
-  // antes que este change), así que la unión ya tenía seis miembros -- no
-  // cinco -- antes de esta tarea.
+describe("regresión — el descriptor nuevo de la tarea 5 (comando-visibilidad-a2a-entrante) va antes de /ayuda, que sigue último (ADR 56/138)", () => {
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("el conjunto de formas distintas en uso sigue teniendo seis miembros (no siete) tras agregar /cancelar-solicitud", () => {
+  it("/ver-solicitudes-a2a ocupa el índice 16, forma NUEVA id_opcional_a2a_task (comando-visibilidad-a2a-entrante, tarea 5, design.md §3)", () => {
+    expect(descriptores[16]).toMatchObject({ nombre: "/ver-solicitudes-a2a", forma: "id_opcional_a2a_task" });
+  });
+});
+
+describe("Forma no gana un miembro nuevo por /cancelar-solicitud (comando-cancelar-solicitud, tarea 9 — reusa id_opcional_solicitud); SÍ gana uno por /ver-solicitudes-a2a (comando-visibilidad-a2a-entrante, tarea 5 — id_opcional_a2a_task es forma NUEVA, no reusada)", () => {
+  // `Forma` es un tipo privado de comando-empleado.ts, no exportado: se
+  // verifica en runtime sobre el conjunto de valores `forma` realmente en
+  // uso en COMANDOS, que es la proyección observable del tipo. El número de
+  // referencia es 7 (no 6): al momento de esta tarea, `id_opcional_periodo`
+  // ya había sido incorporado por `comando-reporte-comisiones` (mergeado a
+  // main antes que este change) sin que `/cancelar-solicitud` sumara una
+  // séptima -- reusó `id_opcional_solicitud`. `id_opcional_a2a_task`
+  // (`design.md` §3, ADR 56) sí es una forma nueva, distinta de las seis ya
+  // existentes: sube el conteo real a siete.
+  type DescriptorConForma = { readonly nombre: string; readonly forma: string };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("el conjunto de formas distintas en uso tiene siete miembros (no seis) tras agregar /ver-solicitudes-a2a", () => {
     const formasDistintas = new Set(descriptores.map((d) => d.forma));
-    expect(formasDistintas.size).toBe(6);
+    expect(formasDistintas.size).toBe(7);
   });
 });
 

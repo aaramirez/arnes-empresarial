@@ -59,6 +59,7 @@ import {
   listEscalacionesReembolso,
   listPropuestasCambio,
   listSolicitudesA2AEntrantesPorCaso,
+  listSolicitudesA2AEntrantesPorEstado,
   listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
   reabrirEscalacionReembolso,
@@ -2541,8 +2542,8 @@ describe("repository", () => {
     });
   });
 
-  describe("solicitudes_a2a_entrantes (migración 0011)", () => {
-    it("crea la tabla solicitudes_a2a_entrantes y el índice idx_solicitudes_a2a_entrantes_caso", () => {
+  describe("solicitudes_a2a_entrantes (migraciones 0011, 0012)", () => {
+    it("crea la tabla solicitudes_a2a_entrantes y los índices idx_solicitudes_a2a_entrantes_caso e idx_solicitudes_a2a_entrantes_estado", () => {
       db = openDatabase(":memory:");
 
       const tableNames = (
@@ -2558,6 +2559,38 @@ describe("repository", () => {
 
       expect(tableNames).toContain("solicitudes_a2a_entrantes");
       expect(indexNames).toContain("idx_solicitudes_a2a_entrantes_caso");
+      expect(indexNames).toContain("idx_solicitudes_a2a_entrantes_estado");
+
+      const pragmaIndexNames = (
+        db!
+          .prepare("PRAGMA index_list(solicitudes_a2a_entrantes)")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      expect(pragmaIndexNames).toEqual(
+        expect.arrayContaining([
+          "idx_solicitudes_a2a_entrantes_caso",
+          "idx_solicitudes_a2a_entrantes_estado",
+        ]),
+      );
+    });
+
+    it("correr las migraciones dos veces seguidas no falla (IF NOT EXISTS)", () => {
+      db = openDatabase(":memory:");
+
+      const indexNamesAntes = (
+        db!
+          .prepare("PRAGMA index_list(solicitudes_a2a_entrantes)")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+
+      expect(() => runMigrations(db!)).not.toThrow();
+
+      const indexNamesDespues = (
+        db!
+          .prepare("PRAGMA index_list(solicitudes_a2a_entrantes)")
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      expect(indexNamesDespues).toEqual(indexNamesAntes);
     });
   });
 
@@ -2778,6 +2811,179 @@ describe("repository", () => {
 
       const fila = getSolicitudA2AEntrantePorTaskId(db, "task-1");
       expect(fila!.estado).toBe("TASK_STATE_WORKING");
+    });
+  });
+
+  describe("listSolicitudesA2AEntrantesPorEstado (migración 0012, comando-visibilidad-a2a-entrante, tarea 3)", () => {
+    it.each([
+      { estados: ["TASK_STATE_SUBMITTED"], label: "un estado" },
+      { estados: ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"], label: "dos estados" },
+      {
+        estados: ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_COMPLETED"],
+        label: "tres estados",
+      },
+    ])(
+      "R4: EXPLAIN QUERY PLAN reporta SEARCH ... USING INDEX idx_solicitudes_a2a_entrantes_estado, nunca SCAN, con $label",
+      ({ estados }) => {
+        db = openDatabase(":memory:");
+        insertSolicitudA2AEntrante(db, {
+          id: "solicitud-a2a-1",
+          a2aTaskId: "task-1",
+          origenTransporte: "127.0.0.1",
+          mensajeRecibido: "consulta",
+          estado: "TASK_STATE_SUBMITTED",
+          createdAt: "2026-09-11T00:00:00.000Z",
+          updatedAt: "2026-09-11T00:00:00.000Z",
+        });
+
+        // Monkeypatch temporal solo para capturar el SQL exacto que arma
+        // listSolicitudesA2AEntrantesPorEstado — los placeholders son
+        // dinámicos según la aridad, no se pueden hardcodear en el test.
+        let sqlCapturado: string | undefined;
+        const prepareOriginal = db!.prepare.bind(db);
+        db!.prepare = ((sql: string) => {
+          sqlCapturado = sql;
+          return prepareOriginal(sql);
+        }) as typeof db.prepare;
+        listSolicitudesA2AEntrantesPorEstado(db, { estados, limite: 20 });
+        db!.prepare = prepareOriginal;
+
+        expect(sqlCapturado).toBeDefined();
+        const binds = {
+          ...Object.fromEntries(estados.map((estado, i) => [`estado${i}`, estado])),
+          limite: 21,
+        };
+        const plan = db!.prepare(`EXPLAIN QUERY PLAN ${sqlCapturado}`).all(binds) as Array<{
+          detail: string;
+        }>;
+        const detalle = plan.map((p) => p.detail).join("\n");
+
+        expect(detalle).toMatch(
+          /SEARCH solicitudes_a2a_entrantes USING INDEX idx_solicitudes_a2a_entrantes_estado/,
+        );
+        expect(detalle).not.toMatch(/SCAN solicitudes_a2a_entrantes/);
+      },
+    );
+
+    it("estados vacío ⇒ { items: [], hayMas: false } sin tocar la base — db.prepare no se llama (IN () es error de sintaxis en SQLite)", () => {
+      db = openDatabase(":memory:");
+      let llamadas = 0;
+      const prepareOriginal = db!.prepare.bind(db);
+      db!.prepare = ((sql: string) => {
+        llamadas += 1;
+        return prepareOriginal(sql);
+      }) as typeof db.prepare;
+
+      const listado = listSolicitudesA2AEntrantesPorEstado(db, { estados: [], limite: 20 });
+
+      db!.prepare = prepareOriginal;
+      expect(listado).toEqual({ items: [], hayMas: false });
+      expect(llamadas).toBe(0);
+    });
+
+    it("filtra por [SUBMITTED, WORKING] entre las ocho variantes de TASK_STATE_*, y el resultado sale ascendente por updated_at (no por orden de inserción)", () => {
+      db = openDatabase(":memory:");
+
+      // `WORKING` entra PRIMERO con un `updated_at` MÁS TARDÍO que el de
+      // `SUBMITTED`, que entra DESPUÉS con un `updated_at` MÁS TEMPRANO — así
+      // el orden del resultado sólo puede explicarse por `ORDER BY
+      // updated_at`, nunca por el orden de inserción.
+      insertSolicitudA2AEntrante(db, {
+        id: "solicitud-working",
+        a2aTaskId: "task-working",
+        origenTransporte: "127.0.0.1",
+        mensajeRecibido: "consulta",
+        estado: "TASK_STATE_WORKING",
+        createdAt: "2026-09-11T00:00:00.000Z",
+        updatedAt: "2026-09-11T00:05:00.000Z",
+      });
+
+      const otrosEstados = [
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_REJECTED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_AUTH_REQUIRED",
+      ];
+      for (const estado of otrosEstados) {
+        insertSolicitudA2AEntrante(db, {
+          id: `solicitud-${estado}`,
+          a2aTaskId: `task-${estado}`,
+          origenTransporte: "127.0.0.1",
+          mensajeRecibido: "consulta",
+          estado,
+          createdAt: "2026-09-11T00:00:00.000Z",
+          updatedAt: "2026-09-11T00:01:00.000Z",
+        });
+      }
+
+      insertSolicitudA2AEntrante(db, {
+        id: "solicitud-submitted",
+        a2aTaskId: "task-submitted",
+        origenTransporte: "127.0.0.1",
+        mensajeRecibido: "consulta",
+        estado: "TASK_STATE_SUBMITTED",
+        createdAt: "2026-09-11T00:00:00.000Z",
+        updatedAt: "2026-09-11T00:02:00.000Z",
+      });
+
+      const listado = listSolicitudesA2AEntrantesPorEstado(db, {
+        estados: ["TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"],
+        limite: 20,
+      });
+
+      expect(listado.items.map((item) => item.a2aTaskId)).toEqual([
+        "task-submitted",
+        "task-working",
+      ]);
+      expect(listado.hayMas).toBe(false);
+    });
+
+    it("R7: 20 filas en curso con limite 20 ⇒ hayMas === false y 20 items", () => {
+      db = openDatabase(":memory:");
+      for (let i = 0; i < 20; i += 1) {
+        insertSolicitudA2AEntrante(db, {
+          id: `solicitud-${i}`,
+          a2aTaskId: `task-${i}`,
+          origenTransporte: "127.0.0.1",
+          mensajeRecibido: "consulta",
+          estado: "TASK_STATE_SUBMITTED",
+          createdAt: "2026-09-11T00:00:00.000Z",
+          updatedAt: `2026-09-11T00:${String(i).padStart(2, "0")}:00.000Z`,
+        });
+      }
+
+      const listado = listSolicitudesA2AEntrantesPorEstado(db, {
+        estados: ["TASK_STATE_SUBMITTED"],
+        limite: 20,
+      });
+
+      expect(listado.items).toHaveLength(20);
+      expect(listado.hayMas).toBe(false);
+    });
+
+    it("R7: 21 filas en curso con limite 20 ⇒ exactamente 20 items y hayMas === true (el borde exacto del +1)", () => {
+      db = openDatabase(":memory:");
+      for (let i = 0; i < 21; i += 1) {
+        insertSolicitudA2AEntrante(db, {
+          id: `solicitud-${i}`,
+          a2aTaskId: `task-${i}`,
+          origenTransporte: "127.0.0.1",
+          mensajeRecibido: "consulta",
+          estado: "TASK_STATE_SUBMITTED",
+          createdAt: "2026-09-11T00:00:00.000Z",
+          updatedAt: `2026-09-11T00:${String(i).padStart(2, "0")}:00.000Z`,
+        });
+      }
+
+      const listado = listSolicitudesA2AEntrantesPorEstado(db, {
+        estados: ["TASK_STATE_SUBMITTED"],
+        limite: 20,
+      });
+
+      expect(listado.items).toHaveLength(20);
+      expect(listado.hayMas).toBe(true);
     });
   });
 

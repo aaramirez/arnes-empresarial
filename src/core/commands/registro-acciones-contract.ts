@@ -20,6 +20,7 @@ export const COMANDO_DESCARTAR_PROPUESTA = "/descartar-propuesta";
 export const COMANDO_CONSULTAR_KPI = "/consultar-kpi"; // Hito 6, ADR 85
 export const COMANDO_REPORTE_COMISIONES = "/reporte-comisiones"; // comando-reporte-comisiones, ADR 117
 export const COMANDO_CANCELAR_SOLICITUD = "/cancelar-solicitud"; // v3.3.0
+export const COMANDO_VER_SOLICITUDES_A2A = "/ver-solicitudes-a2a"; // v3.4.0
 
 /* ── Vocabulario de `registro_acciones_empleado.resultado` (tabla del ADR 27) ── */
 export const RESULTADO_EXITOSA = "exitosa"; // /login

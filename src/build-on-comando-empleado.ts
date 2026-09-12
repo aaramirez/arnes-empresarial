@@ -91,6 +91,7 @@ import {
   COMANDO_REPORTE_COMISIONES,
   COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
+  COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
@@ -177,9 +178,19 @@ import {
 import {
   DelegacionA2ANoCompletadaError,
   DESTINO_A2A_KPI_INCIDENTE,
+  esTaskStateConocido,
   type ClienteA2APort,
   type MotivoDelegacionA2ANoCompletada,
 } from "./core/agents/a2a-contract.js";
+import {
+  LIMITE_LISTADO_A2A_ENTRANTES,
+  LINEAS_PAGINA_A2A,
+  TASK_STATES_EN_CURSO,
+  type EstadoSolicitudA2AEntrante,
+  type ListadoSolicitudesA2AEntrantes,
+  type SolicitudA2AEntranteStorePort,
+  type SolicitudA2AEntranteVistaEmpleado,
+} from "./core/agents/a2a-entrante-contract.js";
 import { type InsumoDelegado } from "./core/agents/subagents.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { createVentaStore, createDelegacionA2AStore } from "./build-on-venta.js";
@@ -206,8 +217,11 @@ import {
   descartarPropuestaCambio,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
+  getSolicitudA2AEntrantePorTaskId,
+  listSolicitudesA2AEntrantesPorEstado,
   type SolicitudRow,
   type PropuestaRow,
+  type SolicitudA2AEntranteRow,
 } from "./adapters/memory/repository.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./adapters/tui/tui-port.js";
 
@@ -300,6 +314,12 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly solicitudStore?: SolicitudStorePort;
   /** Tarea 31 — default: `createPropuestaStore(db)` (más abajo). */
   readonly propuestaStore?: PropuestaStorePort;
+  /**
+   * v3.4.0, `comando-visibilidad-a2a-entrante` tarea 4 — default:
+   * `createSolicitudA2AEntranteStore(db)` (más abajo). Opcional para no
+   * romper ningún fake existente de `Deps` en tests actuales.
+   */
+  readonly solicitudA2AEntranteStore?: SolicitudA2AEntranteStorePort;
   /**
    * Tarea 32, ADR 64 — default: `createGitAdapter({ repoRoot: process.cwd(), ... }).aplicarPatch`
    * (más abajo), construido con la config real resuelta de env
@@ -557,6 +577,126 @@ export function createPropuestaStore(db: Database.Database): PropuestaStorePort 
 }
 
 /**
+ * Traduce un `SolicitudA2AEntranteRow` de `repository.ts` a la
+ * `SolicitudA2AEntranteVistaEmpleado` del puerto (v3.4.0, `comando-visibilidad-
+ * a2a-entrante` tarea 4, ADR 141) — ★ donde vive el guard de vocabulario:
+ * `esTaskStateConocido(row.estado)` decide la unión discriminada
+ * `EstadoSolicitudA2AEntrante`. A diferencia de `toPortSolicitud`/
+ * `toPortPropuesta` (arriba), **NO lanza**: éste es un camino de LECTURA
+ * PURA y diagnóstico, no el CAS de escritura — un `throw` haría que una
+ * sola fila corrupta apague el listado entero, exactamente el escenario
+ * para el que este comando existe (ADR 141 pto 3). `agenteExternoUrl` e
+ * `id` NO se copian: no están en el tipo del puerto (ADR 139 pto 3, R1
+ * estructural).
+ */
+function toPortSolicitudA2AEntrante(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVistaEmpleado {
+  const estado: EstadoSolicitudA2AEntrante = esTaskStateConocido(row.estado)
+    ? { conocido: true, valor: row.estado }
+    : { conocido: false, valor: row.estado };
+  return {
+    a2aTaskId: row.a2aTaskId,
+    estado,
+    origenTransporte: row.origenTransporte,
+    ...(row.casoId !== undefined ? { casoId: row.casoId } : {}),
+    mensajeRecibido: row.mensajeRecibido,
+    ...(row.resultado !== undefined ? { resultado: row.resultado } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+/**
+ * `SolicitudA2AEntranteStorePort` por closures sobre `repository.ts`
+ * (v3.4.0, tarea 4) — molde exacto de `createPropuestaStore` de arriba:
+ * delegaciones directas sin lógica de negocio propia, sólo traducción vía
+ * `toPortSolicitudA2AEntrante`. `obtenerPorTaskId` envuelve
+ * `getSolicitudA2AEntrantePorTaskId` — cero SQL nuevo (ADR 136).
+ */
+export function createSolicitudA2AEntranteStore(db: Database.Database): SolicitudA2AEntranteStorePort {
+  return {
+    listarPorEstados(filtro) {
+      const { items, hayMas } = listSolicitudesA2AEntrantesPorEstado(db, {
+        estados: filtro.estados,
+        limite: filtro.limite ?? LIMITE_LISTADO_A2A_ENTRANTES,
+      });
+      return { items: items.map(toPortSolicitudA2AEntrante), hayMas };
+    },
+    obtenerPorTaskId(a2aTaskId) {
+      const row = getSolicitudA2AEntrantePorTaskId(db, a2aTaskId);
+      return row ? toPortSolicitudA2AEntrante(row) : undefined;
+    },
+  };
+}
+
+/**
+ * Una línea por fila — molde de `formatearLineaPropuesta` (más abajo). El
+ * rótulo es **`origen de transporte`**, nunca `agente` (R1, ADR 142 pto 1):
+ * `origenTransporte` es una dirección de red observada por el transporte,
+ * no una identidad de agente externo (`0011:18-20`). No exportada — sólo
+ * la usa `formatearListadoSolicitudesA2A`, mismo criterio que
+ * `formatearLineaPropuesta`/`formatearListadoPropuestas`.
+ */
+function formatearLineaSolicitudA2A(vista: SolicitudA2AEntranteVistaEmpleado): string {
+  return `- tarea ${vista.a2aTaskId} | estado ${vista.estado.valor} | origen de transporte ${vista.origenTransporte} | recibida ${vista.createdAt} | actualizada ${vista.updatedAt}`;
+}
+
+/**
+ * `formatearListadoSolicitudesA2A` (v3.4.0, `comando-visibilidad-a2a-
+ * entrante` tarea 7, ADR 142 pto 1). Exportada — a diferencia de
+ * `formatearListadoPropuestas`/`formatearResumenPropuesta` (más abajo,
+ * anidadas en `buildOnComandoEmpleado`), ésta y
+ * `formatearDetalleSolicitudA2A` viven a nivel de módulo porque la tarea 8
+ * (el `case` del dispatcher que las cablea) todavía no existe: necesitan
+ * ser testeables en forma directa, mismo criterio con el que la tarea 4
+ * exportó `createSolicitudA2AEntranteStore`. Vacío ⇒ texto fijo; `hayMas
+ * === true` ⇒ nota de truncado al final, molde de la nota de
+ * `formatearResumenPropuesta`.
+ */
+export function formatearListadoSolicitudesA2A(listado: ListadoSolicitudesA2AEntrantes): string {
+  if (listado.items.length === 0) {
+    return "No hay solicitudes A2A entrantes en curso.";
+  }
+  const lineas = listado.items.map(formatearLineaSolicitudA2A).join("\n");
+  const nota = listado.hayMas
+    ? `\n\n[…mostrando las primeras ${listado.items.length}; hay más solicitudes en curso…]`
+    : "";
+  return `${lineas}${nota}`;
+}
+
+/**
+ * Pagina `contenido` a `LINEAS_PAGINA_A2A` líneas — mecánica idéntica a
+ * `formatearResumenPropuesta` (más abajo), aplicada dos veces de forma
+ * independiente (`mensaje_recibido` y `resultado`, ADR 142 pto 2): cada
+ * sección paga su propio tope de `LINEAS_PAGINA_A2A`, no un tope conjunto.
+ */
+function formatearSeccionPaginadaA2A(etiqueta: string, contenido: string): string {
+  const lineas = contenido.split("\n");
+  const primeraPagina = lineas.slice(0, LINEAS_PAGINA_A2A).join("\n");
+  const nota =
+    lineas.length > LINEAS_PAGINA_A2A
+      ? `\n\n[…mostrando las primeras ${LINEAS_PAGINA_A2A} de ${lineas.length} líneas de ${etiqueta}…]`
+      : "";
+  return `\n\n${etiqueta}:\n${primeraPagina}${nota}`;
+}
+
+/**
+ * `formatearDetalleSolicitudA2A` (v3.4.0, tarea 7, ADR 142 pto 2-3). Resumen
+ * de una línea (mismos cinco campos que `formatearLineaSolicitudA2A`, con
+ * el mismo rótulo `origen de transporte`) + `mensajeRecibido`/`resultado`
+ * paginados a `LINEAS_PAGINA_A2A` líneas cada uno. `resultado` ausente ⇒
+ * la sección se OMITE por completo — no se imprime vacía ni la palabra
+ * `"undefined"` (mismo binario que el `dictamen` de `formatearLineaSolicitud`,
+ * ADR 142 pto 3). Exportada por el mismo motivo que
+ * `formatearListadoSolicitudesA2A` — ver comentario de esa función.
+ */
+export function formatearDetalleSolicitudA2A(vista: SolicitudA2AEntranteVistaEmpleado): string {
+  const resumen = `solicitud A2A ${vista.a2aTaskId} · estado ${vista.estado.valor} · origen de transporte ${vista.origenTransporte} · recibida ${vista.createdAt} · actualizada ${vista.updatedAt}`;
+  const mensaje = formatearSeccionPaginadaA2A("mensaje recibido", vista.mensajeRecibido);
+  const resultado = vista.resultado !== undefined ? formatearSeccionPaginadaA2A("resultado", vista.resultado) : "";
+  return `${resumen}${mensaje}${resultado}`;
+}
+
+/**
  * `comando` de `registro_acciones_empleado` para cada `AccionSolicitud`
  * (Hito 5, tarea 23) — análoga a `ACCION_ESCALACION_INFO`, pero más chica:
  * a diferencia de `aprobar`/`rechazar`/`reabrir` reembolso, acá NO hay
@@ -727,6 +867,9 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     logTurnEvent(casoId, event, fields, logDeps);
   const solicitudStore: SolicitudStorePort = deps.solicitudStore ?? createSolicitudStore(db);
   const propuestaStore: PropuestaStorePort = deps.propuestaStore ?? createPropuestaStore(db);
+  /** v3.4.0, `comando-visibilidad-a2a-entrante` tarea 8 — default: `createSolicitudA2AEntranteStore(db)`. */
+  const solicitudA2AEntranteStore: SolicitudA2AEntranteStorePort =
+    deps.solicitudA2AEntranteStore ?? createSolicitudA2AEntranteStore(db);
   // Hito 6, tarea 20 (ADR 85 + ADR 82): `clienteA2A` NO tiene default — su
   // ausencia ES el interruptor apagado, resuelto una sola vez en `main.ts`.
   const { clienteA2A } = deps;
@@ -1201,6 +1344,47 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   }
 
   /**
+   * `/ver-solicitudes-a2a [a2aTaskId]` (v3.4.0, `comando-visibilidad-a2a-
+   * entrante` tarea 8, ADR 134/143). Molde LITERAL de `manejarVerPropuesta`
+   * de arriba: UN SOLO PASO, SÍNCRONO, sin `await`, sin `createCaso`, y
+   * NUNCA lee ni escribe `confirmacionPendiente` — mostrar filas que ya
+   * existen es una lectura, punto. `privilegiado: true` ya lo garantizó la
+   * guarda del preámbulo (paso 6): no se duplica acá.
+   *
+   * ÚNICA diferencia con el molde: `registrar(...)` (ADR 143, revertido por
+   * el checkpoint) — `RESULTADO_ATENDIDA` cuando hay algo que mostrar
+   * (listado o detalle encontrado), `RESULTADO_NO_APLICABLE` cuando el id
+   * no existe, para que la auditoría distinga una divulgación de contenido
+   * de un id mal tipeado (ADR 138 pto 2). `casoId` viaja SOLO en modo
+   * detalle (varias filas en el listado, ninguna es "el" caso).
+   */
+  function manejarVerSolicitudesA2A(
+    comando: Extract<ComandoEmpleado, { tipo: "ver_solicitudes_a2a" }>,
+    ahora: string,
+  ): TuiTurnResult {
+    if (comando.a2aTaskId === undefined) {
+      const listado = solicitudA2AEntranteStore.listarPorEstados({ estados: TASK_STATES_EN_CURSO });
+      registrar({ comando: COMANDO_VER_SOLICITUDES_A2A, resultado: RESULTADO_ATENDIDA }, ahora);
+      return sistema(formatearListadoSolicitudesA2A(listado));
+    }
+
+    const vista = solicitudA2AEntranteStore.obtenerPorTaskId(comando.a2aTaskId);
+    if (vista === undefined) {
+      registrar({ comando: COMANDO_VER_SOLICITUDES_A2A, resultado: RESULTADO_NO_APLICABLE }, ahora);
+      return sistema(`No existe ninguna solicitud A2A ${comando.a2aTaskId}.`);
+    }
+    registrar(
+      {
+        comando: COMANDO_VER_SOLICITUDES_A2A,
+        ...(vista.casoId !== undefined ? { casoId: vista.casoId } : {}),
+        resultado: RESULTADO_ATENDIDA,
+      },
+      ahora,
+    );
+    return sistema(formatearDetalleSolicitudA2A(vista));
+  }
+
+  /**
    * `/consultar-kpi <consulta>` (Hito 6, tarea 20, ADR 85). UN SOLO PASO —
    * NUNCA lee ni escribe `confirmacionPendiente`, igual que
    * `manejarVerPropuesta`/`manejarSolicitud`. `privilegiado: true` ya lo
@@ -1559,6 +1743,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionSolicitud(ACCION_CANCELAR_SOLICITUD, comando.solicitudId, ahora);
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
+      case "ver_solicitudes_a2a":
+        return manejarVerSolicitudesA2A(comando, ahora);
       case "consultar_kpi":
         return manejarConsultarKpi(comando, ahora);
       case "aplicar_propuesta":

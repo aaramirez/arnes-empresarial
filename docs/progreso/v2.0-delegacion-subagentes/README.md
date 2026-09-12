@@ -6,11 +6,11 @@
 
 ## Checklist de cierre (`AGENTS.md`)
 
-- [ ] Reviewer no aprobó todavía el hito completo (`sdd-verify` + `code-review` contra `tasks.md`, los 6 specs y `design.md`) — no existe `verify-report.md` en la carpeta del change a la fecha de este documento. Las tareas 1-23 sí pasaron por Implementer→Reviewer individualmente (ver sus commits), pero la revisión de cierre del hito completo (ADR 48, ADR 52, RD-5) queda pendiente.
+- [x] Reviewer aprobó el hito completo (`sdd-verify` + `code-review` contra `tasks.md`, los 6 specs y `design.md`). **Nota (2026-09-11):** la aprobación ocurrió en una sesión posterior a la redacción de este documento y no quedó registrada como `verify-report.md` en la carpeta del change en su momento. Este checklist se corrige retroactivamente por confirmación del checkpoint humano; no se reconstruye acá el contenido de esa revisión porque no se presenció.
 - [x] Entregable funcional demostrado de punta a punta — Entregable A (delegación por roles activa), aislamiento, sin-efectos-sobre-el-repo, Entregable B (solicitud interna con confirmación en dos pasos) y Rollback (`HARNESS_DELEGACION_ROLES=off`), los cinco con evidencia real abajo.
 - [x] Esta carpeta (`docs/progreso/v2.0-delegacion-subagentes/`).
-- [ ] Tarea 25 (`README.md` raíz — documentar `SUBAGENT_REGISTRY` y el interruptor `HARNESS_DELEGACION_ROLES`) — **NO ejecutada en esta sesión** (fuera de alcance de la tarea 24; asignada explícitamente a otra sesión).
-- [ ] Tag `v2.0.0` — pendiente, se crea después del merge a `main`.
+- [x] Tarea 25 (`README.md` raíz — documentar `SUBAGENT_REGISTRY` y el interruptor `HARNESS_DELEGACION_ROLES`) — completada en sesión posterior. Ver `openspec/changes/hito-2.0-delegacion-subagentes/tasks.md:171`, marcada `COMPLETADO`.
+- [x] Tag `v2.0.0` — creado tras el merge a `main` (`git tag -n99 v2.0.0` → "Hito 2.0 - delegacion a subagentes").
 
 ## Hallazgo real encontrado durante la verificación: contaminación de `data/harness.log` por tests sin aislar
 
@@ -261,10 +261,12 @@ $ npm test
 
 Confirmado por lectura de código (no auditoría exhaustiva de los 1120 tests, según el propio alcance de la tarea 24): `invoke-model.test.ts` inyecta un `queryFn` fake en vez de golpear la API real (`await invokeModel(agent, context, "hola", hookEngine, queryFn, mcpServers)`), mismo patrón de DI documentado por el módulo — ningún test de la suite invoca el modelo real ni abre un puerto real (los tests de `webhooks`/`web` usan el mismo patrón de servidor inyectable/efímero que ya usaban en `v1.2.0`/`v1.4.0`).
 
-## Qué falta para el cierre real del hito
+## Qué faltaba para el cierre real del hito (histórico, resuelto)
 
-1. **Tarea 25** (`README.md` raíz — `SUBAGENT_REGISTRY` + interruptor `HARNESS_DELEGACION_ROLES`): no ejecutada en esta sesión, asignada a otra sesión.
-2. **Reviewer de cierre del hito completo** (`sdd-verify` + `code-review` contra `tasks.md`, los 6 specs y `design.md`, con atención especial a ADR 48, ADR 52 y RD-5, según la nota de `tasks.md` líneas 186-190): no corrió todavía — no existe `verify-report.md`.
-3. **El hallazgo de contaminación de `data/harness.log`** (ver sección de arriba) — sugerencia de tarea ya generada (`task_82cd7bb4`), pendiente de que el humano la acepte o la reasigne.
-4. **Checklist de cierre de `AGENTS.md`** y **tag `v2.0.0`**: pendientes del merge a `main`, después de que los puntos 1-2 cierren.
-5. **PRs reales de verificación en `practicaDeDesarrollo`**, abiertos y sin mergear a propósito (evidencia de esta tarea, no cambios funcionales): [PR #3](https://github.com/JimmyFung123/practicaDeDesarrollo/pull/3) (Entregable A) y [PR #4](https://github.com/JimmyFung123/practicaDeDesarrollo/pull/4) (Rollback) — quedan a criterio del humano si cerrarlos/mergearlos o dejarlos como constancia histórica (mismo dilema que el propio Reviewer del PR #4 señaló sobre el archivo `.txt` de evidencia).
+Esta sección quedó desactualizada frente al estado real del repo y se conserva como registro de lo que se sabía al momento de escribir la verificación manual (tarea 24). Estado real confirmado el 2026-09-11, ver checklist arriba:
+
+1. ~~**Tarea 25**~~ — completada en sesión posterior.
+2. ~~**Reviewer de cierre del hito completo**~~ — aprobado en sesión posterior (sin `verify-report.md` propio, ver nota en el checklist).
+3. **El hallazgo de contaminación de `data/harness.log`** (ver sección de arriba) — sugerencia de tarea ya generada (`task_82cd7bb4`); no se verificó en esta sesión si se resolvió, queda fuera del alcance de esta corrección.
+4. ~~**Checklist de cierre de `AGENTS.md`** y **tag `v2.0.0`**~~ — tag creado, checklist completo.
+5. **PRs reales de verificación en `practicaDeDesarrollo`**, abiertos y sin mergear a propósito (evidencia de esta tarea, no cambios funcionales): [PR #3](https://github.com/JimmyFung123/practicaDeDesarrollo/pull/3) (Entregable A) y [PR #4](https://github.com/JimmyFung123/practicaDeDesarrollo/pull/4) (Rollback) — no se verificó su estado actual en esta corrección.

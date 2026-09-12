@@ -8,10 +8,14 @@
  * comandos, las dos ranuras del closure y el orden de evaluación (§6.3).
  */
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import {
   buildOnComandoEmpleado,
   createSolicitudStore,
+  createSolicitudA2AEntranteStore,
+  formatearListadoSolicitudesA2A,
+  formatearDetalleSolicitudA2A,
   type BuildOnComandoEmpleadoDeps,
 } from "./build-on-comando-empleado.js";
 import { COMANDOS } from "./core/commands/comando-empleado.js";
@@ -28,8 +32,10 @@ import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract
 import {
   COMANDO_CONSULTAR_KPI,
   COMANDO_REPORTE_COMISIONES,
+  COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_FALLIDA,
+  RESULTADO_NO_APLICABLE,
   type RegistroAccionesEmpleadoPort,
 } from "./core/commands/registro-acciones-contract.js";
 import { agruparReporteMensual, formatearReporteMensual } from "./core/ventas/reporte.js";
@@ -60,10 +66,17 @@ import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-dele
 import type { DelegacionA2AStorePort } from "./core/turn-selector/dispatch-delegation-a2a.js";
 import {
   TASK_STATE_COMPLETED,
+  TASK_STATE_SUBMITTED,
+  TASK_STATE_WORKING,
   type ClienteA2APort,
   type MotivoDelegacionA2ANoCompletada,
   type ResultadoA2A,
 } from "./core/agents/a2a-contract.js";
+import {
+  LINEAS_PAGINA_A2A,
+  type ListadoSolicitudesA2AEntrantes,
+  type SolicitudA2AEntranteVistaEmpleado,
+} from "./core/agents/a2a-entrante-contract.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
 import type { SoporteResult } from "./build-on-soporte.js";
@@ -76,6 +89,7 @@ import {
   escalarReembolso,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
+  insertSolicitudA2AEntrante,
 } from "./adapters/memory/repository.js";
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
@@ -2315,5 +2329,417 @@ describe("createSolicitudStore", () => {
 
       expect(cancelada?.estado).toBe(SOLICITUD_ESTADO_CANCELADA);
     });
+  });
+});
+
+/**
+ * `toPortSolicitudA2AEntrante`/`createSolicitudA2AEntranteStore`
+ * (comando-visibilidad-a2a-entrante, tarea 4, ADR 141) — molde de la suite
+ * `createSolicitudStore` de arriba: `toPortSolicitudA2AEntrante` NO se
+ * exporta (mismo criterio que `toPortSolicitud`/`toPortPropuesta`, nunca
+ * testeadas en forma directa en este archivo), así que se ejercita
+ * INDIRECTAMENTE a través de `createSolicitudA2AEntranteStore(db)` sobre
+ * SQLite real — mismo patrón que el test de
+ * `SolicitudTipoEstadoInvalidoError` arriba (`:2264`), que tampoco llama a
+ * `toPortSolicitud` en forma directa.
+ */
+describe("createSolicitudA2AEntranteStore / toPortSolicitudA2AEntrante (comando-visibilidad-a2a-entrante, tarea 4)", () => {
+  function withDb<T>(fn: (db: Database.Database) => T): T {
+    const db = openDatabase(":memory:");
+    try {
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  }
+
+  function seedA2AEntrante(
+    db: Database.Database,
+    overrides: { readonly id: string; readonly a2aTaskId: string; readonly estado: string },
+  ): void {
+    insertSolicitudA2AEntrante(db, {
+      id: overrides.id,
+      a2aTaskId: overrides.a2aTaskId,
+      origenTransporte: "https://externo.example.test/rpc",
+      mensajeRecibido: "hola",
+      estado: overrides.estado,
+      createdAt: TIMESTAMP,
+      updatedAt: TIMESTAMP,
+    });
+  }
+
+  it("obtenerPorTaskId: estado 'BASURA' (no conocido) devuelve { conocido: false, valor: 'BASURA' } sin lanzar", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-1", a2aTaskId: "task-basura", estado: "BASURA" });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      let vista: ReturnType<typeof store.obtenerPorTaskId>;
+      expect(() => {
+        vista = store.obtenerPorTaskId("task-basura");
+      }).not.toThrow();
+
+      expect(vista?.estado).toEqual({ conocido: false, valor: "BASURA" });
+    });
+  });
+
+  it("obtenerPorTaskId: estado TASK_STATE_WORKING (conocido) devuelve { conocido: true, valor: 'TASK_STATE_WORKING' }", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-2", a2aTaskId: "task-working", estado: TASK_STATE_WORKING });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      const vista = store.obtenerPorTaskId("task-working");
+
+      expect(vista?.estado).toEqual({ conocido: true, valor: TASK_STATE_WORKING });
+    });
+  });
+
+  it("R1 estructural: la vista nunca expone 'agenteExternoUrl' ni 'id', ni siquiera en runtime (ADR 139 pto 3)", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-3", a2aTaskId: "task-r1", estado: TASK_STATE_WORKING });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      const vista = store.obtenerPorTaskId("task-r1");
+
+      expect(vista).toBeDefined();
+      expect("agenteExternoUrl" in (vista as object)).toBe(false);
+      expect("id" in (vista as object)).toBe(false);
+    });
+  });
+
+  it("listarPorEstados + obtenerPorTaskId: ida y vuelta sobre SQLite real con la tarea 3 (listSolicitudesA2AEntrantesPorEstado)", () => {
+    withDb((db) => {
+      seedA2AEntrante(db, { id: "sol-a2a-4", a2aTaskId: "task-en-curso", estado: TASK_STATE_WORKING });
+      seedA2AEntrante(db, { id: "sol-a2a-5", a2aTaskId: "task-completada", estado: TASK_STATE_COMPLETED });
+      const store = createSolicitudA2AEntranteStore(db);
+
+      const listado = store.listarPorEstados({ estados: [TASK_STATE_WORKING] });
+
+      expect(listado.hayMas).toBe(false);
+      expect(listado.items).toHaveLength(1);
+      expect(listado.items[0]?.a2aTaskId).toBe("task-en-curso");
+      expect(listado.items[0]?.estado).toEqual({ conocido: true, valor: TASK_STATE_WORKING });
+
+      const detalle = store.obtenerPorTaskId("task-completada");
+      expect(detalle?.a2aTaskId).toBe("task-completada");
+      expect(detalle?.estado).toEqual({ conocido: true, valor: TASK_STATE_COMPLETED });
+
+      expect(store.obtenerPorTaskId("no-existe")).toBeUndefined();
+    });
+  });
+});
+
+/**
+ * `formatearListadoSolicitudesA2A`/`formatearDetalleSolicitudA2A`
+ * (comando-visibilidad-a2a-entrante, tarea 7, ADR 142) — testeadas en
+ * forma DIRECTA, sin pasar por `buildOnComandoEmpleado`/el handler: el
+ * `case` del dispatcher que las cablea es la tarea 8, todavía no existe.
+ * Mismo criterio que la suite de la tarea 4 de arriba, que tampoco
+ * necesita el handler para ejercitar `createSolicitudA2AEntranteStore`.
+ */
+describe("formatearListadoSolicitudesA2A / formatearDetalleSolicitudA2A (comando-visibilidad-a2a-entrante, tarea 7)", () => {
+  function makeVistaA2A(overrides: Partial<SolicitudA2AEntranteVistaEmpleado> = {}): SolicitudA2AEntranteVistaEmpleado {
+    return {
+      a2aTaskId: "task-1",
+      estado: { conocido: true, valor: TASK_STATE_WORKING },
+      origenTransporte: "https://externo.example.test/rpc",
+      mensajeRecibido: "hola, este es el mensaje recibido",
+      createdAt: TIMESTAMP,
+      updatedAt: TIMESTAMP,
+      ...overrides,
+    };
+  }
+
+  it("R1, mitad de texto: ni el listado ni el detalle imprimen 'agente' como rótulo — los dos usan 'origen de transporte'", () => {
+    const vista = makeVistaA2A({ resultado: "resultado sin nada raro" });
+    const listado: ListadoSolicitudesA2AEntrantes = { items: [vista], hayMas: false };
+
+    const textoListado = formatearListadoSolicitudesA2A(listado);
+    const textoDetalle = formatearDetalleSolicitudA2A(vista);
+
+    expect(textoListado).not.toContain("agente");
+    expect(textoListado).toContain("origen de transporte");
+    expect(textoDetalle).not.toContain("agente");
+    expect(textoDetalle).toContain("origen de transporte");
+  });
+
+  it("formatearDetalleSolicitudA2A: un resultado con más de LINEAS_PAGINA_A2A líneas muestra solo la primera página y avisa que hay más", () => {
+    const totalLineas = LINEAS_PAGINA_A2A + 15;
+    const lineasResultado = Array.from({ length: totalLineas }, (_, i) => `linea ${i}`);
+    const vista = makeVistaA2A({ resultado: lineasResultado.join("\n") });
+
+    const texto = formatearDetalleSolicitudA2A(vista);
+
+    expect(texto).toContain("linea 0");
+    expect(texto).toContain(`linea ${LINEAS_PAGINA_A2A - 1}`);
+    expect(texto).not.toContain(`linea ${LINEAS_PAGINA_A2A}`);
+    expect(texto).not.toContain(`linea ${totalLineas - 1}`);
+    // La nota de truncado avisa cuántas líneas hay en total, sin literal fijado por diseño.
+    expect(texto).toContain(String(totalLineas));
+  });
+
+  it("formatearDetalleSolicitudA2A: 'resultado' ausente ⇒ la sección se omite por completo (ni vacía, ni 'undefined')", () => {
+    const vista = makeVistaA2A();
+    expect("resultado" in vista).toBe(false);
+
+    const texto = formatearDetalleSolicitudA2A(vista);
+
+    expect(texto).not.toContain("undefined");
+    expect(texto).not.toContain("resultado:");
+  });
+
+  it("formatearListadoSolicitudesA2A: listado vacío devuelve exactamente el texto fijo", () => {
+    const listado: ListadoSolicitudesA2AEntrantes = { items: [], hayMas: false };
+
+    expect(formatearListadoSolicitudesA2A(listado)).toBe("No hay solicitudes A2A entrantes en curso.");
+  });
+
+  it("formatearListadoSolicitudesA2A: hayMas === true agrega una nota de truncado al final", () => {
+    const listado: ListadoSolicitudesA2AEntrantes = { items: [makeVistaA2A()], hayMas: true };
+
+    const texto = formatearListadoSolicitudesA2A(listado);
+
+    expect(texto).toContain("task-1");
+    expect(texto.toLowerCase()).toMatch(/mostrando|hay más/);
+  });
+});
+
+/**
+ * `/ver-solicitudes-a2a` — cableado del dispatcher (comando-visibilidad-a2a-
+ * entrante, tarea 8, ADR 134/143). Molde de la suite `/consultar-kpi`
+ * (Hito 6, tarea 20): `db` es un `openDatabase(":memory:")` REAL vía
+ * `makeKpiDeps` — ni `registro` ni `solicitudA2AEntranteStore` se
+ * sobreescriben, así que corren los defaults REALES de
+ * `buildOnComandoEmpleado` (`insertAccionEmpleado(db, ...)` /
+ * `createSolicitudA2AEntranteStore(db)`) — es la única forma de ejercitar
+ * `registrar(...)` y `listSolicitudesA2AEntrantesPorEstado` de punta a
+ * punta, tal como exige la tarea.
+ */
+describe("buildOnComandoEmpleado — /ver-solicitudes-a2a (comando-visibilidad-a2a-entrante, tarea 8)", () => {
+  function seedA2A(
+    db: Database.Database,
+    overrides: {
+      readonly id: string;
+      readonly a2aTaskId: string;
+      readonly estado: string;
+      readonly updatedAt?: string;
+      readonly casoId?: string;
+    },
+  ): void {
+    insertSolicitudA2AEntrante(db, {
+      id: overrides.id,
+      a2aTaskId: overrides.a2aTaskId,
+      origenTransporte: "https://externo.example.test/rpc",
+      mensajeRecibido: "hola",
+      estado: overrides.estado,
+      ...(overrides.casoId !== undefined ? { casoId: overrides.casoId } : {}),
+      createdAt: overrides.updatedAt ?? TIMESTAMP,
+      updatedAt: overrides.updatedAt ?? TIMESTAMP,
+    });
+  }
+
+  it("sin argumento, filtra por TASK_STATES_EN_CURSO a nivel handler (end-to-end sobre SQLite real)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      seedA2A(db, { id: "sol-1", a2aTaskId: "task-submitted", estado: TASK_STATE_SUBMITTED });
+      seedA2A(db, { id: "sol-2", a2aTaskId: "task-working", estado: TASK_STATE_WORKING });
+      seedA2A(db, { id: "sol-3", a2aTaskId: "task-completed", estado: TASK_STATE_COMPLETED });
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/ver-solicitudes-a2a");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("task-submitted");
+      expect(resultado.responseText).toContain("task-working");
+      expect(resultado.responseText).not.toContain("task-completed");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("★ el caso del Hallazgo 2: una fila TASK_STATE_WORKING con updated_at viejo aparece PRIMERA en el listado sin argumento", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      // La huérfana: quedó en WORKING con updated_at de una sesión anterior
+      // (proceso ya terminado, ej. taskkill /F) — es el escenario que motivó el change.
+      seedA2A(db, {
+        id: "sol-huerfana",
+        a2aTaskId: "task-huerfana-vieja",
+        estado: TASK_STATE_WORKING,
+        updatedAt: "2020-01-01T00:00:00.000Z",
+      });
+      // La legítimamente en curso, más reciente.
+      seedA2A(db, {
+        id: "sol-viva",
+        a2aTaskId: "task-viva-reciente",
+        estado: TASK_STATE_WORKING,
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      });
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/ver-solicitudes-a2a");
+
+      const posicionHuerfana = resultado.responseText.indexOf("task-huerfana-vieja");
+      const posicionViva = resultado.responseText.indexOf("task-viva-reciente");
+      expect(posicionHuerfana).toBeGreaterThanOrEqual(0);
+      expect(posicionViva).toBeGreaterThanOrEqual(0);
+      // No basta con que las dos aparezcan: el orden es la garantía (updated_at ASC).
+      expect(posicionHuerfana).toBeLessThan(posicionViva);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("auditoría: listado exitoso deja UNA fila /ver-solicitudes-a2a/atendida SIN caso_id", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      seedA2A(db, { id: "sol-1", a2aTaskId: "task-1", estado: TASK_STATE_WORKING });
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      await handler("/ver-solicitudes-a2a");
+
+      expect(contarFilasRegistro(db, COMANDO_VER_SOLICITUDES_A2A)).toBe(1);
+      const fila = db
+        .prepare("SELECT resultado, caso_id FROM registro_acciones_empleado WHERE comando = ?")
+        .get(COMANDO_VER_SOLICITUDES_A2A) as { resultado: string; caso_id: string | null };
+      expect(fila.resultado).toBe(RESULTADO_ATENDIDA);
+      expect(fila.caso_id).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("auditoría: detalle encontrado deja fila atendida CON caso_id", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      createCaso(db, {
+        id: "caso-a2a-1",
+        tipo: "consulta_kpi",
+        estado: "activo",
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      });
+      seedA2A(db, { id: "sol-1", a2aTaskId: "task-con-caso", estado: TASK_STATE_COMPLETED, casoId: "caso-a2a-1" });
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/ver-solicitudes-a2a task-con-caso");
+
+      expect(resultado.responseText).toContain("task-con-caso");
+      const fila = db
+        .prepare("SELECT resultado, caso_id FROM registro_acciones_empleado WHERE comando = ?")
+        .get(COMANDO_VER_SOLICITUDES_A2A) as { resultado: string; caso_id: string | null };
+      expect(fila.resultado).toBe(RESULTADO_ATENDIDA);
+      expect(fila.caso_id).toBe("caso-a2a-1");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("auditoría: id inexistente deja fila no_aplicable, responde sin lanzar", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      let resultado: TuiTurnResult | undefined;
+      await expect(async () => {
+        resultado = await handler("/ver-solicitudes-a2a no-existe");
+      }).not.toThrow();
+
+      expect(resultado?.responseText).toBe("No existe ninguna solicitud A2A no-existe.");
+      const fila = db
+        .prepare("SELECT resultado, caso_id FROM registro_acciones_empleado WHERE comando = ?")
+        .get(COMANDO_VER_SOLICITUDES_A2A) as { resultado: string; caso_id: string | null };
+      expect(fila.resultado).toBe(RESULTADO_NO_APLICABLE);
+      expect(fila.caso_id).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("auditoría: sin sesión vigente, cero filas (corta en la guarda de privilegio, antes del handler)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+
+      const resultado = await handler("/ver-solicitudes-a2a");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+      expect(contarFilasRegistro(db, COMANDO_VER_SOLICITUDES_A2A)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("lo que NO hace (ADR 134): ni casos ni delegaciones_a2a ganan filas en ninguno de los dos modos", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      seedA2A(db, { id: "sol-1", a2aTaskId: "task-1", estado: TASK_STATE_WORKING });
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      await handler("/ver-solicitudes-a2a");
+      await handler("/ver-solicitudes-a2a task-1");
+      await handler("/ver-solicitudes-a2a no-existe");
+
+      expect(contarCasos(db)).toBe(0);
+      const filaDelegaciones = db.prepare("SELECT count(*) as total FROM delegaciones_a2a").get() as {
+        total: number;
+      };
+      expect(filaDelegaciones.total).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("lo que NO hace (ADR 134): una confirmación de reembolso pendiente sobrevive a un /ver-solicitudes-a2a de por medio", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+      const store = makeStore({
+        listarReembolsosPendientes: vi.fn(() => [venta]),
+        aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+      });
+      const deps = makeKpiDeps(db, reloj, { store });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const eco = await handler("/aprobar-reembolso v-1");
+      expect(eco.responseText.toLowerCase()).toContain("confirm");
+
+      await handler("/ver-solicitudes-a2a");
+
+      const confirmacion = await handler("/aprobar-reembolso v-1");
+      expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
+      expect(confirmacion.responseText).toContain("v-1");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("lo que NO hace (ADR 134): el handler no es `async` (inspección de firma, molde manejarVerPropuesta)", () => {
+    const source = readFileSync(new URL("./build-on-comando-empleado.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("function manejarVerSolicitudesA2A(");
+    expect(source).not.toContain("async function manejarVerSolicitudesA2A(");
   });
 });
