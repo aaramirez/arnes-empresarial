@@ -30,7 +30,7 @@ Primer puerto de núcleo de `solicitudes_a2a_entrantes`, segundo índice de la t
  │                                     `a2a-entrante-prompt.ts`, familia   │
  │                                     `a2a-entrante-*` YA EXISTENTE       │
  │                                     · `SolicitudA2AEntranteStorePort`   │
- │                                     · `SolicitudA2AEntranteVistaEmpleado`       │
+ │                                     · `SolicitudA2AEntranteVistaEmpleado` │
  │                                     · `EstadoSolicitudA2AEntrante` ★    │
  │                                       (unión discriminada, ADR 141)     │
  │                                     · `TASK_STATES_EN_CURSO` DERIVADO   │
