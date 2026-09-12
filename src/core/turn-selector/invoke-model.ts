@@ -257,13 +257,27 @@ export class ModelResponseIncompleteError extends Error {
  * verbatim from the core `AgentDefinition` (Hito 5, tarea 9) — no longer
  * synthesized; see the module doc's paragraph on `Options.agents[id]` for
  * why.
+ *
+ * **Fix de verificación manual (post-v3.1.0)**: el `.d.ts` real del SDK
+ * declara DOS campos `skills` distintos — `Options.skills` (nivel raíz,
+ * "aplica a la sesión principal") y `AgentDefinition.skills` ("preload into
+ * the **agent context**", el que rige cuando el agente corre como *main
+ * thread agent* vía un `AgentDefinition` con nombre, que es como este arnés
+ * invoca SIEMPRE — nunca la sesión "pelada" del SDK). `toQueryOptions` ya
+ * seteaba `Options.skills`, pero nunca `AgentDefinition.skills`: la skill
+ * quedaba descubierta y validada por el Registro de Skills, pero nunca
+ * llegaba al contexto real del turno. Se pasa el mismo `skills` acá, para
+ * el agente principal y para cada subagente — misma lista para todos, sin
+ * filtrado por rol (RD-54 ya aceptaba ese mismo criterio para
+ * `Options.skills`).
  */
-function toSdkAgentDefinition(agent: AgentDefinition): SdkAgentDefinition {
+function toSdkAgentDefinition(agent: AgentDefinition, skills: readonly string[]): SdkAgentDefinition {
   return {
     description: agent.description,
     prompt: agent.systemPrompt,
     tools: [...agent.allowedTools],
     model: agent.model,
+    skills: [...skills],
   };
 }
 
@@ -355,8 +369,8 @@ function toQueryOptions(
   const options: Options = {
     agent: agent.id,
     agents: {
-      [agent.id]: toSdkAgentDefinition(agent),
-      ...Object.fromEntries(subagentes.map((s) => [s.id, toSdkAgentDefinition(s)])),
+      [agent.id]: toSdkAgentDefinition(agent, skills),
+      ...Object.fromEntries(subagentes.map((s) => [s.id, toSdkAgentDefinition(s, skills)])),
     },
     settingSources: [...SETTING_SOURCES_DEL_ARNES],
     skills: [...skills],

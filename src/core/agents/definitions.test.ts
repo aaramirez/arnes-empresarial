@@ -34,7 +34,7 @@ describe("agent registry", () => {
     expect(agent?.id).toBe(CONVERSATIONAL_AGENT_ID);
     expect(agent?.model).toBe(DEFAULT_AGENT_MODEL);
     expect(agent?.systemPrompt.length).toBeGreaterThan(0);
-    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME]);
+    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"]);
   });
 
   it("returns undefined for an unknown agent id", () => {
@@ -88,7 +88,7 @@ describe("agent registry", () => {
   it("keeps systemPrompt and allowedTools unchanged after adding description", () => {
     const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
 
-    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME]);
+    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"]);
     expect(agent?.systemPrompt).toMatch(/no tenés delegación a otros agentes/);
   });
 });

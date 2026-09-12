@@ -174,6 +174,11 @@ describe("invokeModel", () => {
             prompt: "sos un agente de prueba",
             tools: ["Read", "Grep"],
             model: "sonnet",
+            // Fix de verificación manual (post-v3.1.0): AgentDefinition.skills
+            // (no solo Options.skills) es lo que precarga skills en el
+            // contexto real del agente — ver el comentario de
+            // `toSdkAgentDefinition`.
+            skills: [],
           },
         },
         // definicion-skills, tarea 6 (ADR 108): siempre presentes, dentro
