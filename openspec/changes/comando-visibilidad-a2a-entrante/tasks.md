@@ -74,7 +74,7 @@
 
 10. [x] **`README.md`** **+ `docs/ARC42_Harness_Empresarial.md`** (modificados) — TDD exception (documentación) — documentan `/ver-solicitudes-a2a [a2aTaskId]` en el Registro de Comandos y en el flujo A2A entrante: los dos modos, `privilegiado: true`, el límite honesto de `origen_transporte` (R1), y que el remedio activo sobre el huérfano (cancelar/barrido) queda fuera de alcance. ★ **R3 (punto 5 de la tabla)**: el conteo de la Caja Blanca del Registro de Comandos se coordina con el estado real de `comando-reporte-comisiones`/`comando-cancelar-solicitud` en `main` al momento de este commit — mismo criterio que la tarea 5. Commit: `docs: documenta /ver-solicitudes-a2a en README y arc42 (comando-visibilidad-a2a-entrante, tarea 10)`.
 
-11. [ ] **Verificación manual del entregable** — TDD exception (sin código de producción). Cubre, como mínimo:
+11. [x] **Verificación manual del entregable** — TDD exception (sin código de producción). Cubre, como mínimo:
    - ★ **El caso del Hallazgo 2 (punto 4 de la tabla, cierre)**: reproducir el escenario documentado en `evidencia-verificacion-manual.md:128-142` — una fila `TASK_STATE_WORKING` que quedó huérfana (proceso terminado por `taskkill /F`) — y confirmar con `/ver-solicitudes-a2a` que aparece, primera, en el listado sin argumento, consultando además `data/harness.db` directamente para corroborar `updated_at`.
    - `/ver-solicitudes-a2a` sobre una fila `COMPLETED` real ⇒ el `responseText` **nunca** dice "agente", siempre "origen de transporte" (R1).
    - `/ver-solicitudes-a2a no-existe` ⇒ mensaje explicativo, sin throw, fila `no_aplicable` en `registro_acciones_empleado`.
