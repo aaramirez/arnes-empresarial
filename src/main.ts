@@ -68,17 +68,21 @@ import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle
 import { logTurnEvent } from "./core/logging/turn-logger.js";
 import { openDatabase } from "./adapters/memory/db.js";
 import {
+  buscarCredencialEmpleado,
   createCaso,
   createSesionAgente,
+  CasoNotFoundError,
   getCasoById,
   getLatestSesionAgente,
+  listComisionesPorPeriodo,
+  listVentasEnReembolsoPendiente,
   updateCaso,
   type Caso,
 } from "./adapters/memory/repository.js";
 import { startTui } from "./adapters/tui/start-tui.js";
 import { createKnowledgeAdapter, type KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import { buildOnSubmit } from "./build-on-submit.js";
-import { buildOnActivity } from "./build-on-activity.js";
+import { buildOnActivity, createDelegacionStore } from "./build-on-activity.js";
 import { createBoardAdapter, resolveBotLogin } from "./adapters/board/index.js";
 import { resolveBoardConfig } from "./adapters/board/config.js";
 import { startWebhookServer, type WebhookAdapter } from "./adapters/webhooks/index.js";
@@ -100,6 +104,15 @@ import { buildOnComandoEmpleado } from "./build-on-comando-empleado.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
 import { buildOnA2AEntrante } from "./build-on-a2a-entrante.js";
+import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
+import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
+import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
+import { getSubagentDefinition } from "./core/agents/definitions.js";
+import { invokeModel } from "./core/turn-selector/invoke-model.js";
+import { buildOnLoginHttp } from "./build-on-login-http.js";
+import { buildOnOperacionesEmpleado } from "./build-on-operaciones-empleado.js";
+import { crearSesionEmpleadoStore } from "./adapters/web/sesion-empleado-store.js";
+import { crearConfirmacionOperacionesStore } from "./adapters/web/confirmacion-operaciones-store.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -383,11 +396,106 @@ const ventaHandlers = buildOnVenta({
 // TUI) — `buildOnSoporte` no se toca y `createKnowledge` no se duplica.
 const onSoporte = buildOnSoporte({ db, memory, hooks, agents, createKnowledge });
 
+// 5b-ter. Superficie HTTP autenticada de operaciones de negocio
+//         (`operaciones-negocio-conversacionales`, ADR 172/173, tarea 10):
+//         `credenciales`/`reporteStore`/`despacharDeps` se construyen ACÁ,
+//         UNA sola vez, y se comparten con `buildOnComandoEmpleado` (bloque
+//         5c, más abajo) — mismo criterio "una instancia, dos consumidores"
+//         que `notifier`/`baseUrlPublica`/`riesgoCredito` ya aplican arriba
+//         para `buildOnVenta`. `dummyPasswordHash` (fix de review sobre
+//         `resolverLogin`, hallazgo de duplicación/drift) se adelanta acá
+//         (antes vivía solo en el bloque 5c) porque `buildOnLoginHttp` la
+//         necesita para la MISMA mitigación de timing attack que ya usa la
+//         TUI: se genera con `hashPassword(...)` — la MISMA función que
+//         produce los hashes reales de `credenciales_empleado` — para que
+//         la mitigación de `resolverLogin` SIEMPRE use el costo scrypt
+//         vigente. La contraseña de entrada es arbitraria: este hash nunca
+//         se compara contra ninguna contraseña real.
+const dummyPasswordHash = hashPassword("dummy-timing-mitigation");
+
+// `credenciales` — MISMO molde inline que hoy vive dentro de
+// `build-on-comando-empleado.ts` como default (`:860-867`) — construida acá
+// UNA vez y pasada explícita a `buildOnLoginHttp` (abajo) y a
+// `buildOnComandoEmpleado` (bloque 5c): los dos ya no construyen su propia
+// instancia por separado.
+const credenciales: CredencialesEmpleadoPort = {
+  buscarCredencial: (empleadoId) => {
+    const row = buscarCredencialEmpleado(db, empleadoId);
+    return row ? { empleadoId: row.empleadoId, passwordHash: row.passwordHash } : undefined;
+  },
+};
+
+// ADR 174 consecuencias: `main.ts` hoy no construía ningún `ReporteStorePort`
+// propio — el default vivía inline, duplicado, dentro de
+// `build-on-comando-empleado.ts` (`:880-885`). Se construye acá UNA vez y se
+// pasa explícita a los DOS composition roots que lo consumen
+// (`buildOnOperacionesEmpleado` abajo, `buildOnComandoEmpleado` en el bloque
+// 5c) — cero duplicación de closure.
+const reporteStore: ReporteStorePort = {
+  listComisionesPorPeriodo: (periodo) => listComisionesPorPeriodo(db, periodo),
+  listVentasEnReembolsoPendiente: () => listVentasEnReembolsoPendiente(db),
+};
+
+// Mismo molde que el default inline de `build-on-comando-empleado.ts`
+// (`despacharDeps`, `:920-935`) — `buildOnOperacionesEmpleado` lo exige por
+// tipo, SIN default (ADR 167 §6), para poder delegar
+// `crear_solicitud_interna` al `validador-solicitudes`, exactamente igual
+// que ya hace la TUI.
+const despacharDeps: DespacharDelegacionDeps = {
+  store: createDelegacionStore(db),
+  invocar: async ({ agent, casoId: casoIdDelegado, tareaDelegada }) => {
+    const casoDelegado = getCasoById(db, casoIdDelegado);
+    if (casoDelegado === undefined) {
+      throw new CasoNotFoundError(casoIdDelegado);
+    }
+    return invokeModel(agent, { caso: casoDelegado, resumeSessionId: undefined }, tareaDelegada, hooks);
+  },
+  getSubagente: getSubagentDefinition,
+  newId: randomUUID,
+  now: () => new Date().toISOString(),
+  logEvent: (casoIdEvento, event, fields) => logTurnEvent(casoIdEvento, event, fields),
+};
+
+// Dos stores en memoria nuevos (ADR 173 pto 4): sesión HTTP por token
+// opaco, y confirmación de `cancelar_solicitud_interna` por-empleado — cero
+// relación con la ranura única de la TUI.
+const sesionStore = crearSesionEmpleadoStore();
+const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+
+// `POST /login` (ADR 173 pto 2) — reusa las MISMAS `deps` de política de
+// auth que ya usa la TUI.
+const onLogin = buildOnLoginHttp({
+  credenciales,
+  verificarPassword,
+  dummyPasswordHash,
+  authConfig,
+  sesionStore,
+});
+
+// `POST /operaciones` (ADR 172/173, ADR 167 §6) — reusa las MISMAS
+// instancias de `notifier`/`baseUrlPublica`/`riesgoCredito` que ya arma
+// `buildOnVenta` arriba (ADR 171 pto 5).
+const onOperacionesEmpleado = buildOnOperacionesEmpleado({
+  db,
+  memory,
+  hooks,
+  ventasConfig,
+  notifier,
+  baseUrlPublica: webConfig.publicUrl,
+  ...(riesgoCredito !== undefined ? { riesgoCredito } : {}), // exactOptionalPropertyTypes
+  reporteStore,
+  despacharDeps,
+});
+
 let web: WebAdapter | undefined;
 try {
   web = await startWebServer({
     ...ventaHandlers,
     onSoporte,
+    onLogin,
+    onOperacionesEmpleado,
+    sesionStore,
+    confirmacionOperacionesStore,
     logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
   });
 } catch (error) {
@@ -403,15 +511,10 @@ try {
 //     composition root los une, igual que ya hace con `randomUUID` como
 //     `newId` en `buildOnVenta`.
 //
-// `dummyPasswordHash` (fix de review sobre `resolverLogin`, hallazgo de
-// duplicación/drift): se genera acá con `hashPassword(...)` — la MISMA
-// función que produce los hashes reales de `credenciales_empleado` — para
-// que la mitigación de timing attack de `resolverLogin` SIEMPRE use el
-// costo scrypt vigente, sin importar qué tan viejo sea un literal
-// hardcodeado. La contraseña de entrada es arbitraria: este hash nunca se
-// compara contra ninguna contraseña real, solo fuerza el mismo costo
-// computacional.
-const dummyPasswordHash = hashPassword("dummy-timing-mitigation");
+// `credenciales`/`reporteStore` — MISMAS instancias que arriba
+// (`operaciones-negocio-conversacionales`, ADR 173 pto 5, ADR 174
+// consecuencias): cero duplicación de closure entre los dos composition
+// roots.
 const onComandoEmpleado = buildOnComandoEmpleado({
   onSubmit,
   onSoporte,
@@ -421,6 +524,8 @@ const onComandoEmpleado = buildOnComandoEmpleado({
   verificarPassword,
   dummyPasswordHash,
   hooks,
+  credenciales,
+  reporteStore,
   ...(clienteA2A !== undefined ? { clienteA2A } : {}), // exactOptionalPropertyTypes
 });
 
