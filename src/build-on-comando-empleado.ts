@@ -73,15 +73,19 @@ import {
   COMANDO_LOG_CORRELATION_ID,
   esComandoPrivilegiado,
   formatearAyuda,
+  nombreComando,
   parsearComando,
+  requiereAdministrador,
   type ComandoEmpleado,
 } from "./core/commands/comando-empleado.js";
 import {
   COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_ASIGNAR_ROL,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_CONSULTAR_KPI,
+  COMANDO_CREAR_EMPLEADO,
   COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
@@ -94,6 +98,7 @@ import {
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_AUTOAPROBACION_PROHIBIDA,
+  RESULTADO_AUTODEGRADACION_PROHIBIDA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_EXITOSA,
@@ -108,7 +113,14 @@ import { type AuthConfig } from "./core/auth/auth-config.js";
 import { type CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import { resolverLogin } from "./core/auth/login.js";
 import { sesionVigente, type SesionEmpleado } from "./core/auth/sesion.js";
-import { type RolEmpleado, type RolEmpleadoPort } from "./core/auth/rol-contract.js";
+import {
+  ROLES_EMPLEADO,
+  ROL_ADMINISTRADOR,
+  type RolEmpleado,
+  type RolEmpleadoEscritorPort,
+  type RolEmpleadoPort,
+} from "./core/auth/rol-contract.js";
+import { esAdministrador } from "./core/auth/autorizacion-resolucion.js";
 import {
   ACCION_APROBAR,
   ACCION_REABRIR,
@@ -198,8 +210,11 @@ import { type InsumoDelegado } from "./core/agents/subagents.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { createVentaStore, createDelegacionA2AStore } from "./build-on-venta.js";
 import { createDelegacionStore } from "./build-on-activity.js";
+import { altaCredencialEmpleado } from "./empleados.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
+import { isWebhookEnabled, resolveWebhookConfig } from "./adapters/webhooks/config.js";
+import { isBoardEnabled, resolveBoardConfig } from "./adapters/board/config.js";
 import type { SoporteResult } from "./build-on-soporte.js";
 import {
   buscarCredencialEmpleado,
@@ -223,6 +238,7 @@ import {
   getSolicitudA2AEntrantePorTaskId,
   listSolicitudesA2AEntrantesPorEstado,
   buscarRolEmpleado,
+  upsertRolEmpleado,
   type SolicitudRow,
   type PropuestaRow,
   type SolicitudA2AEntranteRow,
@@ -358,6 +374,13 @@ export interface BuildOnComandoEmpleadoDeps {
    * `main.ts` NO la pasa explícitamente — verificado en `design.md` §7.
    */
   readonly rolPort?: RolEmpleadoPort;
+  /**
+   * `comandos-administracion-empleados`, ADR 180/RD-82 — costura de test
+   * opcional, MISMO molde que `rolPort`: default `createRolEmpleadoEscritor(db)`.
+   * `Deps.rolEscritor` opcional no rompe ningún fake existente. SIN
+   * consumidor todavía — `/asignar-rol` (PR3, bloqueada) es quien lo llama.
+   */
+  readonly rolEscritor?: RolEmpleadoEscritorPort;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -640,6 +663,23 @@ export function createSolicitudA2AEntranteStore(db: Database.Database): Solicitu
 }
 
 /**
+ * `comandos-administracion-empleados` (ADR 180, RD-82) — escritor de rol,
+ * co-ubicado con `RolEmpleadoPort` (lectura) en `rol-contract.ts`, SIN
+ * tocarlo. Exportada, mismo molde que `createSolicitudStore`/
+ * `createSolicitudA2AEntranteStore` arriba: permite probar el adaptador por
+ * defecto contra un `db` real sin depender de un consumidor (`/asignar-rol`
+ * llega en la PR3, bloqueada). `upsertRolEmpleado` (ADR 162) NO cambia de
+ * firma — este adaptador es una línea sobre la función que ya existe.
+ */
+export function createRolEmpleadoEscritor(db: Database.Database): RolEmpleadoEscritorPort {
+  return {
+    asignarRol(input) {
+      upsertRolEmpleado(db, input);
+    },
+  };
+}
+
+/**
  * Una línea por fila — molde de `formatearLineaPropuesta` (más abajo). El
  * rótulo es **`origen de transporte`**, nunca `agente` (R1, ADR 142 pto 1):
  * `origenTransporte` es una dirección de red observada por el transporte,
@@ -876,6 +916,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return row ? (row.rol as RolEmpleado) : undefined;
       },
     };
+  /** `comandos-administracion-empleados`, ADR 180/RD-82 — mismo molde inline que `rolPort`. */
+  const rolEscritor: RolEmpleadoEscritorPort = deps.rolEscritor ?? createRolEmpleadoEscritor(db);
   /** `comando-reporte-comisiones`, ADR 121 pto 1 (RD-55) — mismo molde inline que `credenciales`/`registro`. */
   const reporteStore: ReporteStorePort =
     deps.reporteStore ??
@@ -1718,6 +1760,90 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     return sistema(formatearReporteMensual(reporte));
   }
 
+  /**
+   * `/estado-bot-prs` (comandos-administracion-empleados, tarea 3, ADR
+   * 185) — enmienda del checkpoint al diferido del ADR 178 de esa misma
+   * propuesta. Solo lectura, cero escrituras: `resolveWebhookConfig`/
+   * `isWebhookEnabled` y `resolveBoardConfig`/`isBoardEnabled` YA EXISTEN
+   * (`src/adapters/webhooks/config.ts`, `src/adapters/board/config.ts`) —
+   * sin puerto nuevo. Nunca imprime `GITHUB_WEBHOOK_SECRET` ni
+   * `GITHUB_TOKEN`: sólo el booleano de presencia y, si el listener está
+   * habilitado, el puerto/path (configuración no sensible). Sin
+   * `registrar()`: es una lectura, `privilegiado: true` (guarda de sesión
+   * del preámbulo, paso 6) ya la protege, y el descriptor no exige rol
+   * administrador — no hay secreto ni escritura que gatear por rol. El
+   * dispatcher NO consulta ningún campo de rol para este comando todavía
+   * (ese gate llega en la PR2, bloqueada).
+   */
+  function manejarEstadoBotPrs(): TuiTurnResult {
+    const webhook = resolveWebhookConfig();
+    const board = resolveBoardConfig();
+    const listener = isWebhookEnabled(webhook)
+      ? `escuchando en :${webhook.port}${webhook.path}`
+      : "deshabilitado (sin GITHUB_WEBHOOK_SECRET)";
+    return sistema(`Bot de PRs — listener: ${listener}. GITHUB_TOKEN: ${isBoardEnabled(board) ? "presente" : "ausente"}.`);
+  }
+
+  /**
+   * `comandos-administracion-empleados` (ADR 175 pto 4, 177, 182, 184,
+   * tarea 7) — se llega acá SOLO con sesión vigente (paso 6) y rol
+   * `administrador` ya confirmado (paso 6.5): esta función no vuelve a
+   * chequear ninguno de los dos.
+   *
+   * Orden de validación, en el orden exacto de `tasks.md` tarea 7: (1) `rol`
+   * contra `ROLES_EMPLEADO` — el parser NO lo valida (ADR 177 pto 2); (2)
+   * `empleadoId` tiene credencial — sin eso no hay a quién autenticar
+   * (mismo criterio que ADR 160/RD-79 del CLI); (3) ★ auto-degradación
+   * PROHIBIDA SIN CONTEO (ADR 182) — el propio actor no puede asignarse un
+   * rol distinto de `administrador` a sí mismo, sin importar cuántos
+   * administradores existan. Las validaciones (1) y (2) NO dejan fila de
+   * auditoría (son errores de entrada, no un intento de acción evaluado);
+   * (3) SÍ deja fila `autodegradacion_prohibida` — es un intento real,
+   * rechazado por política.
+   */
+  function manejarAsignarRol(comando: Extract<ComandoEmpleado, { tipo: "asignar_rol" }>, ahora: string): TuiTurnResult {
+    if (!(ROLES_EMPLEADO as readonly string[]).includes(comando.rol)) {
+      return sistema(`Rol inválido: "${comando.rol}". Roles válidos: ${ROLES_EMPLEADO.join(" | ")}.`);
+    }
+    const rol = comando.rol as RolEmpleado;
+
+    if (credenciales.buscarCredencial(comando.empleadoId) === undefined) {
+      return sistema(`No existe el empleado "${comando.empleadoId}".`);
+    }
+
+    const empleadoIdActor = (sesion as SesionEmpleado).empleadoId;
+    if (comando.empleadoId === empleadoIdActor && rol !== ROL_ADMINISTRADOR) {
+      registrar({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_AUTODEGRADACION_PROHIBIDA }, ahora);
+      return sistema("No podés quitarte a vos mismo el rol de administrador.");
+    }
+
+    rolEscritor.asignarRol({ empleadoId: comando.empleadoId, rol, ahora });
+    registrar({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_EXITOSA }, ahora);
+    return sistema(`Rol de ${comando.empleadoId} asignado: ${rol}.`);
+  }
+
+  /**
+   * `comandos-administracion-empleados` (ADR 174, 181, 184, tarea 8) — se
+   * llega acá SOLO con sesión vigente (paso 6) y rol `administrador` ya
+   * confirmado (paso 6.5). Reusa `altaCredencialEmpleado` (tarea 1,
+   * `src/empleados.ts`) — MISMA validación de forma, MISMO hash scrypt y
+   * MISMO mensaje de duplicado que el CLI (`empleados:crear`). ★ La
+   * contraseña NUNCA llega a `registrar()` — sólo `comando`/`resultado`, ni
+   * siquiera en el camino de error (invariante estructural de
+   * `AccionEmpleado`, `registro-acciones-contract.ts`).
+   */
+  function manejarCrearEmpleado(
+    comando: Extract<ComandoEmpleado, { tipo: "crear_empleado" }>,
+    ahora: string,
+  ): TuiTurnResult {
+    const resultado = altaCredencialEmpleado(db, { empleadoId: comando.empleadoId, password: comando.password, ahora });
+    if (!resultado.ok) {
+      return sistema(resultado.mensaje);
+    }
+    registrar({ comando: COMANDO_CREAR_EMPLEADO, resultado: RESULTADO_EXITOSA }, ahora);
+    return sistema(`Empleado ${comando.empleadoId} creado.`);
+  }
+
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
     if (comando.motivo === "solicitada") {
       return sistema(formatearAyuda());
@@ -1762,6 +1888,27 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       return sistema("Ese comando necesita una sesión activa. Usá /login <empleadoId> <password>.");
     }
 
+    // 6.5. Gate de administrador (comandos-administracion-empleados, ADR
+    // 175/183 parte 2, RD-84) — SEGUNDO eje de gateo, DISTINTO de
+    // `privilegiado` (paso 6, arriba, sin cambios): ese exige sólo sesión
+    // vigente, éste exige además rol `administrador`. Corre DESPUÉS de la
+    // guarda de sesión: sin sesión, el rechazo ya ocurrió en el paso 6 y el
+    // rol nunca se consulta. `empleadoId` sale de `sesion`, nunca del
+    // comando tipeado (ADR 37) — la sesión ya está garantizada acá para
+    // todo comando `requiereAdministrador: true`, porque esos comandos son
+    // SIEMPRE `privilegiado: true` también (ADR 177 pto 3).
+    if (requiereAdministrador(comando.tipo)) {
+      const empleadoId = (sesion as SesionEmpleado).empleadoId;
+      if (!esAdministrador(rolPort, empleadoId)) {
+        logEvent(COMANDO_LOG_CORRELATION_ID, "comando-administrativo-no-autorizado", {
+          tipo: comando.tipo,
+          empleadoId,
+        });
+        registrar({ comando: nombreComando(comando.tipo), resultado: RESULTADO_NO_AUTORIZADO }, ahora);
+        return sistema("Ese comando requiere rol administrador.");
+      }
+    }
+
     // 7. Ruteo.
     switch (comando.tipo) {
       case "login":
@@ -1798,6 +1945,12 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionPropuesta(ACCION_DESCARTAR_PROPUESTA, comando.propuestaId, comando.motivo, ahora);
       case "reporte_comisiones":
         return manejarReporteComisiones(comando, ahora);
+      case "estado_bot_prs":
+        return manejarEstadoBotPrs();
+      case "asignar_rol":
+        return manejarAsignarRol(comando, ahora);
+      case "crear_empleado":
+        return manejarCrearEmpleado(comando, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }

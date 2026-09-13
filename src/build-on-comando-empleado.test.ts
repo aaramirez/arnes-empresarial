@@ -7,13 +7,14 @@
  * (tarea 6.1, ADR 41) — este archivo verifica el RUTEO de los ocho
  * comandos, las dos ranuras del closure y el orden de evaluación (§6.3).
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import {
   buildOnComandoEmpleado,
   createSolicitudStore,
   createSolicitudA2AEntranteStore,
+  createRolEmpleadoEscritor,
   formatearListadoSolicitudesA2A,
   formatearDetalleSolicitudA2A,
   type BuildOnComandoEmpleadoDeps,
@@ -30,11 +31,15 @@ import type { VentasConfig } from "./core/ventas/ventas-config.js";
 import type { AuthConfig } from "./core/auth/auth-config.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import {
+  COMANDO_ASIGNAR_ROL,
   COMANDO_CONSULTAR_KPI,
+  COMANDO_CREAR_EMPLEADO,
   COMANDO_REPORTE_COMISIONES,
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_AUTOAPROBACION_PROHIBIDA,
+  RESULTADO_AUTODEGRADACION_PROHIBIDA,
+  RESULTADO_EXITOSA,
   RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
   RESULTADO_NO_AUTORIZADO,
@@ -93,7 +98,32 @@ import {
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
   insertSolicitudA2AEntrante,
+  buscarRolEmpleado,
+  upsertRolEmpleado,
+  insertCredencialEmpleado,
+  buscarCredencialEmpleado,
 } from "./adapters/memory/repository.js";
+
+/**
+ * `comandos-administracion-empleados`, tarea 5 — "comando de prueba
+ * sintético" (Approach punto 1 de `proposal.md`): el gate genérico de
+ * administrador se prueba ANTES de que exista ningún comando administrativo
+ * real (`/asignar-rol`/`/crear-empleado` llegan en la PR3, bloqueada). Se
+ * mockea SOLO `requiereAdministrador` (el resto del módulo queda real, vía
+ * `importOriginal`) para fabricar, por test, que un tipo YA EXISTENTE
+ * (`reporte_comisiones`) "requiere administrador" — sin tocar `DESCRIPTORES`
+ * real, que hoy declara los dieciocho en `false` (tarea 2). Default `() =>
+ * false`: idéntico al comportamiento real de hoy para CUALQUIER tipo, así
+ * que el resto de las suites de este archivo (que no tocan este describe)
+ * no se ven afectadas.
+ */
+const { requiereAdministradorMock } = vi.hoisted(() => ({
+  requiereAdministradorMock: vi.fn((_tipo: string) => false),
+}));
+vi.mock("./core/commands/comando-empleado.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./core/commands/comando-empleado.js")>();
+  return { ...actual, requiereAdministrador: requiereAdministradorMock };
+});
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
 const PASSWORD = "secreto-super-largo-123";
@@ -2093,6 +2123,152 @@ describe("buildOnComandoEmpleado — /reporte-comisiones (comando-reporte-comisi
   });
 });
 
+describe("buildOnComandoEmpleado — /estado-bot-prs (comandos-administracion-empleados, tarea 3, ADR 185)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function contarFilasTotales(db: Database.Database): number {
+    const row = db.prepare("SELECT count(*) as total FROM registro_acciones_empleado").get() as { total: number };
+    return row.total;
+  }
+
+  it("sin sesión pide /login, cero fila", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+      expect(contarFilasTotales(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rol BASE con sesión responde IGUAL que un administrador — no gateado (requiereAdministrador: false, sin consumidor todavía)", async () => {
+    const dbAdmin = openDatabase(":memory:");
+    const dbBase = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s3cr3t");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+
+      const depsAdmin = makeKpiDeps(dbAdmin, reloj, { rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+      const handlerAdmin = buildOnComandoEmpleado(depsAdmin);
+      await login(handlerAdmin);
+      const resultadoAdmin = await handlerAdmin("/estado-bot-prs");
+
+      const depsBase = makeKpiDeps(dbBase, reloj, { rolPort: makeRolPort(ROL_EMPLEADO) });
+      const handlerBase = buildOnComandoEmpleado(depsBase);
+      await login(handlerBase);
+      const resultadoBase = await handlerBase("/estado-bot-prs");
+
+      expect(resultadoBase.responseText).toBe(resultadoAdmin.responseText);
+      expect(resultadoBase.responseText.toLowerCase()).not.toContain("no estás autorizado");
+    } finally {
+      dbAdmin.close();
+      dbBase.close();
+    }
+  });
+
+  it("listener habilitado (GITHUB_WEBHOOK_SECRET seteado) ⇒ responde puerto y path", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s3cr3t");
+      vi.stubEnv("WEBHOOK_PORT", "9999");
+      vi.stubEnv("WEBHOOK_PATH", "/hooks/gh");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("9999");
+      expect(resultado.responseText).toContain("/hooks/gh");
+      expect(resultado.responseText.toLowerCase()).not.toContain("deshabilitado");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("listener deshabilitado (sin GITHUB_WEBHOOK_SECRET) ⇒ responde 'deshabilitado (sin GITHUB_WEBHOOK_SECRET)'", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("deshabilitado (sin GITHUB_WEBHOOK_SECRET)");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("GITHUB_TOKEN presente ⇒ 'presente', NUNCA el valor del token en el texto", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_TOKEN", "ghp_secretoMuyLargo123");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("presente");
+      expect(resultado.responseText).not.toContain("ghp_secretoMuyLargo123");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("GITHUB_TOKEN ausente ⇒ 'ausente'", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_TOKEN", "");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("ausente");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("cero filas nuevas en registro_acciones_empleado — es una lectura, sin registrar()", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s3cr3t");
+      vi.stubEnv("GITHUB_TOKEN", "ghp_x");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const antes = contarFilasTotales(db);
+      await handler("/estado-bot-prs");
+      const despues = contarFilasTotales(db);
+
+      expect(despues).toBe(antes);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("createSolicitudStore", () => {
   function withDb<T>(fn: (db: Database.Database) => T): T {
     const db = openDatabase(":memory:");
@@ -2569,5 +2745,482 @@ describe("buildOnComandoEmpleado — /ver-solicitudes-a2a (comando-visibilidad-a
 
     expect(source).toContain("function manejarVerSolicitudesA2A(");
     expect(source).not.toContain("async function manejarVerSolicitudesA2A(");
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 5 (ADR 175/183 parte 2, RD-84)
+ * — el gate genérico de `administrador` en el dispatcher, paso 6.5: DESPUÉS
+ * de la guarda de sesión existente (paso 6, sin cambios) y ANTES del
+ * `switch`. Comando de prueba sintético (Approach punto 1 de
+ * `proposal.md`): `requiereAdministrador` fabricado a `true` para el tipo
+ * YA EXISTENTE `reporte_comisiones`, vía el mock de módulo de arriba — sin
+ * tocar `DESCRIPTORES` real, que hoy declara los dieciocho en `false`.
+ */
+describe("buildOnComandoEmpleado — gate de administrador, comando sintético (comandos-administracion-empleados, tarea 5, ADR 183/RD-84)", () => {
+  afterEach(() => {
+    requiereAdministradorMock.mockImplementation(() => false);
+  });
+
+  it("rol base ⇒ rechazado con mensaje de rol administrador, el handler real NO corre, fila no_autorizado", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "reporte_comisiones");
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const registro = makeRegistro();
+    const reporteStore = makeReporteStore();
+    const deps = makeDeps(reloj, { registro, reporteStore, rolPort: makeRolPort(ROL_EMPLEADO) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler("/reporte-comisiones 2026-08");
+
+    expect(resultado.responseText.toLowerCase()).toContain("administrador");
+    expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: COMANDO_REPORTE_COMISIONES,
+      resultado: RESULTADO_NO_AUTORIZADO,
+      empleadoId: "ana",
+    });
+  });
+
+  it("rol administrador ⇒ el gate deja pasar y el handler real corre", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "reporte_comisiones");
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const reporteStore = makeReporteStore();
+    const deps = makeDeps(reloj, { reporteStore, rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const resultado = await handler("/reporte-comisiones 2026-08");
+
+    expect(resultado.responseText.toLowerCase()).not.toContain("requiere rol administrador");
+    expect(reporteStore.listComisionesPorPeriodo).toHaveBeenCalled();
+  });
+
+  it("sin sesión: el rechazo es por sesión (guarda de privilegio, paso 6), el rol NUNCA se consulta", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "reporte_comisiones");
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const rolPort: RolEmpleadoPort = { buscarRol: vi.fn(makeRolPort(ROL_EMPLEADO).buscarRol) };
+    const deps = makeDeps(reloj, { rolPort });
+    const handler = buildOnComandoEmpleado(deps);
+
+    const resultado = await handler("/reporte-comisiones 2026-08");
+
+    expect(resultado.responseText).toContain("/login");
+    expect(rolPort.buscarRol).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 6 (ADR 180, RD-82) —
+ * `createRolEmpleadoEscritor`, MISMO molde exportado que
+ * `createSolicitudStore`/`createSolicitudA2AEntranteStore` (arriba en este
+ * mismo archivo): permite probar el adaptador por defecto de `rolEscritor`
+ * contra un `db` real de SQLite en memoria SIN necesitar un comando real que
+ * lo consuma todavía (`/asignar-rol` llega recién en la PR3, bloqueada).
+ * `Deps.rolEscritor` es la costura opcional (molde `credenciales`/`rolPort`)
+ * — `buildOnComandoEmpleado` construye este mismo adaptador como default
+ * cuando `deps.rolEscritor` está ausente.
+ */
+describe("createRolEmpleadoEscritor (comandos-administracion-empleados, tarea 6, ADR 180/RD-82)", () => {
+  it("asignarRol llama a upsertRolEmpleado con los tres campos exactos — verificado leyendo con buscarRolEmpleado", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const escritor = createRolEmpleadoEscritor(db);
+
+      const resultado = escritor.asignarRol({ empleadoId: "ana", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+
+      expect(resultado).toBeUndefined();
+      const fila = buscarRolEmpleado(db, "ana");
+      expect(fila).toMatchObject({ empleadoId: "ana", rol: ROL_ADMINISTRADOR, createdAt: TIMESTAMP, updatedAt: TIMESTAMP });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("Deps.rolEscritor es opcional: buildOnComandoEmpleado se construye sin pasarlo, sin romper ningún fake existente", () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const deps = makeDeps(reloj, {}); // sin rolEscritor — molde `credenciales`/`rolPort`
+    expect(() => buildOnComandoEmpleado(deps)).not.toThrow();
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 7 (ADR 175 pto 4, 177, 182,
+ * 184) — `/asignar-rol`, gateado por administrador (tarea 5), escribiendo
+ * con `rolEscritor` (tarea 6). `db` REAL (`openDatabase(":memory:")`, no un
+ * doble): `credenciales`/`rolPort`/`rolEscritor` quedan en sus defaults
+ * REALES (closures sobre `db`) para que el gate lea el rol recién escrito
+ * sin re-login — ver el último test, "efecto sin re-login". `registro` SÍ
+ * es un doble (`makeRegistro`), para poder aserir sobre las filas de
+ * auditoría con `vi.fn()`. `requiereAdministradorMock` (mock de módulo,
+ * arriba en este archivo) se fuerza a `true` para `"asignar_rol"` en cada
+ * test — el descriptor real YA declara `requiereAdministrador: true` (tarea
+ * 7), pero el mock global de este archivo reemplaza la función entera, así
+ * que hay que hacerlo explícito por test, mismo criterio que el describe de
+ * la tarea 5.
+ */
+describe("buildOnComandoEmpleado — /asignar-rol (comandos-administracion-empleados, tarea 7, ADR 175 pto 4, 177, 182, 184)", () => {
+  afterEach(() => {
+    requiereAdministradorMock.mockImplementation(() => false);
+  });
+
+  /**
+   * `credenciales`/`rolPort` REALES (closures sobre `db`, `exactOptionalPropertyTypes`
+   * no permite pasar `undefined` explícito para "volver" al default interno
+   * de `buildOnComandoEmpleado`) — MISMO molde inline que ese default,
+   * duplicado a propósito acá para no depender de exportar los closures
+   * internos solo para testear.
+   */
+  function realCredenciales(db: Database.Database): CredencialesEmpleadoPort {
+    return {
+      buscarCredencial: (empleadoId) => {
+        const row = buscarCredencialEmpleado(db, empleadoId);
+        return row ? { empleadoId: row.empleadoId, passwordHash: row.passwordHash } : undefined;
+      },
+    };
+  }
+
+  function realRolPort(db: Database.Database): RolEmpleadoPort {
+    return {
+      buscarRol: (empleadoId) => {
+        const row = buscarRolEmpleado(db, empleadoId);
+        return row ? (row.rol as RolEmpleado) : undefined;
+      },
+    };
+  }
+
+  function realDeps(
+    db: Database.Database,
+    reloj: Reloj,
+    overrides: Partial<BuildOnComandoEmpleadoDeps> = {},
+  ): BuildOnComandoEmpleadoDeps {
+    return makeKpiDeps(db, reloj, {
+      credenciales: realCredenciales(db),
+      rolPort: realRolPort(db),
+      authConfig: makeAuthConfig({ sesionTtlMinutos: 0 }),
+      registro: makeRegistro(),
+      ...overrides,
+    });
+  }
+
+  it("administrador asciende a otro empleado ⇒ queda administrador, escrito por rolEscritor (upsertRolEmpleado), fila exitosa", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "asignar_rol");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+      vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+      const resultado = await handler("/asignar-rol ana administrador");
+
+      expect(resultado.responseText.toLowerCase()).toContain("administrador");
+      expect(buscarRolEmpleado(db, "ana")).toMatchObject({ empleadoId: "ana", rol: ROL_ADMINISTRADOR });
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(fila).toMatchObject({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_EXITOSA, empleadoId: "admin" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("asignar rol a un empleadoId sin credencial ⇒ falla, sin fila huérfana en roles_empleado", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "asignar_rol");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const deps = realDeps(db, reloj);
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+
+      const resultado = await handler("/asignar-rol bob administrador");
+
+      expect(resultado.responseText.toLowerCase()).toContain("bob");
+      expect(buscarRolEmpleado(db, "bob")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rol base ejecuta /asignar-rol ⇒ rechazado por el gate (tarea 5), sin cambio en roles_empleado, fila no_autorizado", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "asignar_rol");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      // "ana" SIN fila en roles_empleado ⇒ rol base por ausencia (ADR 154 pto 5).
+      insertCredencialEmpleado(db, { empleadoId: "bob", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "ana");
+      vi.mocked(registro.registrarAccion).mockClear();
+
+      const resultado = await handler("/asignar-rol bob administrador");
+
+      expect(resultado.responseText.toLowerCase()).toContain("administrador");
+      expect(buscarRolEmpleado(db, "bob")).toBeUndefined();
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(fila).toMatchObject({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("★ único administrador intenta degradarse a sí mismo ⇒ rechazado sin conteo, rol sigue administrador, fila autodegradacion_prohibida (ADR 182)", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "asignar_rol");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+      vi.mocked(registro.registrarAccion).mockClear();
+
+      const resultado = await handler("/asignar-rol admin empleado");
+
+      expect(resultado.responseText.toLowerCase()).toContain("no podés");
+      expect(buscarRolEmpleado(db, "admin")).toMatchObject({ rol: ROL_ADMINISTRADOR });
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(fila).toMatchObject({
+        comando: COMANDO_ASIGNAR_ROL,
+        resultado: RESULTADO_AUTODEGRADACION_PROHIBIDA,
+        empleadoId: "admin",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("con dos administradores, uno degrada al otro ⇒ éxito, sin restricción de auto-degradación (no aplica: son empleados distintos)", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "asignar_rol");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin1", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin1", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      insertCredencialEmpleado(db, { empleadoId: "admin2", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin2", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const deps = realDeps(db, reloj);
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin1");
+
+      const resultado = await handler("/asignar-rol admin2 empleado");
+
+      expect(resultado.responseText.toLowerCase()).not.toContain("no podés");
+      expect(buscarRolEmpleado(db, "admin2")).toMatchObject({ rol: ROL_EMPLEADO });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("quitarle el rol a un administrador tiene efecto SIN re-login (sesión sin expiraEn, SESION_TTL_MINUTOS=0, ADR 154 pto 1) — el rol se lee por puerto en cada comando, nunca se cachea en la sesión", async () => {
+    requiereAdministradorMock.mockImplementation(
+      (tipo: string) => tipo === "asignar_rol" || tipo === "reporte_comisiones",
+    );
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin1", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin1", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      insertCredencialEmpleado(db, { empleadoId: "admin2", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin2", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+
+      // Dos dispatchers distintos, mismo `db` — dos terminales de la TUI.
+      const handlerAdmin1 = buildOnComandoEmpleado(realDeps(db, reloj));
+      const reporteStore = makeReporteStore();
+      const handlerAdmin2 = buildOnComandoEmpleado(realDeps(db, reloj, { reporteStore }));
+
+      // admin2 abre sesión ANTES de ser degradado — sesión sin expiraEn (TTL 0).
+      await login(handlerAdmin2, "admin2");
+      const antes = await handlerAdmin2("/reporte-comisiones 2026-08");
+      expect(antes.responseText.toLowerCase()).not.toContain("administrador");
+      expect(reporteStore.listComisionesPorPeriodo).toHaveBeenCalled();
+
+      // admin1 degrada a admin2 — admin2 NUNCA vuelve a hacer /login.
+      await login(handlerAdmin1, "admin1");
+      await handlerAdmin1("/asignar-rol admin2 empleado");
+      expect(buscarRolEmpleado(db, "admin2")).toMatchObject({ rol: ROL_EMPLEADO });
+
+      // admin2 sigue con la MISMA sesión (sin re-login) — el gate lo rechaza igual.
+      vi.mocked(reporteStore.listComisionesPorPeriodo).mockClear();
+      const despues = await handlerAdmin2("/reporte-comisiones 2026-08");
+      expect(despues.responseText.toLowerCase()).toContain("administrador");
+      expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 8 (ADR 174, 181, 184) —
+ * `/crear-empleado`, gateado por administrador (tarea 5), reusando
+ * `altaCredencialEmpleado` (tarea 1, `src/empleados.ts`) — el MISMO molde
+ * de `db` real y `credenciales`/`rolPort` reales que el describe de
+ * `/asignar-rol` de arriba (`realCredenciales`/`realRolPort`, declaradas en
+ * ESE describe — se redeclaran acá, más chico, porque `describe` no
+ * comparte scope léxico entre bloques hermanos).
+ */
+describe("buildOnComandoEmpleado — /crear-empleado (comandos-administracion-empleados, tarea 8, ADR 174, 181, 184)", () => {
+  afterEach(() => {
+    requiereAdministradorMock.mockImplementation(() => false);
+  });
+
+  function realCredenciales(db: Database.Database): CredencialesEmpleadoPort {
+    return {
+      buscarCredencial: (empleadoId) => {
+        const row = buscarCredencialEmpleado(db, empleadoId);
+        return row ? { empleadoId: row.empleadoId, passwordHash: row.passwordHash } : undefined;
+      },
+    };
+  }
+
+  function realRolPort(db: Database.Database): RolEmpleadoPort {
+    return {
+      buscarRol: (empleadoId) => {
+        const row = buscarRolEmpleado(db, empleadoId);
+        return row ? (row.rol as RolEmpleado) : undefined;
+      },
+    };
+  }
+
+  function realDeps(
+    db: Database.Database,
+    reloj: Reloj,
+    overrides: Partial<BuildOnComandoEmpleadoDeps> & { readonly writes?: string[] } = {},
+  ): BuildOnComandoEmpleadoDeps {
+    return makeKpiDeps(db, reloj, {
+      credenciales: realCredenciales(db),
+      rolPort: realRolPort(db),
+      authConfig: makeAuthConfig({ sesionTtlMinutos: 0 }),
+      registro: makeRegistro(),
+      ...overrides,
+    });
+  }
+
+  it("administrador da de alta un empleado nuevo ⇒ fila con password_hash scrypt, DISTINTO del texto en claro, fila exitosa con ambos empleados identificables", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+      vi.mocked(registro.registrarAccion).mockClear();
+
+      const resultado = await handler(`/crear-empleado ana ${PASSWORD}`);
+
+      expect(resultado.responseText.toLowerCase()).toContain("ana");
+      const fila = buscarCredencialEmpleado(db, "ana");
+      expect(fila).toBeDefined();
+      expect(fila?.passwordHash).not.toBe(PASSWORD);
+      expect(fila?.passwordHash.startsWith("scrypt$")).toBe(true);
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(accion).toMatchObject({ comando: COMANDO_CREAR_EMPLEADO, resultado: RESULTADO_EXITOSA, empleadoId: "admin" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("alta duplicada ⇒ rechazo, password_hash de la fila existente SIN cambio", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "scrypt$hash-original", ahora: TIMESTAMP });
+      const deps = realDeps(db, reloj);
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+
+      const resultado = await handler(`/crear-empleado ana ${PASSWORD}`);
+
+      expect(resultado.responseText.toLowerCase()).toContain("ana");
+      expect(buscarCredencialEmpleado(db, "ana")?.passwordHash).toBe("scrypt$hash-original");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rol base ejecuta /crear-empleado ⇒ rechazado por el gate (tarea 5), NINGUNA fila en credenciales_empleado, fila de auditoría con resultado de rechazo por autorización", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      // "ana" SIN fila en roles_empleado ⇒ rol base por ausencia (ADR 154 pto 5).
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "ana");
+      vi.mocked(registro.registrarAccion).mockClear();
+
+      const resultado = await handler(`/crear-empleado bob ${PASSWORD}`);
+
+      expect(resultado.responseText.toLowerCase()).toContain("administrador");
+      expect(buscarCredencialEmpleado(db, "bob")).toBeUndefined();
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(fila).toMatchObject({ comando: COMANDO_CREAR_EMPLEADO, resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * ★ Invariante de contraseña, EXTENDIDO del molde de la suite de `/login`
+   * (arriba, "fallido (password incorrecta) y fallido (empleado
+   * inexistente) dan el MISMO mensaje genérico, sin fila"): la contraseña
+   * tipeada NUNCA aparece en ninguna fila de `registro_acciones_empleado`
+   * ni en ningún evento de `logTurnEvent` emitido durante el comando — ni
+   * completa, ni como prefijo, ni su longitud. `AccionEmpleado` no tiene
+   * estructuralmente ningún campo para una longitud (garantía del tipo,
+   * `registro-acciones-contract.test.ts`), así que basta con verificar que
+   * el texto completo de la contraseña no aparece en ningún lado.
+   */
+  it("★ la contraseña NUNCA aparece en registro_acciones_empleado ni en ningún evento de log emitido por /crear-empleado — ni completa, ni como prefijo", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const writes: string[] = [];
+      const deps = realDeps(db, reloj, { registro, writes });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+
+      await handler(`/crear-empleado ana ${PASSWORD}`);
+      // Alta duplicada — segundo camino de código, mismo invariante.
+      await handler(`/crear-empleado ana ${PASSWORD}`);
+
+      const filas = vi.mocked(registro.registrarAccion).mock.calls.map((c) => c[0]);
+      expect(JSON.stringify(filas)).not.toContain(PASSWORD);
+      expect(JSON.stringify(writes)).not.toContain(PASSWORD);
+    } finally {
+      db.close();
+    }
   });
 });

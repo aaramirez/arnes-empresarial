@@ -11,10 +11,21 @@ export interface CredencialEmpleado {
 }
 
 /**
- * UNA sola operación, de LECTURA (ADR 30). El alta y la rotación viven en
- * otro proceso (`src/empleados.ts`, ADR 33) y no pasan por este puerto: la
- * TUI no puede crear credenciales, y eso es una propiedad del diseño, no un
- * olvido.
+ * UNA sola operación, de LECTURA (ADR 30). La ROTACIÓN sigue viviendo
+ * exclusivamente en `src/empleados.ts` (ADR 33) — este puerto no gana una
+ * operación de rotación.
+ *
+ * ★ El ALTA ya NO es exclusiva de `src/empleados.ts` (ADR 174,
+ *   `comandos-administracion-empleados`): la propiedad de diseño original
+ *   de este comentario — *"la TUI no puede crear credenciales"* — fue
+ *   REVERTIDA a pedido explícito del stakeholder. `/crear-empleado` (tarea
+ *   8) también da de alta, reusando `altaCredencialEmpleado` (`empleados.ts`,
+ *   ADR 181/RD-82) — NO un segundo camino de escritura. Lo que sobrevive
+ *   intacto de la propiedad original, y es lo que en realidad protegía
+ *   (ADR 174 pto 2): (a) la contraseña NUNCA se persiste en claro — sigue
+ *   siendo `scrypt$N$r$p$salt$clave`, mismo hash que el CLI — y (b) este
+ *   puerto de LECTURA sigue teniendo una sola operación; el escritor
+ *   compartido no vive acá, vive en `empleados.ts`.
  *
  * SÍNCRONO, como `VentaStorePort` y `MemoryPort` (`better-sqlite3` lo es).
  */

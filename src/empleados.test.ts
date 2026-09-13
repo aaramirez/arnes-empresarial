@@ -1,7 +1,26 @@
+import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as dbModule from "./adapters/memory/db.js";
-import { buscarRolEmpleado, insertCredencialEmpleado } from "./adapters/memory/repository.js";
-import { main, parseArgsEmpleado } from "./empleados.js";
+import { buscarCredencialEmpleado, buscarRolEmpleado, insertCredencialEmpleado } from "./adapters/memory/repository.js";
+import { altaCredencialEmpleado, main, parseArgsEmpleado } from "./empleados.js";
+
+/**
+ * `leerPasswordDeStdin` (privada) usa `node:readline`'s `createInterface`
+ * directo. Se mockea el MÓDULO, no `process.stdin`: `readline.Interface`
+ * implementa su propio protocolo de iteración asíncrona sobre eventos
+ * `"line"`, así que espiar `Symbol.asyncIterator` de `process.stdin` no lo
+ * intercepta. Sin precedente previo en el repo (el modo `"alta"`/`"rotar"`
+ * de `main()` nunca tuvo test de integración hasta esta tarea) — mock
+ * mínimo: un objeto que satisface `for await (const linea of rl)` y `rl.close()`.
+ */
+vi.mock("node:readline", () => ({ createInterface: vi.fn() }));
+
+function mockStdinLinea(linea: string): void {
+  vi.mocked(createInterface).mockReturnValue({
+    [Symbol.asyncIterator]: () => (async function* () { yield linea; })(),
+    close: vi.fn(),
+  } as never);
+}
 
 /**
  * Spec `autenticacion-empleado-tui`, requirements "Alta de credencial por
@@ -168,6 +187,124 @@ describe("main() — modo asignar-rol", () => {
 
       const rol = buscarRolEmpleado(db, "ana");
       expect(rol?.rol).toBe("administrador");
+    } finally {
+      cerrarDeVerdad();
+    }
+  });
+});
+
+/**
+ * `altaCredencialEmpleado` (comandos-administracion-empleados, tarea 1, ADR
+ * 181/RD-82): función pura-de-efectos-acotados extraída del cuerpo de
+ * `main()`'s rama `"alta"`, exportada para que `/crear-empleado` (PR3,
+ * bloqueada) la reuse sin invocar el script como subproceso. `leerPasswordDeStdin`
+ * y el `process.exit` de `main()` NO se comparten (I/O de terminal, no
+ * aplica a la TUI) — por eso este describe NO los ejercita.
+ */
+describe("altaCredencialEmpleado", () => {
+  const ahora = "2026-09-13T00:00:00.000Z";
+
+  it("alta exitosa ⇒ {ok:true}, credencial queda con password_hash scrypt (nunca la contraseña en claro)", () => {
+    const db = dbModule.openDatabase(":memory:");
+    try {
+      const resultado = altaCredencialEmpleado(db, { empleadoId: "ana", password: "secreto123", ahora });
+
+      expect(resultado).toEqual({ ok: true });
+      const credencial = buscarCredencialEmpleado(db, "ana");
+      expect(credencial?.passwordHash).toBeDefined();
+      expect(credencial?.passwordHash).not.toBe("secreto123");
+      expect(credencial?.passwordHash.startsWith("scrypt$")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("empleadoId inválido ⇒ {ok:false} con el mismo mensaje que main() usa hoy, sin fila creada", () => {
+    const db = dbModule.openDatabase(":memory:");
+    try {
+      const resultado = altaCredencialEmpleado(db, { empleadoId: "ana!", password: "secreto123", ahora });
+
+      expect(resultado).toEqual({ ok: false, mensaje: 'empleadoId inválido: "ana!"' });
+      expect(buscarCredencialEmpleado(db, "ana!")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("password vacía ⇒ {ok:false}, sin fila creada", () => {
+    const db = dbModule.openDatabase(":memory:");
+    try {
+      const resultado = altaCredencialEmpleado(db, { empleadoId: "ana", password: "   ", ahora });
+
+      expect(resultado).toEqual({ ok: false, mensaje: "La contraseña no puede estar vacía" });
+      expect(buscarCredencialEmpleado(db, "ana")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("duplicado ⇒ {ok:false} con el mismo mensaje que main() usa hoy, hash existente sin cambio", () => {
+    const db = dbModule.openDatabase(":memory:");
+    try {
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "hash-original", ahora });
+
+      const resultado = altaCredencialEmpleado(db, { empleadoId: "ana", password: "otra-cosa", ahora });
+
+      expect(resultado).toEqual({ ok: false, mensaje: 'Ya existe una credencial para "ana"' });
+      expect(buscarCredencialEmpleado(db, "ana")?.passwordHash).toBe("hash-original");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("main() — modo alta delega en altaCredencialEmpleado (no-regresión, comandos-administracion-empleados, tarea 1)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.argv = process.argv.slice(0, 2);
+  });
+
+  function stubDb() {
+    const db = dbModule.openDatabase(":memory:");
+    const cerrarDeVerdad = db.close.bind(db);
+    db.close = () => db;
+    vi.spyOn(dbModule, "openDatabase").mockReturnValue(db);
+    return { db, cerrarDeVerdad };
+  }
+
+  function stubExit() {
+    return vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+  }
+
+  it("alta exitosa por stdin ⇒ delega en altaCredencialEmpleado, misma fila que una llamada directa", async () => {
+    const { db, cerrarDeVerdad } = stubDb();
+    mockStdinLinea("secreto123");
+    process.argv = ["node", "empleados.ts", "ana"];
+
+    try {
+      await main();
+
+      const credencial = buscarCredencialEmpleado(db, "ana");
+      expect(credencial?.passwordHash.startsWith("scrypt$")).toBe(true);
+    } finally {
+      cerrarDeVerdad();
+    }
+  });
+
+  it("duplicado por stdin ⇒ exit 1, mismo mensaje que altaCredencialEmpleado devuelve directo", async () => {
+    const { db, cerrarDeVerdad } = stubDb();
+    insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "hash-original", ahora: "2026-09-13T00:00:00.000Z" });
+    mockStdinLinea("otra-cosa");
+    const exitSpy = stubExit();
+    process.argv = ["node", "empleados.ts", "ana"];
+
+    try {
+      await expect(main()).rejects.toThrow("process.exit(1)");
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(buscarCredencialEmpleado(db, "ana")?.passwordHash).toBe("hash-original");
     } finally {
       cerrarDeVerdad();
     }

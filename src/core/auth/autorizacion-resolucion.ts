@@ -11,3 +11,17 @@ export function puedeResolverAjeno(rolPort: RolEmpleadoPort, empleadoId: string)
   const rol = rolPort.buscarRol(empleadoId) ?? ROL_EMPLEADO;
   return rol === ROL_ADMINISTRADOR;
 }
+
+/**
+ * `comandos-administracion-empleados` (ADR 183 parte 2/RD-84). Nombre
+ * DISTINTO de `puedeResolverAjeno` a propósito: hoy coinciden en
+ * implementación (dos roles), pero responden preguntas de política
+ * distintas — si aparece un tercer rol, cada una cambia de forma
+ * independiente sin tocar la otra. Consumida por el gate genérico del
+ * dispatcher (`build-on-comando-empleado.ts`, paso 6.5), DESPUÉS de la
+ * guarda de sesión existente.
+ */
+export function esAdministrador(rolPort: RolEmpleadoPort, empleadoId: string): boolean {
+  const rol = rolPort.buscarRol(empleadoId) ?? ROL_EMPLEADO;
+  return rol === ROL_ADMINISTRADOR;
+}

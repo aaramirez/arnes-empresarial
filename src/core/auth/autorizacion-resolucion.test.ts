@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleadoPort } from "./rol-contract.js";
-import { puedeResolverAjeno } from "./autorizacion-resolucion.js";
+import { esAdministrador, puedeResolverAjeno } from "./autorizacion-resolucion.js";
 
 /**
  * Spec `autorizacion-empleado` req. "Un `empleado_id` sin fila de rol cae al
@@ -24,5 +24,27 @@ describe("puedeResolverAjeno", () => {
 
   it("puerto devuelve undefined (ausencia de fila) ⇒ false, NUNCA autoriza", () => {
     expect(puedeResolverAjeno(makePort(undefined), "ana")).toBe(false);
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, ADR 183 parte 2/RD-84 — nombre
+ * DISTINTO de `puedeResolverAjeno` a propósito: hoy coinciden en
+ * implementación (dos roles), pero responden preguntas de política
+ * distintas. Test rojo inicial de todo el change (Approach punto 1 de
+ * `proposal.md`): un empleado con rol base no alcanza para lo que este
+ * módulo va a gatear en el dispatcher.
+ */
+describe("esAdministrador", () => {
+  it("rol administrador explícito ⇒ true", () => {
+    expect(esAdministrador(makePort(ROL_ADMINISTRADOR), "ana")).toBe(true);
+  });
+
+  it("rol empleado explícito ⇒ false", () => {
+    expect(esAdministrador(makePort(ROL_EMPLEADO), "ana")).toBe(false);
+  });
+
+  it("puerto devuelve undefined (ausencia de fila) ⇒ false, NUNCA autoriza", () => {
+    expect(esAdministrador(makePort(undefined), "ana")).toBe(false);
   });
 });
