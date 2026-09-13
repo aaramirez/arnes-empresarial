@@ -25,6 +25,7 @@ import {
   aprobarReembolso,
   aprobarSolicitudInterna,
   buscarCredencialEmpleado,
+  buscarRolEmpleado,
   cancelarSolicitudA2AEntrante,
   cancelarSolicitudInterna,
   completarDelegacion,
@@ -71,6 +72,7 @@ import {
   updateCredencialEmpleado,
   upsertProyecto,
   upsertResponsable,
+  upsertRolEmpleado,
   upsertVendedor,
   type CreateActividadInput,
   type CreateCasoConActividadInput,
@@ -2151,6 +2153,46 @@ describe("repository", () => {
       });
 
       expect(resultado).toBeUndefined();
+    });
+  });
+
+  describe("roles de empleado (migración 0013)", () => {
+    it("buscarRolEmpleado sobre tabla vacía devuelve undefined", () => {
+      db = openDatabase(":memory:");
+
+      expect(buscarRolEmpleado(db, "ana")).toBeUndefined();
+    });
+
+    it("upsertRolEmpleado llamado dos veces sobre el mismo empleadoId deja created_at sin cambios y actualiza updated_at", () => {
+      db = openDatabase(":memory:");
+
+      const primera = upsertRolEmpleado(db, {
+        empleadoId: "ana",
+        rol: "administrador",
+        ahora: "2026-09-13T00:00:00.000Z",
+      });
+
+      expect(primera).toEqual({
+        empleadoId: "ana",
+        rol: "administrador",
+        createdAt: "2026-09-13T00:00:00.000Z",
+        updatedAt: "2026-09-13T00:00:00.000Z",
+      });
+
+      const segunda = upsertRolEmpleado(db, {
+        empleadoId: "ana",
+        rol: "empleado",
+        ahora: "2026-09-14T00:00:00.000Z",
+      });
+
+      expect(segunda).toEqual({
+        empleadoId: "ana",
+        rol: "empleado",
+        createdAt: "2026-09-13T00:00:00.000Z",
+        updatedAt: "2026-09-14T00:00:00.000Z",
+      });
+
+      expect(buscarRolEmpleado(db, "ana")).toEqual(segunda);
     });
   });
 
