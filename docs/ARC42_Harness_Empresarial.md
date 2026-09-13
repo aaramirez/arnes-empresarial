@@ -704,6 +704,14 @@ Descripción: el gate de `autorizacion-empleado` (v3.5) exige rol `administrador
 
 Condición de disparo para resolverlo: unificar esos dos espacios de identidades — decidir si un `vendedor_id` corresponde a un `empleado_id` real y, si es así, agregar la ligadura (FK o columna) que hoy no existe. Es una limpieza de modelo de datos legítima, deliberadamente **fuera de alcance** de `autorizacion-empleado` (ADR 155 pto 3 de esa propuesta): mezclar esa unificación con el cierre de R10 habría atado una decisión de negocio no pedida a un change que ya tenía su propio riesgo de alcance. Queda declarada con el mismo tratamiento que este arnés le dio a R10 hasta que se resolvió: nombrada, ubicada y con dueño (el change que unifique las identidades), pero no resuelta acá.
 
+**Deuda 6: Exposición de datos en vista previa antes del gate de autorización — DECLARADA, no resuelta**
+
+Descripción: el paso de "requiere confirmación" (`confirmado === false`) de `resolverEscalacionReembolso` (`resolver-escalacion-reembolso.ts`, paso D de la secuencia documentada en su cabecera, design.md ADR 159/RD-78) y el eco análogo de `resolverSolicitudInterna` (`resolver-solicitud-interna.ts`, mismo punto de la secuencia) devuelven el detalle completo (monto, caso, ítem) de una venta o solicitud **ajena** antes de que corra el gate de rol (`puedeResolverAjeno`) — cualquier empleado autenticado puede ver esos datos con solo tipear el comando, sin permiso para resolverlo y sin necesidad de confirmar.
+
+Por qué existe: es el orden que `design.md` (ADR 159/RD-78) ya fijó a propósito — el gate de rol se evalúa recién en el punto donde se arma la escritura real (justo antes del CAS), no antes del eco de confirmación. Ese orden no es un descuido: adelantar el gate no compraría confidencialidad adicional en `resolverSolicitudInterna` (el listado sin id de `aprobar`/`rechazar` ya expone el mismo detalle a cualquier empleado, con o sin rol elevado), y mantiene el molde único de "eco antes de confirmar" compartido entre ambas funciones.
+
+Cierre: no aplica — **el checkpoint humano decidió, en la revisión de `autorizacion-empleado`, declarar esta exposición como deuda técnica y no reordenar el gate**. No se modifica ningún archivo de `src/` por este hallazgo; el orden D-antes-que-E permanece exactamente como lo fijó `design.md`. Queda documentada para que una futura revisión de este mismo tema encuentre la decisión ya tomada y su justificación, en vez de reabrirla.
+
 # Glosario
 
 | Término | Definición |
