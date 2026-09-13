@@ -1,0 +1,248 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import {
+  OPERACIONES_MCP_SERVER_NAME,
+  OPERACIONES_NEGOCIO,
+  OPERACIONES_TOOL_NAME,
+  OPERACIONES_TOOL_QUALIFIED_NAME,
+  OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_CREAR_SOLICITUD_INTERNA,
+  OPERACION_PROCESAR_DEVOLUCION,
+  OPERACION_REGISTRAR_VENTA,
+  OPERACION_RESOLVER_DECISION_VENTA,
+  type ConfirmacionOperacionPort,
+  type OperacionCancelarSolicitudInterna,
+  type OperacionConsultarReporteComisiones,
+  type OperacionCrearSolicitudInterna,
+  type OperacionNegocio,
+  type OperacionProcesarDevolucion,
+  type OperacionRegistrarVenta,
+  type OperacionResolverDecisionVenta,
+} from "./operaciones-contract.js";
+
+/**
+ * operaciones-negocio-conversacionales, tarea 1. Molde de `hitl-contract.test.ts`
+ * (constantes + chequeos de tipos en compilación) — este módulo, igual que
+ * `hitl-contract.ts`, no tiene ni un solo `import` en su fuente.
+ */
+
+describe("operaciones-contract constants", () => {
+  it("OPERACIONES_TOOL_QUALIFIED_NAME es mcp__operaciones__operacion_negocio", () => {
+    expect(OPERACIONES_MCP_SERVER_NAME).toBe("operaciones");
+    expect(OPERACIONES_TOOL_NAME).toBe("operacion_negocio");
+    expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
+  });
+
+  it("OPERACIONES_NEGOCIO enumera las seis operaciones del contrato (ADR 163/171/174)", () => {
+    expect(OPERACIONES_NEGOCIO).toEqual([
+      OPERACION_RESOLVER_DECISION_VENTA,
+      OPERACION_PROCESAR_DEVOLUCION,
+      OPERACION_CREAR_SOLICITUD_INTERNA,
+      OPERACION_CANCELAR_SOLICITUD_INTERNA,
+      OPERACION_REGISTRAR_VENTA,
+      OPERACION_CONSULTAR_REPORTE_COMISIONES,
+    ]);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(6);
+  });
+});
+
+describe("OperacionNegocio — cada input mínimo tipa correctamente", () => {
+  it("resolver_decision_venta: token + decision", () => {
+    const op: OperacionResolverDecisionVenta = {
+      operacion: OPERACION_RESOLVER_DECISION_VENTA,
+      token: "token-1",
+      decision: "confirmar",
+    };
+    const generico: OperacionNegocio = op;
+    expect(generico.operacion).toBe("resolver_decision_venta");
+  });
+
+  it("procesar_devolucion: token, motivo opcional", () => {
+    const sinMotivo: OperacionProcesarDevolucion = {
+      operacion: OPERACION_PROCESAR_DEVOLUCION,
+      token: "token-1",
+    };
+    const conMotivo: OperacionProcesarDevolucion = {
+      operacion: OPERACION_PROCESAR_DEVOLUCION,
+      token: "token-1",
+      motivo: "no le sirvió",
+    };
+    const generico: OperacionNegocio = sinMotivo;
+    expect(generico.operacion).toBe("procesar_devolucion");
+    expect(conMotivo.motivo).toBe("no le sirvió");
+  });
+
+  it("crear_solicitud_interna: tipo + detalle, ambos string libres", () => {
+    const op: OperacionCrearSolicitudInterna = {
+      operacion: OPERACION_CREAR_SOLICITUD_INTERNA,
+      tipo: "gasto",
+      detalle: "taxi al cliente",
+    };
+    const generico: OperacionNegocio = op;
+    expect(generico.operacion).toBe("crear_solicitud_interna");
+  });
+
+  it("cancelar_solicitud_interna: solicitudId opcional (ausente = modo listado)", () => {
+    const listado: OperacionCancelarSolicitudInterna = {
+      operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA,
+    };
+    const conId: OperacionCancelarSolicitudInterna = {
+      operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA,
+      solicitudId: "sol-1",
+    };
+    const generico: OperacionNegocio = listado;
+    expect(generico.operacion).toBe("cancelar_solicitud_interna");
+    expect(conId.solicitudId).toBe("sol-1");
+  });
+
+  it("registrar_venta: monto es la ÚNICA excepción de dinero del contrato (ADR 170/171), sin vendedorId", () => {
+    const op: OperacionRegistrarVenta = {
+      operacion: OPERACION_REGISTRAR_VENTA,
+      clienteId: "cliente-1",
+      clienteEmail: "cliente@example.com",
+      planNuevo: "premium",
+      monto: 100,
+      vendedorNombre: "Juan Pérez",
+    };
+    const generico: OperacionNegocio = op;
+    expect(generico.operacion).toBe("registrar_venta");
+    // vendedorId NUNCA es campo del modelo (ADR 147 pto 1, ADR 171 pto 2) — sale de sesion.empleadoId por closure.
+    expect("vendedorId" in op).toBe(false);
+  });
+
+  it("consultar_reporte_comisiones: único campo opcional periodo, sin dinero ni identidad (ADR 174)", () => {
+    const sinPeriodo: OperacionConsultarReporteComisiones = {
+      operacion: OPERACION_CONSULTAR_REPORTE_COMISIONES,
+    };
+    const conPeriodo: OperacionConsultarReporteComisiones = {
+      operacion: OPERACION_CONSULTAR_REPORTE_COMISIONES,
+      periodo: "2026-08",
+    };
+    const generico: OperacionNegocio = sinPeriodo;
+    expect(generico.operacion).toBe("consultar_reporte_comisiones");
+    expect(conPeriodo.periodo).toBe("2026-08");
+  });
+});
+
+describe("OperacionNegocio — invariante: campo de dinero/período sólo en su operación (ADR 145 pto 2, ADR 170/171/174)", () => {
+  // Chequeo de tipos en tiempo de compilación, no una prueba de
+  // comportamiento: estas funciones nunca se invocan (mismo molde que
+  // `definitions.test.ts:198-210`). La garantía la da `tsc --noEmit` al
+  // fallar si el `@ts-expect-error` deja de ser necesario.
+
+  function _chequeoDeTipos_resolverDecisionVentaNoAceptaMonto(): void {
+    const op: OperacionResolverDecisionVenta = {
+      operacion: OPERACION_RESOLVER_DECISION_VENTA,
+      token: "t",
+      decision: "confirmar",
+      // @ts-expect-error — `monto` no es campo de `resolver_decision_venta`; es la única excepción de `registrar_venta` (ADR 170/171).
+      monto: 100,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_procesarDevolucionNoAceptaPorcentaje(): void {
+    const op: OperacionProcesarDevolucion = {
+      operacion: OPERACION_PROCESAR_DEVOLUCION,
+      token: "t",
+      // @ts-expect-error — `porcentaje` no es campo de ninguna operación del contrato (ADR 145 pto 2).
+      porcentaje: 10,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_crearSolicitudInternaNoAceptaMonto(): void {
+    const op: OperacionCrearSolicitudInterna = {
+      operacion: OPERACION_CREAR_SOLICITUD_INTERNA,
+      tipo: "gasto",
+      detalle: "x",
+      // @ts-expect-error — `monto` no es campo de `crear_solicitud_interna`.
+      monto: 50,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_cancelarSolicitudInternaNoAceptaMonto(): void {
+    const op: OperacionCancelarSolicitudInterna = {
+      operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA,
+      // @ts-expect-error — `monto` no es campo de `cancelar_solicitud_interna`.
+      monto: 50,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_consultarReporteComisionesNoAceptaMonto(): void {
+    const op: OperacionConsultarReporteComisiones = {
+      operacion: OPERACION_CONSULTAR_REPORTE_COMISIONES,
+      // @ts-expect-error — `monto` no es campo de `consultar_reporte_comisiones` (sólo lectura, ADR 174).
+      monto: 50,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_registrarVentaNoAceptaPeriodo(): void {
+    const op: OperacionRegistrarVenta = {
+      operacion: OPERACION_REGISTRAR_VENTA,
+      clienteId: "c",
+      clienteEmail: "c@example.com",
+      planNuevo: "p",
+      monto: 1,
+      vendedorNombre: "x",
+      // @ts-expect-error — `periodo` no es campo de `registrar_venta`; es exclusivo de `consultar_reporte_comisiones` (ADR 174).
+      periodo: "2026-01",
+    };
+    void op;
+  }
+
+  it("las funciones de arriba nunca se invocan — la garantía es tsc --noEmit, no runtime", () => {
+    expect(typeof _chequeoDeTipos_resolverDecisionVentaNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_procesarDevolucionNoAceptaPorcentaje).toBe("function");
+    expect(typeof _chequeoDeTipos_crearSolicitudInternaNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_cancelarSolicitudInternaNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_consultarReporteComisionesNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_registrarVentaNoAceptaPeriodo).toBe("function");
+  });
+});
+
+describe("ConfirmacionOperacionPort (ADR 166)", () => {
+  it("marcarPendiente + estaConfirmada + consumir tipan y se comportan según el guard origenCasoId !== casoIdActual", () => {
+    let pendiente:
+      | { solicitudId: string; empleadoId: string; casoId: string; origenCasoId: string }
+      | undefined;
+
+    const port: ConfirmacionOperacionPort = {
+      estaConfirmada: (solicitudId, empleadoId, casoIdActual) =>
+        pendiente !== undefined &&
+        pendiente.solicitudId === solicitudId &&
+        pendiente.empleadoId === empleadoId &&
+        pendiente.origenCasoId !== casoIdActual,
+      marcarPendiente: (input) => {
+        pendiente = { ...input };
+      },
+      consumir: () => {
+        pendiente = undefined;
+      },
+    };
+
+    port.marcarPendiente({ solicitudId: "s1", casoId: "c1", empleadoId: "e1", origenCasoId: "caso-turno-1" });
+
+    // Mismo turno que creó la ranura ⇒ nunca autoconfirma (ADR 166).
+    expect(port.estaConfirmada("s1", "e1", "caso-turno-1")).toBe(false);
+    // Turno posterior ⇒ sí confirma.
+    expect(port.estaConfirmada("s1", "e1", "caso-turno-2")).toBe(true);
+
+    port.consumir();
+    expect(port.estaConfirmada("s1", "e1", "caso-turno-2")).toBe(false);
+  });
+});
+
+describe("operaciones-contract.ts source", () => {
+  it("has no import statements — el módulo del contrato no importa nada", () => {
+    const sourcePath = fileURLToPath(new URL("./operaciones-contract.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/\bimport\b/);
+  });
+});

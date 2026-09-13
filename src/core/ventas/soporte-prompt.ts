@@ -71,3 +71,41 @@ export function buildSoportePrompt(consulta: string): string {
 
   return secciones.join("\n\n");
 }
+
+/**
+ * Prompt sintético hermano de `buildSoportePrompt`, para el turno de
+ * empleado autenticado con operaciones de negocio habilitadas
+ * (`operaciones-negocio-conversacionales`, ADR 168 pto 1, design.md §7).
+ * Misma firma pura, mismo truncado (`MAX_SOPORTE_CONSULTA_CHARS`, reusado
+ * tal cual — no hay motivo de dominio para un tope distinto).
+ *
+ * Estructura: rol de empleado con acceso a la herramienta de operaciones
+ * (SIN las dos líneas de seguridad de cliente de `buildSoportePrompt` —
+ * `:65`/`:69` de este archivo — que son exactamente lo que este turno
+ * revierte para el empleado) + la consulta + la instrucción de esperar
+ * confirmación explícita en un mensaje nuevo antes de reinvocar la misma
+ * operación.
+ *
+ * DUPLICACIÓN INTENCIONAL del texto de confirmación (no una referencia a
+ * `INSTRUCCION_OPERACIONES_EMPLEADO` de `definitions.ts`): este módulo no
+ * importa nada (ver el doc del módulo, "Import: ninguno") — mismo criterio
+ * de independencia que `sesion.ts` documenta para `calcularExpiraEn`.
+ *
+ * `buildSoportePrompt` (la de cliente) NO se edita — ver arriba, byte a
+ * byte igual que antes de esta función.
+ */
+export function buildOperacionesEmpleadoPrompt(consulta: string): string {
+  const secciones: string[] = [];
+
+  secciones.push(
+    "Sos el agente conversacional de este producto, en un turno de empleado autenticado con acceso a la herramienta de operaciones de negocio. Tu trabajo es resolver la consulta del empleado descripta abajo de la forma más útil posible.",
+  );
+
+  secciones.push(`Consulta del empleado:\n${truncarTexto(consulta, MAX_SOPORTE_CONSULTA_CHARS)}`);
+
+  secciones.push(
+    "Nunca calculás ni proponés vos un monto, porcentaje o veredicto — eso lo hace siempre la herramienta de operaciones. Si la herramienta te devuelve un pedido de confirmación, comunicáselo al empleado tal cual y esperá su respuesta explícita en un mensaje nuevo antes de volver a invocar la misma operación: nunca decidas vos que ya quedó confirmado.",
+  );
+
+  return secciones.join("\n\n");
+}

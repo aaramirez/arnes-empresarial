@@ -211,15 +211,16 @@ npm run empleados:crear -- <empleadoId> --rol administrador
 
 ### Comandos de solicitud interna
 
-Comandos TUI privilegiados para resolver una solicitud interna (`/solicitar`) mientras está `pendiente_aprobacion_humana`:
+Comandos TUI privilegiados para resolver una solicitud interna mientras está `pendiente_aprobacion_humana`:
 
 | Comando | Uso | Descripción |
 | --- | --- | --- |
 | `/aprobar-solicitud` | `/aprobar-solicitud [solicitudId]` | Aprueba una solicitud interna pendiente (lista las pendientes si se omite el id). |
 | `/rechazar-solicitud` | `/rechazar-solicitud [solicitudId]` | Rechaza una solicitud interna pendiente (lista las pendientes si se omite el id). |
-| `/cancelar-solicitud` | `/cancelar-solicitud [solicitudId]` | Retira una solicitud propia que todavía está pendiente (lista las pendientes si se omite el id). |
 
-`/aprobar-solicitud` y `/rechazar-solicitud` sobre la solicitud de **otro** empleado exigen rol `administrador` (v3.5.0, ver [Roles de empleado y autorización](#roles-de-empleado-y-autorización)) — un empleado con rol base recibe un rechazo distinguible ("no estás autorizado"). Sobre la **propia** solicitud, ambos comandos se rechazan siempre ("no podés aprobar/rechazar la tuya"), tenga o no rol elevado. `/cancelar-solicitud`, en cambio, sólo lo puede ejecutar el propio solicitante (`solicitud.solicitanteId === sesion.empleadoId`), sin exigir ningún rol — un tercero recibe un rechazo sin ver el `detalle` de la solicitud. Los tres comandos sólo alcanzan una solicitud en estado `pendiente_aprobacion_humana`: una ya `aprobada`, `rechazada` o `cancelada` responde igual que un id inexistente. No existe `/reabrir-solicitud`: cancelar deja la solicitud en un estado terminal.
+`/aprobar-solicitud` y `/rechazar-solicitud` sobre la solicitud de **otro** empleado exigen rol `administrador` (v3.5.0, ver [Roles de empleado y autorización](#roles-de-empleado-y-autorización)) — un empleado con rol base recibe un rechazo distinguible ("no estás autorizado"). Sobre la **propia** solicitud, ambos comandos se rechazan siempre ("no podés aprobar/rechazar la tuya"), tenga o no rol elevado. Ambos sólo alcanzan una solicitud en estado `pendiente_aprobacion_humana`: una ya `aprobada`, `rechazada` o `cancelada` responde igual que un id inexistente. No existe `/reabrir-solicitud`: cancelar deja la solicitud en un estado terminal.
+
+> **v3.6.0**: crear una solicitud interna (antes `/solicitar`), cancelar la propia (antes `/cancelar-solicitud`) y procesar una devolución (antes `/devolucion`) ya **no** son comandos de la TUI — se dieron de baja (ADR 148 pto 2, `operaciones-negocio-conversacionales`) y se resuelven ahora por conversación, vía la herramienta `operaciones` del turno de empleado autenticado. Ver [Operaciones de negocio por conversación](#operaciones-de-negocio-por-conversación-v360-operaciones-negocio-conversacionales) más abajo. `/aprobar-solicitud`/`/rechazar-solicitud` de arriba **no** bajan — siguen siendo comandos de TUI, sin cambio.
 
 ### Reporte de comisiones: dos vías
 
@@ -245,6 +246,32 @@ Desde v3.4.0, comando TUI privilegiado (`privilegiado: true`) de solo lectura so
 El protocolo A2A v1.0.0 no transporta la identidad del agente externo que envió la solicitud: la columna correspondiente se rotula **"origen de transporte"**, nunca "agente" ni "solicitante" — es la dirección de red por la que llegó el mensaje, no una identidad verificada. `agente_externo_url` es siempre `NULL` en este hito.
 
 `/ver-solicitudes-a2a` es de **sólo lectura**: si una fila queda huérfana (por ejemplo, en `TASK_STATE_WORKING` porque el proceso que la atendía terminó sin actualizar su estado), este comando la hace visible pero no actúa sobre ella. Cancelarla o reconciliarla con un barrido de arranque queda fuera de su alcance.
+
+### Operaciones de negocio por conversación (v3.6.0, `operaciones-negocio-conversacionales`)
+
+Segunda superficie conversacional, **HTTP**, dedicada al empleado autenticado — no reemplaza la TUI, la complementa. Expone seis operaciones sobre el camino del dinero, cada una delegando el 100% del cálculo a una función determinista ya existente, sin modificarla:
+
+| Operación | Función determinista |
+| --- | --- |
+| `registrar_venta` | `registrarVenta` |
+| `resolver_decision_venta` | `resolverDecisionVenta` |
+| `procesar_devolucion` | `procesarDevolucion` |
+| `crear_solicitud_interna` | `crearSolicitudInterna` |
+| `cancelar_solicitud_interna` | `resolverSolicitudInterna` (acción `cancelar` únicamente) |
+| `consultar_reporte_comisiones` | `resolverPeriodoReporte`/`agruparReporteMensual`/`formatearReporteMensual` |
+
+**Dos rutas HTTP nuevas, autenticadas — NO vía TUI**:
+
+1. `POST /login` — credenciales de empleado → token opaco.
+2. `POST /operaciones` — `Authorization: Bearer <token>` → invoca el turno de empleado con la herramienta `operaciones` habilitada.
+
+`POST /soporte` (cliente, anónimo, sin sesión) **nunca** tiene esta herramienta — es el riesgo dominante del change (R1 de `proposal.md`), cerrado con un test de regresión que reconfirma la ausencia de `operaciones` en el `allowedTools` de ese turno.
+
+`cancelar_solicitud_interna` exige confirmación humana explícita en un turno conversacional **posterior y distinto** — no se puede autoconfirmar dentro del mismo turno.
+
+Los tres comandos TUI de autoservicio (`/devolucion`, `/solicitar`, `/cancelar-solicitud`) se dieron de baja y se resuelven ahora por acá — ver la nota en [Comandos de solicitud interna](#comandos-de-solicitud-interna). Los cinco comandos administrativos/HITL (`/aprobar-*`, `/rechazar-*`, `/reabrir-*`) **no** se tocan: el ADR 151 los declaró candidatos a pasar a conversación, pero esa ejecución sigue **BLOQUEADA** por decisión del checkpoint (R10, cerrado en v3.5, ver [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md)).
+
+**R12, heredada y aceptada, no un bug pendiente**: `consultar_reporte_comisiones` no tiene gate de rol ni admite escopar por vendedor — mismo comportamiento que ya tenía `/reporte-comisiones` por TUI. El checkpoint aceptó esto explícitamente; detalle completo en el arc42 (Riesgo 4, R12).
 
 ### Skills (`.claude/skills/`)
 

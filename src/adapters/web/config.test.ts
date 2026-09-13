@@ -3,7 +3,11 @@ import {
   DEFAULT_WEB_MAX_BODY_BYTES,
   DEFAULT_WEB_PUBLIC_URL,
   isWebEnabled,
+  OPERACIONES_TIMEOUT_MS,
   resolveWebConfig,
+  RUTA_LOGIN,
+  RUTA_OPERACIONES,
+  SOPORTE_TIMEOUT_MS,
 } from "./config.js";
 
 describe("resolveWebConfig", () => {
@@ -112,5 +116,18 @@ describe("isWebEnabled", () => {
 
   it("returns true when port is a positive value", () => {
     expect(isWebEnabled(resolveWebConfig({ WEB_PORT: "8080" }))).toBe(true);
+  });
+});
+
+describe("rutas y timeout de operaciones-negocio-conversacionales (tarea 9)", () => {
+  it("RUTA_LOGIN y RUTA_OPERACIONES son rutas nuevas, distintas de las existentes", () => {
+    expect(RUTA_LOGIN).toBe("/login");
+    expect(RUTA_OPERACIONES).toBe("/operaciones");
+  });
+
+  it("OPERACIONES_TIMEOUT_MS es independiente de SOPORTE_TIMEOUT_MS (turnos distintos)", () => {
+    expect(OPERACIONES_TIMEOUT_MS).toBe(SOPORTE_TIMEOUT_MS);
+    // Mismo valor hoy, constantes DISTINTAS a propósito (ADR 173 pto 3):
+    // tunearlas por separado no debe requerir tocar la otra.
   });
 });

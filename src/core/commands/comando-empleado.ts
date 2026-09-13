@@ -127,13 +127,16 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los dieciocho descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
- * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
- * `comando-reporte-comisiones`, ADR 117/119 + uno de
- * `comando-cancelar-solicitud`, ADR 127 + uno de
- * `comando-visibilidad-a2a-entrante`, ADR 138), en el orden en que `/ayuda`
- * los imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue último — los
- * descriptores existentes no cambian de orden ni de forma.
+ * Los quince descriptores (dieciocho tras `comando-visibilidad-a2a-entrante`,
+ * menos `/devolucion`, `/solicitar` y `/cancelar-solicitud` — bajados por
+ * `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14: los tres
+ * eran comandos transaccionales de autoservicio, ahora se resuelven por
+ * conversación vía la herramienta `operaciones`, ver spec
+ * `herramienta-operaciones-negocio`. Los cinco `/aprobar-*`/`/rechazar-*`/
+ * `/reabrir-*` NO bajan: el ADR 151 los declaró candidatos a conversación
+ * pero su ejecución sigue BLOQUEADA por el checkpoint), en el orden en que
+ * `/ayuda` los imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue
+ * último — los descriptores existentes no cambian de orden ni de forma.
  */
 const DESCRIPTORES = [
   {
@@ -164,15 +167,6 @@ const DESCRIPTORES = [
     tipo: "soporte",
   },
   {
-    nombre: "/devolucion",
-    uso: "/devolucion <token> [motivo]",
-    ayuda: "Procesa una devolución con el token de confirmación de la venta.",
-    privilegiado: false,
-    secreto: false,
-    forma: "id_mas_resto",
-    tipo: "devolucion",
-  },
-  {
     nombre: "/aprobar-reembolso",
     uso: "/aprobar-reembolso [ventaId]",
     ayuda: "Aprueba un reembolso escalado (lista los pendientes si se omite el id).",
@@ -198,15 +192,6 @@ const DESCRIPTORES = [
     secreto: false,
     forma: "id_opcional",
     tipo: "reabrir_reembolso",
-  },
-  {
-    nombre: "/solicitar",
-    uso: "/solicitar <tipo> <detalle>",
-    ayuda: "Crea una solicitud interna (p. ej. vacaciones) que un validador dictamina antes de tu aprobación.",
-    privilegiado: true,
-    secreto: false,
-    forma: "id_mas_resto",
-    tipo: "solicitar",
   },
   {
     nombre: "/aprobar-solicitud",
@@ -284,15 +269,6 @@ const DESCRIPTORES = [
     tipo: "reporte_comisiones",
   },
   {
-    nombre: "/cancelar-solicitud",
-    uso: "/cancelar-solicitud [solicitudId]",
-    ayuda: "Retira una solicitud propia que todavía está pendiente (lista las pendientes si se omite el id).",
-    privilegiado: true, // ADR 127
-    secreto: false,
-    forma: "id_opcional_solicitud", // reusada (ADR 56) — el SHAPE `{ solicitudId }` ya existe
-    tipo: "cancelar_solicitud",
-  },
-  {
     nombre: "/ver-solicitudes-a2a",
     uso: "/ver-solicitudes-a2a [a2aTaskId]",
     ayuda: "Muestra las solicitudes A2A entrantes en curso (o el detalle de una, si se pasa el id de tarea).",
@@ -317,12 +293,10 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los dieciocho descriptores (ocho de v1.4.0 + tres de Hito 5, §5.7, ADR 56 +
- * tres de Hito 5.1, §5.9, ADR 69 + uno de Hito 6, ADR 85 + uno de
- * `comando-reporte-comisiones`, ADR 117/119 + uno de
- * `comando-cancelar-solicitud`, ADR 127 + uno de
- * `comando-visibilidad-a2a-entrante`, ADR 138), en el orden en que `/ayuda`
- * los imprime.
+ * Los quince descriptores (dieciocho tras `comando-visibilidad-a2a-entrante`,
+ * menos `/devolucion`, `/solicitar` y `/cancelar-solicitud` — bajados por
+ * `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14), en el
+ * orden en que `/ayuda` los imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
 
@@ -400,9 +374,10 @@ function idOpcionalPayload<T extends string, K extends string>(
  *     · id opcional de tarea A2A (`a2aTaskId`, ADR 56/138): mismo patrón otra vez, para `/ver-solicitudes-a2a`.
  *     · id + resto: `split` en el PRIMER espacio; el resto entero con `trim` de bordes.
  *  4. Argumento obligatorio ausente o vacío → `{ ayuda, "argumentos", comando }`.
- *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/devolucion` (token), `/solicitar` (los DOS),
- *     `/aplicar-propuesta` (propuestaId), `/descartar-propuesta` (propuestaId).
- *     `motivo` de `/devolucion` y `/descartar-propuesta`, `ventaId` de los tres de reembolso, `solicitudId` de
+ *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/aplicar-propuesta` (propuestaId),
+ *     `/descartar-propuesta` (propuestaId). (`/devolucion` y `/solicitar` ya no son comandos — bajados por
+ *     `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14.)
+ *     `motivo` de `/descartar-propuesta`, `ventaId` de los tres de reembolso, `solicitudId` de
  *     los dos de solicitud, `propuestaId` de `/ver-propuesta` y `a2aTaskId` de `/ver-solicitudes-a2a` son
  *     OPCIONALES.
  *  5. `/ayuda` explícito → `{ ayuda, "solicitada" }`.
@@ -452,24 +427,15 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     return idOpcionalPayload(descriptor.tipo, restoLinea, "a2aTaskId");
   }
 
-  // forma === "id_mas_resto": /login, /soporte, /devolucion, /solicitar,
-  // /aplicar-propuesta, /descartar-propuesta.
+  // forma === "id_mas_resto": /login, /soporte, /aplicar-propuesta,
+  // /descartar-propuesta, /consultar-kpi. (/devolucion y /solicitar
+  // también eran de esta forma — bajados por
+  // `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14.)
   if (descriptor.nombre === "/soporte") {
     if (restoLinea === undefined) {
       return ayudaArgumentos(comandoToken);
     }
     return { tipo: "soporte", consulta: restoLinea };
-  }
-
-  if (descriptor.nombre === "/solicitar") {
-    if (restoLinea === undefined) {
-      return ayudaArgumentos(comandoToken);
-    }
-    const { primero: tipoSolicitud, resto: detalle } = splitPrimerEspacio(restoLinea);
-    if (detalle === undefined) {
-      return ayudaArgumentos(comandoToken);
-    }
-    return { tipo: "solicitar", tipoSolicitud, detalle };
   }
 
   if (descriptor.nombre === "/login") {
@@ -494,8 +460,7 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     return { tipo: "aplicar_propuesta", propuestaId };
   }
 
-  // /descartar-propuesta <propuestaId> [motivo] — rama PROPIA (ADR 69),
-  // calcada de /devolucion, no compartida con /aplicar-propuesta.
+  // /descartar-propuesta <propuestaId> [motivo] — rama PROPIA (ADR 69).
   if (descriptor.nombre === "/descartar-propuesta") {
     if (restoLinea === undefined) {
       return ayudaArgumentos(comandoToken);
@@ -507,11 +472,14 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
   }
 
   // /consultar-kpi <consulta> — rama PROPIA (ADR 85), calcada de /soporte.
-  // ★ Va OBLIGATORIAMENTE antes del bloque final de /devolucion: esa sección
-  // es una cadena de `if (descriptor.nombre === …)` cuyo fallthrough final
-  // es /devolucion, sin un `if` propio — un descriptor id_mas_resto nuevo
-  // sin su rama explícita no falla en compilación, se parsea en silencio
-  // como devolución.
+  // ★ Es el último descriptor de forma "id_mas_resto": todos los que existen
+  // hoy (/login, /soporte, /aplicar-propuesta, /descartar-propuesta,
+  // /consultar-kpi) tienen rama explícita arriba — no queda ningún
+  // fallthrough implícito (el que existía para /devolucion se quitó junto
+  // con su descriptor, `operaciones-negocio-conversacionales`, ADR 148 pto
+  // 2, tarea 14). Un descriptor id_mas_resto nuevo sin su rama explícita cae
+  // en la red de seguridad de abajo, como "desconocido" — no falla en
+  // compilación, pero tampoco se parsea en silencio como otra cosa.
   if (descriptor.nombre === "/consultar-kpi") {
     if (restoLinea === undefined) {
       return ayudaArgumentos(comandoToken);
@@ -519,10 +487,7 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     return { tipo: "consultar_kpi", consulta: restoLinea };
   }
 
-  // /devolucion <token> [motivo]
-  if (restoLinea === undefined) {
-    return ayudaArgumentos(comandoToken);
-  }
-  const { primero: token, resto: motivo } = splitPrimerEspacio(restoLinea);
-  return motivo === undefined ? { tipo: "devolucion", token } : { tipo: "devolucion", token, motivo };
+  // Red de seguridad: nunca debería llegar acá con los descriptores de hoy
+  // (los cinco de forma "id_mas_resto" tienen rama explícita arriba).
+  return ayudaDesconocido(comandoToken);
 }

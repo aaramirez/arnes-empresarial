@@ -1,7 +1,7 @@
 /**
  * Listener HTTP del adaptador Web (Hito 4, tarea 17, §4.4 — el corazón del
- * adaptador). Ruteo, auth de `/ventas`, drenaje de turnos de soporte en
- * vuelo, y la tabla de respuestas exhaustiva del diseño.
+ * adaptador). Ruteo, auth de `/ventas`, drenaje de turnos de soporte y de
+ * operaciones en vuelo, y la tabla de respuestas exhaustiva del diseño.
  *
  * Orden de checks dentro de cada ruta — EXHAUSTIVO, no se reordena
  * (design.md §4.4): `método+ruta → tope de body → auth (solo /ventas) →
@@ -12,7 +12,8 @@
  * con dobles planos de `WebRequest`/`WebResponse`, sin abrir ningún puerto
  * real ni mockear `node:http`. `startServer` monta ese listener sobre un
  * servidor real (o inyectado en tests) y agrega el drenaje de los turnos de
- * `/soporte` en vuelo al cerrar.
+ * `/soporte` y de `/operaciones` en vuelo al cerrar (mismo `Set`
+ * compartido — hallazgo de Reviewer, `operaciones-negocio-conversacionales`).
  *
  * Diferencia real con `webhooks/server.ts`, no cosmética: acá la
  * acumulación del body la hace `leerBody` (tarea 14) en vez de reimplementar
@@ -24,8 +25,11 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import {
+  OPERACIONES_TIMEOUT_MS,
   RUTA_CONFIRMAR_PREFIJO,
   RUTA_DEVOLUCION,
+  RUTA_LOGIN,
+  RUTA_OPERACIONES,
   RUTA_SOPORTE,
   RUTA_VENTAS,
   SOPORTE_TIMEOUT_MS,
@@ -40,6 +44,8 @@ import {
   parseAltaVentaPayload,
   parseDecisionForm,
   parseDevolucionPayload,
+  parseLoginPayload,
+  parseOperacionesPayload,
   parseSoportePayload,
 } from "./payloads.js";
 import { renderConfirmacionHtml, renderLinkInvalidoHtml, renderResultadoHtml } from "./render.js";
@@ -47,6 +53,10 @@ import type { RegistrarVentaInput, RegistrarVentaResult } from "../../core/venta
 import type { DecisionCliente, DecisionVentaResult } from "../../core/ventas/confirmar-venta.js";
 import type { DevolucionResult } from "../../core/ventas/procesar-devolucion.js";
 import type { VentaPublica } from "../../core/ventas/ventas-contract.js";
+import type { SesionEmpleado } from "../../core/auth/sesion.js";
+import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
+import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
+import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
 
 /**
  * DECISIÓN PARA EL REVIEWER: `SoporteResult` todavía no existe como módulo
@@ -62,6 +72,17 @@ export interface SoporteResult {
   readonly respuesta: string;
 }
 
+/**
+ * Resultado de `POST /login` (`operaciones-negocio-conversacionales`, ADR
+ * 173 pto 2, tarea 9). Mismo criterio estructural que `SoporteResult` de
+ * arriba: se declara LOCALMENTE, no se importa desde `build-on-login-http.ts`
+ * (composition root) — un adaptador no importa de un módulo de composition
+ * root, se acopla por FORMA, no por identidad de tipo.
+ */
+export type LoginHttpResult =
+  | { readonly ok: true; readonly token: string; readonly expiraEn?: string }
+  | { readonly ok: false };
+
 export interface WebServerDeps {
   readonly config: WebConfig;
   /** Los cinco handlers del ADR 12, ya cerrados sobre sus dependencias por el composition root. */
@@ -76,6 +97,25 @@ export interface WebServerDeps {
     readonly motivo?: string;
   }) => Promise<DevolucionResult>;
   readonly onSoporte: (input: { readonly consulta: string }) => Promise<SoporteResult>;
+  /** `operaciones-negocio-conversacionales`, ADR 173 pto 2, tarea 9: `POST /login`. */
+  readonly onLogin: (input: {
+    readonly empleadoId: string;
+    readonly password: string;
+  }) => Promise<LoginHttpResult>;
+  /**
+   * ídem, ADR 173 pto 3: `POST /operaciones`. Mismo shape de resultado que
+   * `SoporteResult` (`{ casoId, respuesta }`) -- turno distinto, forma
+   * idéntica.
+   */
+  readonly onOperacionesEmpleado: (input: {
+    readonly consulta: string;
+    readonly sesion: SesionEmpleado;
+    readonly confirmacion: ConfirmacionOperacionPort;
+  }) => Promise<SoporteResult>;
+  /** ídem, ADR 173 pto 4: resuelve el `Bearer <token>` de `POST /operaciones` a una `SesionEmpleado`. */
+  readonly sesionStore: SesionEmpleadoStore;
+  /** ídem, ADR 173 pto 4: ranura de confirmación por-empleado de `cancelar_solicitud_interna`. */
+  readonly confirmacionOperacionesStore: ConfirmacionOperacionesStore;
   readonly logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
   /** `randomUUID` en producción; contador determinista en tests. Ver §9.1. */
   readonly newRequestId?: () => string;
@@ -83,7 +123,7 @@ export interface WebServerDeps {
 
 export interface WebServerHandle {
   readonly port: number;
-  /** Deja de aceptar, drena los turnos de `/soporte` en vuelo con techo de `WEB_CLOSE_TIMEOUT_MS`, resuelve. NUNCA rechaza. */
+  /** Deja de aceptar, drena los turnos de `/soporte` y de `/operaciones` en vuelo con techo de `WEB_CLOSE_TIMEOUT_MS`, resuelve. NUNCA rechaza. */
   close(): Promise<void>;
 }
 
@@ -129,6 +169,47 @@ function esAutorizado(req: WebRequest, ventasApiToken: string): boolean {
   }
 
   return timingSafeEqual(esperadoBuffer, actualBuffer);
+}
+
+const BEARER_PREFIJO = "Bearer ";
+
+/**
+ * Extrae `<token>` de un header `Authorization: Bearer <token>`
+ * (`operaciones-negocio-conversacionales`, ADR 173 pto 3, tarea 9). Reusa
+ * `firstHeaderValue` -- el mismo extractor de header que ya usa `esAutorizado`
+ * -- pero a diferencia de esa función, que compara el header COMPLETO contra
+ * un secreto único con `timingSafeEqual`, esto DEVUELVE el token para que el
+ * caller lo busque por CLAVE en un store (`sesionStore.buscar`, molde
+ * `token-confirmacion.ts`: token opaco de alta entropía, buscado por
+ * igualdad de clave, no por barrido secuencial contra un secreto adivinable
+ * por descarte). `undefined` si falta el header, no empieza con
+ * `"Bearer "`, o el token queda vacío tras el prefijo.
+ */
+function extraerBearerToken(req: WebRequest): string | undefined {
+  const headerValue = firstHeaderValue(req.headers.authorization);
+  if (typeof headerValue !== "string" || !headerValue.startsWith(BEARER_PREFIJO)) {
+    return undefined;
+  }
+  const token = headerValue.slice(BEARER_PREFIJO.length);
+  return token === "" ? undefined : token;
+}
+
+/**
+ * Resuelve la `SesionEmpleado` de un `POST /operaciones` a partir de su
+ * header `Authorization`. `undefined` en CUALQUIERA de: header ausente,
+ * token sin coincidencia en `sesionStore`, o sesión vencida -- los tres
+ * casos son indistinguibles desde acá (mismo criterio que
+ * `SesionEmpleadoStore.buscar`, ADR 173 pto 4).
+ */
+function resolverSesionDesdeRequest(
+  req: WebRequest,
+  sesionStore: SesionEmpleadoStore,
+): SesionEmpleado | undefined {
+  const token = extraerBearerToken(req);
+  if (token === undefined) {
+    return undefined;
+  }
+  return sesionStore.buscar(token);
 }
 
 /**
@@ -449,6 +530,144 @@ async function handleSoporte(
 }
 
 /**
+ * `POST /login` (`operaciones-negocio-conversacionales`, ADR 173 pto 2,
+ * tarea 9). Credenciales inválidas ⇒ `401` con el MISMO mensaje genérico
+ * indistinguible que ya usa la TUI (ADR 30, `build-on-comando-empleado.ts`'s
+ * `manejarLogin`: `"Credenciales inválidas."`) -- no se filtra por HTTP una
+ * distinción que el núcleo ya decidió ocultar.
+ */
+async function handleLogin(
+  req: WebRequest,
+  res: WebResponse,
+  requestId: string,
+  deps: WebServerDeps,
+): Promise<void> {
+  const { config, logEvent } = deps;
+
+  const lectura = await leerCuerpoConTope(req, res, config, requestId, RUTA_LOGIN, logEvent);
+  if (!lectura.ok) {
+    if (lectura.motivo === "error-transporte") {
+      logEvent(requestId, "web-payload-invalido", { motivo: "error-transporte" });
+      respondJson(res, 400, { error: "error de transporte" });
+    }
+    return;
+  }
+
+  const jsonResult = parseJsonBody(lectura.body);
+  if (!jsonResult.ok) {
+    logEvent(requestId, "web-payload-invalido", { motivo: jsonResult.motivo });
+    respondJson(res, 400, { error: jsonResult.motivo });
+    return;
+  }
+
+  const payloadResult = parseLoginPayload(jsonResult.valor);
+  if (!payloadResult.ok) {
+    logEvent(requestId, "web-payload-invalido", { motivo: payloadResult.motivo });
+    respondJson(res, 400, { error: payloadResult.motivo });
+    return;
+  }
+
+  try {
+    const resultado = await deps.onLogin(payloadResult.valor);
+    if (!resultado.ok) {
+      logEvent(requestId, "web-no-autorizado", {});
+      respondJson(res, 401, { error: "Credenciales inválidas." });
+      return;
+    }
+    respondJson(
+      res,
+      200,
+      resultado.expiraEn !== undefined
+        ? { token: resultado.token, expiraEn: resultado.expiraEn }
+        : { token: resultado.token },
+    );
+  } catch {
+    logEvent(requestId, "web-handler-fallido", {});
+    respondJson(res, 500, { error: "error interno" });
+  }
+}
+
+/**
+ * `POST /operaciones` (`operaciones-negocio-conversacionales`, ADR 172/173,
+ * tarea 9) -- ★ riesgo dominante R1. Orden EXHAUSTIVO, no se reordena (mismo
+ * criterio que el resto del archivo): tope de body → auth por sesión
+ * (`resolverSesionDesdeRequest`, NUNCA por el body) → parseo → handler.
+ * `empleadoId` SIEMPRE sale de la `sesion` resuelta por el store -- nunca
+ * del body del request, ni siquiera si el body lo incluyera. Sin sesión
+ * vigente, `onOperacionesEmpleado` JAMÁS se invoca -- eso es lo que blinda
+ * este handler contra R1.
+ */
+async function handleOperaciones(
+  req: WebRequest,
+  res: WebResponse,
+  requestId: string,
+  deps: WebServerDeps,
+): Promise<void> {
+  const { config, logEvent, sesionStore, confirmacionOperacionesStore } = deps;
+
+  const lectura = await leerCuerpoConTope(req, res, config, requestId, RUTA_OPERACIONES, logEvent);
+  if (!lectura.ok) {
+    if (lectura.motivo === "error-transporte") {
+      logEvent(requestId, "web-payload-invalido", { motivo: "error-transporte" });
+      respondJson(res, 400, { error: "error de transporte" });
+    }
+    return;
+  }
+
+  const sesion = resolverSesionDesdeRequest(req, sesionStore);
+  if (sesion === undefined) {
+    logEvent(requestId, "web-no-autorizado", {});
+    respondJson(res, 401, { error: "no autorizado" });
+    return;
+  }
+
+  const jsonResult = parseJsonBody(lectura.body);
+  if (!jsonResult.ok) {
+    logEvent(requestId, "web-payload-invalido", { motivo: jsonResult.motivo });
+    respondJson(res, 400, { error: jsonResult.motivo });
+    return;
+  }
+
+  const payloadResult = parseOperacionesPayload(jsonResult.valor);
+  if (!payloadResult.ok) {
+    logEvent(requestId, "web-payload-invalido", { motivo: payloadResult.motivo });
+    respondJson(res, 400, { error: payloadResult.motivo });
+    return;
+  }
+
+  // `confirmacion` sale de la ranura POR EMPLEADO (ADR 173 pto 4) -- nunca
+  // del slot único de la TUI, y siempre resuelta ANTES de invocar el turno
+  // (reconciliación 2 de `tasks.md`).
+  const confirmacion = confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId);
+
+  const turno = deps.onOperacionesEmpleado({ consulta: payloadResult.valor.consulta, sesion, confirmacion });
+  // Misma carrera contra timeout que `handleSoporte`, con su propia
+  // constante independiente (`OPERACIONES_TIMEOUT_MS`, ADR 173 pto 3).
+  const resultado = await Promise.race<TurnoResultado>([
+    turno.then(
+      (valor): TurnoResultado => ({ estado: "resuelto", valor }),
+      (): TurnoResultado => ({ estado: "rechazado" }),
+    ),
+    new Promise<TurnoResultado>((resolve) => {
+      setTimeout(() => resolve({ estado: "timeout" }), OPERACIONES_TIMEOUT_MS);
+    }),
+  ]);
+
+  if (resultado.estado === "timeout") {
+    logEvent(requestId, "operaciones-timeout", {});
+    respondJson(res, 504, { error: "tiempo de espera excedido" });
+    return;
+  }
+  if (resultado.estado === "rechazado") {
+    logEvent(requestId, "operaciones-turno-fallido", {});
+    respondJson(res, 502, { error: "error interno" });
+    return;
+  }
+
+  respondJson(res, 200, { casoId: resultado.valor.casoId, respuesta: resultado.valor.respuesta });
+}
+
+/**
  * El listener HTTP, aislado del ciclo de vida del servidor para poder
  * testear cada respuesta con dobles planos.
  *
@@ -482,6 +701,14 @@ export function createRequestListener(deps: WebServerDeps): (req: WebRequest, re
       void handleSoporte(req, res, requestId, deps);
       return;
     }
+    if (method === "POST" && path === RUTA_LOGIN) {
+      void handleLogin(req, res, requestId, deps);
+      return;
+    }
+    if (method === "POST" && path === RUTA_OPERACIONES) {
+      void handleOperaciones(req, res, requestId, deps);
+      return;
+    }
 
     res.statusCode = 404;
     res.end();
@@ -494,12 +721,12 @@ export function createRequestListener(deps: WebServerDeps): (req: WebRequest, re
  * defecto abra un puerto.
  *
  * Igual que `webhooks/server.ts:254`: `listen` + `on("error")` con promesa.
- * El `Set<Promise<unknown>>` de drenaje trackea SOLO los turnos de
- * `/soporte` en vuelo (no las otras rutas — son todas síncronas del lado
- * del `store` salvo la notificación best-effort de `/ventas`, que ya
- * corrió cuando `onAltaVenta` resuelve). `close()` hace `server.close()` →
- * `Promise.allSettled([...enVuelo])` en carrera contra `WEB_CLOSE_TIMEOUT_MS`
- * → resuelve. Nunca rechaza.
+ * El `Set<Promise<unknown>>` de drenaje trackea los turnos de `/soporte` Y
+ * de `/operaciones` en vuelo, compartiendo el MISMO `Set` (no las otras
+ * rutas — son todas síncronas del lado del `store` salvo la notificación
+ * best-effort de `/ventas`, que ya corrió cuando `onAltaVenta` resuelve).
+ * `close()` hace `server.close()` → `Promise.allSettled([...enVuelo])` en
+ * carrera contra `WEB_CLOSE_TIMEOUT_MS` → resuelve. Nunca rechaza.
  */
 export function startServer(
   deps: WebServerDeps,
@@ -522,7 +749,27 @@ export function startServer(
     return promesa;
   };
 
-  const listener = createRequestListener({ ...deps, onSoporte: onSoporteConDrenaje });
+  // Hallazgo del Reviewer (`operaciones-negocio-conversacionales`): los
+  // turnos de `/operaciones` corren la MISMA carrera de shutdown que los de
+  // `/soporte` (una escritura sincrónica de better-sqlite3 que llegue
+  // después de `db.close()` en `main.ts` puede pegarle a una DB ya
+  // cerrada) -- comparten el MISMO `enVuelo` de arriba, no uno nuevo, así
+  // `close()` drena ambos tipos de turno indistintamente.
+  const onOperacionesEmpleadoConDrenaje: WebServerDeps["onOperacionesEmpleado"] = (input) => {
+    const promesa = deps.onOperacionesEmpleado(input);
+    enVuelo.add(promesa);
+    const olvidar = (): void => {
+      enVuelo.delete(promesa);
+    };
+    promesa.then(olvidar, olvidar);
+    return promesa;
+  };
+
+  const listener = createRequestListener({
+    ...deps,
+    onSoporte: onSoporteConDrenaje,
+    onOperacionesEmpleado: onOperacionesEmpleadoConDrenaje,
+  });
   const server = createServer(listener);
 
   return new Promise((resolve, reject) => {

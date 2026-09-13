@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  OPERACIONES_TIMEOUT_MS,
   RUTA_CONFIRMAR_PREFIJO,
   RUTA_DEVOLUCION,
+  RUTA_LOGIN,
+  RUTA_OPERACIONES,
   RUTA_SOPORTE,
   RUTA_VENTAS,
   SOPORTE_TIMEOUT_MS,
@@ -10,9 +13,21 @@ import {
   type WebConfig,
 } from "./config.js";
 import type { CreateWebServerFn, WebRequest, WebResponse } from "./http.js";
-import { createRequestListener, startServer, type SoporteResult, type WebServerDeps } from "./server.js";
+import {
+  createRequestListener,
+  startServer,
+  type LoginHttpResult,
+  type SoporteResult,
+  type WebServerDeps,
+} from "./server.js";
 import type { RegistrarVentaResult } from "../../core/ventas/registrar-venta.js";
 import type { VentaPublica } from "../../core/ventas/ventas-contract.js";
+import type { SesionEmpleado } from "../../core/auth/sesion.js";
+import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
+import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../../core/operaciones/operaciones-contract.js";
+import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
+import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import { CONVERSATIONAL_AGENT_ID, getAgentDefinition } from "../../core/agents/definitions.js";
 
 const CONFIG: WebConfig = {
   port: 8080,
@@ -104,6 +119,31 @@ async function esperarRespuesta(res: FakeResponse): Promise<void> {
   await vi.waitFor(() => expect(res.end).toHaveBeenCalled());
 }
 
+function fakeConfirmacion(): ConfirmacionOperacionPort {
+  return {
+    estaConfirmada: vi.fn().mockReturnValue(false),
+    marcarPendiente: vi.fn(),
+    consumir: vi.fn(),
+  };
+}
+
+function fakeSesionStore(overrides: Partial<SesionEmpleadoStore> = {}): SesionEmpleadoStore {
+  return {
+    crear: vi.fn().mockReturnValue("token-nuevo"),
+    buscar: vi.fn().mockReturnValue(undefined),
+    ...overrides,
+  };
+}
+
+function fakeConfirmacionOperacionesStore(
+  overrides: Partial<ConfirmacionOperacionesStore> = {},
+): ConfirmacionOperacionesStore {
+  return {
+    paraEmpleado: vi.fn().mockReturnValue(fakeConfirmacion()),
+    ...overrides,
+  };
+}
+
 function makeDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
   return {
     config: CONFIG,
@@ -112,6 +152,10 @@ function makeDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
     onDecisionVenta: vi.fn(),
     onDevolucion: vi.fn(),
     onSoporte: vi.fn(),
+    onLogin: vi.fn(),
+    onOperacionesEmpleado: vi.fn(),
+    sesionStore: fakeSesionStore(),
+    confirmacionOperacionesStore: fakeConfirmacionOperacionesStore(),
     logEvent: vi.fn(),
     newRequestId: () => REQUEST_ID,
     ...overrides,
@@ -148,8 +192,56 @@ const SOPORTE_RESULT: SoporteResult = {
   respuesta: "respuesta del bot",
 };
 
+const OPERACIONES_RESULT: SoporteResult = {
+  casoId: "caso-operaciones-1",
+  respuesta: "operación registrada",
+};
+
+const SESION_EMPLEADO: SesionEmpleado = {
+  empleadoId: "emp-1",
+  iniciadaEn: "2026-01-01T00:00:00.000Z",
+};
+
 function authHeader(token = CONFIG.ventasApiToken): Record<string, string> {
   return { authorization: `Bearer ${token}` };
+}
+
+/**
+ * Doble plano de `http.Server` compartido por todas las suites de
+ * drenaje de `close()` (`/soporte` y `/operaciones`) -- extraído a
+ * ámbito de módulo (antes vivía solo dentro de la suite de `/soporte`)
+ * para que la suite nueva de `/operaciones` y la combinada lo reusen sin
+ * duplicar el doble.
+ */
+function makeFakeHttpServer(): {
+  server: { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+  createServer: CreateWebServerFn;
+  getListener: () => (req: WebRequest, res: WebResponse) => void;
+} {
+  let capturedListener: ((req: WebRequest, res: WebResponse) => void) | undefined;
+  const server = {
+    listen: vi.fn((_port: number, callback: () => void) => {
+      callback();
+    }),
+    close: vi.fn((callback: (error?: Error) => void) => {
+      callback();
+    }),
+    on: vi.fn(),
+  };
+  const createServer = vi.fn((listener: (req: WebRequest, res: WebResponse) => void) => {
+    capturedListener = listener;
+    return server;
+  });
+  return {
+    server,
+    createServer,
+    getListener: () => {
+      if (capturedListener === undefined) {
+        throw new Error("listener not captured yet");
+      }
+      return capturedListener;
+    },
+  };
 }
 
 describe("createRequestListener — ruteo", () => {
@@ -698,37 +790,6 @@ describe("startServer — close() drains in-flight /soporte turns", () => {
     vi.useRealTimers();
   });
 
-  function makeFakeHttpServer(): {
-    server: { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
-    createServer: CreateWebServerFn;
-    getListener: () => (req: WebRequest, res: WebResponse) => void;
-  } {
-    let capturedListener: ((req: WebRequest, res: WebResponse) => void) | undefined;
-    const server = {
-      listen: vi.fn((_port: number, callback: () => void) => {
-        callback();
-      }),
-      close: vi.fn((callback: (error?: Error) => void) => {
-        callback();
-      }),
-      on: vi.fn(),
-    };
-    const createServer = vi.fn((listener: (req: WebRequest, res: WebResponse) => void) => {
-      capturedListener = listener;
-      return server;
-    });
-    return {
-      server,
-      createServer,
-      getListener: () => {
-        if (capturedListener === undefined) {
-          throw new Error("listener not captured yet");
-        }
-        return capturedListener;
-      },
-    };
-  }
-
   it("close() awaits the in-flight /soporte turn via Promise.allSettled before resolving", async () => {
     let resolverTurno!: (value: SoporteResult) => void;
     const onSoporte = vi.fn().mockImplementation(
@@ -799,5 +860,434 @@ describe("startServer — close() drains in-flight /soporte turns", () => {
       "web-cierre-con-turnos-en-vuelo",
       expect.anything(),
     );
+  });
+});
+
+/**
+ * Hallazgo del Reviewer (`operaciones-negocio-conversacionales`): el mismo
+ * mecanismo de drenaje que ya protegía `/soporte` (Set `enVuelo` + carrera
+ * contra `WEB_CLOSE_TIMEOUT_MS` en `close()`) tenía que cubrir también
+ * `/operaciones` -- si un turno seguía en vuelo cuando arrancaba el
+ * shutdown, `web.close()` no lo esperaba y una escritura sincrónica de
+ * better-sqlite3 podía pegarle a una DB ya cerrada. Mismo molde EXACTO que
+ * la suite de `/soporte` de arriba, aplicado a `onOperacionesEmpleado`.
+ */
+describe("startServer — close() drains in-flight /operaciones turns", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function operacionesDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    return makeDeps({ sesionStore, ...overrides });
+  }
+
+  it("close() awaits the in-flight /operaciones turn via Promise.allSettled before resolving", async () => {
+    let resolverTurno!: (value: SoporteResult) => void;
+    const onOperacionesEmpleado = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverTurno = resolve;
+        }),
+    );
+    const deps = operacionesDeps({ onOperacionesEmpleado });
+    const { createServer, getListener } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+    getListener()(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    // Mismo motivo que en la suite de /soporte: dejar que
+    // `onOperacionesEmpleado` quede registrado en `enVuelo` (a través del
+    // wrapper de drenaje de `startServer`) antes de tomar la foto en
+    // `close()`.
+    await vi.advanceTimersByTimeAsync(0);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    // Avanza CASI todo el techo de `WEB_CLOSE_TIMEOUT_MS` (no solo un par de
+    // microtareas) antes de afirmar que `close()` sigue pendiente -- esto es
+    // lo que distingue de verdad "sigue esperando al turno real" de "el Set
+    // estaba vacío y ya resolvió por descuido" (un par de `await
+    // Promise.resolve()` no alcanza para distinguir ambos casos, porque la
+    // cadena `Promise.allSettled([]) → race → resolveClose` también tarda
+    // más de un puñado de microtareas en asentarse).
+    await vi.advanceTimersByTimeAsync(WEB_CLOSE_TIMEOUT_MS - 1);
+    expect(closed).toBe(false);
+
+    resolverTurno(OPERACIONES_RESULT);
+    await closePromise;
+
+    expect(closed).toBe(true);
+  });
+
+  it("close() resolves after WEB_CLOSE_TIMEOUT_MS even if an /operaciones turn never settles, and logs web-cierre-con-turnos-en-vuelo", async () => {
+    const onOperacionesEmpleado = vi.fn().mockImplementation(() => new Promise<SoporteResult>(() => {}));
+    const logEvent = vi.fn();
+    const deps = operacionesDeps({ onOperacionesEmpleado, logEvent });
+    const { createServer, getListener } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+    getListener()(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(WEB_CLOSE_TIMEOUT_MS);
+    await closePromise;
+
+    expect(closed).toBe(true);
+    expect(logEvent).toHaveBeenCalledWith(
+      WEB_LOG_CORRELATION_ID,
+      "web-cierre-con-turnos-en-vuelo",
+      expect.anything(),
+    );
+  });
+});
+
+/**
+ * Regresión + prueba de que `/soporte` y `/operaciones` comparten el MISMO
+ * Set `enVuelo` (no dos mecanismos de drenaje independientes) -- si
+ * `close()` esperara a `/soporte` y `/operaciones` con dos `Set`s
+ * separados, este describe seguiría en verde por casualidad; la prueba
+ * combinada de abajo es la que realmente lo distingue.
+ */
+describe("startServer — close() drenaje compartido entre /soporte y /operaciones", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("close() with no turns in flight of either kind resolves immediately", async () => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ sesionStore });
+    const { createServer } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await closePromise;
+
+    expect(closed).toBe(true);
+  });
+
+  it("close() awaits a concurrent /soporte turn AND a concurrent /operaciones turn (same drenaje mechanism)", async () => {
+    let resolverSoporte!: (value: SoporteResult) => void;
+    let resolverOperaciones!: (value: SoporteResult) => void;
+    const onSoporte = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverSoporte = resolve;
+        }),
+    );
+    const onOperacionesEmpleado = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverOperaciones = resolve;
+        }),
+    );
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ onSoporte, onOperacionesEmpleado, sesionStore });
+    const { createServer, getListener } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    const reqSoporte = new FakeRequest({ method: "POST", url: RUTA_SOPORTE, headers: {} });
+    const resSoporte = new FakeResponse();
+    getListener()(reqSoporte, resSoporte);
+    reqSoporte.emitBody([jsonBody({ consulta: "hola" })]);
+
+    const reqOperaciones = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const resOperaciones = new FakeResponse();
+    getListener()(reqOperaciones, resOperaciones);
+    reqOperaciones.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    // Deja que ambos turnos queden registrados en el `enVuelo` compartido
+    // antes de tomar la foto en `close()`.
+    await vi.advanceTimersByTimeAsync(0);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    // Resolver solo /soporte no alcanza -- close() sigue esperando a
+    // /operaciones. Se espera CASI todo el techo (no un par de
+    // microtareas) para distinguir de verdad "sigue bloqueado por el turno
+    // de /operaciones" de "el Set solo tenía /soporte y ya se vació,
+    // /operaciones nunca estuvo ahí" (mismo motivo que en la suite
+    // anterior).
+    resolverSoporte(SOPORTE_RESULT);
+    await vi.advanceTimersByTimeAsync(WEB_CLOSE_TIMEOUT_MS - 1);
+    expect(closed).toBe(false);
+
+    resolverOperaciones(OPERACIONES_RESULT);
+    await closePromise;
+
+    expect(closed).toBe(true);
+  });
+});
+
+describe("createRequestListener — POST /login (operaciones-negocio-conversacionales, tarea 9, ADR 173 pto 2)", () => {
+  it("responds 200 {token} on valid credentials", async () => {
+    const onLogin = vi.fn().mockResolvedValue({ ok: true, token: "token-nuevo" } satisfies LoginHttpResult);
+    const deps = makeDeps({ onLogin });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: RUTA_LOGIN, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ empleadoId: "emp-1", password: "correcta" })]);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.end).toHaveBeenCalledWith(JSON.stringify({ token: "token-nuevo" }));
+    expect(onLogin).toHaveBeenCalledWith({ empleadoId: "emp-1", password: "correcta" });
+  });
+
+  it("responds 200 {token, expiraEn} when the login result includes an expiration", async () => {
+    const onLogin = vi
+      .fn()
+      .mockResolvedValue({ ok: true, token: "token-nuevo", expiraEn: "2026-01-01T01:00:00.000Z" } satisfies LoginHttpResult);
+    const deps = makeDeps({ onLogin });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: RUTA_LOGIN, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ empleadoId: "emp-1", password: "correcta" })]);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.end).toHaveBeenCalledWith(
+      JSON.stringify({ token: "token-nuevo", expiraEn: "2026-01-01T01:00:00.000Z" }),
+    );
+  });
+
+  it("responds 401 with the SAME generic message the TUI already uses (ADR 30) on invalid credentials", async () => {
+    const onLogin = vi.fn().mockResolvedValue({ ok: false } satisfies LoginHttpResult);
+    const deps = makeDeps({ onLogin });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: RUTA_LOGIN, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ empleadoId: "emp-1", password: "incorrecta" })]);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.end).toHaveBeenCalledWith(JSON.stringify({ error: "Credenciales inválidas." }));
+  });
+
+  it("responds 400 with an invalid payload (missing password), without calling onLogin", async () => {
+    const onLogin = vi.fn();
+    const deps = makeDeps({ onLogin });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: RUTA_LOGIN, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ empleadoId: "emp-1" })]);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(400);
+    expect(onLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe("createRequestListener — POST /operaciones (operaciones-negocio-conversacionales, tarea 9, ADR 172/173 -- riesgo dominante R1)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("★ R1: responds 401 without ever calling onOperacionesEmpleado when the Authorization header is missing", async () => {
+    const onOperacionesEmpleado = vi.fn();
+    const deps = makeDeps({ onOperacionesEmpleado });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: RUTA_OPERACIONES, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(res.statusCode).toBe(401);
+    expect(onOperacionesEmpleado).not.toHaveBeenCalled();
+  });
+
+  it("★ R1: responds 401 without ever calling onOperacionesEmpleado when the token does not resolve to any session (inexistente o vencida, indistinguibles)", async () => {
+    const onOperacionesEmpleado = vi.fn();
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(undefined) });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-vencido-o-inexistente" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(res.statusCode).toBe(401);
+    expect(onOperacionesEmpleado).not.toHaveBeenCalled();
+    expect(sesionStore.buscar).toHaveBeenCalledWith("token-vencido-o-inexistente");
+  });
+
+  it("with a valid token (emitted by /login), invokes the turn with the resolved session -- empleadoId ALWAYS comes from the session, never from the body", async () => {
+    const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
+    const confirmacionDelEmpleado = fakeConfirmacion();
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
+      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
+    });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, confirmacionOperacionesStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    // `empleadoId` en el body es ruido deliberado -- el handler NUNCA debe leerlo de acá.
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta", empleadoId: "emp-suplantado" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sesionStore.buscar).toHaveBeenCalledWith("token-valido");
+    expect(confirmacionOperacionesStore.paraEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
+    expect(onOperacionesEmpleado).toHaveBeenCalledWith({
+      consulta: "quiero registrar una venta",
+      sesion: SESION_EMPLEADO,
+      confirmacion: confirmacionDelEmpleado,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.end).toHaveBeenCalledWith(JSON.stringify(OPERACIONES_RESULT));
+  });
+
+  it("responds 400 with an invalid payload (missing consulta), without calling onOperacionesEmpleado", async () => {
+    const onOperacionesEmpleado = vi.fn();
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({})]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(res.statusCode).toBe(400);
+    expect(onOperacionesEmpleado).not.toHaveBeenCalled();
+  });
+
+  it("responds 504 and logs operaciones-timeout when the handler takes longer than OPERACIONES_TIMEOUT_MS", async () => {
+    let resolverTurno!: (value: SoporteResult) => void;
+    const onOperacionesEmpleado = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverTurno = resolve;
+        }),
+    );
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    await vi.advanceTimersByTimeAsync(OPERACIONES_TIMEOUT_MS);
+
+    expect(res.statusCode).toBe(504);
+    expect(deps.logEvent).toHaveBeenCalledWith(REQUEST_ID, "operaciones-timeout", expect.anything());
+
+    resolverTurno(OPERACIONES_RESULT);
+  });
+
+  it("responds 502 and logs operaciones-turno-fallido when the handler rejects", async () => {
+    const onOperacionesEmpleado = vi.fn().mockRejectedValue(new Error("el modelo rechazó"));
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(res.statusCode).toBe(502);
+    expect(deps.logEvent).toHaveBeenCalledWith(REQUEST_ID, "operaciones-turno-fallido", expect.anything());
+  });
+
+  it("★ REGRESIÓN EXPLÍCITA (R1, no opcional): con la ruta hermana /operaciones ya cableada, el agente conversacional de /soporte (cliente, anónimo) sigue SIN la tool de operaciones", () => {
+    const agenteConversacional = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
+
+    expect(agenteConversacional).toBeDefined();
+    expect(agenteConversacional?.allowedTools).not.toContain(OPERACIONES_TOOL_QUALIFIED_NAME);
   });
 });

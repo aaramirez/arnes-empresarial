@@ -134,6 +134,50 @@ export function parseSoportePayload(payload: unknown): ParseResult<{ consulta: s
 }
 
 /**
+ * `{ empleadoId, password }` (`operaciones-negocio-conversacionales`, ADR
+ * 173 pto 2, tarea 9). Ambos strings requeridos no vacíos -- sin tope de 256
+ * (mismo criterio que `parseSoportePayload`'s `consulta`: no es un string
+ * "opaco" de identidad, es la contraseña en texto plano de un intento de
+ * login, y `resolverLogin` es quien decide si es válida, no este parser).
+ */
+export function parseLoginPayload(
+  payload: unknown,
+): ParseResult<{ empleadoId: string; password: string }> {
+  if (!isRecord(payload)) {
+    return { ok: false, motivo: "payload invalido" };
+  }
+
+  const { empleadoId, password } = payload;
+  if (!isNonEmptyString(empleadoId)) {
+    return { ok: false, motivo: "empleadoId invalido" };
+  }
+  if (!isNonEmptyString(password)) {
+    return { ok: false, motivo: "password invalido" };
+  }
+
+  return { ok: true, valor: { empleadoId, password } };
+}
+
+/**
+ * `{ consulta }` (`operaciones-negocio-conversacionales`, ADR 173 pto 3,
+ * tarea 9). Molde EXACTO de `parseSoportePayload` -- `consulta` string no
+ * vacía; el truncado real (por longitud de prompt) lo hace
+ * `buildOperacionesEmpleadoPrompt`, no este parser.
+ */
+export function parseOperacionesPayload(payload: unknown): ParseResult<{ consulta: string }> {
+  if (!isRecord(payload)) {
+    return { ok: false, motivo: "payload invalido" };
+  }
+
+  const { consulta } = payload;
+  if (!isNonEmptyString(consulta)) {
+    return { ok: false, motivo: "consulta invalida" };
+  }
+
+  return { ok: true, valor: { consulta } };
+}
+
+/**
  * `application/x-www-form-urlencoded` del formulario HTML: `decision=confirmar|rechazar`.
  * Cualquier otro valor (incluida su ausencia) → `{ ok: false }`, que el
  * ruteador convierte en la MISMA página genérica que un token inválido (R6:
