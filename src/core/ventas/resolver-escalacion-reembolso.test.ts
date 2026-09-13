@@ -16,6 +16,7 @@ import {
   type ResolverEscalacionDeps,
 } from "./resolver-escalacion-reembolso.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
+import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado, type RolEmpleadoPort } from "../auth/rol-contract.js";
 
 /**
  * Spec `reembolso-resolucion-escalacion` (ADR 25, 29, 37, 38). Dobles planos
@@ -71,12 +72,26 @@ function makeStore(overrides: Partial<VentaStorePort> = {}): VentaStorePort {
   };
 }
 
+/**
+ * Default `administrador` (rol elevado): así los fixtures existentes, que no
+ * ejercitan el gate de rol, siguen pasando sin tocar cada `it`. Los tests
+ * nuevos del gate (rol base) pasan un `rolPort` explícito por override.
+ */
+/**
+ * Sin default parameter: pasar `undefined` explícito debe significar "ausencia
+ * de fila" (ADR 154 pto 5), no disparar un valor por default de JS.
+ */
+function makeRolPort(rol: RolEmpleado | undefined): RolEmpleadoPort {
+  return { buscarRol: () => rol };
+}
+
 function makeDeps(overrides: Partial<ResolverEscalacionDeps> = {}): ResolverEscalacionDeps {
   return {
     store: makeStore(),
     newId: vi.fn(() => "accion-1"),
     now: vi.fn(() => AHORA),
     logEvent: vi.fn(),
+    rolPort: makeRolPort(ROL_ADMINISTRADOR),
     ...overrides,
   };
 }
@@ -237,6 +252,120 @@ describe("resolverEscalacionReembolso", () => {
       motivo: "cas",
       ventaId: "venta-1",
       casoId: "caso-1",
+    });
+  });
+
+  it("rol base + confirmado:true (aprobar) → no_autorizado, sin tocar store.aprobarEscalacionReembolso", () => {
+    const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9" });
+    const store = makeStore({ listarReembolsosPendientes: vi.fn(() => [escalacion]) });
+    const deps = makeDeps({ store, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+    const resultado = resolverEscalacionReembolso(
+      { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+
+    expect(resultado).toEqual({
+      resultado: "no_autorizado",
+      accion: ACCION_APROBAR,
+      ventaId: "venta-1",
+      casoId: "caso-9",
+    });
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(store.rechazarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(store.reabrirEscalacionReembolso).not.toHaveBeenCalled();
+  });
+
+  it("rol base + confirmado:true (rechazar) → no_autorizado, sin tocar store.rechazarEscalacionReembolso", () => {
+    const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9" });
+    const store = makeStore({ listarReembolsosPendientes: vi.fn(() => [escalacion]) });
+    const deps = makeDeps({ store, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+    const resultado = resolverEscalacionReembolso(
+      { accion: ACCION_RECHAZAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+
+    expect(resultado).toEqual({
+      resultado: "no_autorizado",
+      accion: ACCION_RECHAZAR,
+      ventaId: "venta-1",
+      casoId: "caso-9",
+    });
+    expect(store.rechazarEscalacionReembolso).not.toHaveBeenCalled();
+  });
+
+  it("rol base + confirmado:true (reabrir) → no_autorizado, sin tocar store.reabrirEscalacionReembolso", () => {
+    const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9" });
+    const store = makeStore({ listarReembolsosRechazados: vi.fn(() => [escalacion]) });
+    const deps = makeDeps({ store, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+    const resultado = resolverEscalacionReembolso(
+      { accion: ACCION_REABRIR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+
+    expect(resultado).toEqual({
+      resultado: "no_autorizado",
+      accion: ACCION_REABRIR,
+      ventaId: "venta-1",
+      casoId: "caso-9",
+    });
+    expect(store.reabrirEscalacionReembolso).not.toHaveBeenCalled();
+  });
+
+  it("rol base sin fila (undefined) + confirmado:true → no_autorizado (ADR 154 pto 5, ausencia nunca autoriza)", () => {
+    const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9" });
+    const store = makeStore({ listarReembolsosPendientes: vi.fn(() => [escalacion]) });
+    const deps = makeDeps({ store, rolPort: makeRolPort(undefined) });
+
+    const resultado = resolverEscalacionReembolso(
+      { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+
+    expect(resultado.resultado).toBe("no_autorizado");
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+  });
+
+  it("revocar el rol elevado surte efecto sin re-login: misma sesión, mismo objeto, resuelve una vez y falla la siguiente (spec `autorizacion-empleado`, requirement 'El rol se lee en el momento de la decisión', hallazgo Reviewer R2)", () => {
+    // El rolPort simula la revocación cambiando de respuesta ENTRE llamadas
+    // (no hay adaptador SQL real acá — dobles planos, mismo criterio que el
+    // resto del archivo). La MISMA `SESION` (sin `expiraEn`, TTL en 0, para
+    // que quede claro que no expiró) se reusa en las dos invocaciones: no
+    // media ningún `/login` nuevo entre una y otra.
+    let rolActual: RolEmpleado | undefined = ROL_ADMINISTRADOR;
+    const rolPort: RolEmpleadoPort = { buscarRol: () => rolActual };
+
+    const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9" });
+    const ventaResuelta = buildVenta({ estado: VENTA_ESTADO_REEMBOLSADA });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [escalacion]),
+      aprobarEscalacionReembolso: vi.fn(() => ventaResuelta),
+    });
+    const deps = makeDeps({ store, rolPort });
+
+    // 1ª llamada: rol elevado → resuelve la escalación ajena con normalidad.
+    const primeraLlamada = resolverEscalacionReembolso(
+      { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+    expect(primeraLlamada.resultado).toBe("aplicada");
+
+    // Revocación: el rol pasa a base. Ningún re-login de por medio — la
+    // misma `SESION` (mismo objeto) se reusa tal cual en la 2ª llamada.
+    rolActual = ROL_EMPLEADO;
+
+    // 2ª llamada: MISMA sesión, rol ya revocado → rechazada por autorización.
+    const segundaLlamada = resolverEscalacionReembolso(
+      { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+    expect(segundaLlamada).toEqual({
+      resultado: "no_autorizado",
+      accion: ACCION_APROBAR,
+      ventaId: "venta-1",
+      casoId: "caso-9",
     });
   });
 

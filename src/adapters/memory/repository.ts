@@ -1610,6 +1610,58 @@ export function updateCredencialEmpleado(
   return row ? rowToCredencialEmpleado(row) : undefined;
 }
 
+export interface RolEmpleadoRow {
+  readonly empleadoId: string;
+  readonly rol: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+interface RolEmpleadoSqlRow {
+  empleado_id: string;
+  rol: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToRolEmpleado(row: RolEmpleadoSqlRow): RolEmpleadoRow {
+  return {
+    empleadoId: row.empleado_id,
+    rol: row.rol,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** `SELECT ... WHERE empleado_id = ?`. `undefined` si no existe (ADR 154 pto 5: el núcleo decide que eso es rol base, no este adaptador). */
+export function buscarRolEmpleado(db: Database.Database, empleadoId: string): RolEmpleadoRow | undefined {
+  const row = db
+    .prepare("SELECT empleado_id, rol, created_at, updated_at FROM roles_empleado WHERE empleado_id = ?")
+    .get(empleadoId) as RolEmpleadoSqlRow | undefined;
+  return row ? rowToRolEmpleado(row) : undefined;
+}
+
+/**
+ * `INSERT ... ON CONFLICT(empleado_id) DO UPDATE`, molde de `upsertProyecto`/
+ * `upsertVendedor`. `created_at` se fija SOLO en el INSERT inicial (no está
+ * en el `DO UPDATE SET`); `updated_at` se pisa siempre — un cambio de rol es
+ * un evento auditable (ADR 156 pto 4).
+ */
+export function upsertRolEmpleado(
+  db: Database.Database,
+  input: { readonly empleadoId: string; readonly rol: string; readonly ahora: string },
+): RolEmpleadoRow {
+  const row = db
+    .prepare(
+      `INSERT INTO roles_empleado (empleado_id, rol, created_at, updated_at)
+       VALUES (@empleadoId, @rol, @ahora, @ahora)
+       ON CONFLICT(empleado_id) DO UPDATE SET rol = excluded.rol, updated_at = excluded.updated_at
+       RETURNING empleado_id, rol, created_at, updated_at`,
+    )
+    .get(input) as RolEmpleadoSqlRow;
+  return rowToRolEmpleado(row);
+}
+
 export class DelegacionNotFoundError extends Error {
   constructor(id: string) {
     super(`Delegacion not found: ${id}`);

@@ -397,4 +397,49 @@ describe("runMigrations", () => {
         .run("ana", "hash-2", "2026-08-26T01:00:00.000Z", "2026-08-26T01:00:00.000Z"),
     ).toThrow(/UNIQUE|PRIMARY KEY/);
   });
+
+  it("creates roles_empleado on a fresh database", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    expect(tableNames(db)).toContain("roles_empleado");
+  });
+
+  it("allows inserting a roles_empleado row keyed by empleado_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO roles_empleado (empleado_id, rol, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ana", "administrador", "2026-09-13T00:00:00.000Z", "2026-09-13T00:00:00.000Z");
+
+    const row = db
+      .prepare("SELECT rol FROM roles_empleado WHERE empleado_id = ?")
+      .get("ana") as { rol: string };
+    expect(row.rol).toBe("administrador");
+  });
+
+  it("leaves roles_empleado with zero rows after migrating a database with pre-existing credenciales_empleado rows (default-deny sin backfill, ADR 156/157)", () => {
+    const db = new Database(":memory:");
+
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS credenciales_empleado (
+        empleado_id TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+    );
+    db.prepare(
+      "INSERT INTO credenciales_empleado (empleado_id, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("ana", "hash-preexistente", "2026-08-26T00:00:00.000Z", "2026-08-26T00:00:00.000Z");
+
+    runMigrations(db);
+
+    const { count } = db
+      .prepare("SELECT COUNT(*) as count FROM roles_empleado")
+      .get() as CountRow;
+    expect(count).toBe(0);
+  });
 });

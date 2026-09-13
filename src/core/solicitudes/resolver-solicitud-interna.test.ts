@@ -18,6 +18,7 @@ import {
   type ResolverSolicitudDeps,
 } from "./resolver-solicitud-interna.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
+import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado, type RolEmpleadoPort } from "../auth/rol-contract.js";
 
 /**
  * Spec `solicitud-interna-hitl` (ADR 37, 50). Dobles planos de
@@ -54,12 +55,27 @@ function makeStore(overrides: Partial<SolicitudStorePort> = {}): SolicitudStoreP
   };
 }
 
+/**
+ * Sin default parameter: pasar `undefined` explícito debe significar "ausencia
+ * de fila" (ADR 154 pto 5), no disparar un valor por default de JS. Mismo
+ * molde que `resolver-escalacion-reembolso.test.ts`.
+ */
+function makeRolPort(rol: RolEmpleado | undefined): RolEmpleadoPort {
+  return { buscarRol: () => rol };
+}
+
+/**
+ * Default `administrador` (rol elevado): así los fixtures existentes, que no
+ * ejercitan el gate de rol ni la autoaprobación, siguen pasando sin tocar
+ * cada `it`. Los tests nuevos de la tarea 3.1 pasan un `rolPort` explícito.
+ */
 function makeDeps(overrides: Partial<ResolverSolicitudDeps> = {}): ResolverSolicitudDeps {
   return {
     store: makeStore(),
     newId: vi.fn(() => "accion-1"),
     now: vi.fn(() => AHORA),
     logEvent: vi.fn(),
+    rolPort: makeRolPort(ROL_ADMINISTRADOR),
     ...overrides,
   };
 }
@@ -415,6 +431,124 @@ describe("resolverSolicitudInterna", () => {
       const llamada = logEvent.mock.calls.find(([, evento]) => evento === "solicitud-listada");
       expect(llamada?.[2]).toEqual({ accion: ACCION_APROBAR_SOLICITUD, cantidad: 1 });
       expect(llamada?.[2]).not.toHaveProperty("soloPropias");
+    });
+  });
+
+  describe("gate de rol y prohibición de autoaprobación (autorizacion-empleado, ADR 153/155/159, tarea 3.1)", () => {
+    describe.each([
+      ["aprobar", ACCION_APROBAR_SOLICITUD],
+      ["rechazar", ACCION_RECHAZAR_SOLICITUD],
+    ] as const)("rol base + %s de una solicitud ajena", (_nombre, accion) => {
+      it("→ no_autorizado, sin tocar el store, evento solicitud-resolucion-no-autorizada", () => {
+        const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "empleado-x" });
+        const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+        const logEvent = vi.fn();
+        const deps = makeDeps({ store, logEvent, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+        const resultado = resolverSolicitudInterna(
+          { accion, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+          deps,
+        );
+
+        expect(resultado).toEqual({
+          resultado: "no_autorizado",
+          accion,
+          itemId: "solicitud-1",
+          casoId: "caso-9",
+        });
+        expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+        expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+        expect(logEvent).toHaveBeenCalledWith("caso-9", "solicitud-resolucion-no-autorizada", {
+          accion,
+          solicitudId: "solicitud-1",
+          empleadoId: "ana",
+        });
+      });
+    });
+
+    describe.each([
+      ["aprobar", ACCION_APROBAR_SOLICITUD],
+      ["rechazar", ACCION_RECHAZAR_SOLICITUD],
+    ] as const)("rol elevado + %s de la propia solicitud", (_nombre, accion) => {
+      it("→ autoaprobacion_prohibida, el rol NO alcanza para salvarla (ADR 155)", () => {
+        const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "ana" });
+        const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+        const logEvent = vi.fn();
+        const deps = makeDeps({ store, logEvent, rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+
+        const resultado = resolverSolicitudInterna(
+          { accion, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+          deps,
+        );
+
+        expect(resultado).toEqual({
+          resultado: "autoaprobacion_prohibida",
+          accion,
+          itemId: "solicitud-1",
+          casoId: "caso-9",
+        });
+        expect(store.aprobarSolicitud).not.toHaveBeenCalled();
+        expect(store.rechazarSolicitud).not.toHaveBeenCalled();
+        expect(logEvent).toHaveBeenCalledWith("caso-9", "solicitud-autoaprobacion-rechazada", {
+          accion,
+          solicitudId: "solicitud-1",
+          empleadoId: "ana",
+        });
+      });
+    });
+
+    it("rol base + cancelar la propia solicitud → sigue aplicando igual, el gate nuevo no la toca (esAccionAutoservicio la desvía antes)", () => {
+      const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "ana" });
+      const resuelta = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", estado: SOLICITUD_ESTADO_CANCELADA });
+      const store = makeStore({
+        listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+        cancelarSolicitud: vi.fn(() => resuelta),
+      });
+      const deps = makeDeps({ store, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+      const resultado = resolverSolicitudInterna(
+        { accion: ACCION_CANCELAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+        deps,
+      );
+
+      expect(store.cancelarSolicitud).toHaveBeenCalledTimes(1);
+      expect(resultado.resultado).toBe("aplicada");
+    });
+
+    it("rol elevado + acción sobre solicitud ajena → aplica igual que antes del change (regresión explícita)", () => {
+      const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "empleado-x" });
+      const resuelta = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", estado: SOLICITUD_ESTADO_APROBADA });
+      const store = makeStore({
+        listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+        aprobarSolicitud: vi.fn(() => resuelta),
+      });
+      const deps = makeDeps({ store, rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+
+      const resultado = resolverSolicitudInterna(
+        { accion: ACCION_APROBAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+        deps,
+      );
+
+      expect(store.aprobarSolicitud).toHaveBeenCalledTimes(1);
+      expect(resultado.resultado).toBe("aplicada");
+    });
+
+    it("orden de precedencia (RD-78): rol base Y solicitud propia coinciden en aprobar → no_autorizado, la autoaprobación nunca se llega a evaluar", () => {
+      const solicitud = buildSolicitud({ id: "solicitud-1", casoId: "caso-9", solicitanteId: "ana" });
+      const store = makeStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+      const deps = makeDeps({ store, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+      const resultado = resolverSolicitudInterna(
+        { accion: ACCION_APROBAR_SOLICITUD, solicitudId: "solicitud-1", confirmado: true, sesion: SESION },
+        deps,
+      );
+
+      expect(resultado).toEqual({
+        resultado: "no_autorizado",
+        accion: ACCION_APROBAR_SOLICITUD,
+        itemId: "solicitud-1",
+        casoId: "caso-9",
+      });
     });
   });
 });

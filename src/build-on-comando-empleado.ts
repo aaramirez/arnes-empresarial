@@ -93,11 +93,13 @@ import {
   COMANDO_SOPORTE,
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
+  RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_EXITOSA,
   RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
+  RESULTADO_NO_AUTORIZADO,
   RESULTADO_REEMBOLSADA,
   type AccionEmpleado,
   type RegistroAccionesEmpleadoPort,
@@ -106,6 +108,7 @@ import { type AuthConfig } from "./core/auth/auth-config.js";
 import { type CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import { resolverLogin } from "./core/auth/login.js";
 import { sesionVigente, type SesionEmpleado } from "./core/auth/sesion.js";
+import { type RolEmpleado, type RolEmpleadoPort } from "./core/auth/rol-contract.js";
 import {
   ACCION_APROBAR,
   ACCION_REABRIR,
@@ -219,6 +222,7 @@ import {
   listVentasEnReembolsoPendiente,
   getSolicitudA2AEntrantePorTaskId,
   listSolicitudesA2AEntrantesPorEstado,
+  buscarRolEmpleado,
   type SolicitudRow,
   type PropuestaRow,
   type SolicitudA2AEntranteRow,
@@ -347,6 +351,13 @@ export interface BuildOnComandoEmpleadoDeps {
    * (sin `createXStore`: no hay traducción de filas que hacer).
    */
   readonly reporteStore?: ReporteStorePort;
+  /**
+   * `autorizacion-empleado`, ADR 161/162 — costura de test opcional, MISMO
+   * molde que `credenciales`/`registro`/`reporteStore`: default construido
+   * DENTRO de esta función, closure sobre `buscarRolEmpleado(db, ...)`.
+   * `main.ts` NO la pasa explícitamente — verificado en `design.md` §7.
+   */
+  readonly rolPort?: RolEmpleadoPort;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -856,6 +867,15 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     };
   const registro: RegistroAccionesEmpleadoPort =
     deps.registro ?? { registrarAccion: (accion) => insertAccionEmpleado(db, accion) };
+  /** `autorizacion-empleado`, ADR 161/162 — mismo molde inline que `credenciales`/`registro`. */
+  const rolPort: RolEmpleadoPort =
+    deps.rolPort ??
+    {
+      buscarRol: (empleadoId) => {
+        const row = buscarRolEmpleado(db, empleadoId);
+        return row ? (row.rol as RolEmpleado) : undefined;
+      },
+    };
   /** `comando-reporte-comisiones`, ADR 121 pto 1 (RD-55) — mismo molde inline que `credenciales`/`registro`. */
   const reporteStore: ReporteStorePort =
     deps.reporteStore ??
@@ -1040,7 +1060,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     if (ventaIdInput === undefined) {
       const resultado = resolverEscalacionReembolso(
         { accion, confirmado: false, sesion: sesionActual },
-        { store, newId, now, logEvent },
+        { store, newId, now, logEvent, rolPort },
       );
       if (resultado.resultado !== "listado") {
         return sistema("No se pudo listar los reembolsos.");
@@ -1058,7 +1078,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     if (!coincide) {
       const resultado = resolverEscalacionReembolso(
         { accion, ventaId: ventaIdInput, confirmado: false, sesion: sesionActual },
-        { store, newId, now, logEvent },
+        { store, newId, now, logEvent, rolPort },
       );
 
       if (resultado.resultado === "no_aplicable") {
@@ -1084,13 +1104,26 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     confirmacionPendiente = undefined;
     const resultado = resolverEscalacionReembolso(
       { accion, ventaId: ventaIdInput, confirmado: true, sesion: sesionActual },
-      { store, newId, now, logEvent },
+      { store, newId, now, logEvent, rolPort },
     );
 
     if (resultado.resultado === "aplicada") {
       return sistema(
         `Listo: la venta ${ventaIdInput} quedó en ${resultado.estadoFinal} y el caso ${resultado.venta.casoId} en ${ACCION_ESCALACION_INFO[accion].estadoCaso}.`,
       );
+    }
+
+    if (resultado.resultado === "no_autorizado") {
+      registrar(
+        {
+          comando: ACCION_ESCALACION_INFO[accion].comando,
+          ventaId: ventaIdInput,
+          casoId: resultado.casoId,
+          resultado: RESULTADO_NO_AUTORIZADO,
+        },
+        ahora,
+      );
+      return sistema(`No estás autorizado para ${accion} esa escalación de reembolso: se requiere rol elevado.`);
     }
 
     if (resultado.resultado === "no_aplicable") {
@@ -1194,7 +1227,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     if (solicitudIdInput === undefined) {
       const resultado = resolverSolicitudInterna(
         { accion, confirmado: false, sesion: sesionActual },
-        { store: solicitudStore, newId, now, logEvent },
+        { store: solicitudStore, newId, now, logEvent, rolPort },
       );
       if (resultado.resultado !== "listado") {
         return sistema("No se pudo listar las solicitudes.");
@@ -1212,7 +1245,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     if (!coincide) {
       const resultado = resolverSolicitudInterna(
         { accion, solicitudId: solicitudIdInput, confirmado: false, sesion: sesionActual },
-        { store: solicitudStore, newId, now, logEvent },
+        { store: solicitudStore, newId, now, logEvent, rolPort },
       );
 
       if (resultado.resultado === "no_aplicable") {
@@ -1242,11 +1275,23 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     confirmacionPendiente = undefined;
     const resultado = resolverSolicitudInterna(
       { accion, solicitudId: solicitudIdInput, confirmado: true, sesion: sesionActual },
-      { store: solicitudStore, newId, now, logEvent },
+      { store: solicitudStore, newId, now, logEvent, rolPort },
     );
 
     if (resultado.resultado === "aplicada") {
       return sistema(`Listo: la solicitud ${solicitudIdInput} quedó ${resultado.estadoFinal}.`);
+    }
+
+    if (resultado.resultado === "no_autorizado") {
+      registrar({ comando: ACCION_SOLICITUD_COMANDO[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_AUTORIZADO }, ahora);
+      return sistema(`No estás autorizado para ${accion} esa solicitud: se requiere rol elevado.`);
+    }
+    if (resultado.resultado === "autoaprobacion_prohibida") {
+      registrar(
+        { comando: ACCION_SOLICITUD_COMANDO[accion], casoId: resultado.casoId, resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA },
+        ahora,
+      );
+      return sistema(`No podés ${accion} tu propia solicitud, aunque tengas rol elevado.`);
     }
 
     if (resultado.resultado === "no_aplicable") {

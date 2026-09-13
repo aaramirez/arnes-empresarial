@@ -20,6 +20,8 @@ import {
   type VentaStorePort,
 } from "./ventas-contract.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
+import type { RolEmpleadoPort } from "../auth/rol-contract.js";
+import { puedeResolverAjeno } from "../auth/autorizacion-resolucion.js";
 
 export const ACCION_APROBAR = "aprobar";
 export const ACCION_RECHAZAR = "rechazar";
@@ -38,6 +40,11 @@ export interface ResolverEscalacionDeps {
   ) => void;
   /** Tope del listado sin argumento. Default `LIMITE_LISTADO_ESCALACIONES` (20). */
   readonly limiteListado?: number;
+  /**
+   * Requerido, no opcional (ADR 153 pto 1, ADR 159): imposible de compilar un
+   * call site o un test que "olvide" pasar el puerto de rol.
+   */
+  readonly rolPort: RolEmpleadoPort;
 }
 
 export type MotivoNoAplicable = "no_encontrada" | "cas";
@@ -57,7 +64,8 @@ export type ResolverEscalacionResult =
       readonly motivo: MotivoNoAplicable;
       readonly ventaId?: string;
       readonly casoId?: string;
-    };
+    }
+  | { readonly resultado: "no_autorizado"; readonly accion: AccionEscalacion; readonly ventaId: string; readonly casoId: string };
 
 function listar(
   store: VentaStorePort,
@@ -97,7 +105,10 @@ function aplicarCas(
  *  D. `confirmado === false` → `{ requiere_confirmacion, venta }` — evento
  *     `reembolso-resolucion-solicitada` con `{ accion, ventaId, monto }`.
  *     ★ NI el store NI el registro reciben una sola escritura. ★
- *  E. `confirmado === true` → el método CAS que corresponda, con
+ *  E. `!puedeResolverAjeno(rolPort, empleadoId)` (ADR 153/159) → `no_autorizado`
+ *     con `{ accion, ventaId, casoId }`, evento `reembolso-resolucion-no-autorizada`.
+ *     ★ NO escribe en `ventas` ni `casos`. ★
+ *  F. `confirmado === true` (con rol elevado) → el método CAS que corresponda, con
  *     `{ ventaId, casoId, empleadoId: sesion.empleadoId, accionId: newId(), ahora: now() }`.
  *     `undefined` (el CAS no matcheó) → `no_aplicable` con `motivo: "cas"`.
  *     Fila → evento `reembolso-escalacion-aprobada|rechazada|reabierta`.
@@ -139,6 +150,11 @@ export function resolverEscalacionReembolso(
   if (!confirmado) {
     logEvent(venta.casoId, "reembolso-resolucion-solicitada", { accion, ventaId, monto: venta.monto });
     return { resultado: "requiere_confirmacion", accion, venta };
+  }
+
+  if (!puedeResolverAjeno(deps.rolPort, sesion.empleadoId)) {
+    logEvent(venta.casoId, "reembolso-resolucion-no-autorizada", { accion, ventaId, empleadoId: sesion.empleadoId });
+    return { resultado: "no_autorizado", accion, ventaId, casoId: venta.casoId };
   }
 
   const resolucionInput: ResolucionEscalacionInput = {

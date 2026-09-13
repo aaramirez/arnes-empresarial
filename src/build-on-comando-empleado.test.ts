@@ -34,10 +34,13 @@ import {
   COMANDO_REPORTE_COMISIONES,
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
+  RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
+  RESULTADO_NO_AUTORIZADO,
   type RegistroAccionesEmpleadoPort,
 } from "./core/commands/registro-acciones-contract.js";
+import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado, type RolEmpleadoPort } from "./core/auth/rol-contract.js";
 import { agruparReporteMensual, formatearReporteMensual } from "./core/ventas/reporte.js";
 import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import {
@@ -156,6 +159,18 @@ function makeRegistro(overrides: Partial<RegistroAccionesEmpleadoPort> = {}): Re
     registrarAccion: vi.fn(),
     ...overrides,
   };
+}
+
+/**
+ * Default `administrador` (rol elevado) en `makeDeps`/`makeKpiDeps`, MISMO
+ * molde/razón que `resolver-escalacion-reembolso.test.ts`: así los fixtures
+ * existentes, que no ejercitan el gate de rol, siguen pasando sin tocar cada
+ * `it`. Los tests nuevos del gate (rol base) pasan un `rolPort` explícito por
+ * override. Sin default parameter: `undefined` explícito = ausencia de fila
+ * (ADR 154 pto 5), no un valor por default de JS.
+ */
+function makeRolPort(rol: RolEmpleado | undefined): RolEmpleadoPort {
+  return { buscarRol: () => rol };
 }
 
 function makeConfig(overrides: Partial<VentasConfig> = {}): VentasConfig {
@@ -303,6 +318,7 @@ function makeDeps(
     hooks: createHookEngine(),
     now: () => reloj.ahora,
     logDeps,
+    rolPort: makeRolPort(ROL_ADMINISTRADOR),
     ...rest,
   };
 }
@@ -350,6 +366,13 @@ function makeKpiDeps(
     hooks: createHookEngine(),
     now: () => reloj.ahora,
     logDeps,
+    /**
+     * `autorizacion-empleado`, tarea 4.2 — default `administrador`, MISMO
+     * criterio que `makeDeps`: estos tests ejercitan otras cosas (ADR 85,
+     * ADR 121, confirmación pendiente), no el gate de rol. `db` es REAL acá,
+     * así que sin este default caerían al rol base por ausencia de fila.
+     */
+    rolPort: makeRolPort(ROL_ADMINISTRADOR),
     ...rest,
   };
 }
@@ -715,6 +738,39 @@ describe("buildOnComandoEmpleado — resolución de escalaciones en dos pasos", 
   });
 });
 
+describe("buildOnComandoEmpleado — gate de rol en /aprobar-reembolso (autorizacion-empleado, tarea 4.2)", () => {
+  it("empleado con rol base confirma /aprobar-reembolso v-1: mensaje de no autorizado, no ejecuta y deja fila no_autorizado", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
+    const registro = makeRegistro();
+    const store = makeStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const deps = makeDeps(reloj, {
+      store,
+      registro,
+      verificarPassword: vi.fn(() => true),
+      rolPort: makeRolPort(ROL_EMPLEADO),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    await handler("/aprobar-reembolso v-1"); // eco — el gate de rol NO corre acá (RD-78)
+    const resultado = await handler("/aprobar-reembolso v-1"); // confirma
+
+    expect(resultado.responseText.toLowerCase()).toContain("no estás autorizado");
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "/aprobar-reembolso",
+      resultado: RESULTADO_NO_AUTORIZADO,
+      casoId: "caso-9",
+      ventaId: "v-1",
+      empleadoId: "ana",
+    });
+  });
+});
+
 describe("buildOnComandoEmpleado — ADR 40 (fila no transaccional no tumba el comando)", () => {
   it("/devolucion responde su resultado normal aunque registrarAccion lance, y emite accion-empleado-registro-fallido", async () => {
     const reloj: Reloj = { ahora: TIMESTAMP };
@@ -934,7 +990,11 @@ describe("buildOnComandoEmpleado — ADR 55 (ConfirmacionPendiente ensanchada po
 
 describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hito 5, tarea 23)", () => {
   function depsConSolicitudPendiente(reloj: Reloj, overrides: Partial<BuildOnComandoEmpleadoDeps> = {}) {
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
+    // `solicitanteId` distinto de "ana" (quien hace login más abajo) — estos
+    // tests ejercitan el CAS, no la prohibición de autoaprobación
+    // (autorizacion-empleado, tarea 4.2); "ana" con rol elevado por default
+    // de `makeDeps` aprobando su PROPIA solicitud dispararía ese gate.
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "otro-empleado" });
     const registro = makeRegistro();
     const solicitudStore = makeSolicitudStore({
       listarSolicitudesPendientes: vi.fn(() => [solicitud]),
@@ -992,7 +1052,8 @@ describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hi
 
   it("CAS no matcheado (la solicitud ya no está pendiente): responde no_aplicable y registra la fila FUERA de la transacción", async () => {
     const reloj: Reloj = { ahora: TIMESTAMP };
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
+    // `solicitanteId` distinto de "ana" — mismo motivo que `depsConSolicitudPendiente`.
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "otro-empleado" });
     const registro = makeRegistro();
     const solicitudStore = makeSolicitudStore({
       listarSolicitudesPendientes: vi.fn(() => [solicitud]),
@@ -1074,6 +1135,111 @@ describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hi
     const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
     expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
     expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildOnComandoEmpleado — gate de rol y prohibición de autoaprobación en /aprobar-solicitud (autorizacion-empleado, tarea 4.2)", () => {
+  it("empleado con rol base confirma /aprobar-solicitud ajena: mensaje de no autorizado, no ejecuta y deja fila no_autorizado", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "otro-empleado" });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const deps = makeDeps(reloj, {
+      solicitudStore,
+      registro,
+      verificarPassword: vi.fn(() => true),
+      rolPort: makeRolPort(ROL_EMPLEADO),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    await handler("/aprobar-solicitud sol-1"); // eco — el gate de rol NO corre acá (RD-78)
+    const resultado = await handler("/aprobar-solicitud sol-1"); // confirma
+
+    expect(resultado.responseText.toLowerCase()).toContain("no estás autorizado");
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "/aprobar-solicitud",
+      resultado: RESULTADO_NO_AUTORIZADO,
+      casoId: "caso-sol-9",
+      empleadoId: "ana",
+    });
+  });
+
+  it("empleado con rol elevado confirma /aprobar-solicitud sobre SU PROPIA solicitud: autoaprobación prohibida, no ejecuta y deja fila autoaprobacion_prohibida", async () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    // `solicitanteId` default de `makeSolicitudCreada` es "ana" — la misma
+    // que hace login más abajo: es la propia solicitud del actor.
+    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
+    const registro = makeRegistro();
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const deps = makeDeps(reloj, {
+      solicitudStore,
+      registro,
+      verificarPassword: vi.fn(() => true),
+      rolPort: makeRolPort(ROL_ADMINISTRADOR),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    await handler("/aprobar-solicitud sol-1"); // eco
+    const resultado = await handler("/aprobar-solicitud sol-1"); // confirma
+
+    expect(resultado.responseText.toLowerCase()).toContain("no podés");
+    expect(resultado.responseText.toLowerCase()).toContain("propia");
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "/aprobar-solicitud",
+      resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA,
+      casoId: "caso-sol-9",
+      empleadoId: "ana",
+    });
+  });
+});
+
+describe("buildOnComandoEmpleado — invariante: comandos privilegiados de solo lectura no exigen rol elevado (autorizacion-empleado, tarea 4.2)", () => {
+  it("/consultar-kpi responde con éxito para un empleado con rol BASE, con cualquier sesión vigente — sin condición de rol nueva", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const clienteA2A = makeClienteA2A();
+      const deps = makeKpiDeps(db, reloj, { clienteA2A, rolPort: makeRolPort(ROL_EMPLEADO) });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/consultar-kpi cuál fue el pico de latencia");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toBe("todo en orden");
+      expect(contarFilasRegistro(db, COMANDO_CONSULTAR_KPI)).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("/reporte-comisiones responde con éxito para un empleado con rol BASE, con cualquier sesión vigente — sin condición de rol nueva", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const reporteStore = makeReporteStore();
+      const deps = makeKpiDeps(db, reloj, { reporteStore, rolPort: makeRolPort(ROL_EMPLEADO) });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/reporte-comisiones 2026-08");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("Reporte de comisiones");
+      expect(resultado.responseText.toLowerCase()).not.toContain("no estás autorizado");
+    } finally {
+      db.close();
+    }
   });
 });
 
