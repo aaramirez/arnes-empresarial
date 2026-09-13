@@ -44,7 +44,7 @@ import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { construirAgenteEmpleadoOperaciones } from "./core/agents/definitions.js";
 import { buildOperacionesEmpleadoPrompt } from "./core/ventas/soporte-prompt.js";
-import { createCaso, buscarRolEmpleado, listComisionesPorPeriodo, listVentasEnReembolsoPendiente } from "./adapters/memory/repository.js";
+import { createCaso, buscarRolEmpleado, insertAccionEmpleado, listComisionesPorPeriodo, listVentasEnReembolsoPendiente } from "./adapters/memory/repository.js";
 import { createOperacionesAdapter } from "./adapters/operaciones/index.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps, type EjecutarOperacionInput } from "./core/operaciones/ejecutar-operacion.js";
 import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
@@ -53,6 +53,7 @@ import type { RolEmpleado, RolEmpleadoPort } from "./core/auth/rol-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
 import { type ConsultaRiesgoCreditoPort, type VentaNotifierPort } from "./core/ventas/ventas-contract.js";
 import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
+import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { createVentaStore } from "./build-on-venta.js";
 import { createSolicitudStore } from "./build-on-comando-empleado.js";
@@ -80,6 +81,8 @@ export interface BuildOnOperacionesEmpleadoDeps {
   readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
   /** ADR 174 — ausente ⇒ default inline IDÉNTICO al de `build-on-comando-empleado.ts` (closures sobre `db`). */
   readonly reporteStore?: ReporteStorePort;
+  /** ADR 188 pto 2 (Enmienda 1) — ausente ⇒ default inline byte-idéntico al de `build-on-comando-empleado.ts:868-869` (closure sobre `db`). */
+  readonly registro?: RegistroAccionesEmpleadoPort;
   readonly despacharDeps: DespacharDelegacionDeps;
   readonly newId?: () => string; // default: randomUUID
   readonly newToken?: () => string; // default: randomUUID
@@ -139,6 +142,9 @@ export function buildOnOperacionesEmpleado(
       listComisionesPorPeriodo: (periodo) => listComisionesPorPeriodo(db, periodo),
       listVentasEnReembolsoPendiente: () => listVentasEnReembolsoPendiente(db),
     };
+  /** ADR 188 pto 2 — mismo molde inline que `build-on-comando-empleado.ts:868-869` cuando no se inyecta explícito. */
+  const registro: RegistroAccionesEmpleadoPort =
+    deps.registro ?? { registrarAccion: (accion) => insertAccionEmpleado(db, accion) };
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
 
@@ -150,6 +156,7 @@ export function buildOnOperacionesEmpleado(
     baseUrlPublica,
     ...(deps.riesgoCredito !== undefined ? { riesgoCredito: deps.riesgoCredito } : {}),
     reporteStore,
+    registro,
     despacharDeps,
     rolPort,
     newId,

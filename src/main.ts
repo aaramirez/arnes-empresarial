@@ -74,6 +74,7 @@ import {
   CasoNotFoundError,
   getCasoById,
   getLatestSesionAgente,
+  insertAccionEmpleado,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
   updateCaso,
@@ -105,6 +106,7 @@ import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
 import { buildOnA2AEntrante } from "./build-on-a2a-entrante.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
+import type { RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
@@ -436,6 +438,17 @@ const reporteStore: ReporteStorePort = {
   listVentasEnReembolsoPendiente: () => listVentasEnReembolsoPendiente(db),
 };
 
+// ADR 188 (RD-87), Enmienda 1 post-implementación: mismo molde que
+// `reporteStore` arriba — `main.ts` hoy no construía ningún
+// `RegistroAccionesEmpleadoPort` propio, el default vivía inline, duplicado,
+// dentro de `build-on-comando-empleado.ts` (`:868-869`). Se construye acá
+// UNA vez y se pasa explícita a los DOS composition roots que lo consumen
+// (`buildOnOperacionesEmpleado` abajo, `buildOnComandoEmpleado` en el bloque
+// 5c) — cero duplicación de closure, un único escritor, una única tabla.
+const registro: RegistroAccionesEmpleadoPort = {
+  registrarAccion: (accion) => insertAccionEmpleado(db, accion),
+};
+
 // Mismo molde que el default inline de `build-on-comando-empleado.ts`
 // (`despacharDeps`, `:920-935`) — `buildOnOperacionesEmpleado` lo exige por
 // tipo, SIN default (ADR 167 §6), para poder delegar
@@ -484,6 +497,7 @@ const onOperacionesEmpleado = buildOnOperacionesEmpleado({
   baseUrlPublica: webConfig.publicUrl,
   ...(riesgoCredito !== undefined ? { riesgoCredito } : {}), // exactOptionalPropertyTypes
   reporteStore,
+  registro,
   despacharDeps,
 });
 
@@ -526,6 +540,7 @@ const onComandoEmpleado = buildOnComandoEmpleado({
   hooks,
   credenciales,
   reporteStore,
+  registro,
   ...(clienteA2A !== undefined ? { clienteA2A } : {}), // exactOptionalPropertyTypes
 });
 

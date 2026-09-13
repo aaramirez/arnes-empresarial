@@ -124,4 +124,24 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
     expect(comandoMock).toHaveBeenCalledTimes(1);
     expect(comandoMock.mock.calls[0]?.[0].credenciales).toBeDefined();
   });
+
+  it("pasa la MISMA instancia de registro a buildOnOperacionesEmpleado y a buildOnComandoEmpleado (ADR 188/RD-87, tarea 16)", async () => {
+    await import("./main.js");
+
+    const { buildOnComandoEmpleado } = await import("./build-on-comando-empleado.js");
+    const { buildOnOperacionesEmpleado } = await import("./build-on-operaciones-empleado.js");
+
+    const comandoMock = vi.mocked(buildOnComandoEmpleado);
+    const operacionesMock = vi.mocked(buildOnOperacionesEmpleado);
+
+    expect(comandoMock).toHaveBeenCalledTimes(1);
+    expect(operacionesMock).toHaveBeenCalledTimes(1);
+
+    const registroDeComando = comandoMock.mock.calls[0]?.[0].registro;
+    const registroDeOperaciones = operacionesMock.mock.calls[0]?.[0].registro;
+
+    expect(registroDeComando).toBeDefined();
+    expect(registroDeOperaciones).toBeDefined();
+    expect(registroDeComando).toBe(registroDeOperaciones);
+  });
 });

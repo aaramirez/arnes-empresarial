@@ -45,6 +45,24 @@ import type { SesionEmpleado } from "../auth/sesion.js";
 import { agruparReporteMensual, formatearReporteMensual, resolverPeriodoReporte } from "../ventas/reporte.js";
 import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
+import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
+import {
+  COMANDO_CANCELAR_SOLICITUD,
+  COMANDO_DEVOLUCION,
+  COMANDO_REGISTRAR_VENTA,
+  COMANDO_REPORTE_COMISIONES,
+  COMANDO_RESOLVER_DECISION_VENTA,
+  COMANDO_SOLICITAR,
+  RESULTADO_ATENDIDA,
+  RESULTADO_CONFIRMADA,
+  RESULTADO_CREADA,
+  RESULTADO_ESCALADA,
+  RESULTADO_NO_APLICABLE,
+  RESULTADO_RECHAZADA,
+  RESULTADO_REEMBOLSADA,
+  type AccionEmpleado,
+  type RegistroAccionesEmpleadoPort,
+} from "../commands/registro-acciones-contract.js";
 
 export interface EjecutarOperacionDeps {
   readonly store: VentaStorePort;
@@ -70,6 +88,13 @@ export interface EjecutarOperacionDeps {
    * `deps` no compila sin este campo.
    */
   readonly rolPort: RolEmpleadoPort;
+  /**
+   * Requerido (nunca opcional acá) — ADR 188 pto 1: la opcionalidad vive
+   * únicamente en `BuildOnOperacionesEmpleadoDeps` (tarea 5), resuelta a una
+   * instancia concreta antes de despachar, mismo criterio que `reporteStore`
+   * (ADR 174 pto 6).
+   */
+  readonly registro: RegistroAccionesEmpleadoPort;
   readonly newId: () => string;
   /** Exigido por tipo por `registrarVenta` (ADR 171 pto 5). */
   readonly newToken: () => string;
@@ -128,6 +153,66 @@ function textoCrearSolicitudInterna(resultado: CrearSolicitudInternaResult): str
       ? ` Dictamen: ${solicitud.dictamen}`
       : " Sin dictamen: la validación automática no se pudo completar.";
   return `Solicitud ${solicitud.id} creada (caso ${solicitud.casoId}).${dictamen}`;
+}
+
+/**
+ * Duplicado local mínimo de `resultadoDevolucion` (`build-on-comando-empleado.ts`,
+ * ADR 188 sección final) — `src/core/` no puede importar de un archivo raíz
+ * (regla no negociable de `AGENTS.md`), mismo criterio de duplicación
+ * deliberada que `CASO_TIPO_OPERACIONES`/`CASO_ESTADO_ACTIVO` en
+ * `build-on-operaciones-empleado.ts`.
+ */
+function resultadoDevolucionAuditoria(resultado: DevolucionResult["resultado"]): string {
+  if (resultado === "reembolsada") return RESULTADO_REEMBOLSADA;
+  if (resultado === "escalada") return RESULTADO_ESCALADA;
+  return RESULTADO_NO_APLICABLE;
+}
+
+/** Mismo criterio que `resultadoDevolucionAuditoria` — mapea las tres ramas de `DecisionVentaResult` al vocabulario de auditoría. */
+function resultadoDecisionVentaAuditoria(resultado: DecisionVentaResult["resultado"]): string {
+  if (resultado === "confirmada") return RESULTADO_CONFIRMADA;
+  if (resultado === "rechazada") return RESULTADO_RECHAZADA;
+  return RESULTADO_NO_APLICABLE;
+}
+
+/**
+ * Único punto donde el dispatcher del núcleo escribe FUERA de la
+ * transacción de dominio de la operación (ADR 188 pto 3, Enmienda 1 post-
+ * implementación). Contrato asimétrico del ADR 40, citado en el propio
+ * puerto (`registro-acciones-contract.ts:70-76`): `RegistroAccionesEmpleadoPort`
+ * SÍ puede lanzar, y es el LLAMADOR (acá) quien envuelve la llamada en su
+ * PROPIO `try`/`catch` — NUNCA el `catch` global de `ejecutarOperacion`, que
+ * degradaría el texto de negocio ya resuelto a un genérico "no se aplicó
+ * nada" (mentira, si el efecto ya ocurrió). Éxito ⇒
+ * `accion-empleado-registrada`; falla ⇒ `accion-empleado-registro-fallido`,
+ * sin alterar el texto que ya se le devuelve al modelo.
+ *
+ * NO re-chequea `sesionVigente` (ADR 188 pto 9): a diferencia de la TUI,
+ * `EjecutarOperacionInput.sesion` es requerida por tipo y el turno entero ya
+ * está gateado en `POST /operaciones` (401 sin token vigente, ADR 173) — la
+ * rama `accion-empleado-sin-sesion` de la TUI es estructuralmente
+ * inalcanzable acá.
+ */
+function registrar(
+  input: Omit<AccionEmpleado, "id" | "empleadoId" | "ocurridoAt">,
+  sesion: SesionEmpleado,
+  casoIdActual: string,
+  deps: EjecutarOperacionDeps,
+): void {
+  const ahora = deps.now();
+  try {
+    deps.registro.registrarAccion({ ...input, id: deps.newId(), empleadoId: sesion.empleadoId, ocurridoAt: ahora });
+    deps.logEvent(casoIdActual, "accion-empleado-registrada", {
+      comando: input.comando,
+      resultado: input.resultado,
+      canal: "conversacional",
+    });
+  } catch (error) {
+    deps.logEvent(casoIdActual, "accion-empleado-registro-fallido", {
+      comando: input.comando,
+      message: toErrorMessage(error),
+    });
+  }
 }
 
 /**
@@ -199,6 +284,22 @@ async function ejecutarCancelarSolicitud(
   if (resultado.resultado === "aplicada") {
     return `Listo: la solicitud ${solicitudId} quedó ${resultado.estadoFinal}.`;
   }
+  // Camino CAS-perdido (ADR 188 hallazgo 1): la ÚNICA rama de esta operación
+  // que audita desde acá — el camino feliz de arriba ya viajó dentro de la
+  // transacción de `cancelarSolicitudInterna` (`repository.ts`), auditarlo
+  // de nuevo lo DUPLICARÍA. `MOTIVO_NO_ENCONTRADA`/`no_es_dueno` no llegan a
+  // este punto (ya fueron devueltos por el `if` de más arriba del CAS
+  // perdido de `resolverSolicitudInterna` en los pasos previos de esta
+  // función), pero el guard de `motivo`/`casoId` deja explícito que sólo el
+  // CAS perdido con `casoId` conocido escribe fila.
+  if (resultado.resultado === "no_aplicable" && resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
+    registrar(
+      { comando: COMANDO_CANCELAR_SOLICITUD, casoId: resultado.casoId, resultado: RESULTADO_NO_APLICABLE },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+  }
   return "No se pudo completar la cancelación: puede que ya no esté pendiente.";
 }
 
@@ -213,6 +314,7 @@ async function ejecutarCancelarSolicitud(
 async function ejecutarRegistrarVenta(
   operacion: OperacionRegistrarVenta,
   sesion: SesionEmpleado,
+  casoIdActual: string,
   deps: EjecutarOperacionDeps,
 ): Promise<string> {
   const registrarDeps: RegistrarVentaDeps = {
@@ -240,12 +342,24 @@ async function ejecutarRegistrarVenta(
     registrarDeps,
   );
 
+  registrar(
+    { comando: COMANDO_REGISTRAR_VENTA, ventaId: resultado.ventaId, casoId: resultado.casoId, resultado: RESULTADO_CREADA },
+    sesion,
+    casoIdActual,
+    deps,
+  );
+
   const notificado = resultado.notificado ? "sí" : "no se pudo notificar automáticamente";
   return `Venta ${resultado.ventaId} registrada (caso ${resultado.casoId}). Notificación al cliente: ${notificado}. Link de confirmación: ${resultado.linkConfirmacion}.`;
 }
 
 /** ADR 174 pto 2/4: sin gate de rol, sin escopado por vendedor (R12) — `periodo` es el único dato de entrada. */
-async function ejecutarConsultarReporte(periodoInput: string | undefined, deps: EjecutarOperacionDeps): Promise<string> {
+async function ejecutarConsultarReporte(
+  periodoInput: string | undefined,
+  sesion: SesionEmpleado,
+  casoIdActual: string,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
   const resolucion = resolverPeriodoReporte(periodoInput, deps.now());
   if (!resolucion.ok) {
     return resolucion.mensaje;
@@ -254,6 +368,7 @@ async function ejecutarConsultarReporte(periodoInput: string | undefined, deps: 
   const comisiones = deps.reporteStore.listComisionesPorPeriodo(resolucion.periodo);
   const reembolsosPendientes = deps.reporteStore.listVentasEnReembolsoPendiente();
   const reporte = agruparReporteMensual({ periodo: resolucion.periodo, comisiones, reembolsosPendientes });
+  registrar({ comando: COMANDO_REPORTE_COMISIONES, resultado: RESULTADO_ATENDIDA }, sesion, casoIdActual, deps);
   return formatearReporteMensual(reporte);
 }
 
@@ -283,6 +398,12 @@ export async function ejecutarOperacion(
           { token: operacion.token, decision: operacion.decision },
           confirmarDeps,
         );
+        registrar(
+          { comando: COMANDO_RESOLVER_DECISION_VENTA, resultado: resultadoDecisionVentaAuditoria(resultado.resultado) },
+          input.sesion,
+          input.casoIdActual,
+          deps,
+        );
         return textoDecisionVenta(resultado);
       }
 
@@ -300,6 +421,17 @@ export async function ejecutarOperacion(
           },
           procesarDeps,
         );
+        registrar(
+          {
+            comando: COMANDO_DEVOLUCION,
+            ...(resultado.ventaId !== undefined ? { ventaId: resultado.ventaId } : {}),
+            ...(resultado.casoId !== undefined ? { casoId: resultado.casoId } : {}),
+            resultado: resultadoDevolucionAuditoria(resultado.resultado),
+          },
+          input.sesion,
+          input.casoIdActual,
+          deps,
+        );
         return textoDevolucion(resultado);
       }
 
@@ -308,6 +440,14 @@ export async function ejecutarOperacion(
           { tipo: operacion.tipo, detalle: operacion.detalle, solicitanteId: input.sesion.empleadoId },
           { store: deps.solicitudStore, despacharDeps: deps.despacharDeps },
         );
+        if (resultado.resultado === "creada") {
+          registrar(
+            { comando: COMANDO_SOLICITAR, casoId: resultado.solicitud.casoId, resultado: RESULTADO_CREADA },
+            input.sesion,
+            input.casoIdActual,
+            deps,
+          );
+        }
         return textoCrearSolicitudInterna(resultado);
       }
 
@@ -315,10 +455,10 @@ export async function ejecutarOperacion(
         return await ejecutarCancelarSolicitud(operacion.solicitudId, input, deps);
 
       case OPERACION_REGISTRAR_VENTA:
-        return await ejecutarRegistrarVenta(operacion, input.sesion, deps);
+        return await ejecutarRegistrarVenta(operacion, input.sesion, input.casoIdActual, deps);
 
       case OPERACION_CONSULTAR_REPORTE_COMISIONES:
-        return await ejecutarConsultarReporte(operacion.periodo, deps);
+        return await ejecutarConsultarReporte(operacion.periodo, input.sesion, input.casoIdActual, deps);
 
       default: {
         const _exhaustivo: never = operacion;

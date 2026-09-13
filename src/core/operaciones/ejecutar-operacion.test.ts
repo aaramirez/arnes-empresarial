@@ -34,6 +34,23 @@ import type { ComisionConVenta, VentaPendienteReembolso } from "../ventas/report
 import type { ReporteStorePort } from "../ventas/reporte-contract.js";
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../auth/rol-contract.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
+import {
+  COMANDO_CANCELAR_SOLICITUD,
+  COMANDO_DEVOLUCION,
+  COMANDO_REGISTRAR_VENTA,
+  COMANDO_REPORTE_COMISIONES,
+  COMANDO_RESOLVER_DECISION_VENTA,
+  COMANDO_SOLICITAR,
+  RESULTADO_ATENDIDA,
+  RESULTADO_CONFIRMADA,
+  RESULTADO_CREADA,
+  RESULTADO_ESCALADA,
+  RESULTADO_NO_APLICABLE,
+  RESULTADO_RECHAZADA,
+  RESULTADO_REEMBOLSADA,
+  type AccionEmpleado,
+  type RegistroAccionesEmpleadoPort,
+} from "../commands/registro-acciones-contract.js";
 
 /**
  * operaciones-negocio-conversacionales, tarea 3. Dobles de `VentaStorePort`/
@@ -175,6 +192,14 @@ function makeConfirmacion(overrides: Partial<ConfirmacionOperacionPort> = {}): C
   };
 }
 
+/** operaciones-negocio-conversacionales, tarea 16 (ADR 188/RD-87) — doble que captura las llamadas a `registrarAccion`. */
+function makeRegistro(overrides: Partial<RegistroAccionesEmpleadoPort> = {}): RegistroAccionesEmpleadoPort {
+  return {
+    registrarAccion: vi.fn((_accion: AccionEmpleado) => undefined),
+    ...overrides,
+  };
+}
+
 let idCounter = 0;
 
 function makeDeps(overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOperacionDeps {
@@ -187,6 +212,7 @@ function makeDeps(overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOpera
     reporteStore: makeReporteStore(),
     despacharDeps: makeDespacharDeps(),
     rolPort: makeRolPort(),
+    registro: makeRegistro(),
     newId: vi.fn(() => `id-${idCounter++}`),
     newToken: vi.fn(() => `token-${idCounter++}`),
     now: vi.fn(() => AHORA),
@@ -440,9 +466,10 @@ describe("ejecutarOperacion — consultar_reporte_comisiones (ADR 174 pto 2, R12
     expect(reporteStore.listComisionesPorPeriodo).toHaveBeenCalledWith("2026-09");
   });
 
-  it("periodo inválido ⇒ mensaje de uso, CERO llamadas a reporteStore", async () => {
+  it("periodo inválido ⇒ mensaje de uso, CERO llamadas a reporteStore y CERO a registrarAccion (tarea 16, ADR 188 pto 6)", async () => {
     const reporteStore = makeReporteStore();
-    const deps = makeDeps({ reporteStore });
+    const registro = makeRegistro();
+    const deps = makeDeps({ reporteStore, registro });
 
     const texto = await ejecutarOperacion(
       makeInput({ operacion: OPERACION_CONSULTAR_REPORTE_COMISIONES, periodo: "no-es-un-periodo" }),
@@ -452,6 +479,7 @@ describe("ejecutarOperacion — consultar_reporte_comisiones (ADR 174 pto 2, R12
     expect(texto).toContain("Periodo inválido");
     expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
     expect(reporteStore.listVentasEnReembolsoPendiente).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
   });
 
   it("periodo válido ⇒ pipeline completo, texto devuelto literal (regresión byte a byte)", async () => {
@@ -549,5 +577,267 @@ describe("ejecutarOperacion — paridad de comportamiento con los invocadores HT
     expect(tareaDelegada).toContain("taxi al cliente");
     expect(tareaDelegada).not.toContain(SESION.empleadoId);
     expect(texto).toContain("creada");
+  });
+});
+
+/* ── Bloque 6 (ADR 188/RD-87, tarea 16): auditoría de acciones conversacionales en registro_acciones_empleado ── */
+
+describe("ejecutarOperacion — auditoría en registro_acciones_empleado (Enmienda 1, ADR 188/RD-87)", () => {
+  it("registrar_venta: UNA llamada con COMANDO_REGISTRAR_VENTA/RESULTADO_CREADA, ventaId/casoId y empleadoId de la sesión", async () => {
+    const registro = makeRegistro();
+    const sesionDistinta: SesionEmpleado = { empleadoId: "empleado-real", iniciadaEn: AHORA };
+    const deps = makeDeps({ registro });
+
+    await ejecutarOperacion(
+      makeInput(
+        {
+          operacion: OPERACION_REGISTRAR_VENTA,
+          clienteId: "cliente-1",
+          clienteEmail: "cliente@example.com",
+          planNuevo: "premium",
+          monto: 100,
+          vendedorNombre: "Juan Pérez",
+        },
+        { sesion: sesionDistinta },
+      ),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(accion).toMatchObject({
+      comando: COMANDO_REGISTRAR_VENTA,
+      resultado: RESULTADO_CREADA,
+      empleadoId: "empleado-real",
+    });
+    expect(accion?.ventaId).toBeDefined();
+    expect(accion?.casoId).toBeDefined();
+  });
+
+  it("resolver_decision_venta: confirmar ⇒ UNA llamada con COMANDO_RESOLVER_DECISION_VENTA/RESULTADO_CONFIRMADA, sin ventaId/casoId (hallazgo 2, R6+ADR 27)", async () => {
+    const venta = buildVenta({ estado: VENTA_ESTADO_PENDIENTE_CONFIRMACION, monto: 1000 });
+    const store = makeVentaStore({
+      buscarVentaPorToken: vi.fn(() => venta),
+      confirmarVentaConComision: vi.fn(() => ({
+        venta: { ...venta, estado: VENTA_ESTADO_CONFIRMADA } as Venta,
+        comision: { id: "comision-1", ventaId: venta.id, vendedorId: venta.vendedorId, monto: 100, periodo: "2026-09", createdAt: AHORA },
+      })),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_DECISION_VENTA, token: "token-1", decision: "confirmar" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(accion).toMatchObject({
+      comando: COMANDO_RESOLVER_DECISION_VENTA,
+      resultado: RESULTADO_CONFIRMADA,
+      empleadoId: SESION.empleadoId,
+    });
+    expect(accion?.ventaId).toBeUndefined();
+    expect(accion?.casoId).toBeUndefined();
+  });
+
+  it("resolver_decision_venta: rechazar ⇒ UNA llamada con RESULTADO_RECHAZADA", async () => {
+    const venta = buildVenta({ estado: VENTA_ESTADO_PENDIENTE_CONFIRMACION });
+    // `rechazarVenta` NO debe devolver `undefined` acá: eso significa "carrera" (no_aplicable) para `resolverDecisionVenta`.
+    const store = makeVentaStore({ buscarVentaPorToken: vi.fn(() => venta), rechazarVenta: vi.fn(() => venta) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_DECISION_VENTA, token: "token-1", decision: "rechazar" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_RESOLVER_DECISION_VENTA,
+      resultado: RESULTADO_RECHAZADA,
+    });
+  });
+
+  it("resolver_decision_venta: token inexistente ⇒ UNA llamada con RESULTADO_NO_APLICABLE", async () => {
+    const store = makeVentaStore({ buscarVentaPorToken: vi.fn(() => undefined) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_DECISION_VENTA, token: "no-existe", decision: "confirmar" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_RESOLVER_DECISION_VENTA,
+      resultado: RESULTADO_NO_APLICABLE,
+    });
+  });
+
+  it("procesar_devolucion: reembolsada ⇒ UNA llamada con COMANDO_DEVOLUCION/RESULTADO_REEMBOLSADA, ventaId/casoId de la venta", async () => {
+    const venta = buildVenta({ estado: VENTA_ESTADO_CONFIRMADA, monto: 100 });
+    const store = makeVentaStore({
+      buscarVentaPorToken: vi.fn(() => venta),
+      aprobarReembolso: vi.fn(() => ({ ...venta, estado: VENTA_ESTADO_REEMBOLSADA }) as Venta),
+    });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_PROCESAR_DEVOLUCION, token: "token-1" }), deps);
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_DEVOLUCION,
+      resultado: RESULTADO_REEMBOLSADA,
+      ventaId: venta.id,
+      casoId: venta.casoId,
+      empleadoId: SESION.empleadoId,
+    });
+  });
+
+  it("procesar_devolucion: token inexistente (no_aplicable sin venta) ⇒ UNA llamada con RESULTADO_NO_APLICABLE, sin ventaId/casoId", async () => {
+    const store = makeVentaStore({ buscarVentaPorToken: vi.fn(() => undefined) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_PROCESAR_DEVOLUCION, token: "no-existe" }), deps);
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(accion).toMatchObject({ comando: COMANDO_DEVOLUCION, resultado: RESULTADO_NO_APLICABLE });
+    expect(accion?.ventaId).toBeUndefined();
+    expect(accion?.casoId).toBeUndefined();
+  });
+
+  it("crear_solicitud_interna: alta válida ⇒ UNA llamada con COMANDO_SOLICITAR/RESULTADO_CREADA y el casoId de la solicitud", async () => {
+    const registro = makeRegistro();
+    const deps = makeDeps({ registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CREAR_SOLICITUD_INTERNA, tipo: SOLICITUD_TIPO_GASTO, detalle: "taxi al cliente" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(accion).toMatchObject({
+      comando: COMANDO_SOLICITAR,
+      resultado: RESULTADO_CREADA,
+      empleadoId: SESION.empleadoId,
+    });
+    // El `casoId` lo genera `crearSolicitudInterna` dinámicamente (`newId()`) — se
+    // verifica que sea el MISMO que el texto de negocio le devuelve al modelo,
+    // no un valor hardcodeado.
+    expect(accion?.casoId).toBeDefined();
+    expect(texto).toContain(String(accion?.casoId));
+  });
+
+  it("crear_solicitud_interna: tipo_desconocido ⇒ CERO llamadas a registrarAccion", async () => {
+    const registro = makeRegistro();
+    const deps = makeDeps({ registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CREAR_SOLICITUD_INTERNA, tipo: "tipo-inventado", detalle: "x" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("consultar_reporte_comisiones: periodo válido ⇒ UNA llamada con COMANDO_REPORTE_COMISIONES/RESULTADO_ATENDIDA, sin correlación", async () => {
+    const reporteStore = makeReporteStore();
+    const registro = makeRegistro();
+    const deps = makeDeps({ reporteStore, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_REPORTE_COMISIONES, periodo: "2026-08" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(accion).toMatchObject({ comando: COMANDO_REPORTE_COMISIONES, resultado: RESULTADO_ATENDIDA, empleadoId: SESION.empleadoId });
+    expect(accion?.ventaId).toBeUndefined();
+    expect(accion?.casoId).toBeUndefined();
+  });
+
+  it("cancelar_solicitud_interna: camino feliz ⇒ CERO llamadas a registrarAccion (el store ya audita dentro de su transacción, hallazgo 1)", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1" });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA, solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toContain("sol-1");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("cancelar_solicitud_interna: camino CAS perdido ⇒ UNA llamada con COMANDO_CANCELAR_SOLICITUD/RESULTADO_NO_APLICABLE", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1" });
+    const solicitudStore = makeSolicitudStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      cancelarSolicitud: vi.fn(() => undefined),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA, solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_CANCELAR_SOLICITUD,
+      resultado: RESULTADO_NO_APLICABLE,
+      casoId: "caso-solicitud-1",
+      empleadoId: SESION.empleadoId,
+    });
+  });
+
+  it("registrarAccion que LANZA: el texto de negocio es idéntico al del camino feliz y se emite accion-empleado-registro-fallido, no el catch global", async () => {
+    const venta = buildVenta({ estado: VENTA_ESTADO_CONFIRMADA, monto: 100 });
+    const store = makeVentaStore({
+      buscarVentaPorToken: vi.fn(() => venta),
+      aprobarReembolso: vi.fn(() => ({ ...venta, estado: VENTA_ESTADO_REEMBOLSADA }) as Venta),
+    });
+    const registro = makeRegistro({
+      registrarAccion: vi.fn(() => {
+        throw new Error("fallo de escritura de auditoría");
+      }),
+    });
+    const logEvent = vi.fn();
+    const deps = makeDeps({ store, registro, logEvent });
+
+    const textoConFalloDeRegistro = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_PROCESAR_DEVOLUCION, token: "token-1" }),
+      deps,
+    );
+
+    // Camino feliz de control, mismos deps salvo un `registro` que NO lanza — mismo texto de negocio en los dos casos.
+    const depsFeliz = makeDeps({ store, registro: makeRegistro() });
+    const textoCaminoFeliz = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_PROCESAR_DEVOLUCION, token: "token-1" }),
+      depsFeliz,
+    );
+
+    expect(textoConFalloDeRegistro).toBe(textoCaminoFeliz);
+    expect(textoConFalloDeRegistro).not.toContain("no se aplicó nada");
+    expect(logEvent).toHaveBeenCalledWith(
+      CASO_ACTUAL,
+      "accion-empleado-registro-fallido",
+      expect.objectContaining({ comando: COMANDO_DEVOLUCION, message: "fallo de escritura de auditoría" }),
+    );
+    expect(logEvent).not.toHaveBeenCalledWith(CASO_ACTUAL, "operacion-fallida", expect.anything());
   });
 });
