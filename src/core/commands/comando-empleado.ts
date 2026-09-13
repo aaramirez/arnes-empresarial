@@ -108,9 +108,10 @@ export interface DescriptorComando {
    * ADR 183 parte 1/RD-84), un eje de gateo DISTINTO de `privilegiado`
    * (ese exige sólo sesión vigente — resignificarlo está prohibido, R4 de
    * `autorizacion-empleado`). Lo consume el dispatcher (paso 6.5, DESPUÉS
-   * del gate de sesión), no el parser. Scaffolding puro por ahora: ningún
-   * descriptor de hoy lo necesita (todos `false`) hasta que
-   * `/crear-empleado`/`/asignar-rol` lleguen (PR2/PR3, bloqueadas).
+   * del gate de sesión), no el parser. Consumidor real: el paso 6.5 de
+   * `buildOnComandoEmpleado` en `build-on-comando-empleado.ts` (ya en
+   * producción) — hoy `true` solo para `/asignar-rol` y `/crear-empleado`,
+   * el resto de los dieciocho descriptores queda en `false`.
    */
   readonly requiereAdministrador: boolean;
 }
@@ -385,6 +386,21 @@ const DESCRIPTORES = [
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
 
 /**
+ * Índice por `tipo`, construido UNA sola vez a nivel de módulo (code-review
+ * de `comandos-administracion-empleados`, hallazgo 7): `esComandoPrivilegiado`,
+ * `requiereAdministrador` y `nombreComando` hacían cada una su propio
+ * `DESCRIPTORES.find()` — hasta tres recorridos lineales por comando
+ * despachado con gate de administrador. No cambia ninguna firma pública: las
+ * tres siguen recibiendo `tipo` y devolviendo lo mismo, solo que ahora
+ * resuelven el descriptor con `Map.get` (O(1)) en vez de `Array.find`
+ * (O(n)). `DESCRIPTORES` es literal y fijo en build time, así que el `Map`
+ * no necesita invalidarse nunca.
+ */
+const DESCRIPTOR_POR_TIPO: ReadonlyMap<ComandoEmpleado["tipo"], DescriptorInterno> = new Map(
+  DESCRIPTORES.map((d) => [d.tipo, d] as const),
+);
+
+/**
  * ÚNICA fuente de verdad de qué comandos exigen sesión vigente (ADR 28, 32):
  * lee el campo `privilegiado` del descriptor correspondiente en
  * `DESCRIPTORES`, en vez de mantener una lista paralela. El dispatcher
@@ -393,19 +409,37 @@ export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
  * protegido automáticamente, sin tocar el guard.
  */
 export function esComandoPrivilegiado(tipo: ComandoEmpleado["tipo"]): boolean {
-  return DESCRIPTORES.find((d) => d.tipo === tipo)?.privilegiado ?? false;
+  return DESCRIPTOR_POR_TIPO.get(tipo)?.privilegiado ?? false;
 }
 
 /**
  * ÚNICA fuente de verdad de qué comandos exigen rol `administrador`
  * (comandos-administracion-empleados, ADR 183 parte 1/RD-84) — molde EXACTO
  * de `esComandoPrivilegiado`: lee el campo `requiereAdministrador` del
- * descriptor correspondiente, en vez de mantener una lista paralela. SIN
- * consumidor todavía — el dispatcher no la consulta hasta que el gate de
- * administrador exista (PR2, tarea 5, bloqueada).
+ * descriptor correspondiente, en vez de mantener una lista paralela.
+ * Consumidor real: el paso 6.5 de `buildOnComandoEmpleado`
+ * (`build-on-comando-empleado.ts`), el gate de administrador, ya en
+ * producción — corre DESPUÉS del guard de sesión del paso 6.
  */
 export function requiereAdministrador(tipo: ComandoEmpleado["tipo"]): boolean {
-  return DESCRIPTORES.find((d) => d.tipo === tipo)?.requiereAdministrador ?? false;
+  return DESCRIPTOR_POR_TIPO.get(tipo)?.requiereAdministrador ?? false;
+}
+
+/**
+ * ÚNICA fuente de verdad para traducir `tipo` (valor interno, p. ej.
+ * `"asignar_rol"`) al `nombre` público del comando (`"/asignar-rol"`) — molde
+ * EXACTO de `esComandoPrivilegiado`/`requiereAdministrador`: lee el campo
+ * `nombre` del descriptor correspondiente en `DESCRIPTORES`, en vez de
+ * mantener una tabla paralela `tipo -> COMANDO_*` (code-review de
+ * `comandos-administracion-empleados`, hallazgo 1: el gate de administrador
+ * en `build-on-comando-empleado.ts` escribía `comando.tipo` crudo en la fila
+ * de auditoría de un rechazo, en vez del vocabulario `/comando` que usan las
+ * demás filas de `registrar()`). Fallback a `tipo` si no hay descriptor —
+ * no debería ocurrir para ningún `ComandoEmpleado["tipo"]` real, pero evita
+ * perder la fila entera por un `undefined`.
+ */
+export function nombreComando(tipo: ComandoEmpleado["tipo"]): string {
+  return DESCRIPTOR_POR_TIPO.get(tipo)?.nombre ?? tipo;
 }
 
 /** Texto de `/ayuda`: encabezado + una línea `uso — ayuda` por descriptor. PURA. */
@@ -454,6 +488,36 @@ function idOpcionalPayload<T extends string, K extends string>(
 ): { readonly tipo: T } | ({ readonly tipo: T } & Record<K, string>) {
   const valor = restoLinea === undefined ? undefined : splitPrimerEspacio(restoLinea).primero;
   return valor === undefined ? { tipo } : ({ tipo, [key]: valor } as { readonly tipo: T } & Record<K, string>);
+}
+
+/**
+ * Payload común a las dos formas "id + resto OBLIGATORIO, con clave propia"
+ * (`id_mas_resto_rol`, `id_mas_resto_password`; comandos-administracion-empleados,
+ * ADR 184, tareas 7/8; code-review, hallazgo 6 — antes duplicado inline en
+ * cada rama): `empleadoId` es el primer token del resto de la línea, y el
+ * segundo `split` de ese resto (otra vez en el primer espacio) va bajo la
+ * clave de payload `key` — a diferencia de `idOpcionalPayload`, acá los DOS
+ * campos son OBLIGATORIOS: `restoLinea` ausente, o su segundo token ausente,
+ * devuelve `{ ayuda, "argumentos", comando }` (regla 4 del comentario de
+ * `parsearComando`). `tipo` se recibe ya resuelto por quien llama —
+ * `descriptor.tipo` es la ÚNICA fuente de verdad, mismo criterio que
+ * `idOpcionalPayload`. El formato de `key` (p. ej. `rol`) NO se valida acá:
+ * eso es responsabilidad de otra capa (ADR 177 pto 2).
+ */
+function idMasRestoObligatorioPayload<T extends string, K extends string>(
+  tipo: T,
+  comandoToken: string,
+  restoLinea: string | undefined,
+  key: K,
+): ComandoEmpleado | ({ readonly tipo: T; readonly empleadoId: string } & Record<K, string>) {
+  if (restoLinea === undefined) {
+    return ayudaArgumentos(comandoToken);
+  }
+  const { primero: empleadoId, resto: valor } = splitPrimerEspacio(restoLinea);
+  if (valor === undefined) {
+    return ayudaArgumentos(comandoToken);
+  }
+  return { tipo, empleadoId, [key]: valor } as { readonly tipo: T; readonly empleadoId: string } & Record<K, string>;
 }
 
 /**
@@ -528,36 +592,24 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     return idOpcionalPayload(descriptor.tipo, restoLinea, "a2aTaskId");
   }
 
-  // /asignar-rol <empleadoId> <rol> — forma NUEVA "id_mas_resto_rol"
+  // /asignar-rol <empleadoId> <rol> — forma "id_mas_resto_rol"
   // (comandos-administracion-empleados, tarea 7, ADR 184): mismo patrón de
   // parseo que "id_mas_resto" (primer token + resto de línea), clave de
-  // payload propia (`rol`). El formato de `rol` NO se valida acá (ADR 177
-  // pto 2, mismo criterio que `periodo`) — se valida contra
-  // `ROLES_EMPLEADO` en el dispatcher.
+  // payload propia (`rol`) — extraído a `idMasRestoObligatorioPayload`
+  // (code-review, hallazgo 6), mismo helper que "id_mas_resto_password". El
+  // formato de `rol` NO se valida acá (ADR 177 pto 2, mismo criterio que
+  // `periodo`) — se valida contra `ROLES_EMPLEADO` en el dispatcher.
   if (descriptor.forma === "id_mas_resto_rol") {
-    if (restoLinea === undefined) {
-      return ayudaArgumentos(comandoToken);
-    }
-    const { primero: empleadoId, resto: rol } = splitPrimerEspacio(restoLinea);
-    if (rol === undefined) {
-      return ayudaArgumentos(comandoToken);
-    }
-    return { tipo: "asignar_rol", empleadoId, rol };
+    return idMasRestoObligatorioPayload(descriptor.tipo, comandoToken, restoLinea, "rol");
   }
 
-  // /crear-empleado <empleadoId> <password> — forma NUEVA
-  // "id_mas_resto_password" (comandos-administracion-empleados, tarea 8,
-  // ADR 184): mismo patrón de parseo que "id_mas_resto_rol"/"id_mas_resto",
-  // clave de payload `password`. Molde EXACTO de la rama "/login".
+  // /crear-empleado <empleadoId> <password> — forma "id_mas_resto_password"
+  // (comandos-administracion-empleados, tarea 8, ADR 184): mismo patrón de
+  // parseo que "id_mas_resto_rol"/"id_mas_resto", clave de payload
+  // `password`, mismo helper `idMasRestoObligatorioPayload` (code-review,
+  // hallazgo 6). Molde EXACTO de la rama "/login" en cuanto a shape.
   if (descriptor.forma === "id_mas_resto_password") {
-    if (restoLinea === undefined) {
-      return ayudaArgumentos(comandoToken);
-    }
-    const { primero: empleadoId, resto: password } = splitPrimerEspacio(restoLinea);
-    if (password === undefined) {
-      return ayudaArgumentos(comandoToken);
-    }
-    return { tipo: "crear_empleado", empleadoId, password };
+    return idMasRestoObligatorioPayload(descriptor.tipo, comandoToken, restoLinea, "password");
   }
 
   // forma === "id_mas_resto": /login, /soporte, /aplicar-propuesta,

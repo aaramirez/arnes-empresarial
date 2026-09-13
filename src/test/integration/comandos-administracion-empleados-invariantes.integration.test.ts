@@ -18,10 +18,14 @@ import { ROLES_EMPLEADO } from "../../core/auth/rol-contract.js";
  * `worktree.integration.test.ts` (`isGitBinaryAvailable`). Compara SIEMPRE
  * contra `main`, nunca contra un commit fijo: es la base real desde la que
  * se abrió la rama del hito (`AGENTS.md`, convención de ramas).
+ *
+ * Una sola llamada a `git rev-parse --verify main` alcanza para las dos
+ * condiciones (code-review, hallazgo 8): si `git` no está en `PATH`, este
+ * comando falla igual que `git --version` fallaría, bajo el mismo `catch` —
+ * la llamada previa a `git --version` era redundante.
  */
 function isGitDiffAvailable(): boolean {
   try {
-    execFileSync("git", ["--version"], { windowsHide: true, stdio: "ignore" });
     execFileSync("git", ["rev-parse", "--verify", "main"], { windowsHide: true, stdio: "ignore" });
     return true;
   } catch {
@@ -107,5 +111,26 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
       const d = descriptores.find((x) => x.nombre === nombre);
       expect(d).toMatchObject({ privilegiado: true, requiereAdministrador: false });
     }
+  });
+
+  /**
+   * code-review de `comandos-administracion-empleados`, hallazgo 3: el paso
+   * 6.5 del dispatcher (`build-on-comando-empleado.ts`) hace
+   * `(sesion as SesionEmpleado).empleadoId` para todo comando con
+   * `requiereAdministrador: true`, un cast que es seguro SOLO porque, por
+   * convención (ADR 177 pto 3), todo descriptor así también es
+   * `privilegiado: true` — lo que garantiza que el gate de sesión (paso 6,
+   * ANTES en el mismo dispatcher) ya cortó la ejecución si no hay sesión
+   * vigente. Nada fuerza esa convención a nivel de tipos: este test la
+   * blinda a nivel de runtime, recorriendo TODOS los descriptores reales —
+   * si algún día se agrega uno con `requiereAdministrador: true` y
+   * `privilegiado: false`, este test rompe ANTES de que el cast del
+   * dispatcher se vuelva inseguro.
+   */
+  it("todo descriptor con requiereAdministrador: true es también privilegiado: true (invariante del cast de sesión en el paso 6.5 del dispatcher)", () => {
+    type DescriptorAdmin = { readonly nombre: string; readonly privilegiado: boolean; readonly requiereAdministrador: boolean };
+    const descriptores = COMANDOS as unknown as readonly DescriptorAdmin[];
+    const violaciones = descriptores.filter((d) => d.requiereAdministrador && !d.privilegiado);
+    expect(violaciones).toEqual([]);
   });
 });

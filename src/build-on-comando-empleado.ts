@@ -73,6 +73,7 @@ import {
   COMANDO_LOG_CORRELATION_ID,
   esComandoPrivilegiado,
   formatearAyuda,
+  nombreComando,
   parsearComando,
   requiereAdministrador,
   type ComandoEmpleado,
@@ -1903,7 +1904,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
           tipo: comando.tipo,
           empleadoId,
         });
-        registrar({ comando: comando.tipo, resultado: RESULTADO_NO_AUTORIZADO }, ahora);
+        registrar({ comando: nombreComando(comando.tipo), resultado: RESULTADO_NO_AUTORIZADO }, ahora);
         return sistema("Ese comando requiere rol administrador.");
       }
     }

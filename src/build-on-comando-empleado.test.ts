@@ -2779,7 +2779,7 @@ describe("buildOnComandoEmpleado — gate de administrador, comando sintético (
     expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
     const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
     expect(fila).toMatchObject({
-      comando: "reporte_comisiones",
+      comando: COMANDO_REPORTE_COMISIONES,
       resultado: RESULTADO_NO_AUTORIZADO,
       empleadoId: "ana",
     });
@@ -2972,7 +2972,7 @@ describe("buildOnComandoEmpleado — /asignar-rol (comandos-administracion-emple
       expect(buscarRolEmpleado(db, "bob")).toBeUndefined();
       expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
       const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
-      expect(fila).toMatchObject({ comando: "asignar_rol", resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
+      expect(fila).toMatchObject({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
     } finally {
       db.close();
     }
@@ -3182,7 +3182,7 @@ describe("buildOnComandoEmpleado — /crear-empleado (comandos-administracion-em
       expect(buscarCredencialEmpleado(db, "bob")).toBeUndefined();
       expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
       const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
-      expect(fila).toMatchObject({ comando: "crear_empleado", resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
+      expect(fila).toMatchObject({ comando: COMANDO_CREAR_EMPLEADO, resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
     } finally {
       db.close();
     }
