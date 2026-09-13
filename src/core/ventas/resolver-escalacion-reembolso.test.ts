@@ -328,6 +328,47 @@ describe("resolverEscalacionReembolso", () => {
     expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
   });
 
+  it("revocar el rol elevado surte efecto sin re-login: misma sesión, mismo objeto, resuelve una vez y falla la siguiente (spec `autorizacion-empleado`, requirement 'El rol se lee en el momento de la decisión', hallazgo Reviewer R2)", () => {
+    // El rolPort simula la revocación cambiando de respuesta ENTRE llamadas
+    // (no hay adaptador SQL real acá — dobles planos, mismo criterio que el
+    // resto del archivo). La MISMA `SESION` (sin `expiraEn`, TTL en 0, para
+    // que quede claro que no expiró) se reusa en las dos invocaciones: no
+    // media ningún `/login` nuevo entre una y otra.
+    let rolActual: RolEmpleado | undefined = ROL_ADMINISTRADOR;
+    const rolPort: RolEmpleadoPort = { buscarRol: () => rolActual };
+
+    const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9" });
+    const ventaResuelta = buildVenta({ estado: VENTA_ESTADO_REEMBOLSADA });
+    const store = makeStore({
+      listarReembolsosPendientes: vi.fn(() => [escalacion]),
+      aprobarEscalacionReembolso: vi.fn(() => ventaResuelta),
+    });
+    const deps = makeDeps({ store, rolPort });
+
+    // 1ª llamada: rol elevado → resuelve la escalación ajena con normalidad.
+    const primeraLlamada = resolverEscalacionReembolso(
+      { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+    expect(primeraLlamada.resultado).toBe("aplicada");
+
+    // Revocación: el rol pasa a base. Ningún re-login de por medio — la
+    // misma `SESION` (mismo objeto) se reusa tal cual en la 2ª llamada.
+    rolActual = ROL_EMPLEADO;
+
+    // 2ª llamada: MISMA sesión, rol ya revocado → rechazada por autorización.
+    const segundaLlamada = resolverEscalacionReembolso(
+      { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+      deps,
+    );
+    expect(segundaLlamada).toEqual({
+      resultado: "no_autorizado",
+      accion: ACCION_APROBAR,
+      ventaId: "venta-1",
+      casoId: "caso-9",
+    });
+  });
+
   it("es SÍNCRONA: no devuelve una Promise ni un objeto thenable", () => {
     const deps = makeDeps();
 
