@@ -273,17 +273,27 @@ Los tres comandos TUI de autoservicio (`/devolucion`, `/solicitar`, `/cancelar-s
 
 **R12, heredada y aceptada, no un bug pendiente**: `consultar_reporte_comisiones` no tiene gate de rol ni admite escopar por vendedor — mismo comportamiento que ya tenía `/reporte-comisiones` por TUI. El checkpoint aceptó esto explícitamente; detalle completo en el arc42 (Riesgo 4, R12).
 
-### Estado del bot de PRs (comandos-administracion-empleados, PR1)
+### Administración de empleados desde la TUI (comandos-administracion-empleados)
 
-Comando TUI privilegiado (`privilegiado: true`) de **solo lectura**, sin gate de rol (`requiereAdministrador: false`) — enmienda del checkpoint al diferido de la configuración del bot de PRs desde la TUI (ver [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md)):
+Reparto de canales, ya completo: **chat = trabajo transaccional del empleado** (`operaciones-negocio-conversacionales`), **TUI = administración**. Dar de alta un empleado y asignarle rol dejan de exigir salir del arnés (`npm run empleados:crear`) y pasan a ser comandos de la TUI, gateados por rol `administrador`.
 
 | Comando | Uso | Descripción |
 | --- | --- | --- |
-| `/estado-bot-prs` | `/estado-bot-prs` | Muestra si el listener de webhooks está escuchando (y en qué puerto/path) y si `GITHUB_TOKEN` está configurado — como presencia booleana, nunca como valor. |
+| `/estado-bot-prs` | `/estado-bot-prs` | Solo lectura, sin gate de rol (`requiereAdministrador: false`) — enmienda del checkpoint al diferido de la configuración del bot de PRs desde la TUI. Muestra si el listener de webhooks está escuchando (y en qué puerto/path) y si `GITHUB_TOKEN` está configurado — como presencia booleana, nunca como valor. No escribe en ninguna tabla, no modifica configuración del listener, y no revela `GITHUB_WEBHOOK_SECRET` ni `GITHUB_TOKEN` en su respuesta. Configurar esos secretos desde la TUI sigue diferido (ADR 178) — este comando sólo responde "¿está andando?". |
+| `/crear-empleado` | `/crear-empleado <empleadoId> <password>` | Exige rol `administrador`. Da de alta una credencial nueva en `credenciales_empleado`, reusando `altaCredencialEmpleado` — el mismo hash `scrypt` y la misma guarda de forma (`ID_REGEX`) que `empleados:crear`. Segundo descriptor del repo con `secreto: true` (después de `/login`) — y el único donde el secreto es de **otra** persona. |
+| `/asignar-rol` | `/asignar-rol <empleadoId> <rol>` | Exige rol `administrador`. Asigna o cambia el rol (`empleado` \| `administrador`) llamando a `upsertRolEmpleado` — el mismo mecanismo que ya usa `autorizacion-empleado`, sin una segunda tabla ni un segundo vocabulario de rol. El único `administrador` existente **no puede degradarse a sí mismo** (prohibición absoluta, sin conteo — ADR 182): con dos o más administradores, cualquiera de los otros sí puede degradarlo. |
 
-No escribe en ninguna tabla, no modifica configuración del listener, y no revela `GITHUB_WEBHOOK_SECRET` ni `GITHUB_TOKEN` en su respuesta. Configurar esos secretos desde la TUI sigue diferido — este comando sólo responde "¿está andando?".
+**ADR 174 — la TUI pasa a poder crear credenciales**, revirtiendo a pedido explícito del stakeholder la propiedad de diseño original de `credenciales-contract.ts` ("la TUI no puede crear credenciales"). Lo que sobrevive intacto: la contraseña nunca se persiste en claro, nunca aparece en una fila de `registro_acciones_empleado`, nunca aparece en un evento de log — mismo invariante que ya cubría `/login`, extendido a `/crear-empleado`.
 
-> **Registro de Comandos, conteo real**: al momento de este agregado, `DESCRIPTORES` tiene **dieciséis** entradas (los quince heredados más `/estado-bot-prs`). `/crear-empleado` y `/asignar-rol` (el resto de `comandos-administracion-empleados`) todavía no existen — llegan en una PR posterior, bloqueada hasta que `autorizacion-empleado` esté disponible en la rama.
+**R1, residual aceptado, no un bug pendiente**: con `/crear-empleado`, el `administrador` tipea la contraseña de **otra** persona como argumento de la TUI (sin enmascarar, ADR 21 sin tocar) — queda visible en el transcripto. **Procedimiento de rotación por CLI obligatorio**: inmediatamente después de comunicar la contraseña inicial fuera de banda, rotarla con `npm run empleados:crear -- <id> --rotar` (contraseña nueva por `stdin`, nunca por `argv`). El bootstrap del primer `administrador` sigue siendo exclusivamente CLI (`empleados:crear -- <id> --rol administrador`) — antes de que exista un `administrador`, no hay quien pueda ejecutar `/asignar-rol`.
+
+**Todo rechazo por rol insuficiente o por auto-degradación deja fila distinguible en `registro_acciones_empleado`**, con el mecanismo `registrar()` ya existente — ningún método de puerto nuevo.
+
+**Deuda con nombre, no diferido silencioso**:
+- **ADR 178** — configurar `GITHUB_WEBHOOK_SECRET`/`GITHUB_TOKEN` desde la TUI sigue fuera de alcance: el listener de webhooks abre su puerto una única vez al arrancar el proceso, y ambos son secretos recuperables sin ningún precedente de persistencia en este repo. Condición de disparo: una decisión tomada sobre dónde viven los secretos de integración del arnés (`.env`, gestor externo, o bóveda propia con cifrado en reposo).
+- **ADR 179** — "configuración por usuario" no es una cuarta capacidad: no hay ningún settear por-empleado en las tablas del esquema ni en `src/core/config/env.ts`. Condición de disparo: que el stakeholder nombre al menos una cosa concreta que hoy sea global y deba ser por usuario.
+
+`DESCRIPTORES` queda en **dieciocho** entradas (los quince heredados + `/estado-bot-prs` + `/crear-empleado` + `/asignar-rol`), los tres nuevos insertados inmediatamente antes de `/ayuda`, que sigue último — ningún descriptor existente cambió de orden ni de forma.
 
 ### Skills (`.claude/skills/`)
 
