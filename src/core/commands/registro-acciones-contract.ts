@@ -36,6 +36,8 @@ export const RESULTADO_APLICADA = "aplicada"; // /aplicar-propuesta
 export const RESULTADO_DESCARTADA = "descartada"; // /descartar-propuesta
 export const RESULTADO_NO_APLICABLE = "no_aplicable";
 export const RESULTADO_CANCELADA = "cancelada"; // /cancelar-solicitud (ADR 132/133)
+export const RESULTADO_NO_AUTORIZADO = "no_autorizado"; // /aprobar-reembolso, /rechazar-reembolso, /reabrir-reembolso, /aprobar-solicitud, /rechazar-solicitud (autorizacion-empleado, ADR 161)
+export const RESULTADO_AUTOAPROBACION_PROHIBIDA = "autoaprobacion_prohibida"; // /aprobar-solicitud, /rechazar-solicitud (autorizacion-empleado, ADR 161)
 
 /**
  * Una fila del registro. `ventaId`/`casoId`/`propuestaId` son OPCIONALES
@@ -72,8 +74,13 @@ export interface AccionEmpleado {
  * efecto de negocio ya ocurrió; perder la fila es R10, mentir sobre el
  * efecto no lo es.
  *
- * Las filas de los TRES comandos de resolución NO pasan por acá: viajan
- * dentro de la transacción del CAS (`VentaStorePort`, ADR 27).
+ * Las filas de una resolución EXITOSA de los TRES comandos de resolución NO
+ * pasan por acá: viajan dentro de la transacción del CAS (`VentaStorePort`,
+ * ADR 27). Un INTENTO RECHAZADO sí pasa por acá — igual que ya pasa un
+ * intento rechazado por CAS-no-matcheado, un rechazo por rol (`no_autorizado`)
+ * o por autoaprobación (`autoaprobacion_prohibida`) también se escribe fuera
+ * de la transacción de dominio, vía este puerto (autorizacion-empleado, ADR
+ * 161).
  */
 export interface RegistroAccionesEmpleadoPort {
   registrarAccion(accion: AccionEmpleado): void;
