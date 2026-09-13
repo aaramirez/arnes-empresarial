@@ -1,0 +1,416 @@
+<!doctype html>
+<title>Mapa de Módulos</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --page:       #f2f3f1;
+  --surface:    #fcfcfb;
+  --surface-2:  #ffffff;
+  --ink:        #12181f;
+  --ink-2:      #52514e;
+  --ink-muted:  #898781;
+  --line:       #e1e0d9;
+  --line-strong:#c3c2b7;
+  --accent:     #2a78d6;
+  --accent-2:   #eb6834;
+  --accent-3:   #1baf7a;
+  --accent-5:   #4a3aa7;
+  --good:       #0ca30c;
+  --good-bg:    color-mix(in srgb, #0ca30c 14%, transparent);
+  --warning:    #b3790a;
+  --warning-bg: color-mix(in srgb, #fab219 26%, transparent);
+  --critical:   #d03b3b;
+  --critical-bg:color-mix(in srgb, #d03b3b 14%, transparent);
+  --shadow:     0 1px 2px rgba(18,24,31,.04), 0 8px 24px -12px rgba(18,24,31,.12);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#17181a; --ink:#fff; --ink-2:#c3c2b7; --ink-muted:#898781;
+    --line:#2c2c2a; --line-strong:#3a3a37; --accent:#3987e5; --accent-2:#d95926; --accent-3:#199e70; --accent-5:#9085e9;
+    --good:#0ca30c; --good-bg:color-mix(in srgb, #0ca30c 22%, transparent);
+    --warning:#fab219; --warning-bg:color-mix(in srgb, #fab219 20%, transparent);
+    --critical:#e66767; --critical-bg:color-mix(in srgb, #e66767 20%, transparent);
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#0d0d0d; --surface:#1a1a19; --surface-2:#17181a; --ink:#fff; --ink-2:#c3c2b7; --ink-muted:#898781;
+  --line:#2c2c2a; --line-strong:#3a3a37; --accent:#3987e5; --accent-2:#d95926; --accent-3:#199e70; --accent-5:#9085e9;
+  --good:#0ca30c; --good-bg:color-mix(in srgb, #0ca30c 22%, transparent);
+  --warning:#fab219; --warning-bg:color-mix(in srgb, #fab219 20%, transparent);
+  --critical:#e66767; --critical-bg:color-mix(in srgb, #e66767 20%, transparent);
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--ink); font-family: "IBM Plex Sans", system-ui, sans-serif; font-size: 15px; line-height: 1.55; }
+h1,h2,h3,.mono,nav a,.section-label { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+h1,h2 { text-wrap: balance; }
+a { color: var(--accent); }
+
+.shell { display:grid; grid-template-columns: 240px minmax(0,1fr); max-width:1320px; margin:0 auto; }
+@media (max-width:900px){ .shell{grid-template-columns:1fr;} .rail{position:static !important; border-right:none !important; border-bottom:1px solid var(--line);} }
+.rail { position:sticky; top:0; height:100vh; overflow-y:auto; padding:28px 20px; border-right:1px solid var(--line); }
+.rail .brand { font-size:13px; font-weight:600; letter-spacing:.04em; color:var(--ink-muted); text-transform:uppercase; margin-bottom:4px; }
+.rail h1 { font-size:19px; margin:0 0 22px; line-height:1.25; }
+.rail nav { display:flex; flex-direction:column; gap:2px; }
+.rail nav a { display:flex; gap:8px; text-decoration:none; color:var(--ink-2); font-size:12.5px; padding:7px 8px; border-radius:6px; }
+.rail nav a:hover { background:var(--surface); color:var(--ink); }
+.rail .meta { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); font-size:11.5px; color:var(--ink-muted); }
+.rail .meta a.other-doc { display:block; margin-top:8px; color:var(--accent); }
+
+main { padding:40px 44px 100px; min-width:0; }
+section { margin-bottom:64px; scroll-margin-top:20px; }
+.section-label { font-size:11.5px; color:var(--accent); letter-spacing:.06em; text-transform:uppercase; margin-bottom:8px; font-weight:600; }
+section h2 { font-size:23px; margin:0 0 10px; }
+section > .lede { color:var(--ink-2); max-width:72ch; margin:0 0 26px; font-size:14.5px; }
+
+.card { background:var(--surface); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow); }
+.pad { padding:22px 24px; }
+
+/* graph */
+.graph-wrap { overflow-x:auto; }
+#graph { display:block; margin:0 auto; }
+.gnode rect { fill: var(--surface-2); stroke: var(--line-strong); }
+.gnode.hub rect { fill: var(--accent); stroke: var(--accent); }
+.gnode.hub text { fill: #fff; }
+.gnode.muted rect { stroke-dasharray: 3 3; fill: var(--surface); }
+.gnode text.lbl { fill: var(--ink); font-size: 10.5px; font-weight: 600; font-family: "IBM Plex Mono", monospace; }
+.gnode text.sub { fill: var(--ink-muted); font-size: 8.5px; font-family: "IBM Plex Mono", monospace; }
+.glabel-group { fill: var(--ink-muted); font-size: 10px; font-family: "IBM Plex Mono", monospace; letter-spacing: .04em; text-transform: uppercase; }
+.legend { display:flex; gap:18px; flex-wrap:wrap; font-size:11.5px; color:var(--ink-2); margin-top:16px; }
+.legend .item { display:flex; align-items:center; gap:7px; }
+.legend .sw { width:16px; height:2px; border-radius:1px; }
+.legend .sw.dot { width:9px; height:9px; border-radius:2px; }
+
+/* hub bars */
+.barlist { display:flex; flex-direction:column; gap:9px; }
+.barrow { display:grid; grid-template-columns:150px 1fr 60px 60px; align-items:center; gap:10px; }
+.barrow .name { font-size:12.5px; color:var(--ink-2); font-family:"IBM Plex Mono",monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.barrow .track { position:relative; height:14px; background:var(--line); border-radius:3px; overflow:hidden; display:flex; }
+.barrow .seg-in { background: var(--accent); height:100%; }
+.barrow .seg-out { background: var(--accent-2); height:100%; }
+.barrow .val { font-size:11.5px; color:var(--ink-muted); text-align:right; font-variant-numeric:tabular-nums; }
+.head-row { display:grid; grid-template-columns:150px 1fr 60px 60px; gap:10px; font-size:10.5px; color:var(--ink-muted); text-transform:uppercase; letter-spacing:.03em; margin-bottom:10px; }
+.head-row .val { text-align:right; }
+
+/* composition root table */
+table.data { width:100%; border-collapse:collapse; font-size:12.5px; }
+table.data th, table.data td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+table.data th { color:var(--ink-muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+table.data td.file { font-family:"IBM Plex Mono",monospace; font-weight:600; white-space:nowrap; }
+
+/* scorecard */
+.score-list { display:flex; flex-direction:column; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.score-item { background:var(--surface); padding:16px 20px; display:grid; grid-template-columns:170px 100px 1fr; gap:16px; align-items:start; }
+@media (max-width:750px){ .score-item{ grid-template-columns:1fr; } }
+.score-item .dim { font-weight:600; font-size:13.5px; }
+.pill { display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px; font-size:11px; font-weight:600; font-family:"IBM Plex Mono",monospace; white-space:nowrap; height:fit-content; }
+.pill.ok { background:var(--good-bg); color:var(--good); }
+.pill.warn { background:var(--warning-bg); color:var(--warning); }
+.pill.bad { background:var(--critical-bg); color:var(--critical); }
+.pill .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
+.score-item .detail { font-size:13px; color:var(--ink-2); }
+
+.verdict-box {
+  border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px;
+  background:var(--surface); padding:26px 28px; box-shadow:var(--shadow);
+}
+.verdict-box .kicker { font-family:"IBM Plex Mono",monospace; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); font-weight:700; margin-bottom:10px; }
+.verdict-box p { font-size:15px; color:var(--ink-2); margin:0 0 12px; }
+.verdict-box p:last-child { margin-bottom:0; }
+.verdict-box strong { color:var(--ink); }
+
+footer.page-footer { border-top:1px solid var(--line); padding-top:20px; margin-top:60px; font-size:11.5px; color:var(--ink-muted); display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+footer.page-footer a { color:var(--ink-2); }
+</style>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">Arnés Empresarial · pasantía</div>
+    <h1>Mapa de Módulos</h1>
+    <nav>
+      <a href="#grafo">Grafo de dependencias</a>
+      <a href="#hubs">Módulos hub</a>
+      <a href="#composicion">Composition root</a>
+      <a href="#scorecard">¿Base empresarial?</a>
+      <a href="#veredicto">Veredicto</a>
+    </nav>
+    <div class="meta">
+      <div>Grafo extraído mecánicamente de los imports reales de <span class="mono">src/</span> — no de la prosa del README.</div>
+      <a class="other-doc" href="dashboard.html">← Bitácora del Arnés</a>
+      <a class="other-doc" href="proceso.html">← Cadena de Revisión</a>
+    </div>
+  </aside>
+
+  <main>
+
+    <section id="grafo">
+      <div class="section-label">Estructura real</div>
+      <h2>Quién depende de quién, sin prosa de por medio</h2>
+      <p class="lede">Un script recorrió los 127 archivos de producción, extrajo cada import relativo y armó el grafo dirigido módulo→módulo. El resultado confirma <strong>cero aristas núcleo→adaptador</strong> — no como afirmación del README, sino como propiedad medida del árbol de imports real. Los nodos punteados no tienen ninguna arista real hacia otro módulo — solo los alcanza el <em>composition root</em> (ver más abajo).</p>
+      <div class="card pad graph-wrap">
+        <svg id="graph" viewBox="0 0 1220 880" width="1220" height="880" role="img" aria-label="Grafo de dependencias entre adaptadores y módulos del núcleo"></svg>
+      </div>
+      <div class="legend">
+        <div class="item"><span class="sw" style="background:var(--accent-2)"></span> adaptador → núcleo</div>
+        <div class="item"><span class="sw" style="background:var(--accent)"></span> núcleo → núcleo</div>
+        <div class="item"><span class="sw" style="background:var(--line-strong)"></span> adaptador → adaptador (única excepción: <span class="mono">shared/</span>)</div>
+        <div class="item"><span class="sw dot" style="background:var(--accent)"></span> módulo hub (fan-in ≥ 8)</div>
+      </div>
+    </section>
+
+    <section id="hubs">
+      <div class="section-label">01 · Módulos hub</div>
+      <h2>Dónde se concentra el acoplamiento real</h2>
+      <p class="lede"><span class="mono">core/agents</span> es el módulo más dependido de todo el repo (11 módulos lo importan) — coherente con ser el único punto de control de seguridad (qué <span class="mono">tools</span> tiene cada rol). <span class="mono">config</span> y <span class="mono">logging</span> tienen fan-out cero: la firma exacta de una utilidad transversal bien diseñada.</p>
+      <div class="card pad">
+        <div class="head-row"><div></div><div>fan-in (naranja) · fan-out (azul)</div><div class="val">in</div><div class="val">out</div></div>
+        <div class="barlist" id="hub-bars"></div>
+      </div>
+    </section>
+
+    <section id="composicion">
+      <div class="section-label">02 · El patrón de composición</div>
+      <h2>Un único punto ve ambos mundos</h2>
+      <p class="lede"><span class="mono">main.ts</span> y los seis <span class="mono">build-on-*.ts</span> concentran el 100% del acoplamiento cruzado núcleo↔adaptadores del repo. Ninguno tiene una sola arista de entrada — son hojas del grafo, coherente con ser el punto de arranque del proceso.</p>
+      <div class="card pad">
+        <table class="data">
+          <thead><tr><th>Composition root</th><th>Adaptadores</th><th>Módulos de core</th><th>Fan-out</th></tr></thead>
+          <tbody>
+            <tr><td class="file">main.ts</td><td>a2a, board, crypto, git, knowledge, memory, notificaciones, tui, web, webhooks</td><td>auth, concurrency, config, logging, startup, turn-selector, ventas</td><td>23</td></tr>
+            <tr><td class="file">build-on-comando-empleado.ts</td><td>git, memory, tui</td><td>agents, auth, commands, hitl, logging, propuestas, solicitudes, startup, turn-selector, ventas</td><td>16</td></tr>
+            <tr><td class="file">build-on-activity.ts</td><td>git, knowledge, memory, test-runner</td><td>activity, agents, concurrency, logging, startup, turn-selector</td><td>11</td></tr>
+            <tr><td class="file">build-on-a2a-entrante.ts</td><td>a2a, knowledge, memory</td><td>agents, logging, startup, turn-selector</td><td>7</td></tr>
+            <tr><td class="file">build-on-venta.ts</td><td>memory</td><td>agents, logging, turn-selector, ventas</td><td>5</td></tr>
+            <tr><td class="file">build-on-soporte.ts</td><td>knowledge, memory</td><td>logging, startup, turn-selector, ventas</td><td>6</td></tr>
+            <tr><td class="file">build-on-submit.ts</td><td>knowledge, tui</td><td>logging, startup, turn-selector</td><td>5</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="scorecard">
+      <div class="section-label">03 · La pregunta del tutor</div>
+      <h2>¿Es esto la base de un arnés empresarial?</h2>
+      <p class="lede">Diez dimensiones que cualquier sistema que se llame "empresarial" tiene que sostener tarde o temprano. Evidencia detallada de cada una en <span class="mono">evaluacion/08-evaluacion-empresarial.md</span>.</p>
+      <div class="score-list">
+        <div class="score-item"><div class="dim">Extensibilidad arquitectónica</div><span class="pill ok"><span class="dot"></span>Fuerte</span><div class="detail">Hexagonal real — 0 aristas núcleo→adaptador, verificado por grafo de imports, no por lectura.</div></div>
+        <div class="score-item"><div class="dim">Corrección del dominio</div><span class="pill ok"><span class="dot"></span>Fuerte</span><div class="detail">Máquinas de estado con CAS real; casos borde (redondeo, husos horarios, tokens) tratados como decisiones explícitas.</div></div>
+        <div class="score-item"><div class="dim">Persistencia y escala</div><span class="pill bad"><span class="dot"></span>Débil</span><div class="detail">Un archivo SQLite, un proceso, un escritor. Sin replicación, sin backup, sin camino a un motor de servidor.</div></div>
+        <div class="score-item"><div class="dim">Multi-tenencia / gobernanza</div><span class="pill bad"><span class="dot"></span>Débil</span><div class="detail">Descartada <em>por diseño explícito</em> en el arc42 — no es un descuido. Autorización = un booleano, sesión solo en memoria.</div></div>
+        <div class="score-item"><div class="dim">Seguridad</div><span class="pill warn"><span class="dot"></span>Parcial</span><div class="detail">timing-safe compare, HMAC, scrypt con guarda anti-DoS — pero cero rate-limiting y tokens compartidos sin rotación.</div></div>
+        <div class="score-item"><div class="dim">Observabilidad</div><span class="pill warn"><span class="dot"></span>Parcial</span><div class="detail">Correlación real por <span class="mono">casoId</span>; sin métricas, sin tracing, sin rotación de logs.</div></div>
+        <div class="score-item"><div class="dim">Confiabilidad operacional</div><span class="pill warn"><span class="dot"></span>Parcial</span><div class="detail">Puertos que "nunca rechazan" degradan bien localmente; sin retries/circuit breakers a nivel de sistema.</div></div>
+        <div class="score-item"><div class="dim">Calidad de ingeniería</div><span class="pill ok"><span class="dot"></span>Fuerte</span><div class="detail">1618 tests, ~1:1 con archivos de producción, bugs reales encontrados solo por integración contra sistemas reales.</div></div>
+        <div class="score-item"><div class="dim">Despliegue y operación</div><span class="pill bad"><span class="dot"></span>Débil</span><div class="detail">Sin CI/CD, sin Docker, sin supervisor de proceso, sin plan de backup — confirmado por inspección directa del árbol.</div></div>
+        <div class="score-item"><div class="dim">Madurez multi-agente</div><span class="pill ok"><span class="dot"></span>Fuerte</span><div class="detail">Delegación con profundidad 1 forzada estructuralmente; A2A validado contra agentes externos reales, bugs de interoperabilidad corregidos.</div></div>
+      </div>
+    </section>
+
+    <section id="veredicto">
+      <div class="section-label">04 · Veredicto</div>
+      <h2>Sí, y no — en ese orden</h2>
+      <div class="verdict-box">
+        <div class="kicker">Respuesta directa</div>
+        <p><strong>Como patrón arquitectónico y motor de orquestación multi-agente: sí</strong> — es una base sólida y genuinamente reutilizable. Nueve adaptadores se agregaron a lo largo de 12 hitos sin que ninguno tocara la forma de otro; el protocolo A2A está implementado en ambos sentidos y validado contra agentes externos reales, no solo contra dobles de test.</p>
+        <p><strong>Como plataforma operable a escala de empresa real: todavía no</strong> — un archivo SQLite, un proceso, sin CI/CD, sin RBAC más allá de un booleano, sin story de escalamiento horizontal. Y esto no es un hallazgo oculto: el propio arc42 declara la multi-tenencia fuera de alcance, por escrito, como consecuencia directa de ser una pasantía corta.</p>
+        <p>La arquitectura de puertos y adaptadores que ya existe está, de hecho, diseñada para que la siguiente etapa — resolver esas cinco brechas (persistencia, multi-tenencia, seguridad de plataforma, observabilidad, despliegue) — sea una extensión sobre lo construido, no una reescritura desde cero.</p>
+      </div>
+    </section>
+
+    <footer class="page-footer">
+      <div>Arnés Empresarial — mapa de módulos y evaluación, carpeta <span class="mono">evaluacion/</span></div>
+      <div><a href="dashboard.html">← Bitácora</a> · <a href="proceso.html">Cadena de Revisión →</a></div>
+    </footer>
+  </main>
+</div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+/* ---------------- Dependency graph ---------------- */
+(function () {
+  const svg = document.getElementById('graph');
+  const NW = 96, NH = 34; // default node box size
+  const HUBW = 118, HUBH = 44;
+  // nodos sin ninguna arista real dibujada en este grafo — solo alcanzables desde el composition root
+  const ISOLATED = new Set(["memory", "tui", "crypto", "commands", "concurrency"]);
+
+  // node id -> {x,y,w,h,label,sub,kind}
+  const nodes = {};
+  function addRow(ids, y, opts = {}) {
+    const w = opts.w || NW, h = opts.h || NH;
+    const totalW = ids.length * (w + 14) - 14;
+    let x = (1220 - totalW) / 2;
+    ids.forEach(([id, label, sub]) => {
+      nodes[id] = { x, y, w, h, label, sub, kind: opts.kind || 'adapter' };
+      x += w + 14;
+    });
+  }
+
+  addRow([
+    ["a2a","a2a"], ["board","board"], ["git","git"], ["knowledgeA","knowledge"],
+    ["memory","memory","fan-out 0"], ["notif","notificaciones"]
+  ], 30);
+  addRow([
+    ["testrunner","test-runner"], ["tui","tui","fan-out 0"], ["web","web"], ["webhooks","webhooks"],
+    ["crypto","crypto","fan-out 0"], ["shared","shared","el único cruce\nadaptador↔adaptador"]
+  ], 96);
+
+  addRow([
+    ["agents","agents","fan-in 11"], ["turnselector","turn-selector","fan-in 9 · out 5"]
+  ], 230, { kind: 'hub', w: HUBW, h: HUBH });
+
+  addRow([
+    ["ventas","ventas"], ["activity","activity"], ["solicitudes","solicitudes"],
+    ["propuestas","propuestas"], ["auth","auth"], ["startup","startup"]
+  ], 330, { kind: 'core' });
+
+  addRow([
+    ["config","config","fan-out 0"], ["logging","logging","fan-out 0"], ["hitl","hitl","fan-out 0"],
+    ["hooks","hooks","fan-out 0"], ["skills","skills","fan-out 0"], ["knowledgeC","knowledge","fan-out 0"],
+    ["text","text","fan-out 0"], ["concurrency","concurrency","fan-out 0"], ["commands","commands","fan-out 0"]
+  ], 420, { kind: 'muted' });
+
+  // group labels
+  const groupLabels = [
+    ["ADAPTADORES", 610, 14],
+    ["NÚCLEO — orquestación", 610, 214],
+    ["NÚCLEO — dominio", 610, 314],
+    ["NÚCLEO — transversal", 610, 404],
+  ];
+  groupLabels.forEach(([t, x, y]) => {
+    const lab = el('text', { class: 'glabel-group', x, y, 'text-anchor': 'middle' }, svg);
+    lab.textContent = t;
+  });
+
+  // draw nodes
+  for (const id in nodes) {
+    const n = nodes[id];
+    const g = el('g', { class: `gnode ${n.kind === 'hub' ? 'hub' : ''} ${ISOLATED.has(id) ? 'muted' : ''}` }, svg);
+    el('rect', { x: n.x, y: n.y, width: n.w, height: n.h, rx: 7 }, g);
+    const t1 = el('text', { class: 'lbl', x: n.x + n.w/2, y: n.y + n.h/2 - (n.sub ? 3 : -4), 'text-anchor': 'middle' }, g);
+    t1.textContent = n.label;
+    if (n.sub) {
+      const lines = n.sub.split('\n');
+      lines.forEach((line, i) => {
+        const t2 = el('text', { class: 'sub', x: n.x + n.w/2, y: n.y + n.h/2 + 10 + i * 9, 'text-anchor': 'middle' }, g);
+        t2.textContent = line;
+      });
+    }
+  }
+
+  function anchor(id) {
+    const n = nodes[id];
+    return { top: [n.x + n.w/2, n.y], bottom: [n.x + n.w/2, n.y + n.h], cx: n.x + n.w/2, cy: n.y + n.h/2 };
+  }
+
+  function edge(fromId, toId, color, sw) {
+    const a = anchor(fromId), b = anchor(toId);
+    const [x1,y1] = a.bottom, [x2,y2] = b.top;
+    const midY = (y1 + y2) / 2;
+    const d = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+    el('path', { d, stroke: color, 'stroke-width': sw || 1.3, fill: 'none', opacity: 0.75 }, svg);
+  }
+  function edgeUp(fromId, toId, color, sw) {
+    // for core->core edges going sideways/up within similar rows, use side anchors
+    const a = anchors2(fromId), b = anchors2(toId);
+    const d = `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+    el('path', { d, stroke: color, 'stroke-width': sw || 1.2, fill: 'none', opacity: 0.6 }, svg);
+  }
+  function anchors2(id) {
+    const n = nodes[id];
+    return { x: n.x + n.w/2, y: n.y + n.h/2 };
+  }
+
+  // adapter -> core edges (orange)
+  const adapterEdges = [
+    ["a2a","agents",1.6], ["a2a","config",1],
+    ["board","activity",1.4], ["board","config",1], ["board","text",1],
+    ["git","agents",1.5], ["git","config",1], ["git","shared",1],
+    ["knowledgeA","config",1], ["knowledgeA","knowledgeC",1], ["knowledgeA","text",1], ["knowledgeA","shared",1],
+    ["notif","config",1], ["notif","ventas",1.2],
+    ["testrunner","agents",1.1], ["testrunner","config",1], ["testrunner","text",1], ["testrunner","shared",1],
+    ["web","config",1], ["web","ventas",2.4],
+    ["webhooks","activity",1.4], ["webhooks","config",1],
+  ];
+  adapterEdges.forEach(([f,t,w]) => {
+    const color = (t === 'shared') ? 'var(--line-strong)' : 'var(--accent-2)';
+    edge(f, t, color, w);
+  });
+
+  // core -> core edges (blue) — drawn as straight connective lines using center anchors
+  const coreEdges = [
+    ["activity","agents"], ["activity","propuestas"], ["activity","turnselector"],
+    ["agents","knowledgeC"],
+    ["auth","ventas"],
+    ["propuestas","auth"], ["propuestas","hitl"],
+    ["solicitudes","agents"], ["solicitudes","auth"], ["solicitudes","hitl"], ["solicitudes","turnselector"],
+    ["startup","agents"], ["startup","hooks"], ["startup","logging"], ["startup","skills"],
+    ["turnselector","agents"], ["turnselector","hooks"], ["turnselector","knowledgeC"], ["turnselector","logging"], ["turnselector","skills"],
+    ["ventas","auth"], ["ventas","config"],
+  ];
+  coreEdges.forEach(([f,t]) => edgeUp(f, t, 'var(--accent)', 1.1));
+
+  // re-draw nodes on top of edges for legibility
+  for (const id in nodes) {
+    const n = nodes[id];
+    const g = el('g', { class: `gnode ${n.kind === 'hub' ? 'hub' : ''} ${ISOLATED.has(id) ? 'muted' : ''}` }, svg);
+    el('rect', { x: n.x, y: n.y, width: n.w, height: n.h, rx: 7 }, g);
+    const t1 = el('text', { class: 'lbl', x: n.x + n.w/2, y: n.y + n.h/2 - (n.sub ? 3 : -4), 'text-anchor': 'middle' }, g);
+    t1.textContent = n.label;
+    if (n.sub) {
+      n.sub.split('\n').forEach((line, i) => {
+        const t2 = el('text', { class: 'sub', x: n.x + n.w/2, y: n.y + n.h/2 + 10 + i * 9, 'text-anchor': 'middle' }, g);
+        t2.textContent = line;
+      });
+    }
+  }
+})();
+
+/* ---------------- Hub fan-in/out bars ---------------- */
+(function () {
+  const data = [
+    ["core/agents", 11, 1],
+    ["core/config", 10, 0],
+    ["core/turn-selector", 9, 5],
+    ["core/logging", 9, 0],
+    ["core/ventas", 8, 2],
+    ["adapters/memory", 8, 0],
+    ["core/startup", 6, 4],
+    ["core/auth", 5, 1],
+    ["adapters/knowledge", 5, 4],
+    ["adapters/git", 3, 3],
+    ["core/activity", 3, 3],
+    ["core/hitl", 3, 0],
+    ["core/knowledge", 3, 0],
+    ["adapters/tui", 3, 0],
+    ["adapters/shared", 3, 0],
+  ];
+  const max = Math.max(...data.map(d => d[1] + d[2]));
+  const container = document.getElementById('hub-bars');
+  data.forEach(([name, fin, fout]) => {
+    const row = document.createElement('div');
+    row.className = 'barrow';
+    const total = fin + fout;
+    const inPct = (fin/max*100).toFixed(1), outPct = (fout/max*100).toFixed(1);
+    row.innerHTML = `
+      <div class="name">${name}</div>
+      <div class="track"><div class="seg-in" style="width:${inPct}%"></div><div class="seg-out" style="width:${outPct}%"></div></div>
+      <div class="val">${fin}</div>
+      <div class="val">${fout}</div>`;
+    container.appendChild(row);
+  });
+})();
+</script>
