@@ -1,0 +1,648 @@
+<!doctype html>
+<title>Bitácora del Arnés</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --page:       #f2f3f1;
+  --surface:    #fcfcfb;
+  --surface-2:  #ffffff;
+  --ink:        #12181f;
+  --ink-2:      #52514e;
+  --ink-muted:  #898781;
+  --line:       #e1e0d9;
+  --line-strong:#c3c2b7;
+  --accent:     #2a78d6;   /* core / categorical slot 1 */
+  --accent-2:   #eb6834;   /* adapters / categorical slot 2 */
+  --accent-3:   #1baf7a;   /* aqua, tests */
+  --accent-4:   #eda100;   /* yellow */
+  --accent-5:   #e87ba4;   /* magenta */
+  --accent-6:   #008300;   /* green */
+  --good:       #0ca30c;
+  --warning:    #fab219;
+  --critical:   #d03b3b;
+  --shadow:     0 1px 2px rgba(18,24,31,.04), 0 8px 24px -12px rgba(18,24,31,.12);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page:       #0d0d0d;
+    --surface:    #1a1a19;
+    --surface-2:  #17181a;
+    --ink:        #ffffff;
+    --ink-2:      #c3c2b7;
+    --ink-muted:  #898781;
+    --line:       #2c2c2a;
+    --line-strong:#3a3a37;
+    --accent:     #3987e5;
+    --accent-2:   #d95926;
+    --accent-3:   #199e70;
+    --accent-4:   #c98500;
+    --accent-5:   #d55181;
+    --accent-6:   #3fbf3f;
+    --shadow:     0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page:       #0d0d0d;
+  --surface:    #1a1a19;
+  --surface-2:  #17181a;
+  --ink:        #ffffff;
+  --ink-2:      #c3c2b7;
+  --ink-muted:  #898781;
+  --line:       #2c2c2a;
+  --line-strong:#3a3a37;
+  --accent:     #3987e5;
+  --accent-2:   #d95926;
+  --accent-3:   #199e70;
+  --accent-4:   #c98500;
+  --accent-5:   #d55181;
+  --accent-6:   #3fbf3f;
+  --shadow:     0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+h1, h2, h3, .mono, .tag, .kpi-value, .num, nav a, .section-label {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+h1 { text-wrap: balance; }
+h2 { text-wrap: balance; }
+
+a { color: var(--accent); }
+
+.shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  max-width: 1280px;
+  margin: 0 auto;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail { position: static !important; border-right: none !important; border-bottom: 1px solid var(--line); }
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 28px 20px;
+  border-right: 1px solid var(--line);
+}
+.rail .brand {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.rail h1 {
+  font-size: 20px;
+  margin: 0 0 22px;
+  line-height: 1.25;
+}
+.rail nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rail nav a {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  text-decoration: none;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+.rail nav a:hover { background: var(--surface); color: var(--ink); }
+.rail nav a .n { color: var(--ink-muted); font-size: 11px; min-width: 16px; }
+.rail .meta {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+.rail .meta div { margin-bottom: 5px; }
+.rail .meta a.other-doc {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+main { padding: 40px 44px 100px; min-width: 0; }
+section { margin-bottom: 68px; scroll-margin-top: 20px; }
+.section-label {
+  font-size: 11.5px;
+  color: var(--accent);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+section h2 { font-size: 23px; margin: 0 0 10px; }
+section > .lede { color: var(--ink-2); max-width: 66ch; margin: 0 0 26px; font-size: 14.5px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.pad { padding: 22px 24px; }
+
+/* KPI row */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.kpi {
+  background: var(--surface);
+  padding: 18px 18px 16px;
+}
+.kpi-value {
+  font-size: 27px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+.kpi-label {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  margin-top: 4px;
+}
+
+/* Architecture diagram */
+.arch-wrap { overflow-x: auto; }
+.arch-wrap svg { display: block; margin: 0 auto; }
+.hex-core rect { fill: var(--accent); }
+.hex-core text { fill: #fff; }
+.node-box rect { fill: var(--surface-2); stroke: var(--line-strong); }
+.node-box text.title { fill: var(--ink); font-weight: 600; }
+.node-box text.sub { fill: var(--ink-muted); }
+.edge { stroke: var(--line-strong); stroke-width: 1.4; fill: none; }
+.edge-label { fill: var(--ink-muted); font-size: 10px; }
+
+/* bars */
+.barlist { display: flex; flex-direction: column; gap: 9px; }
+.barrow { display: grid; grid-template-columns: 148px 1fr 92px; align-items: center; gap: 12px; }
+.barrow .name { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barrow .track { position: relative; height: 16px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.barrow .fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+.barrow .val { font-size: 12px; color: var(--ink-muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+.col-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 14px; display:flex; align-items:center; gap:8px;}
+.col-title .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* timeline chart */
+.tl-wrap { overflow-x: auto; }
+#timeline { display: block; min-width: 720px; }
+.tl-bar { fill: var(--accent); }
+.tl-axis-label { fill: var(--ink-muted); font-size: 10px; font-family: "IBM Plex Mono", monospace; }
+.tl-tag-line { stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.tl-tag-label { fill: var(--ink-2); font-size: 9.5px; font-family: "IBM Plex Mono", monospace; }
+.tl-tooltip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+  background: var(--ink); color: var(--page); font-size: 11.5px; padding: 6px 9px;
+  border-radius: 6px; white-space: nowrap; z-index: 5; font-family: "IBM Plex Mono", monospace;
+}
+.chart-relative { position: relative; }
+
+/* milestone bars (between tags) */
+#milestones { display: block; }
+.ms-bar { fill: var(--accent); cursor: pointer; }
+.ms-bar.gap { fill: var(--line-strong); }
+.ms-label { fill: var(--ink-2); font-size: 10.5px; font-family: "IBM Plex Mono", monospace; }
+.ms-val { fill: var(--ink-muted); font-size: 10px; font-family: "IBM Plex Mono", monospace; }
+
+/* hour rhythm */
+#hours { display: block; }
+.hr-bar { fill: var(--accent); }
+.hr-axis { fill: var(--ink-muted); font-size: 9px; font-family: "IBM Plex Mono", monospace; }
+
+/* commit type bars */
+.type-row { display: grid; grid-template-columns: 90px 1fr 50px; align-items: center; gap: 10px; margin-bottom: 8px; }
+.type-row .name { font-size: 12.5px; font-family: "IBM Plex Mono", monospace; }
+.type-row .track { height: 14px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.type-row .fill { height: 100%; border-radius: 3px; }
+.type-row .val { font-size: 12px; color: var(--ink-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-2); margin-top: 12px; }
+.legend .item { display: flex; align-items: center; gap: 6px; }
+.legend .sw { width: 9px; height: 9px; border-radius: 2px; }
+
+.callout {
+  border-left: 3px solid var(--warning);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  padding: 16px 18px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.callout b { color: var(--ink); }
+
+footer.page-footer {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  margin-top: 60px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+footer.page-footer a { color: var(--ink-2); }
+</style>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">Arnés Empresarial · pasantía</div>
+    <h1>Bitácora del Arnés</h1>
+    <nav>
+      <a href="#resumen"><span class="n">—</span> Resumen</a>
+      <a href="#arquitectura"><span class="n">—</span> Arquitectura</a>
+      <a href="#modulos"><span class="n">—</span> Módulos y tamaño</a>
+      <a href="#linea-tiempo"><span class="n">—</span> Línea de tiempo</a>
+      <a href="#hitos"><span class="n">—</span> Los 12 hitos</a>
+      <a href="#ritmo"><span class="n">—</span> Ritmo de trabajo</a>
+      <a href="#pruebas"><span class="n">—</span> Cobertura de tests</a>
+    </nav>
+    <div class="meta">
+      <div>Generado 2026‑09‑12 desde <span class="mono">git log</span>, <span class="mono">git tag</span> y el árbol de archivos versionado.</div>
+      <div>Excluye el contenido interno de <span class="mono">.git/</span> — solo su metadata.</div>
+      <a class="other-doc" href="proceso.html">→ Ver Cadena de Revisión (proceso SDD)</a>
+      <a class="other-doc" href="mapa-modulos.html">→ Ver Mapa de Módulos (grafo + evaluación)</a>
+    </div>
+  </aside>
+
+  <main>
+
+    <section id="resumen">
+      <div class="section-label">00 · Resumen</div>
+      <h2>Un arnés de agentes construido en 17 días, en público</h2>
+      <p class="lede">TypeScript sobre el Claude Agent SDK, arquitectura hexagonal (núcleo + adaptadores), un solo desarrollador. Cada número de esta página viene del repositorio real — sin estimaciones.</p>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-value">351</div><div class="kpi-label">commits</div></div>
+        <div class="kpi"><div class="kpi-value">12</div><div class="kpi-label">tags semánticos</div></div>
+        <div class="kpi"><div class="kpi-value">17</div><div class="kpi-label">días de calendario</div></div>
+        <div class="kpi"><div class="kpi-value">~49 000</div><div class="kpi-label">líneas TypeScript</div></div>
+        <div class="kpi"><div class="kpi-value">127 / 116</div><div class="kpi-label">archivos prod. / test</div></div>
+        <div class="kpi"><div class="kpi-value">1 618</div><div class="kpi-label">tests (457 describe)</div></div>
+      </div>
+    </section>
+
+    <section id="arquitectura">
+      <div class="section-label">01 · Arquitectura</div>
+      <h2>Un núcleo, nueve adaptadores, cero atajos</h2>
+      <p class="lede">Arquitectura de puertos y adaptadores: <span class="mono">src/core/</span> no importa nunca de <span class="mono">src/adapters/*</span> — verificado por grep sobre el árbol real, no solo declarado en el README. Ningún adaptador habla directo con otro; todo pasa por el núcleo.</p>
+      <div class="card pad arch-wrap">
+        <svg id="archsvg" viewBox="0 0 920 560" width="920" height="560" role="img" aria-label="Diagrama de arquitectura hexagonal: núcleo en el centro conectado a nueve adaptadores"></svg>
+      </div>
+      <div class="legend" style="margin-top:16px">
+        <div class="item"><span class="sw" style="background:var(--accent)"></span> Núcleo — src/core/</div>
+        <div class="item"><span class="sw" style="background:var(--surface-2); border:1px solid var(--line-strong)"></span> Adaptador — src/adapters/*</div>
+      </div>
+    </section>
+
+    <section id="modulos">
+      <div class="section-label">02 · Módulos y tamaño</div>
+      <h2>Dónde vive el código</h2>
+      <p class="lede"><span class="mono">src/adapters/memory/</span> (esquema SQLite + 12 migraciones) es el módulo individual más grande del repo. En el núcleo, <span class="mono">ventas/</span> y <span class="mono">turn-selector/</span> concentran la mayor parte de la lógica de negocio y de orquestación.</p>
+      <div class="two-col">
+        <div class="card pad">
+          <div class="col-title"><span class="swatch" style="background:var(--accent)"></span> src/core/ — 20 291 líneas, 108 archivos</div>
+          <div class="barlist" id="core-bars"></div>
+        </div>
+        <div class="card pad">
+          <div class="col-title"><span class="swatch" style="background:var(--accent-2)"></span> src/adapters/ — 28 706 líneas, 114 archivos</div>
+          <div class="barlist" id="adapter-bars"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="linea-tiempo">
+      <div class="section-label">03 · Línea de tiempo</div>
+      <h2>Commits por día, con cada tag marcado</h2>
+      <p class="lede">17 días de actividad real. Los picos coinciden con el cierre de un hito grande (v2.0.0, 7 de septiembre) y con la tanda final de cuatro comandos chicos tageados el mismo día (v3.1–v3.4, 11 de septiembre). Pasá el cursor sobre una barra para ver el detalle.</p>
+      <div class="card pad tl-wrap chart-relative">
+        <svg id="timeline" viewBox="0 0 1180 340" width="1180" height="340" role="img" aria-label="Commits por día del 26 de agosto al 11 de septiembre de 2026, con marcas de cada tag"></svg>
+        <div class="tl-tooltip" id="tl-tooltip"></div>
+      </div>
+    </section>
+
+    <section id="hitos">
+      <div class="section-label">04 · Los 12 hitos</div>
+      <h2>Commits entre cada tag</h2>
+      <p class="lede">v1.4.0 es el hito más grande (59 commits) — absorbió, sin tag propio, el trabajo completo de ventas y comisiones que el checkpoint humano no aceptó cerrar como <span class="mono">v1.3.0</span> (ver <a href="proceso.html#v13">Cadena de Revisión</a>). Los cuatro últimos hitos (v3.1–v3.4) son comandos puntuales, no bloques de arquitectura — de ahí su tamaño menor y parejo.</p>
+      <div class="card pad">
+        <svg id="milestones" viewBox="0 0 1180 460" width="1180" height="460" role="img" aria-label="Cantidad de commits entre cada tag, de v1.0.0 a v3.4.0"></svg>
+      </div>
+    </section>
+
+    <section id="ritmo">
+      <div class="section-label">05 · Ritmo de trabajo</div>
+      <h2>¿A qué hora se escribió este repo?</h2>
+      <p class="lede">64% de los commits (224 de 351) caen entre las 17:00 y las 23:00. Hay una cola secundaria real de madrugada (00:00–04:00) — compatible con desarrollo part-time fuera de horario de oficina, no con un equipo de jornada completa.</p>
+      <div class="two-col">
+        <div class="card pad">
+          <div class="col-title">Commits por hora del día</div>
+          <svg id="hours" viewBox="0 0 520 220" width="520" height="220" role="img" aria-label="Distribución de commits por hora del día, 0 a 23"></svg>
+        </div>
+        <div class="card pad">
+          <div class="col-title">Composición por tipo (conventional commits)</div>
+          <div id="types"></div>
+          <div class="lede" style="margin-top:10px; font-size:12px;">337 de 351 commits siguen el prefijo <span class="mono">tipo(scope):</span> — el resto son merges de PR sin ese prefijo.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="pruebas">
+      <div class="section-label">06 · Cobertura de tests</div>
+      <h2>Casi un archivo de test por archivo de producción</h2>
+      <p class="lede"><span class="mono">AGENTS.md</span> exige TDD (red → green → refactor) para toda lógica de negocio. La proporción de archivos y la cantidad de aserciones son consistentes con esa regla aplicada de verdad, no solo declarada.</p>
+      <div class="card pad">
+        <div class="kpi-grid" style="border:none; background:none;">
+          <div class="kpi" style="border:1px solid var(--line); border-radius:8px;"><div class="kpi-value">127</div><div class="kpi-label">archivos de producción (.ts/.tsx)</div></div>
+          <div class="kpi" style="border:1px solid var(--line); border-radius:8px;"><div class="kpi-value">116</div><div class="kpi-label">archivos .test.ts/.tsx</div></div>
+          <div class="kpi" style="border:1px solid var(--line); border-radius:8px;"><div class="kpi-value">457</div><div class="kpi-label">bloques describe()</div></div>
+          <div class="kpi" style="border:1px solid var(--line); border-radius:8px;"><div class="kpi-value">1 618</div><div class="kpi-label">bloques it()/test()</div></div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="page-footer">
+      <div>Arnés Empresarial — estudio independiente del repositorio, carpeta <span class="mono">evaluacion/</span></div>
+      <div><a href="proceso.html">Cadena de Revisión →</a> · <a href="mapa-modulos.html">Mapa de Módulos →</a></div>
+    </footer>
+  </main>
+</div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+/* ---------- Architecture diagram ---------- */
+(function () {
+  const svg = document.getElementById('archsvg');
+  const cx = 460, cy = 280;
+  const core = { w: 190, h: 100 };
+  const adapters = [
+    { label: "TUI", sub: "Ink · terminal", angle: -90, iface: "I1" },
+    { label: "Conocimiento", sub: "MCP → Graphify CLI", angle: -50, iface: "I2" },
+    { label: "Memoria compartida", sub: "SQLite embebido", angle: -10, iface: "I3" },
+    { label: "A2A", sub: "JSON-RPC entrante/saliente", angle: 30, iface: "I4" },
+    { label: "Webhooks", sub: "GitHub, firma HMAC", angle: 70, iface: "hito 3" },
+    { label: "Tablero", sub: "GitHub Issues/labels", angle: 110, iface: "hito 3" },
+    { label: "Web / Notificaciones", sub: "link de confirmación + email", angle: 150, iface: "hito 4" },
+    { label: "Git / Worktree", sub: "worktrees aislados", angle: 190, iface: "hito 5.1" },
+    { label: "Test-runner", sub: "vitest en worktree", angle: 230, iface: "hito 5.1" },
+  ];
+  const R = 235;
+
+  // core hub
+  const g = el('g', { class: 'hex-core' }, svg);
+  el('rect', { x: cx - core.w/2, y: cy - core.h/2, width: core.w, height: core.h, rx: 12 }, g);
+  const t1 = el('text', { x: cx, y: cy - 8, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 700, 'font-family': 'IBM Plex Mono, monospace' }, g);
+  t1.textContent = "NÚCLEO";
+  const t2 = el('text', { x: cx, y: cy + 10, 'text-anchor': 'middle', 'font-size': 10.5, 'font-family': 'IBM Plex Mono, monospace' }, g);
+  t2.textContent = "src/core/ — Selector de Turno";
+  const t3 = el('text', { x: cx, y: cy + 26, 'text-anchor': 'middle', 'font-size': 9.5, 'font-family': 'IBM Plex Mono, monospace', opacity: .8 }, g);
+  t3.textContent = "resolve → assemble → invoke → dispatch → close";
+
+  adapters.forEach(a => {
+    const rad = a.angle * Math.PI / 180;
+    const nx = cx + R * Math.cos(rad);
+    const ny = cy + R * Math.sin(rad) * 0.82;
+    const bw = 156, bh = 56;
+
+    // edge
+    const startX = cx + (core.w/2) * Math.cos(rad);
+    const startY = cy + (core.h/2) * Math.sin(rad) * 1.3;
+    const path = el('path', {
+      class: 'edge',
+      d: `M ${startX} ${startY} L ${nx} ${ny}`
+    }, svg);
+    const midx = (startX + nx) / 2, midy = (startY + ny) / 2;
+    const lbl = el('text', { class: 'edge-label', x: midx + 5, y: midy - 5 }, svg);
+    lbl.textContent = a.iface;
+
+    const ng = el('g', { class: 'node-box' }, svg);
+    el('rect', { x: nx - bw/2, y: ny - bh/2, width: bw, height: bh, rx: 9 }, ng);
+    const nt1 = el('text', { class: 'title', x: nx, y: ny - 4, 'text-anchor': 'middle', 'font-size': 12 }, ng);
+    nt1.textContent = a.label;
+    const nt2 = el('text', { class: 'sub', x: nx, y: ny + 13, 'text-anchor': 'middle', 'font-size': 9.5 }, ng);
+    nt2.textContent = a.sub;
+  });
+})();
+
+/* ---------- Module bar lists ---------- */
+const coreData = [
+  ["ventas/", 4232, 23], ["turn-selector/", 4098, 15], ["activity/", 2610, 10],
+  ["agents/", 1994, 12], ["propuestas/", 1573, 8], ["solicitudes/", 1507, 6],
+  ["commands/", 1349, 4], ["auth/", 615, 8], ["skills/", 615, 6],
+  ["logging/", 381, 2], ["startup/", 312, 2], ["concurrency/", 264, 2],
+  ["hooks/", 223, 2], ["hitl/", 175, 2], ["knowledge/", 123, 2],
+  ["config/", 111, 2], ["text/", 109, 2],
+];
+const adapterData = [
+  ["memory/", 7869, 20], ["a2a/", 5760, 14], ["web/", 2890, 13],
+  ["webhooks/", 2320, 13], ["tui/", 2308, 8], ["git/", 1962, 10],
+  ["knowledge/", 1587, 10], ["board/", 1483, 8], ["test-runner/", 1363, 8],
+  ["notificaciones/", 809, 6], ["crypto/", 266, 2], ["shared/", 89, 2],
+];
+
+function renderBars(containerId, data, color) {
+  const max = Math.max(...data.map(d => d[1]));
+  const container = document.getElementById(containerId);
+  data.forEach(([name, loc, files]) => {
+    const row = document.createElement('div');
+    row.className = 'barrow';
+    row.innerHTML = `
+      <div class="name mono">${name}</div>
+      <div class="track"><div class="fill" style="width:${(loc/max*100).toFixed(1)}%; background:${color}"></div></div>
+      <div class="val">${loc.toLocaleString('es')} · ${files}f</div>`;
+    container.appendChild(row);
+  });
+}
+renderBars('core-bars', coreData, 'var(--accent)');
+renderBars('adapter-bars', adapterData, 'var(--accent-2)');
+
+/* ---------- Timeline (commits per day) ---------- */
+(function () {
+  const days = [
+    ["08-26",5],["08-27",6],["08-28",4],["08-29",2],["08-30",11],["08-31",17],
+    ["09-01",12],["09-02",16],["09-03",6],["09-04",26],["09-05",28],["09-06",18],
+    ["09-07",57],["09-08",30],["09-09",42],["09-10",24],["09-11",47]
+  ];
+  const tags = [
+    ["08-31","v1.0.0"], ["09-01","v1.1.0"], ["09-03","v1.2.0"], ["09-06","v1.4.0"],
+    ["09-07","v2.0.0"], ["09-08","v2.1.0"], ["09-09","v2.2.0"],
+    ["09-10","v3.0.0 / v3.1.0"], ["09-11","v3.2 / v3.3 / v3.4"]
+  ];
+  const svg = document.getElementById('timeline');
+  const W = 1180, H = 340, padL = 40, padR = 20, padT = 20, padB = 60;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = Math.max(...days.map(d => d[1]));
+  const bw = plotW / days.length;
+
+  // gridlines
+  [0, 0.5, 1].forEach(f => {
+    const y = padT + plotH * (1 - f);
+    el('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1 }, svg);
+    const lab = el('text', { x: padL - 8, y: y + 3, 'text-anchor': 'end', class: 'tl-axis-label' }, svg);
+    lab.textContent = Math.round(max * f);
+  });
+
+  const tooltip = document.getElementById('tl-tooltip');
+  const wrap = svg.closest('.chart-relative');
+
+  days.forEach(([label, val], i) => {
+    const x = padL + i * bw;
+    const h = (val / max) * plotH;
+    const y = padT + plotH - h;
+    const rect = el('rect', {
+      class: 'tl-bar', x: x + bw * 0.14, y, width: bw * 0.72, height: h, rx: 2
+    }, svg);
+    rect.addEventListener('mousemove', (e) => {
+      const r = wrap.getBoundingClientRect();
+      tooltip.style.left = (e.clientX - r.left + 12) + 'px';
+      tooltip.style.top = (e.clientY - r.top - 10) + 'px';
+      tooltip.style.opacity = 1;
+      tooltip.textContent = `2026-${label} · ${val} commits`;
+    });
+    rect.addEventListener('mouseleave', () => tooltip.style.opacity = 0);
+
+    if (i % 2 === 0 || days.length < 20) {
+      const lab = el('text', { x: x + bw/2, y: H - padB + 16, 'text-anchor': 'middle', class: 'tl-axis-label' }, svg);
+      lab.textContent = label;
+    }
+  });
+
+  // tag markers
+  const dayIndex = Object.fromEntries(days.map((d, i) => [d[0], i]));
+  const tagsByDay = {};
+  tags.forEach(([day, name]) => { (tagsByDay[day] = tagsByDay[day] || []).push(name); });
+  Object.entries(tagsByDay).forEach(([day, names]) => {
+    const i = dayIndex[day];
+    if (i === undefined) return;
+    const x = padL + i * bw + bw / 2;
+    el('line', { class: 'tl-tag-line', x1: x, x2: x, y1: padT - 6, y2: padT + plotH }, svg);
+    names.forEach((name, ni) => {
+      const t = el('text', { class: 'tl-tag-label', x: x, y: padT - 10 - ni * 11, 'text-anchor': 'middle' }, svg);
+      t.textContent = name;
+    });
+  });
+})();
+
+/* ---------- Milestones (commits between tags) ---------- */
+(function () {
+  const data = [
+    ["v1.0.0", 31, "Esqueleto conversacional"],
+    ["v1.1.0", 16, "Consulta de conocimiento"],
+    ["v1.2.0", 32, "Bot de revisión de PRs"],
+    ["v1.4.0", 59, "TUI + ventas/comisiones absorbido"],
+    ["v2.0.0", 26, "Delegación a subagentes"],
+    ["v2.1.0", 56, "Escritura delegada"],
+    ["v2.2.0", 39, "A2A saliente (cliente)"],
+    ["v3.0.0", 22, "A2A entrante (servidor)"],
+    ["v3.1.0", 17, "Definición de skills"],
+    ["v3.2.0", 12, "/reporte-comisiones"],
+    ["v3.3.0", 23, "/cancelar-solicitud"],
+    ["v3.4.0", 18, "/ver-solicitudes-a2a"],
+  ];
+  const svg = document.getElementById('milestones');
+  const W = 1180, H = 460, padL = 60, padR = 20, padT = 10, padB = 20;
+  const rowH = (H - padT - padB) / data.length;
+  const max = Math.max(...data.map(d => d[1]));
+  const plotW = W - padL - padR - 260;
+
+  data.forEach(([tag, val, name], i) => {
+    const y = padT + i * rowH;
+    const barH = rowH * 0.56;
+    const w = (val / max) * plotW;
+    el('text', { x: padL - 8, y: y + barH * 0.75, 'text-anchor': 'end', class: 'ms-label' }, svg).textContent = tag;
+    el('rect', { class: 'ms-bar', x: padL, y, width: Math.max(w, 2), height: barH, rx: 3 }, svg);
+    el('text', { class: 'ms-val', x: padL + w + 8, y: y + barH * 0.75 }, svg).textContent = val + " commits";
+    const desc = el('text', { x: padL + plotW + 90, y: y + barH * 0.75, class: 'ms-label', 'text-anchor': 'start' }, svg);
+    desc.setAttribute('fill', 'var(--ink-muted)');
+    desc.textContent = name;
+  });
+})();
+
+/* ---------- Hour-of-day rhythm ---------- */
+(function () {
+  const hours = [16,17,9,15,7,5,7,1,11,14,2,6,0,0,6,5,6,29,31,32,34,36,30,32];
+  const svg = document.getElementById('hours');
+  const W = 520, H = 220, padL = 26, padR = 8, padT = 10, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = Math.max(...hours);
+  const bw = plotW / 24;
+  hours.forEach((v, h) => {
+    const x = padL + h * bw;
+    const hgt = (v / max) * plotH;
+    const y = padT + plotH - hgt;
+    const isEvening = h >= 17 && h <= 23;
+    el('rect', {
+      class: 'hr-bar', x: x + bw * 0.12, y, width: bw * 0.76, height: Math.max(hgt,1), rx: 1.5,
+      fill: isEvening ? 'var(--accent)' : 'var(--line-strong)'
+    }, svg);
+    if (h % 3 === 0) {
+      el('text', { class: 'hr-axis', x: x + bw/2, y: H - padB + 12, 'text-anchor': 'middle' }, svg).textContent = String(h).padStart(2,'0');
+    }
+  });
+})();
+
+/* ---------- Commit type composition ---------- */
+(function () {
+  const types = [
+    ["feat", 200, 'var(--accent)'],
+    ["docs", 56, 'var(--accent-3)'],
+    ["fix", 48, 'var(--critical)'],
+    ["test", 12, 'var(--accent-4)'],
+    ["refactor", 12, 'var(--accent-5)'],
+    ["chore", 9, 'var(--ink-muted)'],
+  ];
+  const max = Math.max(...types.map(t => t[1]));
+  const container = document.getElementById('types');
+  types.forEach(([name, val, color]) => {
+    const row = document.createElement('div');
+    row.className = 'type-row';
+    row.innerHTML = `
+      <div class="name">${name}</div>
+      <div class="track"><div class="fill" style="width:${(val/max*100).toFixed(1)}%; background:${color}"></div></div>
+      <div class="val">${val}</div>`;
+    container.appendChild(row);
+  });
+})();
+
+/* theme sync for embedded artifact preview (no-op safeguard) */
+</script>

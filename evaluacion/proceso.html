@@ -1,0 +1,302 @@
+<!doctype html>
+<title>Cadena de Revisión</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --page:       #f2f3f1;
+  --surface:    #fcfcfb;
+  --surface-2:  #ffffff;
+  --ink:        #12181f;
+  --ink-2:      #52514e;
+  --ink-muted:  #898781;
+  --line:       #e1e0d9;
+  --line-strong:#c3c2b7;
+  --accent:     #2a78d6;
+  --accent-2:   #eb6834;
+  --accent-3:   #1baf7a;
+  --accent-5:   #4a3aa7;
+  --good:       #0ca30c;
+  --good-bg:    color-mix(in srgb, #0ca30c 14%, transparent);
+  --warning:    #b3790a;
+  --warning-bg: color-mix(in srgb, #fab219 26%, transparent);
+  --critical:   #d03b3b;
+  --critical-bg:color-mix(in srgb, #d03b3b 14%, transparent);
+  --gap-ink:    #4a3aa7;
+  --gap-bg:     color-mix(in srgb, #4a3aa7 14%, transparent);
+  --shadow:     0 1px 2px rgba(18,24,31,.04), 0 8px 24px -12px rgba(18,24,31,.12);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#17181a; --ink:#fff; --ink-2:#c3c2b7; --ink-muted:#898781;
+    --line:#2c2c2a; --line-strong:#3a3a37; --accent:#3987e5; --accent-2:#d95926; --accent-3:#199e70; --accent-5:#9085e9;
+    --good:#0ca30c; --good-bg:color-mix(in srgb, #0ca30c 22%, transparent);
+    --warning:#fab219; --warning-bg:color-mix(in srgb, #fab219 20%, transparent);
+    --critical:#e66767; --critical-bg:color-mix(in srgb, #e66767 20%, transparent);
+    --gap-ink:#9085e9; --gap-bg:color-mix(in srgb, #9085e9 20%, transparent);
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page:#0d0d0d; --surface:#1a1a19; --surface-2:#17181a; --ink:#fff; --ink-2:#c3c2b7; --ink-muted:#898781;
+  --line:#2c2c2a; --line-strong:#3a3a37; --accent:#3987e5; --accent-2:#d95926; --accent-3:#199e70; --accent-5:#9085e9;
+  --good:#0ca30c; --good-bg:color-mix(in srgb, #0ca30c 22%, transparent);
+  --warning:#fab219; --warning-bg:color-mix(in srgb, #fab219 20%, transparent);
+  --critical:#e66767; --critical-bg:color-mix(in srgb, #e66767 20%, transparent);
+  --gap-ink:#9085e9; --gap-bg:color-mix(in srgb, #9085e9 20%, transparent);
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--ink); font-family: "IBM Plex Sans", system-ui, sans-serif; font-size: 15px; line-height: 1.55; }
+h1,h2,h3,.mono,nav a,.section-label { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+h1,h2 { text-wrap: balance; }
+a { color: var(--accent); }
+
+.shell { display:grid; grid-template-columns: 240px minmax(0,1fr); max-width:1280px; margin:0 auto; }
+@media (max-width:900px){ .shell{grid-template-columns:1fr;} .rail{position:static !important; border-right:none !important; border-bottom:1px solid var(--line);} }
+.rail { position:sticky; top:0; height:100vh; overflow-y:auto; padding:28px 20px; border-right:1px solid var(--line); }
+.rail .brand { font-size:13px; font-weight:600; letter-spacing:.04em; color:var(--ink-muted); text-transform:uppercase; margin-bottom:4px; }
+.rail h1 { font-size:20px; margin:0 0 22px; line-height:1.25; }
+.rail nav { display:flex; flex-direction:column; gap:2px; }
+.rail nav a { display:flex; gap:8px; text-decoration:none; color:var(--ink-2); font-size:12.5px; padding:7px 8px; border-radius:6px; }
+.rail nav a:hover { background:var(--surface); color:var(--ink); }
+.rail .meta { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); font-size:11.5px; color:var(--ink-muted); }
+.rail .meta a.other-doc { display:inline-block; margin-top:10px; color:var(--accent); }
+
+main { padding:40px 44px 100px; min-width:0; }
+section { margin-bottom:64px; scroll-margin-top:20px; }
+.section-label { font-size:11.5px; color:var(--accent); letter-spacing:.06em; text-transform:uppercase; margin-bottom:8px; font-weight:600; }
+section h2 { font-size:23px; margin:0 0 10px; }
+section > .lede { color:var(--ink-2); max-width:70ch; margin:0 0 26px; font-size:14.5px; }
+
+.card { background:var(--surface); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow); }
+.pad { padding:22px 24px; }
+
+/* pipeline */
+.pipeline { display:flex; align-items:stretch; gap:0; overflow-x:auto; padding:6px 0; }
+.pl-step { flex:1 1 0; min-width:150px; display:flex; flex-direction:column; align-items:center; text-align:center; position:relative; padding:0 10px; }
+.pl-badge { width:34px; height:34px; border-radius:50%; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; margin-bottom:10px; }
+.pl-step.human .pl-badge { background:var(--accent-5); }
+.pl-title { font-weight:600; font-size:13.5px; margin-bottom:4px; }
+.pl-sub { font-size:11.5px; color:var(--ink-muted); }
+.pl-arrow { position:absolute; top:17px; right:-6px; width:20px; height:2px; background:var(--line-strong); }
+.pl-arrow::after { content:''; position:absolute; right:0; top:-3px; border:4px solid transparent; border-left-color:var(--line-strong); }
+.pl-step:last-child .pl-arrow { display:none; }
+.pl-loop { margin-top:14px; font-size:11px; color:var(--critical); }
+
+/* verdict pills */
+.pill { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:999px; font-size:10.5px; font-weight:600; font-family:"IBM Plex Mono",monospace; white-space:nowrap; }
+.pill.ok { background:var(--good-bg); color:var(--good); }
+.pill.warn { background:var(--warning-bg); color:var(--warning); }
+.pill.gap { background:var(--gap-bg); color:var(--gap-ink); }
+.pill.discard { background:var(--critical-bg); color:var(--critical); }
+.pill .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+/* milestone list */
+.ms-list { display:flex; flex-direction:column; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.ms-item { background:var(--surface); padding:14px 18px; display:grid; grid-template-columns: 90px 1fr auto; gap:14px; align-items:center; }
+.ms-item .tag { font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:13px; }
+.ms-item .name { font-size:13px; color:var(--ink-2); }
+.ms-item .detail { font-size:12px; color:var(--ink-muted); margin-top:2px; }
+@media (max-width:700px){ .ms-item{ grid-template-columns:1fr; } }
+
+/* episode cards */
+.episodes { display:flex; flex-direction:column; gap:16px; }
+.episode { border:1px solid var(--line); border-left:3px solid var(--critical); border-radius:8px; background:var(--surface); padding:16px 20px; }
+.episode h3 { font-size:14.5px; margin:0 0 6px; font-family:"IBM Plex Sans",sans-serif; }
+.episode .tag-mark { font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--critical); font-weight:600; margin-bottom:6px; display:block; }
+.episode p { font-size:13.5px; color:var(--ink-2); margin:0; }
+.episode p + p { margin-top:8px; }
+
+/* callout for v1.3 */
+.callout { border:1px solid var(--line); border-left:3px solid var(--gap-ink); border-radius:8px; padding:20px 22px; background:var(--surface); }
+.callout .k { font-family:"IBM Plex Mono",monospace; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--gap-ink); font-weight:700; margin-bottom:8px; }
+.callout ul { margin:10px 0 0; padding-left:18px; font-size:13.5px; color:var(--ink-2); }
+.callout li { margin-bottom:6px; }
+
+/* adr table */
+table.data { width:100%; border-collapse:collapse; font-size:12.5px; }
+table.data th, table.data td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+table.data th { color:var(--ink-muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+table.data td.adr { font-family:"IBM Plex Mono",monospace; font-weight:600; white-space:nowrap; }
+
+/* test growth bars */
+.barlist { display:flex; flex-direction:column; gap:9px; }
+.barrow { display:grid; grid-template-columns:120px 1fr 70px; align-items:center; gap:12px; }
+.barrow .name { font-size:12.5px; color:var(--ink-2); font-family:"IBM Plex Mono",monospace; }
+.barrow .track { height:16px; background:var(--line); border-radius:3px; overflow:hidden; }
+.barrow .fill { height:100%; border-radius:3px; background:var(--accent); }
+.barrow .val { font-size:12px; color:var(--ink-muted); text-align:right; font-variant-numeric:tabular-nums; }
+
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.kpi { background:var(--surface); padding:18px; }
+.kpi-value { font-size:26px; font-weight:600; font-family:"IBM Plex Mono",monospace; }
+.kpi-label { font-size:11.5px; color:var(--ink-muted); margin-top:4px; }
+
+footer.page-footer { border-top:1px solid var(--line); padding-top:20px; margin-top:60px; font-size:11.5px; color:var(--ink-muted); display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+footer.page-footer a { color:var(--ink-2); }
+</style>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">Arnés Empresarial · pasantía</div>
+    <h1>Cadena de Revisión</h1>
+    <nav>
+      <a href="#pipeline">Pipeline SDD</a>
+      <a href="#veredictos">Los 12 veredictos</a>
+      <a href="#v13">El hito que no cerró</a>
+      <a href="#rechazos">Rondas de rechazo</a>
+      <a href="#adrs">ADRs destacados</a>
+      <a href="#balance">Balance</a>
+    </nav>
+    <div class="meta">
+      <div>Auditoría del proceso Spec Author → Checkpoint humano → Implementer → Reviewer, reconstruida desde <span class="mono">openspec/changes/</span> y <span class="mono">docs/progreso/</span>.</div>
+      <a class="other-doc" href="dashboard.html">→ Ver Bitácora del Arnés (arquitectura y métricas)</a>
+      <a class="other-doc" href="mapa-modulos.html">→ Ver Mapa de Módulos (grafo + evaluación)</a>
+    </div>
+  </aside>
+
+  <main>
+
+    <section id="pipeline">
+      <div class="section-label">Proceso</div>
+      <h2>Cuatro roles, un gate humano no negociable</h2>
+      <p class="lede"><span class="mono">AGENTS.md</span> exige que ningún hito salte roles. En la práctica, sobre 13 changes auditados, este gate cambió el resultado real al menos 3 veces — no fue ceremonia.</p>
+      <div class="card pad">
+        <div class="pipeline">
+          <div class="pl-step"><div class="pl-badge">1</div><div class="pl-title">Spec Author</div><div class="pl-sub">propuesta + diseño + tareas en openspec/</div><div class="pl-arrow"></div></div>
+          <div class="pl-step human"><div class="pl-badge">👤</div><div class="pl-title">Checkpoint humano</div><div class="pl-sub">aprueba, ajusta o rechaza el enfoque</div><div class="pl-arrow"></div></div>
+          <div class="pl-step"><div class="pl-badge">2</div><div class="pl-title">Implementer</div><div class="pl-sub">TDD, commit por tarea</div><div class="pl-arrow"></div></div>
+          <div class="pl-step"><div class="pl-badge">3</div><div class="pl-title">Reviewer</div><div class="pl-sub">sdd-verify + code-review</div><div class="pl-arrow"></div></div>
+          <div class="pl-step"><div class="pl-badge" style="background:var(--good)">✓</div><div class="pl-title">Tag + docs/progreso/</div><div class="pl-sub">solo con las 4 casillas del checklist marcadas</div></div>
+        </div>
+        <div class="pl-loop">↩ Rechazo del Reviewer o del checkpoint → vuelve al Implementer, o al Spec Author si es de diseño (con nuevo paso por el checkpoint)</div>
+      </div>
+    </section>
+
+    <section id="veredictos">
+      <div class="section-label">01 · Los 12 veredictos</div>
+      <h2>Qué pasó realmente en cada hito</h2>
+      <p class="lede">La mayoría de los "PASS" reales llevan warnings — casi siempre de <em>demostración humana pendiente</em>, no de código roto. Los últimos dos hitos tagueados carecen del artefacto <span class="mono">verify-report.md</span> que los diez anteriores sí dejaron.</p>
+      <div class="ms-list">
+        <div class="ms-item"><span class="tag">v1.0.0</span><div><div class="name">Esqueleto conversacional</div><div class="detail">16/16 tareas · 132/132 tests · 0 críticos</div></div><span class="pill ok"><span class="dot"></span>PASS 1ª ronda</span></div>
+        <div class="ms-item"><span class="tag">v1.1.0</span><div><div class="name">Consulta de conocimiento</div><div class="detail">211 tests · 0 críticos · 1 warning no bloqueante</div></div><span class="pill ok"><span class="dot"></span>PASS 1ª ronda</span></div>
+        <div class="ms-item"><span class="tag">v1.2.0</span><div><div class="name">Bot de revisión de PRs</div><div class="detail">477/477 tests · filtro anti-loop falla con PAT compartido en demo</div></div><span class="pill warn"><span class="dot"></span>PASS con warnings</span></div>
+        <div class="ms-item"><span class="tag">v1.3</span><div><div class="name">Ventas y comisiones</div><div class="detail">30/31 tareas — cierre independiente descartado por el checkpoint</div></div><span class="pill discard"><span class="dot"></span>Descartado</span></div>
+        <div class="ms-item"><span class="tag">v1.4.0</span><div><div class="name">TUI canal empleado</div><div class="detail">954/954 tests · absorbe el entregable de v1.3 · conteo de comandos desalineado en spec</div></div><span class="pill warn"><span class="dot"></span>PASS con warnings</span></div>
+        <div class="ms-item"><span class="tag">v2.0.0</span><div><div class="name">Delegación a subagentes</div><div class="detail">Tarea 2 rechazada por TDD simulado, rehecha con RED real</div></div><span class="pill warn"><span class="dot"></span>PASS, 1 rechazo interno</span></div>
+        <div class="ms-item"><span class="tag">v2.1.0</span><div><div class="name">Escritura delegada</div><div class="detail">Solo verify-report de PR1 conservado como archivo</div></div><span class="pill ok"><span class="dot"></span>PASS</span></div>
+        <div class="ms-item"><span class="tag">v2.2.0</span><div><div class="name">A2A cliente</div><div class="detail">1667/1667 tests · 2 bugs de protocolo reales encontrados y corregidos contra 3 agentes externos</div></div><span class="pill warn"><span class="dot"></span>PASS con warnings</span></div>
+        <div class="ms-item"><span class="tag">v3.0.0</span><div><div class="name">A2A entrante</div><div class="detail">chain_strategy de design.md no seguida · PR5 fue 3.4× el forecast</div></div><span class="pill warn"><span class="dot"></span>PASS, desvío de proceso</span></div>
+        <div class="ms-item"><span class="tag">v3.1.0</span><div><div class="name">Definición de skills</div><div class="detail">Sin verify-report versionado · un bug real se corrigió después, fuera del ciclo (commit dbecedb)</div></div><span class="pill gap"><span class="dot"></span>Sin registro</span></div>
+        <div class="ms-item"><span class="tag">v3.2.0</span><div><div class="name">/reporte-comisiones</div><div class="detail">1904/1904 tests · 2 tareas sin tildar en tasks.md</div></div><span class="pill warn"><span class="dot"></span>PASS con warnings</span></div>
+        <div class="ms-item"><span class="tag">v3.3.0</span><div><div class="name">/cancelar-solicitud</div><div class="detail">2 rondas · 1 bug funcional real de diseño (ADR 144)</div></div><span class="pill warn"><span class="dot"></span>PASS, 2 rondas</span></div>
+        <div class="ms-item"><span class="tag">v3.4.0</span><div><div class="name">/ver-solicitudes-a2a</div><div class="detail">Sin verify-report ni README de evidencia — único caso así</div></div><span class="pill gap"><span class="dot"></span>Sin registro</span></div>
+      </div>
+    </section>
+
+    <section id="v13">
+      <div class="section-label">02 · El caso más revelador</div>
+      <h2>El hito que 30 tareas completas no alcanzaron a cerrar</h2>
+      <p class="lede">Sin este documento — <span class="mono">openspec/changes/hito-1.3-ventas-comisiones/NOTA-CIERRE.md</span> —, un lector superficial del historial de tags nunca sabría que existió.</p>
+      <div class="callout">
+        <div class="k">Qué pasó</div>
+        <ul>
+          <li>Las <strong>30 tareas de código</strong> de ventas/comisiones se implementaron completas, cada una con su propio commit.</li>
+          <li>La <strong>tarea 31</strong> — verificación manual end-to-end de 20 pasos — nunca corrió como cierre: <em>"el checkpoint humano determinó que el resultado no cumplía el estándar esperado del Reviewer para cerrarlo como v1.3.0."</em></li>
+          <li>Resultado: sin tag <span class="mono">v1.3.0</span>, sin carpeta de evidencia, sin <span class="mono">verify-report.md</span>.</li>
+          <li>El código <strong>no se descartó</strong> — vive en el árbol y su entregable se demostró como parte de la evidencia de <span class="mono">v1.4.0</span>.</li>
+          <li>El change se dejó <strong>sin archivar</strong> a propósito, "para no borrar el rastro de que el cierre formal se descartó y por qué".</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="rechazos">
+      <div class="section-label">03 · Rondas de rechazo con evidencia forense</div>
+      <h2>Tres veces que el Reviewer cambió el resultado</h2>
+      <p class="lede">Más allá del caso v1.3, estos son los episodios donde un hallazgo del Reviewer forzó rehacer trabajo — con cita textual del propio repositorio.</p>
+      <div class="episodes">
+        <div class="episode">
+          <span class="tag-mark">v2.0.0 · delegación a subagentes · tarea 2</span>
+          <h3>TDD simulado, no ejecutado</h3>
+          <p>El Reviewer rechazó la primera pasada: el paso RED de TDD fue <em>reclamado, no corrido realmente</em>, y el comentario de cabecera del archivo quedó desactualizado. El Implementer revirtió con <span class="mono">git stash</span>, forzó un RED real y corrigió el comentario antes de que se aceptara la tarea.</p>
+        </div>
+        <div class="episode">
+          <span class="tag-mark">v3.3.0 · /cancelar-solicitud · ronda 1 → ADR 144</span>
+          <h3>Un bug funcional real, no cosmético</h3>
+          <p><span class="mono">/cancelar-solicitud</span> sin id reusaba el listado de pendientes sin filtrar por dueño, con <span class="mono">LIMIT 20</span> aplicado antes de cualquier filtro: un empleado con solicitudes propias pendientes podía recibir una lista <strong>vacía</strong> si 20 o más solicitudes ajenas eran más antiguas. Volvió al Spec Author, se aprobó el ADR 144 en checkpoint humano, y las tareas 15-18 son ese fix.</p>
+        </div>
+        <div class="episode">
+          <span class="tag-mark">v3.3.0 · ronda 2 de verificación</span>
+          <h3>12 hallazgos, tabla de trazabilidad completa</h3>
+          <p>Confirmó el fix con test real (25 solicitudes ajenas antes de la propia, la propia sigue apareciendo) y sumó 9 hallazgos menores. De 12 totales, 8 se corrigieron en una pasada autorizada por el humano; 1 se dejó por ser decisión de diseño ya aprobada — el nivel de trazabilidad de hallazgos más alto del repo.</p>
+        </div>
+        <div class="episode">
+          <span class="tag-mark">v2.2.0 · A2A cliente</span>
+          <h3>2 bugs de protocolo, encontrados contra agentes reales</h3>
+          <p>Header <span class="mono">A2A-Version</span> faltante (rechazado por el agente de referencia) y desempaquetado incorrecto del <span class="mono">oneof task/message</span> de la respuesta. 22 tests fallando antes del fix, 44/44 después — verificado contra 3 agentes A2A externos reales, no solo contra dobles.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="adrs">
+      <div class="section-label">04 · Trazabilidad de decisiones</div>
+      <h2>~144 ADRs, un solo registro correlativo</h2>
+      <p class="lede">Sin reiniciar numeración por hito — desde el ADR 1 (arc42, entrega incremental) hasta al menos el ADR 144, nacido directo de un rechazo del Reviewer.</p>
+      <div class="card pad">
+        <table class="data">
+          <thead><tr><th>ADR</th><th>Decisión</th></tr></thead>
+          <tbody>
+            <tr><td class="adr">1</td><td>Entrega incremental v1 lineal → v2 swarm → v3 grafo</td></tr>
+            <tr><td class="adr">2</td><td>Monolito modular de un paquete, no monorepo</td></tr>
+            <tr><td class="adr">3 / 4</td><td>Servidor MCP in-process en vez de <span class="mono">McpStdioServerConfig</span>, priorizando testabilidad TDD</td></tr>
+            <tr><td class="adr">46 / 48</td><td>FKs nullable en <span class="mono">delegaciones</span> — forzado por no poder registrar antes de invocar bajo <span class="mono">foreign_keys=ON</span></td></tr>
+            <tr><td class="adr">51</td><td><span class="mono">SUBAGENT_REGISTRY</span> como <code>Map</code> separado de <span class="mono">AGENT_REGISTRY</span></td></tr>
+            <tr><td class="adr">67</td><td>Único otorgante de <span class="mono">Write</span>/<span class="mono">Edit</span> atado por tipo a un worktree ya abierto</td></tr>
+            <tr><td class="adr">84</td><td>Manejo exhaustivo del noveno <span class="mono">TaskState</span> (<span class="mono">UNSPECIFIED</span>) del protocolo A2A</td></tr>
+            <tr><td class="adr">99 / 100</td><td><span class="mono">GetTask</span> genuinamente síncrono; drenaje del servidor con <span class="mono">Promise.allSettled</span> + <span class="mono">race</span></td></tr>
+            <tr><td class="adr">108</td><td><span class="mono">skills</span>/<span class="mono">settingSources</span> en el literal inicial de <span class="mono">Options</span>, nunca detrás de un <span class="mono">if</span></td></tr>
+            <tr><td class="adr">144</td><td>El hallazgo bloqueante de <span class="mono">/cancelar-solicitud</span> — único ADR que nace de un rechazo del Reviewer, no de diseño anticipado</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="balance">
+      <div class="section-label">05 · Balance</div>
+      <h2>El gate humano no fue teatro — pero se relajó al final</h2>
+      <div class="two-col-balance" style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+        <div class="card pad">
+          <div class="col-title" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px;color:var(--good)">Fortalezas verificables</div>
+          <ul style="margin:0;padding-left:18px;font-size:13.5px;color:var(--ink-2)">
+            <li style="margin-bottom:8px">Un hito completo (30/31 tareas) descartado por no alcanzar el estándar — documentado, no borrado.</li>
+            <li style="margin-bottom:8px">Rechazo con evidencia forense de TDD simulado, corregido con RED real.</li>
+            <li style="margin-bottom:8px">Bug de diseño con impacto funcional real, devuelto al Spec Author y resuelto con ADR propio.</li>
+            <li style="margin-bottom:8px">Verificación de campo contra 3 agentes A2A reales encontró bugs que el testing unitario no capturó.</li>
+          </ul>
+        </div>
+        <div class="card pad">
+          <div class="col-title" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px;color:var(--warning)">Debilidades del rigor real</div>
+          <ul style="margin:0;padding-left:18px;font-size:13.5px;color:var(--ink-2)">
+            <li style="margin-bottom:8px">v3.1 y v3.4 (los 2 últimos hitos) sin <span class="mono">verify-report.md</span> versionado.</li>
+            <li style="margin-bottom:8px">La mayoría de los PASS llevan al menos un paso de demo humana pendiente, sin mecanismo que fuerce su cierre.</li>
+            <li style="margin-bottom:8px"><span class="mono">chain_strategy</span> de <span class="mono">design.md</span> no seguida en 4 de los últimos 5 hitos grandes.</li>
+            <li style="margin-bottom:8px">4 hitos enteros no contemplados en el plan; el plan se actualizó recién un día antes del cierre final.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="lede" style="margin-top:22px;max-width:none">
+        <strong>Pregunta abierta para la revisión con el pasante:</strong> la relajación documental de v3.1–v3.4 (hitos más chicos y frecuentes) — ¿fue una decisión consciente de "menor ceremonia para cambios puntuales", o presión de tiempo hacia el cierre de la pasantía? El propio repo no lo dice.
+      </p>
+    </section>
+
+    <footer class="page-footer">
+      <div>Arnés Empresarial — auditoría de proceso, carpeta <span class="mono">evaluacion/</span></div>
+      <div><a href="dashboard.html">← Bitácora del Arnés</a> · <a href="mapa-modulos.html">Mapa de Módulos →</a></div>
+    </footer>
+  </main>
+</div>
