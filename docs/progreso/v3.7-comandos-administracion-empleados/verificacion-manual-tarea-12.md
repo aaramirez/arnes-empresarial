@@ -57,20 +57,24 @@ npm run typecheck
   (sin salida, sin errores)
 ```
 
-## Limitación declarada — sesión TUI interactiva real
+## 6. Sesión TUI interactiva real — verificada a mano por el humano
 
-El punto del checklist de tarea 12 que pide demostrar el flujo **a través de la interfaz Ink real** (terminal interactiva, `npm run dev`) **no se pudo verificar desde este entorno de ejecución**: Ink usa modo raw sobre un TTY real para la entrada de teclado, y las herramientas de shell disponibles acá no exponen una terminal interactiva de verdad (no hay inyección de teclas ni TTY). Simularlo hubiera significado fingir el resultado sin haberlo corrido — no se hizo.
-
-**Queda pendiente que el humano corra a mano**, en su propia terminal:
+El punto del checklist que exige demostrar el flujo **a través de la interfaz Ink real** no se podía verificar desde el entorno de ejecución del agente (Ink usa modo raw sobre un TTY real; las herramientas de shell del agente no exponen una terminal interactiva de verdad). Se dejaron los pasos exactos para que el humano lo corriera a mano:
 
 ```
-npm run empleados:crear -- admin --rol administrador   # o el admin ya existente ("jimmy")
 npm run dev
-# dentro de la TUI: /login <admin> <password>
-#                    /crear-empleado ana <password>
-#                    /asignar-rol ana administrador
-#                    /login ana <password>
-#                    /aprobar-reembolso <ventaId>
+/login jimmy <password>
+/crear-empleado ana <password>
+/asignar-rol ana administrador
+/logout
+/login ana <password>
+/asignar-rol jimmy administrador   # o /aprobar-reembolso <ventaId> si había uno pendiente
+/logout
+/login bob <password>              # empleado con rol base
+/asignar-rol bob administrador     # y /crear-empleado, ambos deben rechazar
+/estado-bot-prs                    # nunca debe imprimir el valor de los secretos
 ```
 
-Todo lo demás del checklist de tarea 12 (lógica de negocio real de punta a punta, rechazos por rol, enmascarado de secretos, rollback real, suite completa) queda verificado con evidencia reproducible arriba. La tarea 12 se deja **sin marcar `[x]`** en `tasks.md` hasta que se complete este último paso a mano.
+**Resultado: corrido a mano por el humano (JimmyFung123) el 2026-09-13 sobre `hito/v3.7-comandos-administracion-empleados` — confirmado funcionando correctamente.** El rol asignado vía `/asignar-rol` en la TUI le dio a `ana` privilegios de administrador reales de inmediato tras el login, sin ningún paso adicional tipo CLI; el rol base fue rechazado en los comandos gateados; `/estado-bot-prs` no filtró secretos.
+
+Con este último punto, el checklist de tarea 12 de `tasks.md` queda **completo**.
