@@ -206,6 +206,44 @@ function authHeader(token = CONFIG.ventasApiToken): Record<string, string> {
   return { authorization: `Bearer ${token}` };
 }
 
+/**
+ * Doble plano de `http.Server` compartido por todas las suites de
+ * drenaje de `close()` (`/soporte` y `/operaciones`) -- extraído a
+ * ámbito de módulo (antes vivía solo dentro de la suite de `/soporte`)
+ * para que la suite nueva de `/operaciones` y la combinada lo reusen sin
+ * duplicar el doble.
+ */
+function makeFakeHttpServer(): {
+  server: { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+  createServer: CreateWebServerFn;
+  getListener: () => (req: WebRequest, res: WebResponse) => void;
+} {
+  let capturedListener: ((req: WebRequest, res: WebResponse) => void) | undefined;
+  const server = {
+    listen: vi.fn((_port: number, callback: () => void) => {
+      callback();
+    }),
+    close: vi.fn((callback: (error?: Error) => void) => {
+      callback();
+    }),
+    on: vi.fn(),
+  };
+  const createServer = vi.fn((listener: (req: WebRequest, res: WebResponse) => void) => {
+    capturedListener = listener;
+    return server;
+  });
+  return {
+    server,
+    createServer,
+    getListener: () => {
+      if (capturedListener === undefined) {
+        throw new Error("listener not captured yet");
+      }
+      return capturedListener;
+    },
+  };
+}
+
 describe("createRequestListener — ruteo", () => {
   it("responds 404 (empty body) for an unrecognized path", () => {
     const deps = makeDeps();
@@ -752,37 +790,6 @@ describe("startServer — close() drains in-flight /soporte turns", () => {
     vi.useRealTimers();
   });
 
-  function makeFakeHttpServer(): {
-    server: { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
-    createServer: CreateWebServerFn;
-    getListener: () => (req: WebRequest, res: WebResponse) => void;
-  } {
-    let capturedListener: ((req: WebRequest, res: WebResponse) => void) | undefined;
-    const server = {
-      listen: vi.fn((_port: number, callback: () => void) => {
-        callback();
-      }),
-      close: vi.fn((callback: (error?: Error) => void) => {
-        callback();
-      }),
-      on: vi.fn(),
-    };
-    const createServer = vi.fn((listener: (req: WebRequest, res: WebResponse) => void) => {
-      capturedListener = listener;
-      return server;
-    });
-    return {
-      server,
-      createServer,
-      getListener: () => {
-        if (capturedListener === undefined) {
-          throw new Error("listener not captured yet");
-        }
-        return capturedListener;
-      },
-    };
-  }
-
   it("close() awaits the in-flight /soporte turn via Promise.allSettled before resolving", async () => {
     let resolverTurno!: (value: SoporteResult) => void;
     const onSoporte = vi.fn().mockImplementation(
@@ -853,6 +860,213 @@ describe("startServer — close() drains in-flight /soporte turns", () => {
       "web-cierre-con-turnos-en-vuelo",
       expect.anything(),
     );
+  });
+});
+
+/**
+ * Hallazgo del Reviewer (`operaciones-negocio-conversacionales`): el mismo
+ * mecanismo de drenaje que ya protegía `/soporte` (Set `enVuelo` + carrera
+ * contra `WEB_CLOSE_TIMEOUT_MS` en `close()`) tenía que cubrir también
+ * `/operaciones` -- si un turno seguía en vuelo cuando arrancaba el
+ * shutdown, `web.close()` no lo esperaba y una escritura sincrónica de
+ * better-sqlite3 podía pegarle a una DB ya cerrada. Mismo molde EXACTO que
+ * la suite de `/soporte` de arriba, aplicado a `onOperacionesEmpleado`.
+ */
+describe("startServer — close() drains in-flight /operaciones turns", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function operacionesDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    return makeDeps({ sesionStore, ...overrides });
+  }
+
+  it("close() awaits the in-flight /operaciones turn via Promise.allSettled before resolving", async () => {
+    let resolverTurno!: (value: SoporteResult) => void;
+    const onOperacionesEmpleado = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverTurno = resolve;
+        }),
+    );
+    const deps = operacionesDeps({ onOperacionesEmpleado });
+    const { createServer, getListener } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+    getListener()(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    // Mismo motivo que en la suite de /soporte: dejar que
+    // `onOperacionesEmpleado` quede registrado en `enVuelo` (a través del
+    // wrapper de drenaje de `startServer`) antes de tomar la foto en
+    // `close()`.
+    await vi.advanceTimersByTimeAsync(0);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    // Avanza CASI todo el techo de `WEB_CLOSE_TIMEOUT_MS` (no solo un par de
+    // microtareas) antes de afirmar que `close()` sigue pendiente -- esto es
+    // lo que distingue de verdad "sigue esperando al turno real" de "el Set
+    // estaba vacío y ya resolvió por descuido" (un par de `await
+    // Promise.resolve()` no alcanza para distinguir ambos casos, porque la
+    // cadena `Promise.allSettled([]) → race → resolveClose` también tarda
+    // más de un puñado de microtareas en asentarse).
+    await vi.advanceTimersByTimeAsync(WEB_CLOSE_TIMEOUT_MS - 1);
+    expect(closed).toBe(false);
+
+    resolverTurno(OPERACIONES_RESULT);
+    await closePromise;
+
+    expect(closed).toBe(true);
+  });
+
+  it("close() resolves after WEB_CLOSE_TIMEOUT_MS even if an /operaciones turn never settles, and logs web-cierre-con-turnos-en-vuelo", async () => {
+    const onOperacionesEmpleado = vi.fn().mockImplementation(() => new Promise<SoporteResult>(() => {}));
+    const logEvent = vi.fn();
+    const deps = operacionesDeps({ onOperacionesEmpleado, logEvent });
+    const { createServer, getListener } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+    getListener()(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(WEB_CLOSE_TIMEOUT_MS);
+    await closePromise;
+
+    expect(closed).toBe(true);
+    expect(logEvent).toHaveBeenCalledWith(
+      WEB_LOG_CORRELATION_ID,
+      "web-cierre-con-turnos-en-vuelo",
+      expect.anything(),
+    );
+  });
+});
+
+/**
+ * Regresión + prueba de que `/soporte` y `/operaciones` comparten el MISMO
+ * Set `enVuelo` (no dos mecanismos de drenaje independientes) -- si
+ * `close()` esperara a `/soporte` y `/operaciones` con dos `Set`s
+ * separados, este describe seguiría en verde por casualidad; la prueba
+ * combinada de abajo es la que realmente lo distingue.
+ */
+describe("startServer — close() drenaje compartido entre /soporte y /operaciones", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("close() with no turns in flight of either kind resolves immediately", async () => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ sesionStore });
+    const { createServer } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await closePromise;
+
+    expect(closed).toBe(true);
+  });
+
+  it("close() awaits a concurrent /soporte turn AND a concurrent /operaciones turn (same drenaje mechanism)", async () => {
+    let resolverSoporte!: (value: SoporteResult) => void;
+    let resolverOperaciones!: (value: SoporteResult) => void;
+    const onSoporte = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverSoporte = resolve;
+        }),
+    );
+    const onOperacionesEmpleado = vi.fn().mockImplementation(
+      () =>
+        new Promise<SoporteResult>((resolve) => {
+          resolverOperaciones = resolve;
+        }),
+    );
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const deps = makeDeps({ onSoporte, onOperacionesEmpleado, sesionStore });
+    const { createServer, getListener } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+
+    const reqSoporte = new FakeRequest({ method: "POST", url: RUTA_SOPORTE, headers: {} });
+    const resSoporte = new FakeResponse();
+    getListener()(reqSoporte, resSoporte);
+    reqSoporte.emitBody([jsonBody({ consulta: "hola" })]);
+
+    const reqOperaciones = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const resOperaciones = new FakeResponse();
+    getListener()(reqOperaciones, resOperaciones);
+    reqOperaciones.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+
+    // Deja que ambos turnos queden registrados en el `enVuelo` compartido
+    // antes de tomar la foto en `close()`.
+    await vi.advanceTimersByTimeAsync(0);
+
+    let closed = false;
+    const closePromise = handle.close().then(() => {
+      closed = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    // Resolver solo /soporte no alcanza -- close() sigue esperando a
+    // /operaciones. Se espera CASI todo el techo (no un par de
+    // microtareas) para distinguir de verdad "sigue bloqueado por el turno
+    // de /operaciones" de "el Set solo tenía /soporte y ya se vació,
+    // /operaciones nunca estuvo ahí" (mismo motivo que en la suite
+    // anterior).
+    resolverSoporte(SOPORTE_RESULT);
+    await vi.advanceTimersByTimeAsync(WEB_CLOSE_TIMEOUT_MS - 1);
+    expect(closed).toBe(false);
+
+    resolverOperaciones(OPERACIONES_RESULT);
+    await closePromise;
+
+    expect(closed).toBe(true);
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Listener HTTP del adaptador Web (Hito 4, tarea 17, §4.4 — el corazón del
- * adaptador). Ruteo, auth de `/ventas`, drenaje de turnos de soporte en
- * vuelo, y la tabla de respuestas exhaustiva del diseño.
+ * adaptador). Ruteo, auth de `/ventas`, drenaje de turnos de soporte y de
+ * operaciones en vuelo, y la tabla de respuestas exhaustiva del diseño.
  *
  * Orden de checks dentro de cada ruta — EXHAUSTIVO, no se reordena
  * (design.md §4.4): `método+ruta → tope de body → auth (solo /ventas) →
@@ -12,7 +12,8 @@
  * con dobles planos de `WebRequest`/`WebResponse`, sin abrir ningún puerto
  * real ni mockear `node:http`. `startServer` monta ese listener sobre un
  * servidor real (o inyectado en tests) y agrega el drenaje de los turnos de
- * `/soporte` en vuelo al cerrar.
+ * `/soporte` y de `/operaciones` en vuelo al cerrar (mismo `Set`
+ * compartido — hallazgo de Reviewer, `operaciones-negocio-conversacionales`).
  *
  * Diferencia real con `webhooks/server.ts`, no cosmética: acá la
  * acumulación del body la hace `leerBody` (tarea 14) en vez de reimplementar
@@ -122,7 +123,7 @@ export interface WebServerDeps {
 
 export interface WebServerHandle {
   readonly port: number;
-  /** Deja de aceptar, drena los turnos de `/soporte` en vuelo con techo de `WEB_CLOSE_TIMEOUT_MS`, resuelve. NUNCA rechaza. */
+  /** Deja de aceptar, drena los turnos de `/soporte` y de `/operaciones` en vuelo con techo de `WEB_CLOSE_TIMEOUT_MS`, resuelve. NUNCA rechaza. */
   close(): Promise<void>;
 }
 
@@ -720,12 +721,12 @@ export function createRequestListener(deps: WebServerDeps): (req: WebRequest, re
  * defecto abra un puerto.
  *
  * Igual que `webhooks/server.ts:254`: `listen` + `on("error")` con promesa.
- * El `Set<Promise<unknown>>` de drenaje trackea SOLO los turnos de
- * `/soporte` en vuelo (no las otras rutas — son todas síncronas del lado
- * del `store` salvo la notificación best-effort de `/ventas`, que ya
- * corrió cuando `onAltaVenta` resuelve). `close()` hace `server.close()` →
- * `Promise.allSettled([...enVuelo])` en carrera contra `WEB_CLOSE_TIMEOUT_MS`
- * → resuelve. Nunca rechaza.
+ * El `Set<Promise<unknown>>` de drenaje trackea los turnos de `/soporte` Y
+ * de `/operaciones` en vuelo, compartiendo el MISMO `Set` (no las otras
+ * rutas — son todas síncronas del lado del `store` salvo la notificación
+ * best-effort de `/ventas`, que ya corrió cuando `onAltaVenta` resuelve).
+ * `close()` hace `server.close()` → `Promise.allSettled([...enVuelo])` en
+ * carrera contra `WEB_CLOSE_TIMEOUT_MS` → resuelve. Nunca rechaza.
  */
 export function startServer(
   deps: WebServerDeps,
@@ -748,7 +749,27 @@ export function startServer(
     return promesa;
   };
 
-  const listener = createRequestListener({ ...deps, onSoporte: onSoporteConDrenaje });
+  // Hallazgo del Reviewer (`operaciones-negocio-conversacionales`): los
+  // turnos de `/operaciones` corren la MISMA carrera de shutdown que los de
+  // `/soporte` (una escritura sincrónica de better-sqlite3 que llegue
+  // después de `db.close()` en `main.ts` puede pegarle a una DB ya
+  // cerrada) -- comparten el MISMO `enVuelo` de arriba, no uno nuevo, así
+  // `close()` drena ambos tipos de turno indistintamente.
+  const onOperacionesEmpleadoConDrenaje: WebServerDeps["onOperacionesEmpleado"] = (input) => {
+    const promesa = deps.onOperacionesEmpleado(input);
+    enVuelo.add(promesa);
+    const olvidar = (): void => {
+      enVuelo.delete(promesa);
+    };
+    promesa.then(olvidar, olvidar);
+    return promesa;
+  };
+
+  const listener = createRequestListener({
+    ...deps,
+    onSoporte: onSoporteConDrenaje,
+    onOperacionesEmpleado: onOperacionesEmpleadoConDrenaje,
+  });
   const server = createServer(listener);
 
   return new Promise((resolve, reject) => {
