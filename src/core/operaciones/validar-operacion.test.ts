@@ -157,6 +157,77 @@ describe("validarOperacion — claves del modelo/dominio NUNCA aceptadas (ADR 14
   });
 });
 
+describe("validarOperacion — `monto` fuera de rango en registrar_venta se rechaza (hallazgo Reviewer, mismo criterio que parseAltaVentaPayload en payloads.ts)", () => {
+  function baseRegistrarVenta(monto: unknown): Record<string, unknown> {
+    return {
+      operacion: "registrar_venta",
+      clienteId: "c",
+      clienteEmail: "c@example.com",
+      planNuevo: "p",
+      vendedorNombre: "v",
+      monto,
+    };
+  }
+
+  it.each([0, -1, -100, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "monto=%p ⇒ rechazo",
+    (monto) => {
+      expect(validarOperacion(baseRegistrarVenta(monto))).toBeUndefined();
+    },
+  );
+
+  it("monto positivo y finito ⇒ se sigue aceptando (regresión)", () => {
+    const input = baseRegistrarVenta(100);
+    expect(validarOperacion(input)).toBe(input);
+  });
+});
+
+describe("validarOperacion — strings sobre el tope de 256 caracteres se rechazan (hallazgo Reviewer, mismo tope que MAX_STRING_LENGTH en payloads.ts)", () => {
+  const stringLargo = "x".repeat(257);
+  const stringLimite = "x".repeat(256);
+
+  it.each([
+    { operacion: "resolver_decision_venta", token: stringLargo, decision: "confirmar" },
+    { operacion: "procesar_devolucion", token: "t", motivo: stringLargo },
+    { operacion: "crear_solicitud_interna", tipo: stringLargo, detalle: "x" },
+    { operacion: "crear_solicitud_interna", tipo: "x", detalle: stringLargo },
+    { operacion: "cancelar_solicitud_interna", solicitudId: stringLargo },
+    {
+      operacion: "registrar_venta",
+      clienteId: stringLargo,
+      clienteEmail: "c@example.com",
+      planNuevo: "p",
+      monto: 1,
+      vendedorNombre: "v",
+    },
+    {
+      operacion: "registrar_venta",
+      clienteId: "c",
+      clienteEmail: "c@example.com",
+      planNuevo: "p",
+      monto: 1,
+      vendedorNombre: stringLargo,
+    },
+    {
+      operacion: "registrar_venta",
+      clienteId: "c",
+      clienteEmail: "c@example.com",
+      planAnterior: stringLargo,
+      planNuevo: "p",
+      monto: 1,
+      vendedorNombre: "v",
+    },
+    { operacion: "consultar_reporte_comisiones", periodo: stringLargo },
+  ])("$operacion con un campo de 257 caracteres ⇒ rechazo", (input) => {
+    expect(validarOperacion(input)).toBeUndefined();
+  });
+
+  it("string de exactamente 256 caracteres (el límite) se sigue aceptando (regresión)", () => {
+    const input = { operacion: "crear_solicitud_interna", tipo: stringLimite, detalle: "x" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();

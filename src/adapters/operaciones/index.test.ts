@@ -106,6 +106,55 @@ describe("createOperacionesAdapter — rechazo de input inválido, sin invocar e
     expect(ejecutar).not.toHaveBeenCalled();
     expect(result.content[0].text.length).toBeGreaterThan(0);
   });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "registrar_venta con monto=%p ⇒ rechazo, sin invocar ejecutar (hallazgo Reviewer)",
+    async (monto) => {
+      const ejecutar = vi.fn();
+      const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+      const result = await invokeOperacionesTool(adapter, {
+        operacion: "registrar_venta",
+        clienteId: "c",
+        clienteEmail: "c@example.com",
+        planNuevo: "p",
+        vendedorNombre: "v",
+        monto,
+      });
+
+      expect(ejecutar).not.toHaveBeenCalled();
+      expect(result.content[0].text.length).toBeGreaterThan(0);
+    },
+  );
+
+  it("registrar_venta con monto positivo y finito ⇒ sigue delegando en ejecutar (regresión)", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, {
+      operacion: "registrar_venta",
+      clienteId: "c",
+      clienteEmail: "c@example.com",
+      planNuevo: "p",
+      vendedorNombre: "v",
+      monto: 100,
+    });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+
+  it("un campo string de más de 256 caracteres ⇒ rechazo, sin invocar ejecutar (hallazgo Reviewer)", async () => {
+    const ejecutar = vi.fn();
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    const result = await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA,
+      solicitudId: "x".repeat(257),
+    });
+
+    expect(ejecutar).not.toHaveBeenCalled();
+    expect(result.content[0].text.length).toBeGreaterThan(0);
+  });
 });
 
 describe("createOperacionesAdapter — delega en ejecutar y traduce el resultado", () => {
