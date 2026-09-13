@@ -1,10 +1,17 @@
 /**
- * Contrato + validación de la tool de consultas de negocio de sólo lectura
- * para el turno A2A entrante (`consultas-negocio-a2a-entrante`, tarea 4, PR2,
- * ADR 184). Este archivo arranca acá con la porción de VALIDACIÓN y crece en
- * la tarea 5 (PR3) con la orquestación (`handleConsultaNegocio`) y el
- * recorte de datos personales (ADR 180/186) — esa porción NO se adelanta
- * acá.
+ * Contrato + validación + orquestación de la tool de consultas de negocio de
+ * sólo lectura para el turno A2A entrante
+ * (`consultas-negocio-a2a-entrante`, tarea 4 PR2 + tarea 5 PR3, ADR 184,
+ * ADR 180/186). Arrancó en la tarea 4 con la porción de VALIDACIÓN
+ * (`validarConsultaNegocio`) y crece acá con la ORQUESTACIÓN
+ * (`ConsultasNegocioToolDeps`, `handleConsultaNegocio`) y el recorte de
+ * datos personales (ADR 180 pto 4, ADR 186 §7).
+ *
+ * CONTRATO NO NEGOCIABLE de `handleConsultaNegocio` (molde
+ * `knowledge-tool.ts` §"contrato no negociable"): nunca lanza ni rechaza, en
+ * ningún camino de falla — input rechazado, período inválido, referencia
+ * inexistente, o cualquiera de los cuatro puertos lanzando/rechazando
+ * internamente. Toda falla se traduce a texto degradado.
  *
  * `OperacionConsulta` es la unión discriminada de las CUATRO operaciones de
  * sólo lectura (ADR 178 de `proposal.md`, ADR 184 de `design.md` §5):
@@ -31,6 +38,12 @@
  * SÓLO por tipos a nivel de diseño (`ConsultasNegocioToolDeps`, tarea 5) —
  * esta porción de validación no acopla esa lógica todavía.
  */
+
+import type { ReporteStorePort } from "../ventas/reporte-contract.js";
+import { agruparReporteMensual, formatMoney, resolverPeriodoReporte } from "../ventas/reporte.js";
+import type { ConsultaActividadPort } from "../actividad/consulta-actividad-contract.js";
+import type { ConsultaSolicitudesPort } from "../solicitudes/consulta-solicitudes-contract.js";
+import type { ConsultaReembolsosPort } from "../ventas/consulta-reembolsos-contract.js";
 
 export const CONSULTAS_MCP_SERVER_NAME = "consultas";
 export const CONSULTAS_TOOL_NAME = "consultar_negocio";
@@ -143,4 +156,230 @@ export function validarConsultaNegocio(
   }
 
   return raw as unknown as OperacionConsulta;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Orquestación (tarea 5, PR3, ADR 180/186)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Bolsa plana de colaboradores, molde `KnowledgeToolDeps`
+ * (`adapters/knowledge/knowledge-tool.ts`): cada campo es un colaborador
+ * distinto y testeable con su propio doble — no un puerto ni una fusión
+ * semántica (ADR 182 pto 5).
+ */
+export interface ConsultasNegocioToolDeps {
+  /** Correlación (mismo criterio que `KnowledgeToolDeps.casoId`). */
+  readonly casoId: string;
+  readonly reporteStore: ReporteStorePort;
+  readonly actividadPort: ConsultaActividadPort;
+  readonly solicitudesPort: ConsultaSolicitudesPort;
+  readonly reembolsosPort: ConsultaReembolsosPort;
+  readonly logEvent: (event: string, fields?: Readonly<Record<string, unknown>>) => void;
+}
+
+/**
+ * `resolverPeriodoReporte` sólo lee `ahora` cuando `argumento === undefined`.
+ * `periodo` es SIEMPRE un string en `reporte_comisiones` acá porque
+ * `validarConsultaNegocio` ya lo exige como campo requerido (tarea 4) —
+ * ese branch es inalcanzable en la práctica. Este valor existe únicamente
+ * para satisfacer la firma de la función pura reusada, sin duplicar su
+ * lógica de resolución de "mes corriente".
+ */
+const AHORA_INALCANZABLE = "1970-01-01T00:00:00.000Z";
+
+type ConsultaSegura<T> = { readonly ok: true; readonly valor: T } | { readonly ok: false };
+
+/**
+ * Ejecuta `fn` (una llamada a UNO de los cuatro puertos) atrapando tanto un
+ * `throw` sincrónico como cualquier excepción — nunca deja que
+ * `handleConsultaNegocio` propague (Punto obligatorio 3, molde
+ * `knowledge-tool.ts`: el `try/catch` envuelve la llamada al colaborador
+ * inyectado, no la función entera).
+ */
+function consultarSeguro<T>(
+  fn: () => T,
+  deps: Pick<ConsultasNegocioToolDeps, "casoId" | "logEvent">,
+  operacion: OperacionConsulta["operacion"],
+): ConsultaSegura<T> {
+  try {
+    return { ok: true, valor: fn() };
+  } catch (error) {
+    deps.logEvent("consulta-negocio-error", {
+      casoId: deps.casoId,
+      operacion,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { ok: false };
+  }
+}
+
+const MENSAJE_ERROR_PUERTO: Readonly<Record<OperacionConsulta["operacion"], string>> = {
+  [OPERACION_REPORTE_COMISIONES]: "NO SE PUDO CONSULTAR el reporte de comisiones. Intentá de nuevo más tarde.",
+  [OPERACION_ESTADO_ACTIVIDAD]: "NO SE PUDO CONSULTAR el estado de la actividad. Intentá de nuevo más tarde.",
+  [OPERACION_SOLICITUDES_PENDIENTES]:
+    "NO SE PUDO CONSULTAR las solicitudes internas pendientes. Intentá de nuevo más tarde.",
+  [OPERACION_REEMBOLSOS_PENDIENTES]: "NO SE PUDO CONSULTAR los reembolsos pendientes. Intentá de nuevo más tarde.",
+};
+
+/**
+ * Formatea el agregado de `reporte_comisiones` (ADR 186 §7): `periodo`,
+ * cantidad de vendedores con ventas, suma de `ventasConfirmadas`, suma de
+ * `montoVendido`, `totalComisionado` (ya viene sumado por
+ * `agruparReporteMensual`), suma de `ventasConReembolso`. Función NUEVA, SIN
+ * nombre compartido con `formatearReporteMensual` — no imprime la tabla
+ * `filas` ni `reembolsosPendientes` (ADR 186, decisión explícita).
+ */
+function formatearAgregadoReporteComisiones(reporte: {
+  readonly periodo: string;
+  readonly filas: readonly { readonly ventasConfirmadas: number; readonly montoVendido: number; readonly ventasConReembolso: number }[];
+  readonly totalComisionado: number;
+}): string {
+  const ventasConfirmadas = reporte.filas.reduce((acc, f) => acc + f.ventasConfirmadas, 0);
+  const montoVendido = reporte.filas.reduce((acc, f) => acc + f.montoVendido, 0);
+  const ventasConReembolso = reporte.filas.reduce((acc, f) => acc + f.ventasConReembolso, 0);
+
+  return [
+    `Reporte de comisiones (agregado) - periodo ${reporte.periodo}`,
+    `Vendedores con ventas: ${reporte.filas.length}`,
+    `Ventas confirmadas: ${ventasConfirmadas}`,
+    `Monto vendido: ${formatMoney(montoVendido)}`,
+    `Total comisionado: ${formatMoney(reporte.totalComisionado)}`,
+    `Ventas con reembolso: ${ventasConReembolso}`,
+  ].join("\n");
+}
+
+async function handleReporteComisiones(
+  op: OperacionReporteComisiones,
+  deps: ConsultasNegocioToolDeps,
+): Promise<string> {
+  const resuelto = resolverPeriodoReporte(op.periodo, AHORA_INALCANZABLE);
+  if (!resuelto.ok) {
+    return `CONSULTA RECHAZADA: ${resuelto.mensaje}`;
+  }
+
+  const resultado = consultarSeguro(
+    () => deps.reporteStore.listComisionesPorPeriodo(resuelto.periodo),
+    deps,
+    OPERACION_REPORTE_COMISIONES,
+  );
+  if (!resultado.ok) {
+    return MENSAJE_ERROR_PUERTO[OPERACION_REPORTE_COMISIONES];
+  }
+
+  // `reembolsosPendientes` NO se consulta acá: `agruparReporteMensual` lo
+  // exige como parámetro pero el recorte del ADR 186 nunca lo usa en la
+  // salida de A2A — esa lista la cubre la operación `reembolsos_pendientes`,
+  // con su propio puerto (`ConsultaReembolsosPort`). Pasar `[]` evita una
+  // lectura extra del `ReporteStorePort` que después se descartaría.
+  const reporte = agruparReporteMensual({ periodo: resuelto.periodo, comisiones: resultado.valor, reembolsosPendientes: [] });
+  deps.logEvent("consulta-negocio-ok", { casoId: deps.casoId, operacion: OPERACION_REPORTE_COMISIONES });
+  return formatearAgregadoReporteComisiones(reporte);
+}
+
+async function handleEstadoActividad(
+  op: OperacionEstadoActividad,
+  deps: ConsultasNegocioToolDeps,
+): Promise<string> {
+  const resultado = consultarSeguro(
+    () => deps.actividadPort.buscarPorReferencia({ proyectoId: op.proyectoId, referenciaExterna: op.referenciaExterna }),
+    deps,
+    OPERACION_ESTADO_ACTIVIDAD,
+  );
+  if (!resultado.ok) {
+    return MENSAJE_ERROR_PUERTO[OPERACION_ESTADO_ACTIVIDAD];
+  }
+
+  const resumen = resultado.valor;
+  if (resumen === undefined) {
+    return `SIN RESULTADOS: no se encontró actividad para el proyecto "${op.proyectoId}" con referencia "${op.referenciaExterna}".`;
+  }
+
+  deps.logEvent("consulta-negocio-ok", { casoId: deps.casoId, operacion: OPERACION_ESTADO_ACTIVIDAD });
+  return [
+    `Estado de actividad - proyecto ${op.proyectoId}, referencia ${op.referenciaExterna}`,
+    `Estado: ${resumen.estado}`,
+    `Actualizado: ${resumen.updatedAt}`,
+  ].join("\n");
+}
+
+async function handleSolicitudesPendientes(deps: ConsultasNegocioToolDeps): Promise<string> {
+  const resultado = consultarSeguro(
+    () => deps.solicitudesPort.listarPendientes(),
+    deps,
+    OPERACION_SOLICITUDES_PENDIENTES,
+  );
+  if (!resultado.ok) {
+    return MENSAJE_ERROR_PUERTO[OPERACION_SOLICITUDES_PENDIENTES];
+  }
+
+  const solicitudes = resultado.valor;
+  const porTipo = new Map<string, number>();
+  for (const solicitud of solicitudes) {
+    porTipo.set(solicitud.tipo, (porTipo.get(solicitud.tipo) ?? 0) + 1);
+  }
+  const desglose = [...porTipo.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([tipo, cantidad]) => `- ${tipo}: ${cantidad}`)
+    .join("\n");
+
+  deps.logEvent("consulta-negocio-ok", { casoId: deps.casoId, operacion: OPERACION_SOLICITUDES_PENDIENTES });
+  return [
+    "Solicitudes internas pendientes",
+    `Total: ${solicitudes.length}`,
+    solicitudes.length === 0 ? "(sin desglose)" : desglose,
+  ].join("\n");
+}
+
+async function handleReembolsosPendientes(deps: ConsultasNegocioToolDeps): Promise<string> {
+  const resultado = consultarSeguro(
+    () => deps.reembolsosPort.listPendientes(),
+    deps,
+    OPERACION_REEMBOLSOS_PENDIENTES,
+  );
+  if (!resultado.ok) {
+    return MENSAJE_ERROR_PUERTO[OPERACION_REEMBOLSOS_PENDIENTES];
+  }
+
+  const escalaciones = resultado.valor;
+  const montoTotal = escalaciones.reduce((acc, escalacion) => acc + escalacion.monto, 0);
+
+  deps.logEvent("consulta-negocio-ok", { casoId: deps.casoId, operacion: OPERACION_REEMBOLSOS_PENDIENTES });
+  return [
+    "Reembolsos pendientes de aprobación",
+    `Total: ${escalaciones.length}`,
+    `Monto total: ${formatMoney(montoTotal)}`,
+  ].join("\n");
+}
+
+/**
+ * Punto de entrada de la tool `mcp__consultas__consultar_negocio` (el
+ * adaptador MCP de la tarea 6, fuera de esta tarea, envuelve este texto en
+ * un `CallToolResult`). Delega en `validarConsultaNegocio` primero, luego en
+ * el puerto correspondiente, y aplica el recorte del ADR 186 §7 antes de
+ * formatear el texto.
+ *
+ * CONTRATO NO NEGOCIABLE: nunca lanza ni rechaza, en ningún camino de falla
+ * — ver el comentario de cabecera del archivo.
+ */
+export async function handleConsultaNegocio(
+  input: Readonly<Record<string, unknown>>,
+  deps: ConsultasNegocioToolDeps,
+): Promise<string> {
+  const operacionValidada = validarConsultaNegocio(input);
+  if ("rechazo" in operacionValidada) {
+    deps.logEvent("consulta-negocio-rechazo", { casoId: deps.casoId, rechazo: operacionValidada.rechazo });
+    return `CONSULTA RECHAZADA: ${operacionValidada.rechazo}`;
+  }
+
+  switch (operacionValidada.operacion) {
+    case OPERACION_REPORTE_COMISIONES:
+      return handleReporteComisiones(operacionValidada, deps);
+    case OPERACION_ESTADO_ACTIVIDAD:
+      return handleEstadoActividad(operacionValidada, deps);
+    case OPERACION_SOLICITUDES_PENDIENTES:
+      return handleSolicitudesPendientes(deps);
+    case OPERACION_REEMBOLSOS_PENDIENTES:
+      return handleReembolsosPendientes(deps);
+  }
 }
