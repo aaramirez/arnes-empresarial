@@ -32,6 +32,8 @@ import {
   type ResolucionHitlResult,
 } from "../hitl/hitl-contract.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
+import type { RolEmpleadoPort } from "../auth/rol-contract.js";
+import { puedeResolverAjeno } from "../auth/autorizacion-resolucion.js";
 
 export const ACCION_APROBAR_SOLICITUD = "aprobar";
 export const ACCION_RECHAZAR_SOLICITUD = "rechazar";
@@ -50,7 +52,11 @@ function esAccionAutoservicio(accion: AccionSolicitud): boolean {
  * Genérico + lo propio de este dominio (ADR 126 consecuencia, ADR 130).
  * `hitl-contract.ts` NO se toca. La variante `no_es_dueno` NO lleva `item`:
  * el handler no puede filtrar el `detalle` de una solicitud ajena porque no
- * lo recibe (R6, garantía estructural, no de disciplina).
+ * lo recibe (R6, garantía estructural, no de disciplina). `no_autorizado` y
+ * `autoaprobacion_prohibida` (ADR 153/155/159, tarea 3.1) SÍ llevan `casoId`
+ * — deviación explícita del molde `no_es_dueno`, que no lo necesita porque
+ * nunca escribe una fila de auditoría: el dispatcher usa `casoId` para
+ * correlacionar la fila que sí escribe con `registrar()` (ADR 161).
  */
 export type ResolverSolicitudResult =
   | ResolucionHitlResult<SolicitudInterna, AccionSolicitud, SolicitudEstado>
@@ -58,6 +64,18 @@ export type ResolverSolicitudResult =
       readonly resultado: "no_es_dueno";
       readonly accion: AccionSolicitud;
       readonly itemId: string;
+    }
+  | {
+      readonly resultado: "no_autorizado";
+      readonly accion: AccionSolicitud;
+      readonly itemId: string;
+      readonly casoId: string;
+    }
+  | {
+      readonly resultado: "autoaprobacion_prohibida";
+      readonly accion: AccionSolicitud;
+      readonly itemId: string;
+      readonly casoId: string;
     };
 
 export interface ResolverSolicitudDeps {
@@ -72,6 +90,12 @@ export interface ResolverSolicitudDeps {
   ) => void;
   /** Tope del listado sin argumento. Default `LIMITE_LISTADO_SOLICITUDES` (20). */
   readonly limiteListado?: number;
+  /**
+   * Requerido, no opcional (ADR 153 pto 1, ADR 159): imposible de compilar un
+   * call site o un test que "olvide" pasar el puerto de rol. Mismo criterio
+   * que `resolver-escalacion-reembolso.ts`.
+   */
+  readonly rolPort: RolEmpleadoPort;
 }
 
 const EVENTO_SOLICITUD_APLICADA: Record<AccionSolicitud, string> = {
@@ -186,6 +210,30 @@ export function resolverSolicitudInterna(
   if (!confirmado) {
     logEvent(solicitud.casoId, "solicitud-resolucion-solicitada", { accion, solicitudId });
     return { resultado: "requiere_confirmacion", accion, item: solicitud };
+  }
+
+  // Gate de rol + prohibición de autoaprobación (ADR 153/155/159, tarea 3.1):
+  // SOLO para lo que NO es autoservicio — no toca ni subsume
+  // `esAccionAutoservicio` (ADR 154 pto 4). Orden exacto de RD-78: rol
+  // primero, autoaprobación después — son preguntas independientes (ADR 155),
+  // pero el orden decide qué mensaje ve cada actor (design.md §4).
+  if (!esAccionAutoservicio(accion)) {
+    if (!puedeResolverAjeno(deps.rolPort, sesion.empleadoId)) {
+      logEvent(solicitud.casoId, "solicitud-resolucion-no-autorizada", {
+        accion,
+        solicitudId,
+        empleadoId: sesion.empleadoId,
+      });
+      return { resultado: "no_autorizado", accion, itemId: solicitudId, casoId: solicitud.casoId };
+    }
+    if (solicitud.solicitanteId === sesion.empleadoId) {
+      logEvent(solicitud.casoId, "solicitud-autoaprobacion-rechazada", {
+        accion,
+        solicitudId,
+        empleadoId: sesion.empleadoId,
+      });
+      return { resultado: "autoaprobacion_prohibida", accion, itemId: solicitudId, casoId: solicitud.casoId };
+    }
   }
 
   const resolucionInput: ResolucionSolicitudInput = {
