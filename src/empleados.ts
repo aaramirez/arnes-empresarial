@@ -25,6 +25,7 @@
  */
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import Database from "better-sqlite3";
 import { hashPassword } from "./adapters/crypto/password.js";
 import { openDatabase } from "./adapters/memory/db.js";
 import {
@@ -43,8 +44,11 @@ const ROLES_VALIDOS = new Set<string>(ROLES_EMPLEADO);
 
 /** Guarda de FORMA, no de política: este string es la columna de actor de
  *  cada fila de auditoría y se imprime en el eco de `/login`. Un id con
- *  espacios o saltos de línea rompería el parseo posicional de `/login`. */
-const ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+ *  espacios o saltos de línea rompería el parseo posicional de `/login`.
+ *  Exportada (comandos-administracion-empleados, tarea 1, ADR 181/RD-82):
+ *  `altaCredencialEmpleado` la reusa tal cual, mismo criterio de guarda de
+ *  forma para `/crear-empleado` (PR3, bloqueada). */
+export const ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export type ParseArgsEmpleadoResult =
   | { readonly ok: true; readonly empleadoId: string; readonly modo: "alta" | "rotar" }
@@ -151,6 +155,44 @@ async function leerPasswordDeStdin(): Promise<string> {
 }
 
 /**
+ * Función pura-de-efectos-acotados, exportada (comandos-administracion-empleados,
+ * tarea 1, ADR 181/RD-82): extrae la secuencia que hoy vive en el cuerpo de
+ * `main()`'s rama `"alta"` (`hashPassword` → `insertCredencialEmpleado` →
+ * catch de `CredencialEmpleadoDuplicadaError`) para que `/crear-empleado`
+ * (PR3, bloqueada) la reuse SIN invocar el script como subproceso —
+ * alternativa rechazada por `proposal.md` ADR 174 (meter `child_process` en
+ * el camino de un comando de la TUI, con la contraseña por `stdin` o
+ * `argv`). `main()` pasa a LLAMAR a esta función en vez de repetir su
+ * cuerpo. Lo que NO se comparte, a conciencia: `leerPasswordDeStdin()` (I/O
+ * de terminal, no aplica a la TUI) y el `process.exit` (el dispatcher de la
+ * TUI devuelve `TuiTurnResult`, nunca termina el proceso).
+ */
+export function altaCredencialEmpleado(
+  db: Database.Database,
+  input: { readonly empleadoId: string; readonly password: string; readonly ahora: string },
+): { readonly ok: true } | { readonly ok: false; readonly mensaje: string } {
+  if (!ID_REGEX.test(input.empleadoId)) {
+    return { ok: false, mensaje: `empleadoId inválido: "${input.empleadoId}"` };
+  }
+  if (input.password.trim() === "") {
+    return { ok: false, mensaje: "La contraseña no puede estar vacía" };
+  }
+  try {
+    insertCredencialEmpleado(db, {
+      empleadoId: input.empleadoId,
+      passwordHash: hashPassword(input.password),
+      ahora: input.ahora,
+    });
+  } catch (error) {
+    if (error instanceof CredencialEmpleadoDuplicadaError) {
+      return { ok: false, mensaje: `Ya existe una credencial para "${input.empleadoId}"` };
+    }
+    throw error;
+  }
+  return { ok: true };
+}
+
+/**
  * Exportada (a diferencia del resto del archivo, que solo exportaba
  * `parseArgsEmpleado`) porque `"asignar-rol"` necesita test de integración:
  * es un invariante de seguridad (nunca crear una fila de rol huérfana sobre
@@ -192,23 +234,19 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const hash = hashPassword(password);
   const db = openDatabase("data/harness.db");
   try {
     const ahora = new Date().toISOString();
     if (parsed.modo === "alta") {
-      try {
-        insertCredencialEmpleado(db, { empleadoId: parsed.empleadoId, passwordHash: hash, ahora });
-      } catch (error) {
-        if (error instanceof CredencialEmpleadoDuplicadaError) {
-          process.stderr.write(`Ya existe una credencial para "${parsed.empleadoId}"\n`);
-          process.exit(1);
-          return;
-        }
-        throw error;
+      const resultado = altaCredencialEmpleado(db, { empleadoId: parsed.empleadoId, password, ahora });
+      if (!resultado.ok) {
+        process.stderr.write(`${resultado.mensaje}\n`);
+        process.exit(1);
+        return;
       }
       process.stdout.write(`Empleado ${parsed.empleadoId} creado.\n`);
     } else {
+      const hash = hashPassword(password);
       const rotada = updateCredencialEmpleado(db, {
         empleadoId: parsed.empleadoId,
         passwordHash: hash,
