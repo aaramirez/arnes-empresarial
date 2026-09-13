@@ -489,6 +489,18 @@ Mapeo de los Bloques de Construcción a Infraestructura
 
 No se abre un Nivel 2 de infraestructura: todos los bloques corren dentro del mismo proceso, sobre una única máquina — no hay contenedores, clústeres ni servicios desplegados por separado que justifiquen un diagrama propio. Si una iteración futura separa el Adaptador A2A en su propio proceso para exponerlo como servidor accesible desde otras máquinas, ese sería el primer candidato a un elemento de Nivel 2.
 
+## Nota de despliegue: provisioning del rol elevado (v3.5, `autorizacion-empleado`)
+
+La migración `0013` (tabla `roles_empleado`) dejó a **todos** los empleados existentes en rol base por ausencia de fila (default deny, sin backfill — ADR 156/157 de `autorizacion-empleado`). Consecuencia operativa, no un detalle de implementación: al mergear este change, **nadie puede aprobar un reembolso escalado ni una solicitud interna hasta que alguien reciba el rol elevado por CLI**.
+
+Comando exacto para asignar el rol elevado a un `empleadoId` que ya tiene credencial:
+
+```
+npm run empleados:crear -- <empleadoId> --rol administrador
+```
+
+**Ya ejecutado en este entorno**: el primer `administrador` es el empleado **`jimmy`**, resuelto por el checkpoint humano (ADR 156 pto 3) y asignado con el comando de arriba antes del cierre de este change. Cualquier entorno nuevo que reciba este merge (otro checkout, un ambiente de staging, etc.) necesita repetir esa asignación sobre su propio `empleadoId` administrador antes de que quede alguien operando reembolsos o solicitudes.
+
 # Conceptos Transversales (Cross-cutting)
 
 Los siguientes conceptos atraviesan varios bloques de construcción a la vez: si no se deciden una sola vez, cada adaptador los resolvería de forma distinta y el sistema quedaría inconsistente.
@@ -512,6 +524,17 @@ El Ensamblador de Contexto arma el turno que recibirá el modelo (prompt, herram
 ## Concepto 5: Secuencia de arranque del proceso
 
 Registro de Agentes, Registro de Comandos, Motor de Hooks y Registro de Skills se cargan "al iniciar el arnés", pero no hay ningún lado que diga en qué orden, ni qué pasa si un comando referencia un agente que todavía no cargó, o si un hook necesita registrarse antes de que el Selector de Turno acepte el primer prompt. Toca a los cuatro registros del Nivel 2 a la vez — cross-cutting real.
+
+## Concepto 6: Autenticación vs. autorización de empleado (v3.5, `autorizacion-empleado`)
+
+Hasta v3.4 el arnés solo sabía responder *quién sos*: `/login` verifica una contraseña contra un hash scrypt y abre una `SesionEmpleado` con TTL (Hito `tui-canal-empleado`, ADR 30-32). Ninguna función del núcleo sabía responder *qué podés* — cualquier empleado con sesión vigente podía resolver la escalación de reembolso o la solicitud interna de cualquier otro, e incluso aprobar la suya propia. Desde v3.5 (`autorizacion-empleado`) las dos preguntas están separadas a propósito, en objetos, tablas y momentos de lectura distintos:
+
+- **Autenticación** (*quién sos*) — sin cambios: `src/core/auth/sesion.ts` sigue siendo `{ empleadoId, iniciadaEn, expiraEn? }`, producida únicamente por `resolverLogin`, y no se tocó ni una línea en este change.
+- **Autorización** (*qué podés*) — nueva: un **rol de empleado enumerado** con exactamente dos valores, `empleado` (base) y `administrador` (elevado), vive en su propia tabla `roles_empleado` (`empleado_id TEXT PRIMARY KEY, rol TEXT NOT NULL, created_at, updated_at`; migración `0013`, aditiva, sin `CHECK`, sin FK — mismo criterio que el resto del esquema de empleado, cuyas filas sobreviven a lo que le pase a quien las originó).
+- **Cómo se lee**: por un puerto de una sola operación (`RolEmpleadoPort.buscarRol(empleadoId)`), en el momento exacto de la decisión — **nunca cacheado en `SesionEmpleado`**. Consecuencia deliberada: quitarle el rol elevado a un empleado tiene efecto **inmediato**, sin esperar a que su sesión expire (una sesión sin `expiraEn` puede no expirar nunca).
+- **Qué gatea**: únicamente la pregunta *"¿puede resolver lo ajeno?"*, evaluada por el único punto de decisión del repo (`puedeResolverAjeno`, `src/core/auth/autorizacion-resolucion.ts`) desde adentro de las dos funciones deterministas afectadas — `resolverEscalacionReembolso` (aprobar/rechazar/reabrir una escalación de reembolso ajena) y `resolverSolicitudInterna` (aprobar/rechazar una solicitud interna ajena). Un `empleado_id` sin fila en `roles_empleado` cae al rol base, nunca al elevado (default deny, sin backfill: la ausencia de fila **es** la denegación).
+- **Prohibición de autoaprobación** — independiente del rol: `aprobar`/`rechazar` una solicitud interna cuyo `solicitante_id` sea el propio `sesion.empleadoId` se rechaza **aunque el empleado tenga rol `administrador`**. Es separación de funciones, no un tercer valor de rol, y no aplica a la escalación de reembolso (ver Deuda 5, R7).
+- **Lo que NO cambió**: `esAccionAutoservicio` (que permite a cualquier empleado cancelar su propia solicitud) sigue siendo la única fuente de verdad para ese caso; el campo `privilegiado` de `comando-empleado.ts` (que solo exige sesión vigente) no se resignificó — los comandos de solo lectura siguen respondiendo con cualquier sesión activa, sin exigir rol elevado.
 
 # Decisiones de Diseño
 
@@ -643,6 +666,12 @@ Evidencia: `src/test/integration/a2a-server.integration.test.ts` (Hito 7, tarea 
 
 Alcance de la confirmación: el escenario probado (3 `SendMessage` + 1 webhook, turno de negocio mockeado con `handleTurn`) no reprodujo contención ni error de bloqueo — el turno A2A entrante es de lectura y no usa `KeyedQueue` (ADR 90 pto 7), y el webhook de actividad sigue serializado por su propia `KeyedQueue` por `proyectoId`. No queda probado el comportamiento bajo un volumen de escritura mayor al de este escenario; si el volumen real lo exige, sigue pendiente evaluar WAL mode de SQLite, cola de escrituras, o un motor con mejor soporte de concurrencia.
 
+**Riesgo 3 (R10): Ausencia de modelo de autorización — CERRADO en v3.5 (`autorizacion-empleado`)**
+
+Descripción: `tui-canal-empleado` (v1.4.0) dejó documentado, en tres lugares distintos (`proposal.md:65,586` y el encabezado de la migración `0006_credenciales_empleado.ts:11-16`), que autenticar a un empleado no implica saber qué puede hacer: cualquier empleado con sesión vigente podía aprobar el reembolso escalado de cualquier venta, resolver la solicitud interna de cualquier compañero, y **aprobar la suya propia**. `operaciones-negocio-conversacionales` nombró esta deuda **R10** y bloqueó su propio ADR 151 (mover los comandos privilegiados a conversación) hasta que se cerrara — decisión del checkpoint humano.
+
+Cierre: con `autorizacion-empleado` (v3.5), el gate de autorización (`puedeResolverAjeno`) queda dentro de `resolverEscalacionReembolso` y `resolverSolicitudInterna`, y la prohibición de autoaprobación queda dentro de `resolverSolicitudInterna` (Concepto Transversal 6). Evidencia: los tests de las tareas 2.2 y 3.1 de `autorizacion-empleado/tasks.md` demuestran, con un empleado de rol base, que ni la escalación de reembolso ni la solicitud interna ajenas se pueden resolver — un escenario que antes de este change pasaba en verde y ahora falla por diseño — y que un empleado con rol `administrador` sí puede, salvo sobre su propia solicitud.
+
 **Deudas Técnicas**
 
 **Deuda 1: Política concreta de manejo de errores sin especificar**
@@ -668,6 +697,12 @@ Plan: validar con el tutor u otro usuario real una vez que la TUI esté operativ
 Descripción: el objetivo específico 6 del alcance ("Crear el arnés básico con TUI que maneje... Definición de Skills") lista Skills junto con agentes/subagentes, comandos, hooks y A2A. De esos cinco, Agentes/subagentes (v2.0.0), Comandos (v1.4.0), Hooks (Motor de Hooks propio, Hito 1 tarea 6, invocado en `invoke-model.ts`) y A2A (cliente v2.2.0, servidor v3.0) están implementados y ejercitados. **Skills nunca se implementó**: `Options.skills` del Claude Agent SDK no se lee ni se popula en ningún punto de `src/core` — confirmado por auditoría (grep completo sobre `src/core`) y por el propio comentario de `invoke-model.test.ts` ("`skills`, `plugins`, `uuid`... que `invokeModel` nunca lee").
 
 Cierre: con `definicion-skills` (v3.1.0), el Registro de Skills queda implementado y ejercitado de punta a punta. El cargador (`src/core/skills/skill-frontmatter.ts` + `descubrir-skills.ts` + `skills-habilitadas.ts`) descubre `.claude/skills/<nombre>/SKILL.md` desde disco real, con DI de filesystem (molde `turn-logger.ts`) y valida el frontmatter contra una whitelist de exactamente dos campos (`name`/`description`, tope 1024 — más estricta que el SDK, a propósito, ADR 110). Es el **tercer** registro que fija `bootstrapHarness` (después de Agentes y Hooks), con la misma semántica degrada/aborta que el resto del arnés (`HarnessBootstrapError`, ADR 111). `toQueryOptions`/`invokeModel` (`src/core/turn-selector/invoke-model.ts`) emiten `skills` y `settingSources: ["project"]` dentro del literal inicial de `Options` — nunca detrás de un `if`, nunca `'all'`, nunca omitidos (ADR 108). Al menos una skill real y versionada (`citar-conocimiento`, `.claude/skills/citar-conocimiento/SKILL.md`) queda entregada dentro de este mismo change, sujeta a los tres límites del ADR 106. `src/test/integration/skills.integration.test.ts` ejercita el invariante negativo contra disco real (una skill plantada fuera de `.claude/skills/` nunca aparece habilitada) y verifica RD-48 (que `process.cwd()` y la raíz derivada de `import.meta.url` resuelven la misma base). Ya no queda ninguna de las cinco capacidades del objetivo específico 6 sin implementar.
+
+**Deuda 5 (R7): Autoaprobación de reembolso por el propio vendedor — DECLARADA, no resuelta**
+
+Descripción: el gate de `autorizacion-empleado` (v3.5) exige rol `administrador` para resolver una escalación de reembolso ajena, pero no puede impedir que un vendedor con ese rol apruebe el reembolso escalado de **su propia venta**. La prohibición de autoaprobación (Concepto Transversal 6) solo aplica a solicitudes internas, no a escalaciones de reembolso, porque `vendedores` (`id`, `nombre`, `created_at`) y `credenciales_empleado`/`roles_empleado` (`empleado_id`) son **dos espacios de identidades sin ninguna ligadura** — ni FK, ni columna, ni código que traduzca un `vendedor_id` a un `empleado_id`. `resolverEscalacionReembolso` usa `sesion.empleadoId` únicamente para atribución (auditoría), nunca para compararlo contra el `vendedor_id` de la venta.
+
+Condición de disparo para resolverlo: unificar esos dos espacios de identidades — decidir si un `vendedor_id` corresponde a un `empleado_id` real y, si es así, agregar la ligadura (FK o columna) que hoy no existe. Es una limpieza de modelo de datos legítima, deliberadamente **fuera de alcance** de `autorizacion-empleado` (ADR 155 pto 3 de esa propuesta): mezclar esa unificación con el cierre de R10 habría atado una decisión de negocio no pedida a un change que ya tenía su propio riesgo de alcance. Queda declarada con el mismo tratamiento que este arnés le dio a R10 hasta que se resolvió: nombrada, ubicada y con dueño (el change que unifique las identidades), pero no resuelta acá.
 
 # Glosario
 

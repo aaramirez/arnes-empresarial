@@ -199,6 +199,16 @@ Comandos TUI privilegiados (Hito 5.1) para revisar el diff que produjo el Develo
 | `/aplicar-propuesta` | `/aplicar-propuesta <propuestaId>` | Aplica el patch de una propuesta de cambio aprobada. |
 | `/descartar-propuesta` | `/descartar-propuesta <propuestaId> [motivo]` | Descarta una propuesta de cambio pendiente sin aplicarla. |
 
+### Roles de empleado y autorización
+
+Desde v3.5.0 (`autorizacion-empleado`), `/login` sigue respondiendo *quién sos*; un rol de empleado, persistido aparte (`roles_empleado`), responde *qué podés*. Dos valores, sin matriz de permisos: `empleado` (base) y `administrador` (elevado, puede resolver una escalación de reembolso o una solicitud interna de **otro** empleado). Un `empleadoId` sin fila de rol queda en `empleado` por default — el sistema deniega salvo asignación explícita. Un `administrador` **no** puede aprobar ni rechazar su propia solicitud interna, con rol o sin él.
+
+Asignar el rol elevado a un empleado que ya tiene credencial:
+
+```sh
+npm run empleados:crear -- <empleadoId> --rol administrador
+```
+
 ### Comandos de solicitud interna
 
 Comandos TUI privilegiados para resolver una solicitud interna (`/solicitar`) mientras está `pendiente_aprobacion_humana`:
@@ -209,7 +219,7 @@ Comandos TUI privilegiados para resolver una solicitud interna (`/solicitar`) mi
 | `/rechazar-solicitud` | `/rechazar-solicitud [solicitudId]` | Rechaza una solicitud interna pendiente (lista las pendientes si se omite el id). |
 | `/cancelar-solicitud` | `/cancelar-solicitud [solicitudId]` | Retira una solicitud propia que todavía está pendiente (lista las pendientes si se omite el id). |
 
-`/aprobar-solicitud` y `/rechazar-solicitud` los ejecuta cualquier empleado autorizado sobre solicitudes de otros. `/cancelar-solicitud`, en cambio, sólo lo puede ejecutar el propio solicitante (`solicitud.solicitanteId === sesion.empleadoId`) — un tercero recibe un rechazo sin ver el `detalle` de la solicitud. Los tres comandos sólo alcanzan una solicitud en estado `pendiente_aprobacion_humana`: una ya `aprobada`, `rechazada` o `cancelada` responde igual que un id inexistente. No existe `/reabrir-solicitud`: cancelar deja la solicitud en un estado terminal.
+`/aprobar-solicitud` y `/rechazar-solicitud` sobre la solicitud de **otro** empleado exigen rol `administrador` (v3.5.0, ver [Roles de empleado y autorización](#roles-de-empleado-y-autorización)) — un empleado con rol base recibe un rechazo distinguible ("no estás autorizado"). Sobre la **propia** solicitud, ambos comandos se rechazan siempre ("no podés aprobar/rechazar la tuya"), tenga o no rol elevado. `/cancelar-solicitud`, en cambio, sólo lo puede ejecutar el propio solicitante (`solicitud.solicitanteId === sesion.empleadoId`), sin exigir ningún rol — un tercero recibe un rechazo sin ver el `detalle` de la solicitud. Los tres comandos sólo alcanzan una solicitud en estado `pendiente_aprobacion_humana`: una ya `aprobada`, `rechazada` o `cancelada` responde igual que un id inexistente. No existe `/reabrir-solicitud`: cancelar deja la solicitud en un estado terminal.
 
 ### Reporte de comisiones: dos vías
 
