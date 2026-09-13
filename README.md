@@ -273,6 +273,18 @@ Los tres comandos TUI de autoservicio (`/devolucion`, `/solicitar`, `/cancelar-s
 
 **R12, heredada y aceptada, no un bug pendiente**: `consultar_reporte_comisiones` no tiene gate de rol ni admite escopar por vendedor — mismo comportamiento que ya tenía `/reporte-comisiones` por TUI. El checkpoint aceptó esto explícitamente; detalle completo en el arc42 (Riesgo 4, R12).
 
+### Estado del bot de PRs (comandos-administracion-empleados, PR1)
+
+Comando TUI privilegiado (`privilegiado: true`) de **solo lectura**, sin gate de rol (`requiereAdministrador: false`) — enmienda del checkpoint al diferido de la configuración del bot de PRs desde la TUI (ver [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md)):
+
+| Comando | Uso | Descripción |
+| --- | --- | --- |
+| `/estado-bot-prs` | `/estado-bot-prs` | Muestra si el listener de webhooks está escuchando (y en qué puerto/path) y si `GITHUB_TOKEN` está configurado — como presencia booleana, nunca como valor. |
+
+No escribe en ninguna tabla, no modifica configuración del listener, y no revela `GITHUB_WEBHOOK_SECRET` ni `GITHUB_TOKEN` en su respuesta. Configurar esos secretos desde la TUI sigue diferido — este comando sólo responde "¿está andando?".
+
+> **Registro de Comandos, conteo real**: al momento de este agregado, `DESCRIPTORES` tiene **dieciséis** entradas (los quince heredados más `/estado-bot-prs`). `/crear-empleado` y `/asignar-rol` (el resto de `comandos-administracion-empleados`) todavía no existen — llegan en una PR posterior, bloqueada hasta que `autorizacion-empleado` esté disponible en la rama.
+
 ### Skills (`.claude/skills/`)
 
 El arnés descubre skills en `.claude/skills/<nombre>/SKILL.md` — no en `src/core/skills/` (ese directorio es el cargador en TypeScript; el contenido de cada skill vive en el árbol versionado del repo, fuera de `src/`). Una skill empaqueta un procedimiento opcional que el modelo puede elegir invocar durante el turno; a diferencia de `allowedTools`, habilitarla no concede ninguna herramienta nueva.
