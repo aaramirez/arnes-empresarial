@@ -21,6 +21,7 @@ export const COMANDO_CONSULTAR_KPI = "/consultar-kpi"; // Hito 6, ADR 85
 export const COMANDO_REPORTE_COMISIONES = "/reporte-comisiones"; // comando-reporte-comisiones, ADR 117
 export const COMANDO_CANCELAR_SOLICITUD = "/cancelar-solicitud"; // v3.3.0
 export const COMANDO_VER_SOLICITUDES_A2A = "/ver-solicitudes-a2a"; // v3.4.0
+export const COMANDO_ASIGNAR_ROL = "/asignar-rol"; // comandos-administracion-empleados, ADR 184, tarea 7
 // Sin comando de TUI ancestro (ADR 188 pto 6/7, operaciones-negocio-conversacionales
 // Enmienda 1): el prefijo `operacion:` deja constancia de que el disparo es
 // exclusivamente conversacional, sin inventar un comando de TUI fantasma.
@@ -43,6 +44,7 @@ export const RESULTADO_NO_APLICABLE = "no_aplicable";
 export const RESULTADO_CANCELADA = "cancelada"; // /cancelar-solicitud (ADR 132/133)
 export const RESULTADO_NO_AUTORIZADO = "no_autorizado"; // /aprobar-reembolso, /rechazar-reembolso, /reabrir-reembolso, /aprobar-solicitud, /rechazar-solicitud (autorizacion-empleado, ADR 161)
 export const RESULTADO_AUTOAPROBACION_PROHIBIDA = "autoaprobacion_prohibida"; // /aprobar-solicitud, /rechazar-solicitud (autorizacion-empleado, ADR 161)
+export const RESULTADO_AUTODEGRADACION_PROHIBIDA = "autodegradacion_prohibida"; // /asignar-rol (comandos-administracion-empleados, ADR 182, tarea 7)
 export const RESULTADO_CONFIRMADA = "confirmada"; // operacion:resolver_decision_venta (ADR 188 pto 6)
 
 /**

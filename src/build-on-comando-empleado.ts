@@ -81,6 +81,7 @@ import {
   COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_ASIGNAR_ROL,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_CONSULTAR_KPI,
   COMANDO_DESCARTAR_PROPUESTA,
@@ -95,6 +96,7 @@ import {
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_AUTOAPROBACION_PROHIBIDA,
+  RESULTADO_AUTODEGRADACION_PROHIBIDA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_EXITOSA,
@@ -109,7 +111,13 @@ import { type AuthConfig } from "./core/auth/auth-config.js";
 import { type CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import { resolverLogin } from "./core/auth/login.js";
 import { sesionVigente, type SesionEmpleado } from "./core/auth/sesion.js";
-import { type RolEmpleado, type RolEmpleadoEscritorPort, type RolEmpleadoPort } from "./core/auth/rol-contract.js";
+import {
+  ROLES_EMPLEADO,
+  ROL_ADMINISTRADOR,
+  type RolEmpleado,
+  type RolEmpleadoEscritorPort,
+  type RolEmpleadoPort,
+} from "./core/auth/rol-contract.js";
 import { esAdministrador } from "./core/auth/autorizacion-resolucion.js";
 import {
   ACCION_APROBAR,
@@ -1773,6 +1781,44 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     return sistema(`Bot de PRs — listener: ${listener}. GITHUB_TOKEN: ${isBoardEnabled(board) ? "presente" : "ausente"}.`);
   }
 
+  /**
+   * `comandos-administracion-empleados` (ADR 175 pto 4, 177, 182, 184,
+   * tarea 7) — se llega acá SOLO con sesión vigente (paso 6) y rol
+   * `administrador` ya confirmado (paso 6.5): esta función no vuelve a
+   * chequear ninguno de los dos.
+   *
+   * Orden de validación, en el orden exacto de `tasks.md` tarea 7: (1) `rol`
+   * contra `ROLES_EMPLEADO` — el parser NO lo valida (ADR 177 pto 2); (2)
+   * `empleadoId` tiene credencial — sin eso no hay a quién autenticar
+   * (mismo criterio que ADR 160/RD-79 del CLI); (3) ★ auto-degradación
+   * PROHIBIDA SIN CONTEO (ADR 182) — el propio actor no puede asignarse un
+   * rol distinto de `administrador` a sí mismo, sin importar cuántos
+   * administradores existan. Las validaciones (1) y (2) NO dejan fila de
+   * auditoría (son errores de entrada, no un intento de acción evaluado);
+   * (3) SÍ deja fila `autodegradacion_prohibida` — es un intento real,
+   * rechazado por política.
+   */
+  function manejarAsignarRol(comando: Extract<ComandoEmpleado, { tipo: "asignar_rol" }>, ahora: string): TuiTurnResult {
+    if (!(ROLES_EMPLEADO as readonly string[]).includes(comando.rol)) {
+      return sistema(`Rol inválido: "${comando.rol}". Roles válidos: ${ROLES_EMPLEADO.join(" | ")}.`);
+    }
+    const rol = comando.rol as RolEmpleado;
+
+    if (credenciales.buscarCredencial(comando.empleadoId) === undefined) {
+      return sistema(`No existe el empleado "${comando.empleadoId}".`);
+    }
+
+    const empleadoIdActor = (sesion as SesionEmpleado).empleadoId;
+    if (comando.empleadoId === empleadoIdActor && rol !== ROL_ADMINISTRADOR) {
+      registrar({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_AUTODEGRADACION_PROHIBIDA }, ahora);
+      return sistema("No podés quitarte a vos mismo el rol de administrador.");
+    }
+
+    rolEscritor.asignarRol({ empleadoId: comando.empleadoId, rol, ahora });
+    registrar({ comando: COMANDO_ASIGNAR_ROL, resultado: RESULTADO_EXITOSA }, ahora);
+    return sistema(`Rol de ${comando.empleadoId} asignado: ${rol}.`);
+  }
+
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
     if (comando.motivo === "solicitada") {
       return sistema(formatearAyuda());
@@ -1876,6 +1922,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarReporteComisiones(comando, ahora);
       case "estado_bot_prs":
         return manejarEstadoBotPrs();
+      case "asignar_rol":
+        return manejarAsignarRol(comando, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }

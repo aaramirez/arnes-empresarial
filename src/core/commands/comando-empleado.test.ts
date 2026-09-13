@@ -73,6 +73,38 @@ describe("parsearComando", () => {
     expect(parsearComando("/estado-bot-prs lo que sea")).toEqual({ tipo: "estado_bot_prs" });
   });
 
+  it("/asignar-rol <empleadoId> <rol> → tipo asignar_rol con empleadoId y rol (comandos-administracion-empleados, tarea 7, ADR 184)", () => {
+    expect(parsearComando("/asignar-rol ana administrador")).toEqual({
+      tipo: "asignar_rol",
+      empleadoId: "ana",
+      rol: "administrador",
+    });
+  });
+
+  it("/asignar-rol sin rol → ayuda/argumentos", () => {
+    expect(parsearComando("/asignar-rol ana")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/asignar-rol",
+    });
+  });
+
+  it("/asignar-rol sin argumentos → ayuda/argumentos", () => {
+    expect(parsearComando("/asignar-rol")).toEqual({
+      tipo: "ayuda",
+      motivo: "argumentos",
+      comando: "/asignar-rol",
+    });
+  });
+
+  it("/asignar-rol ana lo-que-sea → el parser NO valida el formato de rol (ADR 177 pto 2): 'rol' viaja como string plano, la validación contra ROLES_EMPLEADO vive en el dispatcher", () => {
+    expect(parsearComando("/asignar-rol ana lo-que-sea")).toEqual({
+      tipo: "asignar_rol",
+      empleadoId: "ana",
+      rol: "lo-que-sea",
+    });
+  });
+
   it("/soporte <consulta multi-palabra> → tipo soporte con la consulta completa", () => {
     expect(parsearComando("/soporte no me llegó el link de confirmación")).toEqual({
       tipo: "soporte",
@@ -412,12 +444,17 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los dieciséis descriptores (quince tras la baja de operaciones-negocio-conversacionales tarea 14, más /estado-bot-prs, comandos-administracion-empleados tarea 3)", () => {
+  it("lista los DIECISIETE descriptores (dieciséis más /asignar-rol, comandos-administracion-empleados tarea 7)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(16);
+    expect(COMANDOS).toHaveLength(17);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
+  });
+
+  it("incluye la línea de /asignar-rol (comandos-administracion-empleados, tarea 7, ADR 184)", () => {
+    const texto = formatearAyuda();
+    expect(texto).toContain("/asignar-rol <empleadoId> <rol>");
   });
 
   it("incluye la línea de /estado-bot-prs (comandos-administracion-empleados, tarea 3, ADR 185)", () => {
@@ -474,6 +511,10 @@ describe("esComandoPrivilegiado", () => {
   it("estado_bot_prs es privilegiado (comandos-administracion-empleados, tarea 3, ADR 185 — exige sesión, mismo criterio que /consultar-kpi/reporte-comisiones)", () => {
     expect(esComandoPrivilegiado("estado_bot_prs")).toBe(true);
   });
+
+  it("asignar_rol es privilegiado (comandos-administracion-empleados, tarea 7, ADR 177 pto 3 — exige sesión, distinto del gate de administrador)", () => {
+    expect(esComandoPrivilegiado("asignar_rol")).toBe(true);
+  });
 });
 
 describe("regresión — descriptores previos conservan nombre y forma tras la baja de autoservicio (operaciones-negocio-conversacionales, tarea 14; índices recalculados: -1 por /devolucion, -1 por /solicitar)", () => {
@@ -511,9 +552,30 @@ describe("regresión — los tres descriptores de la tarea 29 van antes de /ayud
     ]);
   });
 
-  it("/ayuda sigue último (índice 15, dieciséis descriptores tras la baja de /devolucion, /solicitar, /cancelar-solicitud, tarea 14, y el alta de /estado-bot-prs, comandos-administracion-empleados tarea 3)", () => {
-    expect(descriptores).toHaveLength(16);
-    expect(descriptores[15]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  it("/ayuda sigue último (índice 16, DIECISIETE descriptores — baja de /devolucion, /solicitar, /cancelar-solicitud (tarea 14) + alta de /estado-bot-prs (tarea 3) + /asignar-rol (tarea 7))", () => {
+    expect(descriptores).toHaveLength(17);
+    expect(descriptores[16]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  });
+});
+
+describe("regresión — /asignar-rol (comandos-administracion-empleados, tarea 7, ADR 184) va antes de /ayuda, que sigue último", () => {
+  type DescriptorConForma = {
+    readonly nombre: string;
+    readonly forma: string;
+    readonly privilegiado: boolean;
+    readonly secreto: boolean;
+    readonly requiereAdministrador: boolean;
+  };
+  const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
+
+  it("/asignar-rol ocupa el índice 15, forma NUEVA id_mas_resto_rol, privilegiado true, secreto false, requiereAdministrador true", () => {
+    expect(descriptores[15]).toMatchObject({
+      nombre: "/asignar-rol",
+      forma: "id_mas_resto_rol",
+      privilegiado: true,
+      secreto: false,
+      requiereAdministrador: true,
+    });
   });
 });
 
@@ -573,13 +635,15 @@ describe("Forma no gana un miembro nuevo por /cancelar-solicitud (comando-cancel
   // main antes que este change) sin que `/cancelar-solicitud` sumara una
   // séptima -- reusó `id_opcional_solicitud`. `id_opcional_a2a_task`
   // (`design.md` §3, ADR 56) sí es una forma nueva, distinta de las seis ya
-  // existentes: sube el conteo real a siete.
+  // existentes: sube el conteo real a siete. `id_mas_resto_rol`
+  // (comandos-administracion-empleados, tarea 7, ADR 184) es otra forma
+  // nueva, distinta de las siete anteriores: sube el conteo a ocho.
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("el conjunto de formas distintas en uso tiene siete miembros (no seis) tras agregar /ver-solicitudes-a2a", () => {
+  it("el conjunto de formas distintas en uso tiene ocho miembros (no siete) tras agregar /asignar-rol", () => {
     const formasDistintas = new Set(descriptores.map((d) => d.forma));
-    expect(formasDistintas.size).toBe(7);
+    expect(formasDistintas.size).toBe(8);
   });
 });
 
@@ -605,14 +669,21 @@ describe("regresión crítica — los cinco comandos HITL bloqueados por el ADR 
   });
 });
 
-describe("requiereAdministrador (comandos-administracion-empleados, tarea 2, ADR 183 parte 1/RD-84) — scaffolding SIN consumidor todavía (el dispatcher no lo consulta hasta la tarea 5, bloqueada)", () => {
-  it("cada descriptor existente (los quince originales más /estado-bot-prs, tarea 3) declara requiereAdministrador === false", () => {
+describe("requiereAdministrador (comandos-administracion-empleados, tarea 2, ADR 183 parte 1/RD-84) — desde la tarea 7 tiene su consumidor real, /asignar-rol", () => {
+  const DESCRIPTORES_ADMINISTRADOR = new Set(["/asignar-rol"]);
+
+  it("todo descriptor que NO es administrativo (los quince originales más /estado-bot-prs, tarea 3) sigue declarando requiereAdministrador === false", () => {
     type DescriptorConRequiereAdministrador = { readonly nombre: string; readonly requiereAdministrador: boolean };
     const descriptores = COMANDOS as unknown as readonly DescriptorConRequiereAdministrador[];
-    expect(descriptores).toHaveLength(16);
+    expect(descriptores).toHaveLength(17);
     for (const descriptor of descriptores) {
+      if (DESCRIPTORES_ADMINISTRADOR.has(descriptor.nombre)) continue;
       expect(descriptor.requiereAdministrador).toBe(false);
     }
+  });
+
+  it("/asignar-rol declara requiereAdministrador === true (comandos-administracion-empleados, tarea 7, ADR 175/183)", () => {
+    expect(requiereAdministrador("asignar_rol")).toBe(true);
   });
 
   it("requiereAdministrador('logout') devuelve false (molde exacto de esComandoPrivilegiado)", () => {
@@ -620,7 +691,7 @@ describe("requiereAdministrador (comandos-administracion-empleados, tarea 2, ADR
   });
 
   it.each(["aprobar_reembolso", "consultar_kpi", "reporte_comisiones"] as const)(
-    "%s (privilegiado, comando existente) también devuelve false: ningún descriptor de hoy exige administrador",
+    "%s (privilegiado, comando existente) también devuelve false: no exige administrador",
     (tipo) => {
       expect(requiereAdministrador(tipo)).toBe(false);
     },

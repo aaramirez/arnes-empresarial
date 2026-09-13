@@ -78,6 +78,11 @@ export type ComandoEmpleado =
    *  del checkpoint al diferido del ADR 178 de esa misma propuesta. Sin
    *  argumentos, de solo lectura: nunca escribe, nunca revela un secreto. */
   | { readonly tipo: "estado_bot_prs" }
+  /** Brazo NUEVO de `comandos-administracion-empleados` (ADR 184, tarea 7).
+   *  `rol` llega como `string` plano — su formato NO se valida acá (ADR 177
+   *  pto 2, mismo criterio que `periodo`): se valida contra
+   *  `ROLES_EMPLEADO` en el dispatcher. */
+  | { readonly tipo: "asignar_rol"; readonly empleadoId: string; readonly rol: string }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -124,6 +129,12 @@ export interface DescriptorComando {
  * `"id_opcional_a2a_task"` (ADR 56/138, `comando-visibilidad-a2a-entrante`)
  * es el mismo precedente otra vez: clave de payload `a2aTaskId`, para
  * `/ver-solicitudes-a2a`.
+ *
+ * `"id_mas_resto_rol"` (ADR 184, `comandos-administracion-empleados`, tarea
+ * 7) es una `Forma` NUEVA, distinta de `"id_mas_resto"`: mismo patrón de
+ * parseo (primer token + resto), clave de payload `rol`, para
+ * `/asignar-rol`. El formato de `rol` NO se valida acá (ADR 177 pto 2) —
+ * eso vive en el dispatcher, contra `ROLES_EMPLEADO`.
  */
 type Forma =
   | "sin_argumentos"
@@ -132,7 +143,8 @@ type Forma =
   | "id_opcional_solicitud"
   | "id_opcional_propuesta"
   | "id_opcional_periodo"
-  | "id_opcional_a2a_task";
+  | "id_opcional_a2a_task"
+  | "id_mas_resto_rol";
 
 interface DescriptorInterno extends DescriptorComando {
   readonly forma: Forma;
@@ -320,6 +332,16 @@ const DESCRIPTORES = [
     tipo: "estado_bot_prs",
   },
   {
+    nombre: "/asignar-rol",
+    uso: "/asignar-rol <empleadoId> <rol>",
+    ayuda: "Asigna el rol indicado (empleado | administrador) a un empleado existente.",
+    privilegiado: true,
+    secreto: false,
+    requiereAdministrador: true,
+    forma: "id_mas_resto_rol",
+    tipo: "asignar_rol",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -481,6 +503,23 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
 
   if (descriptor.forma === "id_opcional_a2a_task") {
     return idOpcionalPayload(descriptor.tipo, restoLinea, "a2aTaskId");
+  }
+
+  // /asignar-rol <empleadoId> <rol> — forma NUEVA "id_mas_resto_rol"
+  // (comandos-administracion-empleados, tarea 7, ADR 184): mismo patrón de
+  // parseo que "id_mas_resto" (primer token + resto de línea), clave de
+  // payload propia (`rol`). El formato de `rol` NO se valida acá (ADR 177
+  // pto 2, mismo criterio que `periodo`) — se valida contra
+  // `ROLES_EMPLEADO` en el dispatcher.
+  if (descriptor.forma === "id_mas_resto_rol") {
+    if (restoLinea === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    const { primero: empleadoId, resto: rol } = splitPrimerEspacio(restoLinea);
+    if (rol === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    return { tipo: "asignar_rol", empleadoId, rol };
   }
 
   // forma === "id_mas_resto": /login, /soporte, /aplicar-propuesta,

@@ -5,6 +5,7 @@ import {
   COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
+  COMANDO_ASIGNAR_ROL,
   COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
@@ -17,6 +18,7 @@ import {
   RESULTADO_APLICADA,
   RESULTADO_APROBADA,
   RESULTADO_ATENDIDA,
+  RESULTADO_AUTODEGRADACION_PROHIBIDA,
   RESULTADO_CREADA,
   RESULTADO_DESCARTADA,
   RESULTADO_EXITOSA,
@@ -47,6 +49,10 @@ describe("vocabulario de comando", () => {
     expect(COMANDO_APLICAR_PROPUESTA).toBe("/aplicar-propuesta");
     expect(COMANDO_DESCARTAR_PROPUESTA).toBe("/descartar-propuesta");
   });
+
+  it("COMANDO_ASIGNAR_ROL es '/asignar-rol' (comandos-administracion-empleados, tarea 7, ADR 184)", () => {
+    expect(COMANDO_ASIGNAR_ROL).toBe("/asignar-rol");
+  });
 });
 
 describe("vocabulario de resultado", () => {
@@ -63,6 +69,10 @@ describe("vocabulario de resultado", () => {
     expect(RESULTADO_CREADA).toBe("creada");
     expect(RESULTADO_APLICADA).toBe("aplicada");
     expect(RESULTADO_DESCARTADA).toBe("descartada");
+  });
+
+  it("RESULTADO_AUTODEGRADACION_PROHIBIDA es 'autodegradacion_prohibida' (comandos-administracion-empleados, tarea 7, ADR 182)", () => {
+    expect(RESULTADO_AUTODEGRADACION_PROHIBIDA).toBe("autodegradacion_prohibida");
   });
 });
 
