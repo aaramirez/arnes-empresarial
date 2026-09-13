@@ -83,6 +83,12 @@ export type ComandoEmpleado =
    *  pto 2, mismo criterio que `periodo`): se valida contra
    *  `ROLES_EMPLEADO` en el dispatcher. */
   | { readonly tipo: "asignar_rol"; readonly empleadoId: string; readonly rol: string }
+  /** Brazo NUEVO de `comandos-administracion-empleados` (ADR 184, tarea 8).
+   *  Molde exacto de `login`: `password` es el ÚNICO otro campo SECRETO de
+   *  todo el núcleo (comentario de cabecera de este tipo) — a diferencia de
+   *  `login.password`, éste es el secreto de OTRA persona (R1 de
+   *  `proposal.md`). */
+  | { readonly tipo: "crear_empleado"; readonly empleadoId: string; readonly password: string }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -135,6 +141,12 @@ export interface DescriptorComando {
  * parseo (primer token + resto), clave de payload `rol`, para
  * `/asignar-rol`. El formato de `rol` NO se valida acá (ADR 177 pto 2) —
  * eso vive en el dispatcher, contra `ROLES_EMPLEADO`.
+ *
+ * `"id_mas_resto_password"` (ADR 184, `comandos-administracion-empleados`,
+ * tarea 8) es otra `Forma` NUEVA, mismo patrón otra vez, clave de payload
+ * `password`, para `/crear-empleado`. `password` es el resto de línea
+ * ENTERO, sin trim salvo el de bordes que ya hace `splitPrimerEspacio`
+ * (mismo límite conocido que `/login`, R4).
  */
 type Forma =
   | "sin_argumentos"
@@ -144,7 +156,8 @@ type Forma =
   | "id_opcional_propuesta"
   | "id_opcional_periodo"
   | "id_opcional_a2a_task"
-  | "id_mas_resto_rol";
+  | "id_mas_resto_rol"
+  | "id_mas_resto_password";
 
 interface DescriptorInterno extends DescriptorComando {
   readonly forma: Forma;
@@ -342,6 +355,16 @@ const DESCRIPTORES = [
     tipo: "asignar_rol",
   },
   {
+    nombre: "/crear-empleado",
+    uso: "/crear-empleado <empleadoId> <password>",
+    ayuda: "Da de alta una credencial de empleado nueva.",
+    privilegiado: true,
+    secreto: true,
+    requiereAdministrador: true,
+    forma: "id_mas_resto_password",
+    tipo: "crear_empleado",
+  },
+  {
     nombre: "/ayuda",
     uso: "/ayuda",
     ayuda: "Lista los comandos disponibles.",
@@ -520,6 +543,21 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
       return ayudaArgumentos(comandoToken);
     }
     return { tipo: "asignar_rol", empleadoId, rol };
+  }
+
+  // /crear-empleado <empleadoId> <password> — forma NUEVA
+  // "id_mas_resto_password" (comandos-administracion-empleados, tarea 8,
+  // ADR 184): mismo patrón de parseo que "id_mas_resto_rol"/"id_mas_resto",
+  // clave de payload `password`. Molde EXACTO de la rama "/login".
+  if (descriptor.forma === "id_mas_resto_password") {
+    if (restoLinea === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    const { primero: empleadoId, resto: password } = splitPrimerEspacio(restoLinea);
+    if (password === undefined) {
+      return ayudaArgumentos(comandoToken);
+    }
+    return { tipo: "crear_empleado", empleadoId, password };
   }
 
   // forma === "id_mas_resto": /login, /soporte, /aplicar-propuesta,

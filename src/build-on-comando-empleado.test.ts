@@ -33,6 +33,7 @@ import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract
 import {
   COMANDO_ASIGNAR_ROL,
   COMANDO_CONSULTAR_KPI,
+  COMANDO_CREAR_EMPLEADO,
   COMANDO_REPORTE_COMISIONES,
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
@@ -3061,6 +3062,163 @@ describe("buildOnComandoEmpleado — /asignar-rol (comandos-administracion-emple
       const despues = await handlerAdmin2("/reporte-comisiones 2026-08");
       expect(despues.responseText.toLowerCase()).toContain("administrador");
       expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 8 (ADR 174, 181, 184) —
+ * `/crear-empleado`, gateado por administrador (tarea 5), reusando
+ * `altaCredencialEmpleado` (tarea 1, `src/empleados.ts`) — el MISMO molde
+ * de `db` real y `credenciales`/`rolPort` reales que el describe de
+ * `/asignar-rol` de arriba (`realCredenciales`/`realRolPort`, declaradas en
+ * ESE describe — se redeclaran acá, más chico, porque `describe` no
+ * comparte scope léxico entre bloques hermanos).
+ */
+describe("buildOnComandoEmpleado — /crear-empleado (comandos-administracion-empleados, tarea 8, ADR 174, 181, 184)", () => {
+  afterEach(() => {
+    requiereAdministradorMock.mockImplementation(() => false);
+  });
+
+  function realCredenciales(db: Database.Database): CredencialesEmpleadoPort {
+    return {
+      buscarCredencial: (empleadoId) => {
+        const row = buscarCredencialEmpleado(db, empleadoId);
+        return row ? { empleadoId: row.empleadoId, passwordHash: row.passwordHash } : undefined;
+      },
+    };
+  }
+
+  function realRolPort(db: Database.Database): RolEmpleadoPort {
+    return {
+      buscarRol: (empleadoId) => {
+        const row = buscarRolEmpleado(db, empleadoId);
+        return row ? (row.rol as RolEmpleado) : undefined;
+      },
+    };
+  }
+
+  function realDeps(
+    db: Database.Database,
+    reloj: Reloj,
+    overrides: Partial<BuildOnComandoEmpleadoDeps> & { readonly writes?: string[] } = {},
+  ): BuildOnComandoEmpleadoDeps {
+    return makeKpiDeps(db, reloj, {
+      credenciales: realCredenciales(db),
+      rolPort: realRolPort(db),
+      authConfig: makeAuthConfig({ sesionTtlMinutos: 0 }),
+      registro: makeRegistro(),
+      ...overrides,
+    });
+  }
+
+  it("administrador da de alta un empleado nuevo ⇒ fila con password_hash scrypt, DISTINTO del texto en claro, fila exitosa con ambos empleados identificables", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+      vi.mocked(registro.registrarAccion).mockClear();
+
+      const resultado = await handler(`/crear-empleado ana ${PASSWORD}`);
+
+      expect(resultado.responseText.toLowerCase()).toContain("ana");
+      const fila = buscarCredencialEmpleado(db, "ana");
+      expect(fila).toBeDefined();
+      expect(fila?.passwordHash).not.toBe(PASSWORD);
+      expect(fila?.passwordHash.startsWith("scrypt$")).toBe(true);
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const accion = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(accion).toMatchObject({ comando: COMANDO_CREAR_EMPLEADO, resultado: RESULTADO_EXITOSA, empleadoId: "admin" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("alta duplicada ⇒ rechazo, password_hash de la fila existente SIN cambio", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "scrypt$hash-original", ahora: TIMESTAMP });
+      const deps = realDeps(db, reloj);
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+
+      const resultado = await handler(`/crear-empleado ana ${PASSWORD}`);
+
+      expect(resultado.responseText.toLowerCase()).toContain("ana");
+      expect(buscarCredencialEmpleado(db, "ana")?.passwordHash).toBe("scrypt$hash-original");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rol base ejecuta /crear-empleado ⇒ rechazado por el gate (tarea 5), NINGUNA fila en credenciales_empleado, fila de auditoría con resultado de rechazo por autorización", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "ana", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      // "ana" SIN fila en roles_empleado ⇒ rol base por ausencia (ADR 154 pto 5).
+      const registro = makeRegistro();
+      const deps = realDeps(db, reloj, { registro });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "ana");
+      vi.mocked(registro.registrarAccion).mockClear();
+
+      const resultado = await handler(`/crear-empleado bob ${PASSWORD}`);
+
+      expect(resultado.responseText.toLowerCase()).toContain("administrador");
+      expect(buscarCredencialEmpleado(db, "bob")).toBeUndefined();
+      expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+      const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+      expect(fila).toMatchObject({ comando: "crear_empleado", resultado: RESULTADO_NO_AUTORIZADO, empleadoId: "ana" });
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * ★ Invariante de contraseña, EXTENDIDO del molde de la suite de `/login`
+   * (arriba, "fallido (password incorrecta) y fallido (empleado
+   * inexistente) dan el MISMO mensaje genérico, sin fila"): la contraseña
+   * tipeada NUNCA aparece en ninguna fila de `registro_acciones_empleado`
+   * ni en ningún evento de `logTurnEvent` emitido durante el comando — ni
+   * completa, ni como prefijo, ni su longitud. `AccionEmpleado` no tiene
+   * estructuralmente ningún campo para una longitud (garantía del tipo,
+   * `registro-acciones-contract.test.ts`), así que basta con verificar que
+   * el texto completo de la contraseña no aparece en ningún lado.
+   */
+  it("★ la contraseña NUNCA aparece en registro_acciones_empleado ni en ningún evento de log emitido por /crear-empleado — ni completa, ni como prefijo", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "crear_empleado");
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      insertCredencialEmpleado(db, { empleadoId: "admin", passwordHash: "scrypt$hash", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "admin", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+      const registro = makeRegistro();
+      const writes: string[] = [];
+      const deps = realDeps(db, reloj, { registro, writes });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler, "admin");
+
+      await handler(`/crear-empleado ana ${PASSWORD}`);
+      // Alta duplicada — segundo camino de código, mismo invariante.
+      await handler(`/crear-empleado ana ${PASSWORD}`);
+
+      const filas = vi.mocked(registro.registrarAccion).mock.calls.map((c) => c[0]);
+      expect(JSON.stringify(filas)).not.toContain(PASSWORD);
+      expect(JSON.stringify(writes)).not.toContain(PASSWORD);
     } finally {
       db.close();
     }

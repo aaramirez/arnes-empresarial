@@ -84,6 +84,7 @@ import {
   COMANDO_ASIGNAR_ROL,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_CONSULTAR_KPI,
+  COMANDO_CREAR_EMPLEADO,
   COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
@@ -208,6 +209,7 @@ import { type InsumoDelegado } from "./core/agents/subagents.js";
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { createVentaStore, createDelegacionA2AStore } from "./build-on-venta.js";
 import { createDelegacionStore } from "./build-on-activity.js";
+import { altaCredencialEmpleado } from "./empleados.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
 import { isWebhookEnabled, resolveWebhookConfig } from "./adapters/webhooks/config.js";
@@ -1819,6 +1821,28 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     return sistema(`Rol de ${comando.empleadoId} asignado: ${rol}.`);
   }
 
+  /**
+   * `comandos-administracion-empleados` (ADR 174, 181, 184, tarea 8) — se
+   * llega acá SOLO con sesión vigente (paso 6) y rol `administrador` ya
+   * confirmado (paso 6.5). Reusa `altaCredencialEmpleado` (tarea 1,
+   * `src/empleados.ts`) — MISMA validación de forma, MISMO hash scrypt y
+   * MISMO mensaje de duplicado que el CLI (`empleados:crear`). ★ La
+   * contraseña NUNCA llega a `registrar()` — sólo `comando`/`resultado`, ni
+   * siquiera en el camino de error (invariante estructural de
+   * `AccionEmpleado`, `registro-acciones-contract.ts`).
+   */
+  function manejarCrearEmpleado(
+    comando: Extract<ComandoEmpleado, { tipo: "crear_empleado" }>,
+    ahora: string,
+  ): TuiTurnResult {
+    const resultado = altaCredencialEmpleado(db, { empleadoId: comando.empleadoId, password: comando.password, ahora });
+    if (!resultado.ok) {
+      return sistema(resultado.mensaje);
+    }
+    registrar({ comando: COMANDO_CREAR_EMPLEADO, resultado: RESULTADO_EXITOSA }, ahora);
+    return sistema(`Empleado ${comando.empleadoId} creado.`);
+  }
+
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
     if (comando.motivo === "solicitada") {
       return sistema(formatearAyuda());
@@ -1924,6 +1948,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarEstadoBotPrs();
       case "asignar_rol":
         return manejarAsignarRol(comando, ahora);
+      case "crear_empleado":
+        return manejarCrearEmpleado(comando, ahora);
       case "ayuda":
         return manejarAyuda(comando);
     }
