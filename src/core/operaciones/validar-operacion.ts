@@ -1,0 +1,84 @@
+/**
+ * Whitelist ESTRICTA por operación (`operaciones-negocio-conversacionales`,
+ * ADR 163 pto 3, ADR 171 pto 2, ADR 174 pto 1, tarea 2). Sin imports — mismo
+ * criterio que `operaciones-contract.ts` (tarea 1): el objeto zod plano del
+ * adaptador MCP (tarea 4, Unit 2, fuera de esta Unit) ya validó tipos sueltos
+ * por campo en el borde; ESTA es la SEGUNDA validación, la que exige
+ * EXACTAMENTE el conjunto de campos de la fila que corresponde a `operacion`
+ * y rechaza cualquier clave extra — el mismo espíritu de whitelist que
+ * `definicion-skills` ADR 110 aplicó al frontmatter.
+ *
+ * Los nombres de operación y sus campos permitidos están DUPLICADOS acá,
+ * literales, a propósito: este módulo no importa `operaciones-contract.ts`
+ * (cero imports, mismo criterio "sin imports" de ese archivo, ver ASCII de
+ * `design.md` §1) para que una whitelist de seguridad no dependa de una
+ * resolución de módulos ajena — mismo criterio que `reporte.ts` documenta
+ * para `PERIODO_REGEX` duplicado de `reporte-mensual.ts`.
+ *
+ * `empleadoId`/`vendedorId`/`solicitanteId`/`sesion`/`confirmado` NUNCA
+ * aparecen en ninguna fila de `CAMPOS_POR_OPERACION` (ADR 147 pto 1, ADR 166
+ * pto 1): cualquier operación que los reciba como clave los trata como
+ * "clave extra" y rechaza — no hace falta una lista de bloqueo separada.
+ */
+
+/** Campos ACEPTADOS por operación, incluyendo `operacion` mismo y los opcionales. */
+const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
+  resolver_decision_venta: ["operacion", "token", "decision"],
+  procesar_devolucion: ["operacion", "token", "motivo"],
+  crear_solicitud_interna: ["operacion", "tipo", "detalle"],
+  cancelar_solicitud_interna: ["operacion", "solicitudId"],
+  // ★ ÚNICA operación cuya whitelist incluye `monto` (ADR 170/171 pto 2) —
+  // `vendedorId` NUNCA está acá, ni acá ni en ninguna otra fila (ADR 147
+  // pto 1): sale del closure del composition root, jamás del modelo.
+  registrar_venta: ["operacion", "clienteId", "clienteEmail", "planAnterior", "planNuevo", "monto", "vendedorNombre"],
+  // ★ ÚNICA operación cuya whitelist incluye `periodo` (ADR 174 pto 1).
+  consultar_reporte_comisiones: ["operacion", "periodo"],
+};
+
+/** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
+const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
+  resolver_decision_venta: ["token", "decision"],
+  procesar_devolucion: ["token"],
+  crear_solicitud_interna: ["tipo", "detalle"],
+  cancelar_solicitud_interna: [],
+  registrar_venta: ["clienteId", "clienteEmail", "planNuevo", "monto", "vendedorNombre"],
+  consultar_reporte_comisiones: [],
+};
+
+/**
+ * `raw` es el objeto zod plano ya parseado por el adaptador MCP (tarea 4):
+ * todos los campos posibles declarados opcionales a nivel del wrapper. Esta
+ * función NUNCA lanza: devuelve el mismo objeto (referencia estable, sin
+ * copiar) cuando es válido, o `undefined` cuando se rechaza — operación
+ * desconocida, clave extra no permitida para esa fila, o falta un campo
+ * requerido.
+ */
+export function validarOperacion(
+  raw: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
+  const operacion = raw["operacion"];
+  if (typeof operacion !== "string" || !Object.hasOwn(CAMPOS_POR_OPERACION, operacion)) {
+    return undefined;
+  }
+
+  const camposPermitidos = CAMPOS_POR_OPERACION[operacion];
+  const camposRequeridos = CAMPOS_REQUERIDOS_POR_OPERACION[operacion];
+  if (camposPermitidos === undefined || camposRequeridos === undefined) {
+    // Inalcanzable: `Object.hasOwn` ya garantizó la clave en ambos records
+    // (tienen las mismas seis claves) — la guarda es sólo para satisfacer
+    // `noUncheckedIndexedAccess`, no un camino real.
+    return undefined;
+  }
+
+  const tieneClaveExtra = Object.keys(raw).some((clave) => !camposPermitidos.includes(clave));
+  if (tieneClaveExtra) {
+    return undefined;
+  }
+
+  const faltaRequerido = camposRequeridos.some((campo) => raw[campo] === undefined);
+  if (faltaRequerido) {
+    return undefined;
+  }
+
+  return raw;
+}
