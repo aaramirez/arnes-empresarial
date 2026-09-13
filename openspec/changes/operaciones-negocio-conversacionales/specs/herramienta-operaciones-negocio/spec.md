@@ -84,3 +84,27 @@ Este change SHALL NOT modificar la firma ni el cuerpo de `registrarVenta`, `reso
 - GIVEN el `git diff` completo de este change
 - WHEN se inspeccionan los archivos de `src/core/ventas/` y `src/core/solicitudes/` que las contienen
 - THEN ninguno tiene una línea modificada dentro del cuerpo de esas seis funciones ni de `resolverPeriodoReporte`, `agruparReporteMensual` o `formatearReporteMensual`
+
+### Requirement: Cada operación que muta o divulga deja la misma fila de auditoría que el comando que reemplazó
+
+El dispatcher del núcleo (`ejecutar-operacion.ts`) SHALL llamar `registrarAccion` (`RegistroAccionesEmpleadoPort`) para cada operación que muta estado o divulga datos sensibles, reusando el mismo literal de `comando` que escribía el comando de TUI que reemplaza — `/devolucion` (`procesar_devolucion`), `/solicitar` (`crear_solicitud_interna`), `/cancelar-solicitud` (`cancelar_solicitud_interna`, únicamente en el camino de CAS perdido) y `/reporte-comisiones` (`consultar_reporte_comisiones`) — y los literales nuevos `operacion:registrar_venta`/`operacion:resolver_decision_venta` para las dos operaciones sin comando previo (ADR 188). El camino feliz de `cancelar_solicitud_interna` SHALL NOT escribir fila desde el dispatcher, porque la transacción del store ya la escribe. Si `registrarAccion` lanza, el texto de negocio devuelto al modelo SHALL permanecer idéntico al del camino feliz, y el sistema SHALL emitir `accion-empleado-registro-fallido`.
+
+#### Scenario: Una devolución conversacional deja la misma fila que dejaba el comando de TUI
+- GIVEN un empleado con sesión vigente invoca `procesar_devolucion` desde el turno conversacional
+- WHEN `procesarDevolucion` resuelve cualquiera de sus tres ramas (`reembolsada`, `escalada`, `no_aplicable`)
+- THEN `registrarAccion` recibe `comando: "/devolucion"` con el mismo `resultado`, `ventaId` y `casoId` que escribía el comando `/devolucion` retirado de la TUI
+
+#### Scenario: La cancelación exitosa no duplica su fila de auditoría
+- GIVEN un empleado invoca `cancelar_solicitud_interna` y la cancelación se resuelve en el camino feliz
+- WHEN el dispatcher del núcleo traduce el `Result` a texto
+- THEN `ejecutar-operacion.ts` NO llama a `registrarAccion` — la única fila de auditoría es la que la transacción de `cancelarSolicitudInterna` ya escribió en el store, sin duplicados
+
+#### Scenario: El reporte de comisiones deja fila atendida sólo si el período es válido
+- GIVEN un empleado invoca `consultar_reporte_comisiones` con un período válido
+- WHEN `resolverPeriodoReporte` resuelve OK
+- THEN `registrarAccion` recibe `comando: "/reporte-comisiones"` con `resultado: "atendida"`; si el período es inválido, la tool corta antes de leer `reporteStore` y no llama a `registrarAccion` en absoluto
+
+#### Scenario: Si `registrarAccion` lanza, el texto de negocio no cambia y se marca el fallo de registro
+- GIVEN una operación cuya función determinista ya resolvió el efecto de negocio (por ejemplo `procesar_devolucion`)
+- WHEN `registrarAccion` lanza una excepción al intentar escribir la fila
+- THEN el texto devuelto al modelo es idéntico al del camino feliz, y el sistema emite `accion-empleado-registro-fallido` en vez del genérico "no se aplicó nada" del `catch` global
