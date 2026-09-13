@@ -30,6 +30,17 @@ export const RUTA_VENTAS = "/ventas";
 export const RUTA_CONFIRMAR_PREFIJO = "/confirmar/";
 export const RUTA_DEVOLUCION = "/devolucion";
 export const RUTA_SOPORTE = "/soporte";
+/** `operaciones-negocio-conversacionales`, ADR 173 pto 1, tarea 9. */
+export const RUTA_LOGIN = "/login";
+/** Ídem. */
+export const RUTA_OPERACIONES = "/operaciones";
+/**
+ * Techo del turno de `POST /operaciones` antes de responder `504` -- CONSTANTE
+ * nueva e INDEPENDIENTE de `SOPORTE_TIMEOUT_MS` (ADR 173 pto 3): son turnos
+ * distintos (empleado autenticado vs. cliente anónimo), se permite tunearlos
+ * distinto.
+ */
+export const OPERACIONES_TIMEOUT_MS = 120_000;
 
 /**
  * Parses a positive-integer env var, falling back to `defaultValue` when the

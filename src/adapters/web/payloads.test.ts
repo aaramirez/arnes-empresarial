@@ -4,6 +4,8 @@ import {
   parseAltaVentaPayload,
   parseDecisionForm,
   parseDevolucionPayload,
+  parseLoginPayload,
+  parseOperacionesPayload,
   parseSoportePayload,
 } from "./payloads.js";
 
@@ -283,6 +285,54 @@ describe("parseSoportePayload", () => {
     const resultado = parseSoportePayload("no es un objeto");
 
     expect(resultado.ok).toBe(false);
+  });
+});
+
+describe("parseLoginPayload", () => {
+  it("acepta un payload con empleadoId y password no vacios", () => {
+    const resultado = parseLoginPayload({ empleadoId: "emp-1", password: "correcta" });
+
+    expect(resultado).toEqual({ ok: true, valor: { empleadoId: "emp-1", password: "correcta" } });
+  });
+
+  it("rechaza empleadoId ausente", () => {
+    expect(parseLoginPayload({ password: "correcta" }).ok).toBe(false);
+  });
+
+  it("rechaza empleadoId vacio", () => {
+    expect(parseLoginPayload({ empleadoId: "", password: "correcta" }).ok).toBe(false);
+  });
+
+  it("rechaza password ausente", () => {
+    expect(parseLoginPayload({ empleadoId: "emp-1" }).ok).toBe(false);
+  });
+
+  it("rechaza password vacio", () => {
+    expect(parseLoginPayload({ empleadoId: "emp-1", password: "" }).ok).toBe(false);
+  });
+
+  it("rechaza un payload que no es un objeto", () => {
+    expect(parseLoginPayload("no es un objeto").ok).toBe(false);
+  });
+});
+
+describe("parseOperacionesPayload", () => {
+  it("acepta un payload con consulta no vacia", () => {
+    const resultado = parseOperacionesPayload({ consulta: "quiero registrar una venta" });
+
+    expect(resultado).toEqual({ ok: true, valor: { consulta: "quiero registrar una venta" } });
+  });
+
+  it("rechaza consulta vacia", () => {
+    expect(parseOperacionesPayload({ consulta: "" }).ok).toBe(false);
+  });
+
+  it("rechaza consulta ausente", () => {
+    expect(parseOperacionesPayload({}).ok).toBe(false);
+  });
+
+  it("rechaza un payload que no es un objeto", () => {
+    expect(parseOperacionesPayload("no es un objeto").ok).toBe(false);
   });
 });
 

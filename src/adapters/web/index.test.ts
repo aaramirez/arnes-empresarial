@@ -29,6 +29,10 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
   onDecisionVenta: () => Promise<never>;
   onDevolucion: () => Promise<never>;
   onSoporte: () => Promise<never>;
+  onLogin: () => Promise<never>;
+  onOperacionesEmpleado: () => Promise<never>;
+  sesionStore: { crear: () => string; buscar: () => undefined };
+  confirmacionOperacionesStore: { paraEmpleado: () => never };
   logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
 } {
   return {
@@ -37,6 +41,14 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
     onDecisionVenta: vi.fn().mockRejectedValue(new Error("not used")),
     onDevolucion: vi.fn().mockRejectedValue(new Error("not used")),
     onSoporte: vi.fn().mockRejectedValue(new Error("not used")),
+    onLogin: vi.fn().mockRejectedValue(new Error("not used")),
+    onOperacionesEmpleado: vi.fn().mockRejectedValue(new Error("not used")),
+    sesionStore: { crear: vi.fn().mockReturnValue("token"), buscar: vi.fn().mockReturnValue(undefined) },
+    confirmacionOperacionesStore: {
+      paraEmpleado: (): never => {
+        throw new Error("not used");
+      },
+    },
     logEvent: vi.fn(),
     ...overrides,
   };
