@@ -23,6 +23,7 @@
  * SDK-agnostic rule above, it is still core talking to core.
  */
 import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.js";
+import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../operaciones/operaciones-contract.js";
 import {
   WORKTREE_TEST_TOOL_QUALIFIED_NAME,
   type WorktreeAbierto,
@@ -171,6 +172,48 @@ export function getAgentDefinition(agentId: string): AgentDefinition | undefined
  */
 export function listAgentDefinitions(): readonly AgentDefinition[] {
   return Array.from(AGENT_REGISTRY.values());
+}
+
+// ---------------------------------------------------------------------------
+// Turno de empleado con operaciones de negocio (`operaciones-negocio-conversacionales`,
+// ADR 164). Construido por spread, NUNCA registrado en `AGENT_REGISTRY`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Texto agregado al `systemPrompt` de `CONVERSATIONAL_AGENT` cuando se
+ * construye la variante de empleado con operaciones (ADR 164, design.md §3).
+ * Es PROMPT, no garantía — la garantía real es que la tool sólo llega a
+ * `allowedTools` de este `AgentDefinition` construido, nunca al de
+ * `CONVERSATIONAL_AGENT` (R1, riesgo dominante de la propuesta).
+ */
+const INSTRUCCION_OPERACIONES_EMPLEADO =
+  "Además tenés disponible una herramienta de operaciones de negocio " +
+  `(\`${OPERACIONES_TOOL_QUALIFIED_NAME}\`) para resolver decisiones de venta, ` +
+  "devoluciones, solicitudes internas propias, altas de venta ya pactadas con el " +
+  "cliente y consultas del reporte de comisiones que te pida el empleado. Nunca " +
+  "calculás ni proponés un monto, porcentaje o veredicto vos mismo — eso lo hace " +
+  "la herramienta. Si la herramienta te devuelve un pedido de confirmación, " +
+  "comunicáselo tal cual al empleado y esperá su respuesta explícita en un " +
+  "mensaje siguiente antes de volver a invocar la misma operación: nunca " +
+  'decidas vos que "ya quedó confirmado".';
+
+/**
+ * Construye el `AgentDefinition` del turno de empleado autenticado con
+ * operaciones de negocio habilitadas (ADR 164, design.md §3). Molde EXACTO
+ * de `construirDeveloperConEscritura`: spread de `CONVERSATIONAL_AGENT`,
+ * nunca lo muta, nunca hay una función que devuelva "solo la parte
+ * insegura". `CONVERSATIONAL_AGENT` y `AGENT_REGISTRY` NO se tocan — el
+ * candidato que devuelve esta función se pasa como `candidateAgents: [...]`
+ * (lista de UN elemento) a `handleTurn`, nunca se registra globalmente
+ * (mismo mecanismo que `buildOnSoporte` ya usa para pasar `agents` como
+ * lista explícita en vez de leer `AGENT_REGISTRY`).
+ */
+export function construirAgenteEmpleadoOperaciones(): AgentDefinition {
+  return {
+    ...CONVERSATIONAL_AGENT,
+    allowedTools: [...CONVERSATIONAL_AGENT.allowedTools, OPERACIONES_TOOL_QUALIFIED_NAME],
+    systemPrompt: `${CONVERSATIONAL_AGENT.systemPrompt}\n\n${INSTRUCCION_OPERACIONES_EMPLEADO}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
