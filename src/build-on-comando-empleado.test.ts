@@ -14,6 +14,7 @@ import {
   buildOnComandoEmpleado,
   createSolicitudStore,
   createSolicitudA2AEntranteStore,
+  createRolEmpleadoEscritor,
   formatearListadoSolicitudesA2A,
   formatearDetalleSolicitudA2A,
   type BuildOnComandoEmpleadoDeps,
@@ -93,7 +94,29 @@ import {
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
   insertSolicitudA2AEntrante,
+  buscarRolEmpleado,
 } from "./adapters/memory/repository.js";
+
+/**
+ * `comandos-administracion-empleados`, tarea 5 — "comando de prueba
+ * sintético" (Approach punto 1 de `proposal.md`): el gate genérico de
+ * administrador se prueba ANTES de que exista ningún comando administrativo
+ * real (`/asignar-rol`/`/crear-empleado` llegan en la PR3, bloqueada). Se
+ * mockea SOLO `requiereAdministrador` (el resto del módulo queda real, vía
+ * `importOriginal`) para fabricar, por test, que un tipo YA EXISTENTE
+ * (`reporte_comisiones`) "requiere administrador" — sin tocar `DESCRIPTORES`
+ * real, que hoy declara los dieciocho en `false` (tarea 2). Default `() =>
+ * false`: idéntico al comportamiento real de hoy para CUALQUIER tipo, así
+ * que el resto de las suites de este archivo (que no tocan este describe)
+ * no se ven afectadas.
+ */
+const { requiereAdministradorMock } = vi.hoisted(() => ({
+  requiereAdministradorMock: vi.fn((_tipo: string) => false),
+}));
+vi.mock("./core/commands/comando-empleado.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./core/commands/comando-empleado.js")>();
+  return { ...actual, requiereAdministrador: requiereAdministradorMock };
+});
 
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
 const PASSWORD = "secreto-super-largo-123";
@@ -2715,5 +2738,104 @@ describe("buildOnComandoEmpleado — /ver-solicitudes-a2a (comando-visibilidad-a
 
     expect(source).toContain("function manejarVerSolicitudesA2A(");
     expect(source).not.toContain("async function manejarVerSolicitudesA2A(");
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 5 (ADR 175/183 parte 2, RD-84)
+ * — el gate genérico de `administrador` en el dispatcher, paso 6.5: DESPUÉS
+ * de la guarda de sesión existente (paso 6, sin cambios) y ANTES del
+ * `switch`. Comando de prueba sintético (Approach punto 1 de
+ * `proposal.md`): `requiereAdministrador` fabricado a `true` para el tipo
+ * YA EXISTENTE `reporte_comisiones`, vía el mock de módulo de arriba — sin
+ * tocar `DESCRIPTORES` real, que hoy declara los dieciocho en `false`.
+ */
+describe("buildOnComandoEmpleado — gate de administrador, comando sintético (comandos-administracion-empleados, tarea 5, ADR 183/RD-84)", () => {
+  afterEach(() => {
+    requiereAdministradorMock.mockImplementation(() => false);
+  });
+
+  it("rol base ⇒ rechazado con mensaje de rol administrador, el handler real NO corre, fila no_autorizado", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "reporte_comisiones");
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const registro = makeRegistro();
+    const reporteStore = makeReporteStore();
+    const deps = makeDeps(reloj, { registro, reporteStore, rolPort: makeRolPort(ROL_EMPLEADO) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
+
+    const resultado = await handler("/reporte-comisiones 2026-08");
+
+    expect(resultado.responseText.toLowerCase()).toContain("administrador");
+    expect(reporteStore.listComisionesPorPeriodo).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
+    expect(fila).toMatchObject({
+      comando: "reporte_comisiones",
+      resultado: RESULTADO_NO_AUTORIZADO,
+      empleadoId: "ana",
+    });
+  });
+
+  it("rol administrador ⇒ el gate deja pasar y el handler real corre", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "reporte_comisiones");
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const reporteStore = makeReporteStore();
+    const deps = makeDeps(reloj, { reporteStore, rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+    const handler = buildOnComandoEmpleado(deps);
+    await login(handler);
+
+    const resultado = await handler("/reporte-comisiones 2026-08");
+
+    expect(resultado.responseText.toLowerCase()).not.toContain("requiere rol administrador");
+    expect(reporteStore.listComisionesPorPeriodo).toHaveBeenCalled();
+  });
+
+  it("sin sesión: el rechazo es por sesión (guarda de privilegio, paso 6), el rol NUNCA se consulta", async () => {
+    requiereAdministradorMock.mockImplementation((tipo: string) => tipo === "reporte_comisiones");
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const rolPort: RolEmpleadoPort = { buscarRol: vi.fn(makeRolPort(ROL_EMPLEADO).buscarRol) };
+    const deps = makeDeps(reloj, { rolPort });
+    const handler = buildOnComandoEmpleado(deps);
+
+    const resultado = await handler("/reporte-comisiones 2026-08");
+
+    expect(resultado.responseText).toContain("/login");
+    expect(rolPort.buscarRol).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `comandos-administracion-empleados`, tarea 6 (ADR 180, RD-82) —
+ * `createRolEmpleadoEscritor`, MISMO molde exportado que
+ * `createSolicitudStore`/`createSolicitudA2AEntranteStore` (arriba en este
+ * mismo archivo): permite probar el adaptador por defecto de `rolEscritor`
+ * contra un `db` real de SQLite en memoria SIN necesitar un comando real que
+ * lo consuma todavía (`/asignar-rol` llega recién en la PR3, bloqueada).
+ * `Deps.rolEscritor` es la costura opcional (molde `credenciales`/`rolPort`)
+ * — `buildOnComandoEmpleado` construye este mismo adaptador como default
+ * cuando `deps.rolEscritor` está ausente.
+ */
+describe("createRolEmpleadoEscritor (comandos-administracion-empleados, tarea 6, ADR 180/RD-82)", () => {
+  it("asignarRol llama a upsertRolEmpleado con los tres campos exactos — verificado leyendo con buscarRolEmpleado", () => {
+    const db = openDatabase(":memory:");
+    try {
+      const escritor = createRolEmpleadoEscritor(db);
+
+      const resultado = escritor.asignarRol({ empleadoId: "ana", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+
+      expect(resultado).toBeUndefined();
+      const fila = buscarRolEmpleado(db, "ana");
+      expect(fila).toMatchObject({ empleadoId: "ana", rol: ROL_ADMINISTRADOR, createdAt: TIMESTAMP, updatedAt: TIMESTAMP });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("Deps.rolEscritor es opcional: buildOnComandoEmpleado se construye sin pasarlo, sin romper ningún fake existente", () => {
+    const reloj: Reloj = { ahora: TIMESTAMP };
+    const deps = makeDeps(reloj, {}); // sin rolEscritor — molde `credenciales`/`rolPort`
+    expect(() => buildOnComandoEmpleado(deps)).not.toThrow();
   });
 });

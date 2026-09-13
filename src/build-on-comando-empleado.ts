@@ -74,6 +74,7 @@ import {
   esComandoPrivilegiado,
   formatearAyuda,
   parsearComando,
+  requiereAdministrador,
   type ComandoEmpleado,
 } from "./core/commands/comando-empleado.js";
 import {
@@ -108,7 +109,8 @@ import { type AuthConfig } from "./core/auth/auth-config.js";
 import { type CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import { resolverLogin } from "./core/auth/login.js";
 import { sesionVigente, type SesionEmpleado } from "./core/auth/sesion.js";
-import { type RolEmpleado, type RolEmpleadoPort } from "./core/auth/rol-contract.js";
+import { type RolEmpleado, type RolEmpleadoEscritorPort, type RolEmpleadoPort } from "./core/auth/rol-contract.js";
+import { esAdministrador } from "./core/auth/autorizacion-resolucion.js";
 import {
   ACCION_APROBAR,
   ACCION_REABRIR,
@@ -225,6 +227,7 @@ import {
   getSolicitudA2AEntrantePorTaskId,
   listSolicitudesA2AEntrantesPorEstado,
   buscarRolEmpleado,
+  upsertRolEmpleado,
   type SolicitudRow,
   type PropuestaRow,
   type SolicitudA2AEntranteRow,
@@ -360,6 +363,13 @@ export interface BuildOnComandoEmpleadoDeps {
    * `main.ts` NO la pasa explícitamente — verificado en `design.md` §7.
    */
   readonly rolPort?: RolEmpleadoPort;
+  /**
+   * `comandos-administracion-empleados`, ADR 180/RD-82 — costura de test
+   * opcional, MISMO molde que `rolPort`: default `createRolEmpleadoEscritor(db)`.
+   * `Deps.rolEscritor` opcional no rompe ningún fake existente. SIN
+   * consumidor todavía — `/asignar-rol` (PR3, bloqueada) es quien lo llama.
+   */
+  readonly rolEscritor?: RolEmpleadoEscritorPort;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -642,6 +652,23 @@ export function createSolicitudA2AEntranteStore(db: Database.Database): Solicitu
 }
 
 /**
+ * `comandos-administracion-empleados` (ADR 180, RD-82) — escritor de rol,
+ * co-ubicado con `RolEmpleadoPort` (lectura) en `rol-contract.ts`, SIN
+ * tocarlo. Exportada, mismo molde que `createSolicitudStore`/
+ * `createSolicitudA2AEntranteStore` arriba: permite probar el adaptador por
+ * defecto contra un `db` real sin depender de un consumidor (`/asignar-rol`
+ * llega en la PR3, bloqueada). `upsertRolEmpleado` (ADR 162) NO cambia de
+ * firma — este adaptador es una línea sobre la función que ya existe.
+ */
+export function createRolEmpleadoEscritor(db: Database.Database): RolEmpleadoEscritorPort {
+  return {
+    asignarRol(input) {
+      upsertRolEmpleado(db, input);
+    },
+  };
+}
+
+/**
  * Una línea por fila — molde de `formatearLineaPropuesta` (más abajo). El
  * rótulo es **`origen de transporte`**, nunca `agente` (R1, ADR 142 pto 1):
  * `origenTransporte` es una dirección de red observada por el transporte,
@@ -878,6 +905,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return row ? (row.rol as RolEmpleado) : undefined;
       },
     };
+  /** `comandos-administracion-empleados`, ADR 180/RD-82 — mismo molde inline que `rolPort`. */
+  const rolEscritor: RolEmpleadoEscritorPort = deps.rolEscritor ?? createRolEmpleadoEscritor(db);
   /** `comando-reporte-comisiones`, ADR 121 pto 1 (RD-55) — mismo molde inline que `credenciales`/`registro`. */
   const reporteStore: ReporteStorePort =
     deps.reporteStore ??
@@ -1786,6 +1815,27 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     if (esComandoPrivilegiado(comando.tipo) && !sesionVigente(sesion, ahora)) {
       logEvent(COMANDO_LOG_CORRELATION_ID, "comando-privilegiado-sin-sesion", { tipo: comando.tipo });
       return sistema("Ese comando necesita una sesión activa. Usá /login <empleadoId> <password>.");
+    }
+
+    // 6.5. Gate de administrador (comandos-administracion-empleados, ADR
+    // 175/183 parte 2, RD-84) — SEGUNDO eje de gateo, DISTINTO de
+    // `privilegiado` (paso 6, arriba, sin cambios): ese exige sólo sesión
+    // vigente, éste exige además rol `administrador`. Corre DESPUÉS de la
+    // guarda de sesión: sin sesión, el rechazo ya ocurrió en el paso 6 y el
+    // rol nunca se consulta. `empleadoId` sale de `sesion`, nunca del
+    // comando tipeado (ADR 37) — la sesión ya está garantizada acá para
+    // todo comando `requiereAdministrador: true`, porque esos comandos son
+    // SIEMPRE `privilegiado: true` también (ADR 177 pto 3).
+    if (requiereAdministrador(comando.tipo)) {
+      const empleadoId = (sesion as SesionEmpleado).empleadoId;
+      if (!esAdministrador(rolPort, empleadoId)) {
+        logEvent(COMANDO_LOG_CORRELATION_ID, "comando-administrativo-no-autorizado", {
+          tipo: comando.tipo,
+          empleadoId,
+        });
+        registrar({ comando: comando.tipo, resultado: RESULTADO_NO_AUTORIZADO }, ahora);
+        return sistema("Ese comando requiere rol administrador.");
+      }
     }
 
     // 7. Ruteo.

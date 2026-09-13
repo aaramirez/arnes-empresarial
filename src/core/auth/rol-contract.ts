@@ -16,3 +16,14 @@ export type RolEmpleado = (typeof ROLES_EMPLEADO)[number];
 export interface RolEmpleadoPort {
   buscarRol(empleadoId: string): RolEmpleado | undefined;
 }
+
+/**
+ * Escritor de rol (`comandos-administracion-empleados`, ADR 175 pto 5,
+ * RD-82). Separado de `RolEmpleadoPort` (lectura, arriba, SIN TOCAR) por el
+ * mismo criterio del ADR 176 pto 1: mezclar lectura y escritura en un
+ * puerto obligaría a que el gate del núcleo (`autorizacion-resolucion.ts`)
+ * reciba un puerto que también puede escribir.
+ */
+export interface RolEmpleadoEscritorPort {
+  asignarRol(input: { readonly empleadoId: string; readonly rol: RolEmpleado; readonly ahora: string }): void;
+}
