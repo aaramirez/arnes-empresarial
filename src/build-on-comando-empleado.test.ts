@@ -7,7 +7,7 @@
  * (tarea 6.1, ADR 41) — este archivo verifica el RUTEO de los ocho
  * comandos, las dos ranuras del closure y el orden de evaluación (§6.3).
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import {
@@ -2087,6 +2087,152 @@ describe("buildOnComandoEmpleado — /reporte-comisiones (comando-reporte-comisi
       const salidaB = formatearReporteMensual(reporte);
 
       expect(salidaA).toBe(salidaB);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("buildOnComandoEmpleado — /estado-bot-prs (comandos-administracion-empleados, tarea 3, ADR 185)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function contarFilasTotales(db: Database.Database): number {
+    const row = db.prepare("SELECT count(*) as total FROM registro_acciones_empleado").get() as { total: number };
+    return row.total;
+  }
+
+  it("sin sesión pide /login, cero fila", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.agentLabel).toBe("sistema");
+      expect(resultado.responseText).toContain("/login");
+      expect(contarFilasTotales(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rol BASE con sesión responde IGUAL que un administrador — no gateado (requiereAdministrador: false, sin consumidor todavía)", async () => {
+    const dbAdmin = openDatabase(":memory:");
+    const dbBase = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s3cr3t");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+
+      const depsAdmin = makeKpiDeps(dbAdmin, reloj, { rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+      const handlerAdmin = buildOnComandoEmpleado(depsAdmin);
+      await login(handlerAdmin);
+      const resultadoAdmin = await handlerAdmin("/estado-bot-prs");
+
+      const depsBase = makeKpiDeps(dbBase, reloj, { rolPort: makeRolPort(ROL_EMPLEADO) });
+      const handlerBase = buildOnComandoEmpleado(depsBase);
+      await login(handlerBase);
+      const resultadoBase = await handlerBase("/estado-bot-prs");
+
+      expect(resultadoBase.responseText).toBe(resultadoAdmin.responseText);
+      expect(resultadoBase.responseText.toLowerCase()).not.toContain("no estás autorizado");
+    } finally {
+      dbAdmin.close();
+      dbBase.close();
+    }
+  });
+
+  it("listener habilitado (GITHUB_WEBHOOK_SECRET seteado) ⇒ responde puerto y path", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s3cr3t");
+      vi.stubEnv("WEBHOOK_PORT", "9999");
+      vi.stubEnv("WEBHOOK_PATH", "/hooks/gh");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("9999");
+      expect(resultado.responseText).toContain("/hooks/gh");
+      expect(resultado.responseText.toLowerCase()).not.toContain("deshabilitado");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("listener deshabilitado (sin GITHUB_WEBHOOK_SECRET) ⇒ responde 'deshabilitado (sin GITHUB_WEBHOOK_SECRET)'", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("deshabilitado (sin GITHUB_WEBHOOK_SECRET)");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("GITHUB_TOKEN presente ⇒ 'presente', NUNCA el valor del token en el texto", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_TOKEN", "ghp_secretoMuyLargo123");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("presente");
+      expect(resultado.responseText).not.toContain("ghp_secretoMuyLargo123");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("GITHUB_TOKEN ausente ⇒ 'ausente'", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_TOKEN", "");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/estado-bot-prs");
+
+      expect(resultado.responseText).toContain("ausente");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("cero filas nuevas en registro_acciones_empleado — es una lectura, sin registrar()", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s3cr3t");
+      vi.stubEnv("GITHUB_TOKEN", "ghp_x");
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const antes = contarFilasTotales(db);
+      await handler("/estado-bot-prs");
+      const despues = contarFilasTotales(db);
+
+      expect(despues).toBe(antes);
     } finally {
       db.close();
     }

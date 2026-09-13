@@ -200,6 +200,8 @@ import { createVentaStore, createDelegacionA2AStore } from "./build-on-venta.js"
 import { createDelegacionStore } from "./build-on-activity.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
+import { isWebhookEnabled, resolveWebhookConfig } from "./adapters/webhooks/config.js";
+import { isBoardEnabled, resolveBoardConfig } from "./adapters/board/config.js";
 import type { SoporteResult } from "./build-on-soporte.js";
 import {
   buscarCredencialEmpleado,
@@ -1718,6 +1720,30 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     return sistema(formatearReporteMensual(reporte));
   }
 
+  /**
+   * `/estado-bot-prs` (comandos-administracion-empleados, tarea 3, ADR
+   * 185) — enmienda del checkpoint al diferido del ADR 178 de esa misma
+   * propuesta. Solo lectura, cero escrituras: `resolveWebhookConfig`/
+   * `isWebhookEnabled` y `resolveBoardConfig`/`isBoardEnabled` YA EXISTEN
+   * (`src/adapters/webhooks/config.ts`, `src/adapters/board/config.ts`) —
+   * sin puerto nuevo. Nunca imprime `GITHUB_WEBHOOK_SECRET` ni
+   * `GITHUB_TOKEN`: sólo el booleano de presencia y, si el listener está
+   * habilitado, el puerto/path (configuración no sensible). Sin
+   * `registrar()`: es una lectura, `privilegiado: true` (guarda de sesión
+   * del preámbulo, paso 6) ya la protege, y el descriptor no exige rol
+   * administrador — no hay secreto ni escritura que gatear por rol. El
+   * dispatcher NO consulta ningún campo de rol para este comando todavía
+   * (ese gate llega en la PR2, bloqueada).
+   */
+  function manejarEstadoBotPrs(): TuiTurnResult {
+    const webhook = resolveWebhookConfig();
+    const board = resolveBoardConfig();
+    const listener = isWebhookEnabled(webhook)
+      ? `escuchando en :${webhook.port}${webhook.path}`
+      : "deshabilitado (sin GITHUB_WEBHOOK_SECRET)";
+    return sistema(`Bot de PRs — listener: ${listener}. GITHUB_TOKEN: ${isBoardEnabled(board) ? "presente" : "ausente"}.`);
+  }
+
   function manejarAyuda(comando: Extract<ComandoEmpleado, { tipo: "ayuda" }>): TuiTurnResult {
     if (comando.motivo === "solicitada") {
       return sistema(formatearAyuda());
@@ -1798,6 +1824,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarResolucionPropuesta(ACCION_DESCARTAR_PROPUESTA, comando.propuestaId, comando.motivo, ahora);
       case "reporte_comisiones":
         return manejarReporteComisiones(comando, ahora);
+      case "estado_bot_prs":
+        return manejarEstadoBotPrs();
       case "ayuda":
         return manejarAyuda(comando);
     }
