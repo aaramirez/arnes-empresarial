@@ -99,6 +99,19 @@ describe("parseArgsEmpleado", () => {
       expect(resultado.mensaje).toContain("Flag desconocida: --foo");
     }
   });
+
+  it("['ana','--rol','administrador','--rol','empleado'] → uso, --rol repetido rechazado explícitamente (hallazgo Reviewer R1)", () => {
+    const resultado = parseArgsEmpleado(["ana", "--rol", "administrador", "--rol", "empleado"]);
+    expect(resultado.ok).toBe(false);
+    if (!resultado.ok) {
+      expect(resultado.mensaje).toContain("--rol solo puede especificarse una vez");
+    }
+  });
+
+  it("['--rol','administrador','--rol','empleado','jimmy'] → uso, NUNCA ok:true con empleadoId mal inferido (caso adversarial del bug real, hallazgo Reviewer R1)", () => {
+    const resultado = parseArgsEmpleado(["--rol", "administrador", "--rol", "empleado", "jimmy"]);
+    expect(resultado.ok).toBe(false);
+  });
 });
 
 describe("main() — modo asignar-rol", () => {

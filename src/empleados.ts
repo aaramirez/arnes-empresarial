@@ -57,16 +57,22 @@ export type ParseArgsEmpleadoResult =
  *  1. Flag desconocida (ni `--rotar` ni `--rol`) → `ok:false`, verificado
  *     ANTES que cualquier otra cosa. Una flag mal escrita en un comando que
  *     escribe credenciales o roles no puede caer en silencio al default.
- *  2. `--rol` y `--rotar` juntos → `ok:false` con mensaje explícito de
+ *  2. `--rol` repetido (dos o más ocurrencias en `argv`) → `ok:false` con
+ *     mensaje explícito ("--rol solo puede especificarse una vez"), verificado
+ *     ANTES de resolver su índice — `indexOf` sólo ve la primera ocurrencia,
+ *     así que sin este chequeo un segundo `--rol` se cuela como el
+ *     `empleadoId` posicional en vez de rechazarse (hallazgo de code-review,
+ *     ronda de corrección post-Reviewer de `autorizacion-empleado`).
+ *  3. `--rol` y `--rotar` juntos → `ok:false` con mensaje explícito de
  *     incompatibilidad (son dos operaciones distintas, error semántico, no
  *     "flag desconocida").
- *  3. `--rol` presente → su valor (el token siguiente) debe pertenecer a
+ *  4. `--rol` presente → su valor (el token siguiente) debe pertenecer a
  *     `ROLES_EMPLEADO`; ausente o inválido → `ok:false`, nunca cae a un rol
  *     por default. Modo `"asignar-rol"`.
- *  4. Primer argumento posicional que no empiece con `--` → `empleadoId`.
+ *  5. Primer argumento posicional que no empiece con `--` → `empleadoId`.
  *     Ausente → `ok:false` con el uso.
- *  5. No matchea `ID_REGEX` → `ok:false` con el uso y el motivo.
- *  6. `--rotar` presente en cualquier posición (sin `--rol`) → `modo:
+ *  6. No matchea `ID_REGEX` → `ok:false` con el uso y el motivo.
+ *  7. `--rotar` presente en cualquier posición (sin `--rol`) → `modo:
  *     "rotar"`; si no → `"alta"`.
  */
 export function parseArgsEmpleado(argv: readonly string[]): ParseArgsEmpleadoResult {
@@ -77,6 +83,11 @@ export function parseArgsEmpleado(argv: readonly string[]): ParseArgsEmpleadoRes
     if (!flagsConocidas.has(flag)) {
       return { ok: false, mensaje: `${USO_MENSAJE}\nFlag desconocida: ${flag}` };
     }
+  }
+
+  const rolOcurrencias = argv.filter((a) => a === "--rol").length;
+  if (rolOcurrencias > 1) {
+    return { ok: false, mensaje: `${USO_MENSAJE}\n--rol solo puede especificarse una vez.` };
   }
 
   const rolIndex = argv.indexOf("--rol");
