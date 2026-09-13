@@ -29,4 +29,20 @@ describe("credenciales-contract.ts source", () => {
 
     expect(source).not.toMatch(/\bimport\b/);
   });
+
+  /**
+   * `comandos-administracion-empleados`, tarea 9 — "grep de contrato": el
+   * comentario histórico de `:14-17` (*"la TUI no puede crear
+   * credenciales, y eso es una propiedad del diseño, no un olvido"*) dejó
+   * de ser cierto (tarea 8, `/crear-empleado`). Este test blinda que el
+   * comentario ACTUALIZADO apunte al ADR que lo cambió (ADR 174) y que la
+   * afirmación vieja ya no esté presente sin matices.
+   */
+  it("el comentario de la interfaz apunta a ADR 174 (comandos-administracion-empleados, tarea 9) — no queda la afirmación vieja sin matices", () => {
+    const sourcePath = fileURLToPath(new URL("./credenciales-contract.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).toContain("ADR 174");
+    expect(source).not.toContain("la TUI no puede crear credenciales, y eso es una propiedad del diseño, no un olvido");
+  });
 });
