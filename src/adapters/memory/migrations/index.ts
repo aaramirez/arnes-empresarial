@@ -10,6 +10,7 @@ import { migration0009PropuestasCambio } from "./0009_propuestas_cambio.js";
 import { migration0010DelegacionesA2A } from "./0010_delegaciones_a2a.js";
 import { migration0011SolicitudesA2AEntrantes } from "./0011_solicitudes_a2a_entrantes.js";
 import { migration0012IdxSolicitudesA2AEntrantesEstado } from "./0012_idx_solicitudes_a2a_entrantes_estado.js";
+import { migration0013RolesEmpleado } from "./0013_roles_empleado.js";
 
 /**
  * A single schema migration: a stable `id` (used to track whether it has
@@ -40,4 +41,5 @@ export const migrations: readonly Migration[] = [
   migration0010DelegacionesA2A,
   migration0011SolicitudesA2AEntrantes,
   migration0012IdxSolicitudesA2AEntrantesEstado,
+  migration0013RolesEmpleado,
 ];
