@@ -1,0 +1,198 @@
+/**
+ * Wiring por turno del turno de empleado autenticado con operaciones de
+ * negocio (`operaciones-negocio-conversacionales`, ADR 167/172/173, tarea
+ * 5). Hermano de `build-on-soporte.ts` — mismo molde EXACTO (module doc de
+ * ese archivo tiene el razonamiento completo que no se repite acá): vive en
+ * `src/`, no dentro de ningún adaptador ni de `core/`, porque importa TANTO
+ * de `src/core/*` COMO de `src/adapters/memory/repository.ts` (`createCaso`
+ * directo) y reusa dos closures de construcción (`createVentaStore`,
+ * `createSolicitudStore`) ya expuestas por sus módulos hermanos
+ * (`build-on-venta.ts`, `build-on-comando-empleado.ts`).
+ *
+ * `sesion`/`confirmacion` viajan como argumento de la función DEVUELTA, no
+ * del closure de construcción (ADR 167 §6 pto 2) — a diferencia de
+ * `createKnowledge` en `buildOnSoporte` (que cierra sobre un `casoId` fijo
+ * por turno), acá `sesion` cambia con cada `/login` y `confirmacion`
+ * necesita leer/escribir un estado vivo por-empleado (`confirmacion-
+ * operaciones-store.ts`, tarea 8, Unit 3 — este módulo no construye esa
+ * implementación, solo consume la interfaz `ConfirmacionOperacionPort`
+ * declarada en `operaciones-contract.ts`).
+ *
+ * `candidateAgents: [construirAgenteEmpleadoOperaciones()]` (ADR 164 pto 2):
+ * lista de UN elemento, nunca leída de `AGENT_REGISTRY` — mismo mecanismo
+ * que `buildOnSoporte` ya usa pasando `agents` explícito a `handleTurn`.
+ *
+ * `mcpServers` es el de la tool `operaciones` (`adapters/operaciones/index.ts`,
+ * tarea 4), construida por turno vía `createOperacionesAdapter` — a
+ * diferencia de `buildOnSoporte`, este módulo NO recibe `createKnowledge`:
+ * `BuildOnOperacionesEmpleadoDeps` no lo incluye (ADR 167 §6, verificado
+ * campo por campo) — la tool de conocimiento queda listada en
+ * `allowedTools` (heredada del spread de `CONVERSATIONAL_AGENT`) pero sin
+ * `mcpServer` registrado para este turno, así que sería inalcanzable en
+ * runtime (mismo patrón "R3" que design.md §8 pto 2 ya documenta para las
+ * skills de este mismo change) — gap conocido, fuera del alcance explícito
+ * de esta tarea.
+ *
+ * PROPAGA `TurnFailedError` — igual que `buildOnSoporte`: hay un caller
+ * esperando (HTTP, `POST /operaciones`, tarea 9) y este módulo no decide
+ * cómo se traduce esa falla, solo la deja pasar.
+ */
+import { randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
+import { handleTurn, type MemoryPort } from "./core/turn-selector/handle-turn.js";
+import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
+import type { bootstrapHarness } from "./core/startup/bootstrap.js";
+import { construirAgenteEmpleadoOperaciones } from "./core/agents/definitions.js";
+import { buildOperacionesEmpleadoPrompt } from "./core/ventas/soporte-prompt.js";
+import { createCaso, buscarRolEmpleado, listComisionesPorPeriodo, listVentasEnReembolsoPendiente } from "./adapters/memory/repository.js";
+import { createOperacionesAdapter } from "./adapters/operaciones/index.js";
+import { ejecutarOperacion, type EjecutarOperacionDeps, type EjecutarOperacionInput } from "./core/operaciones/ejecutar-operacion.js";
+import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
+import type { SesionEmpleado } from "./core/auth/sesion.js";
+import type { RolEmpleado, RolEmpleadoPort } from "./core/auth/rol-contract.js";
+import { type VentasConfig } from "./core/ventas/ventas-config.js";
+import { type ConsultaRiesgoCreditoPort, type VentaNotifierPort } from "./core/ventas/ventas-contract.js";
+import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
+import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
+import { createVentaStore } from "./build-on-venta.js";
+import { createSolicitudStore } from "./build-on-comando-empleado.js";
+
+/**
+ * Valor propio de `casos.tipo` para este turno — DUPLICADO a propósito,
+ * nunca centralizado en `ventas-contract.ts` (mismo criterio que
+ * `CASO_ESTADO_ACTIVO` en `build-on-soporte.ts`): es un detalle de
+ * implementación de este único módulo, no vocabulario compartido.
+ */
+const CASO_TIPO_OPERACIONES = "operaciones";
+/** Idéntico a `CASO_ESTADO_ACTIVO` de `handle-turn.ts`/`build-on-soporte.ts` — duplicado local a propósito (AGENTS.md). */
+const CASO_ESTADO_ACTIVO = "activo";
+
+export interface BuildOnOperacionesEmpleadoDeps {
+  readonly db: Database.Database;
+  readonly memory: MemoryPort;
+  readonly hooks: ReturnType<typeof bootstrapHarness>["hooks"];
+  readonly ventasConfig: VentasConfig;
+  /** Exigido por tipo por `registrarVenta` (ADR 171 pto 5) — reusa la MISMA instancia que `main.ts` construye para `buildOnVenta`. */
+  readonly notifier: VentaNotifierPort;
+  /** Ídem — reusa `webConfig.publicUrl`. */
+  readonly baseUrlPublica: string;
+  /** Ídem, opcional — ausente ⇒ `registrarVenta` se comporta como si A2A saliente estuviera apagado. */
+  readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
+  /** ADR 174 — ausente ⇒ default inline IDÉNTICO al de `build-on-comando-empleado.ts` (closures sobre `db`). */
+  readonly reporteStore?: ReporteStorePort;
+  readonly despacharDeps: DespacharDelegacionDeps;
+  readonly newId?: () => string; // default: randomUUID
+  readonly newToken?: () => string; // default: randomUUID
+  readonly now?: () => string; // default: () => new Date().toISOString()
+  readonly logDeps?: LogTurnEventDeps;
+}
+
+export interface OperacionesEmpleadoResult {
+  readonly casoId: string;
+  readonly respuesta: string;
+}
+
+/**
+ * Devuelve el handler `(input) => Promise<OperacionesEmpleadoResult>` —
+ * agnóstico del caller (ADR 172 pto 7): no sabe ni le importa si lo invoca
+ * HTTP (`POST /operaciones`, tarea 9) o cualquier otro transporte futuro.
+ *
+ * Secuencia exacta (molde `buildOnSoporte`):
+ *  1. `casoId = newId()`; `createCaso(db, {...})`. PROPAGA si falla.
+ *  2. `prompt = buildOperacionesEmpleadoPrompt(input.consulta)` — PURO.
+ *  3. `candidateAgents = [construirAgenteEmpleadoOperaciones()]` — lista de
+ *     UN elemento (ADR 164 pto 2), nunca `AGENT_REGISTRY`.
+ *  4. Arma `EjecutarOperacionDeps` (closures sobre `db`, mismas instancias
+ *     compartidas para `notifier`/`baseUrlPublica`/`riesgoCredito`/
+ *     `reporteStore`/`despacharDeps` que recibe por parámetro) y
+ *     `ejecutar = (input) => ejecutarOperacion(input, ejecutarDeps)`.
+ *  5. `operacionesAdapter = createOperacionesAdapter({ casoId, sesion:
+ *     input.sesion, confirmacion: input.confirmacion, ejecutar })`.
+ *  6. `handleTurn(casoId, prompt, { memory, hooks, candidateAgents,
+ *     ...(logDeps ? {logDeps} : {}), mcpServers: operacionesAdapter.mcpServers })`.
+ *  7. Devuelve `{ casoId, respuesta: result.responseText }`.
+ */
+export function buildOnOperacionesEmpleado(
+  deps: BuildOnOperacionesEmpleadoDeps,
+): (input: {
+  readonly consulta: string;
+  readonly sesion: SesionEmpleado;
+  readonly confirmacion: ConfirmacionOperacionPort;
+}) => Promise<OperacionesEmpleadoResult> {
+  const { db, memory, hooks, ventasConfig, notifier, baseUrlPublica, despacharDeps, logDeps } = deps;
+  const newId = deps.newId ?? randomUUID;
+  const newToken = deps.newToken ?? randomUUID;
+  const now = deps.now ?? (() => new Date().toISOString());
+
+  const store = createVentaStore(db);
+  const solicitudStore = createSolicitudStore(db);
+  /** Mismo molde inline que `build-on-comando-empleado.ts` — `cancelar_solicitud_interna` nunca evalúa el gate de rol (bypass estructural, `esAccionAutoservicio`), pero `ResolverSolicitudDeps.rolPort` es un campo requerido del tipo. */
+  const rolPort: RolEmpleadoPort = {
+    buscarRol: (empleadoId) => {
+      const row = buscarRolEmpleado(db, empleadoId);
+      return row ? (row.rol as RolEmpleado) : undefined;
+    },
+  };
+  /** ADR 174 — mismo molde inline que `build-on-comando-empleado.ts` cuando no se inyecta explícito. */
+  const reporteStore: ReporteStorePort =
+    deps.reporteStore ?? {
+      listComisionesPorPeriodo: (periodo) => listComisionesPorPeriodo(db, periodo),
+      listVentasEnReembolsoPendiente: () => listVentasEnReembolsoPendiente(db),
+    };
+  const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
+    logTurnEvent(casoId, event, fields, logDeps);
+
+  const ejecutarDeps: EjecutarOperacionDeps = {
+    store,
+    solicitudStore,
+    config: ventasConfig,
+    notifier,
+    baseUrlPublica,
+    ...(deps.riesgoCredito !== undefined ? { riesgoCredito: deps.riesgoCredito } : {}),
+    reporteStore,
+    despacharDeps,
+    rolPort,
+    newId,
+    newToken,
+    now,
+    logEvent,
+  };
+
+  const ejecutar = (input: EjecutarOperacionInput): Promise<string> => ejecutarOperacion(input, ejecutarDeps);
+
+  return async (input) => {
+    const casoId = newId();
+    const timestamp = now();
+
+    // PROPAGA si falla — sin caso no hay nada que correlacionar (mismo
+    // criterio que `buildOnSoporte`). Nada corre después si esto lanza.
+    createCaso(db, {
+      id: casoId,
+      tipo: CASO_TIPO_OPERACIONES,
+      estado: CASO_ESTADO_ACTIVO,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    logTurnEvent(casoId, "operaciones-caso-creado", undefined, logDeps);
+
+    const prompt = buildOperacionesEmpleadoPrompt(input.consulta);
+    const candidateAgents = [construirAgenteEmpleadoOperaciones()];
+
+    const operacionesAdapter = createOperacionesAdapter({
+      casoId,
+      sesion: input.sesion,
+      confirmacion: input.confirmacion,
+      ejecutar,
+    });
+
+    const result = await handleTurn(casoId, prompt, {
+      memory,
+      hooks,
+      candidateAgents,
+      ...(logDeps ? { logDeps } : {}),
+      mcpServers: operacionesAdapter.mcpServers,
+    });
+
+    return { casoId, respuesta: result.responseText };
+  };
+}
