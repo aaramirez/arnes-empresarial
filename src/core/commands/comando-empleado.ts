@@ -74,6 +74,10 @@ export type ComandoEmpleado =
    *  OPCIONAL — su ausencia lista las solicitudes A2A entrantes en curso,
    *  su presencia muestra el detalle de una. */
   | { readonly tipo: "ver_solicitudes_a2a"; readonly a2aTaskId?: string }
+  /** Brazo NUEVO de `comandos-administracion-empleados` (ADR 185) — enmienda
+   *  del checkpoint al diferido del ADR 178 de esa misma propuesta. Sin
+   *  argumentos, de solo lectura: nunca escribe, nunca revela un secreto. */
+  | { readonly tipo: "estado_bot_prs" }
   /** `comando` lleva SOLO el primer token (`"/logni"`), NUNCA el resto de la línea. */
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
@@ -88,6 +92,16 @@ export interface DescriptorComando {
   readonly privilegiado: boolean;
   /** `true` SOLO para `/login`: su segundo argumento es un secreto, no un identificador opaco. */
   readonly secreto: boolean;
+  /**
+   * `true` ⇒ exige rol `administrador` (comandos-administracion-empleados,
+   * ADR 183 parte 1/RD-84), un eje de gateo DISTINTO de `privilegiado`
+   * (ese exige sólo sesión vigente — resignificarlo está prohibido, R4 de
+   * `autorizacion-empleado`). Lo consume el dispatcher (paso 6.5, DESPUÉS
+   * del gate de sesión), no el parser. Scaffolding puro por ahora: ningún
+   * descriptor de hoy lo necesita (todos `false`) hasta que
+   * `/crear-empleado`/`/asignar-rol` lleguen (PR2/PR3, bloqueadas).
+   */
+  readonly requiereAdministrador: boolean;
 }
 
 /**
@@ -145,6 +159,7 @@ const DESCRIPTORES = [
     ayuda: "Abre sesión como el empleado indicado.",
     privilegiado: false,
     secreto: true,
+    requiereAdministrador: false,
     forma: "id_mas_resto",
     tipo: "login",
   },
@@ -154,6 +169,7 @@ const DESCRIPTORES = [
     ayuda: "Cierra la sesión abierta, si hay una.",
     privilegiado: false,
     secreto: false,
+    requiereAdministrador: false,
     forma: "sin_argumentos",
     tipo: "logout",
   },
@@ -163,6 +179,7 @@ const DESCRIPTORES = [
     ayuda: "Envía una consulta al agente de soporte.",
     privilegiado: false,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_mas_resto",
     tipo: "soporte",
   },
@@ -172,6 +189,7 @@ const DESCRIPTORES = [
     ayuda: "Aprueba un reembolso escalado (lista los pendientes si se omite el id).",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional",
     tipo: "aprobar_reembolso",
   },
@@ -181,6 +199,7 @@ const DESCRIPTORES = [
     ayuda: "Rechaza un reembolso escalado (lista los pendientes si se omite el id).",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional",
     tipo: "rechazar_reembolso",
   },
@@ -190,6 +209,7 @@ const DESCRIPTORES = [
     ayuda: "Reabre un reembolso previamente rechazado (lista los rechazados si se omite el id).",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional",
     tipo: "reabrir_reembolso",
   },
@@ -199,6 +219,7 @@ const DESCRIPTORES = [
     ayuda: "Aprueba una solicitud interna pendiente (lista las pendientes si se omite el id).",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional_solicitud",
     tipo: "aprobar_solicitud",
   },
@@ -208,6 +229,7 @@ const DESCRIPTORES = [
     ayuda: "Rechaza una solicitud interna pendiente (lista las pendientes si se omite el id).",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional_solicitud",
     tipo: "rechazar_solicitud",
   },
@@ -222,6 +244,7 @@ const DESCRIPTORES = [
     // es la única fuente de verdad que consulta el guard del dispatcher.
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional_propuesta",
     tipo: "ver_propuesta",
   },
@@ -231,6 +254,7 @@ const DESCRIPTORES = [
     ayuda: "Aplica el patch de una propuesta de cambio aprobada.",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_mas_resto",
     tipo: "aplicar_propuesta",
   },
@@ -240,6 +264,7 @@ const DESCRIPTORES = [
     ayuda: "Descarta una propuesta de cambio pendiente sin aplicarla.",
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_mas_resto",
     tipo: "descartar_propuesta",
   },
@@ -252,6 +277,7 @@ const DESCRIPTORES = [
     // un tercero externo (ADR 85).
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_mas_resto",
     tipo: "consultar_kpi",
   },
@@ -265,6 +291,7 @@ const DESCRIPTORES = [
     // ver un empleado con sesión vigente.
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional_periodo",
     tipo: "reporte_comisiones",
   },
@@ -278,8 +305,19 @@ const DESCRIPTORES = [
     // le dio a un tercero, construida sobre datos de la empresa.
     privilegiado: true,
     secreto: false,
+    requiereAdministrador: false,
     forma: "id_opcional_a2a_task",
     tipo: "ver_solicitudes_a2a",
+  },
+  {
+    nombre: "/estado-bot-prs",
+    uso: "/estado-bot-prs",
+    ayuda: "Muestra si el bot de revisión de PRs está escuchando y si GITHUB_TOKEN está configurado (sin revelar valores).",
+    privilegiado: true,
+    secreto: false,
+    requiereAdministrador: false,
+    forma: "sin_argumentos",
+    tipo: "estado_bot_prs",
   },
   {
     nombre: "/ayuda",
@@ -287,6 +325,7 @@ const DESCRIPTORES = [
     ayuda: "Lista los comandos disponibles.",
     privilegiado: false,
     secreto: false,
+    requiereAdministrador: false,
     forma: "sin_argumentos",
     tipo: "ayuda",
   },
@@ -310,6 +349,18 @@ export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
  */
 export function esComandoPrivilegiado(tipo: ComandoEmpleado["tipo"]): boolean {
   return DESCRIPTORES.find((d) => d.tipo === tipo)?.privilegiado ?? false;
+}
+
+/**
+ * ÚNICA fuente de verdad de qué comandos exigen rol `administrador`
+ * (comandos-administracion-empleados, ADR 183 parte 1/RD-84) — molde EXACTO
+ * de `esComandoPrivilegiado`: lee el campo `requiereAdministrador` del
+ * descriptor correspondiente, en vez de mantener una lista paralela. SIN
+ * consumidor todavía — el dispatcher no la consulta hasta que el gate de
+ * administrador exista (PR2, tarea 5, bloqueada).
+ */
+export function requiereAdministrador(tipo: ComandoEmpleado["tipo"]): boolean {
+  return DESCRIPTORES.find((d) => d.tipo === tipo)?.requiereAdministrador ?? false;
 }
 
 /** Texto de `/ayuda`: encabezado + una línea `uso — ayuda` por descriptor. PURA. */
@@ -403,8 +454,13 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
   }
 
   if (descriptor.forma === "sin_argumentos") {
-    // Solo /logout llega acá (aparte de /ayuda, ya resuelto arriba).
-    return { tipo: "logout" };
+    // /logout y /estado-bot-prs llegan acá (aparte de /ayuda, ya resuelto
+    // arriba). ★ Corrección (comandos-administracion-empleados, tarea 3):
+    // antes devolvía hardcodeado `{ tipo: "logout" }` porque /logout era el
+    // ÚNICO consumidor de esta forma — con un segundo comando (/estado-bot-prs)
+    // eso ruteaba silenciosamente a logout. Ahora devuelve el tipo genérico
+    // del descriptor, la misma fuente de verdad que ya usa `idOpcionalPayload`.
+    return { tipo: descriptor.tipo };
   }
 
   if (descriptor.forma === "id_opcional") {
