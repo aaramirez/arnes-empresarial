@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CSP_CHAT,
   OPERACIONES_TIMEOUT_MS,
+  RUTA_CHAT,
+  RUTA_CHAT_ESTILOS,
+  RUTA_CHAT_SCRIPT,
   RUTA_CONFIRMAR_PREFIJO,
   RUTA_DEVOLUCION,
   RUTA_LOGIN,
@@ -12,6 +16,8 @@ import {
   WEB_LOG_CORRELATION_ID,
   type WebConfig,
 } from "./config.js";
+import { CHAT_CLIENT_JS } from "./chat-client.js";
+import { CHAT_CSS, renderChatHtml } from "./chat-page.js";
 import type { CreateWebServerFn, WebRequest, WebResponse } from "./http.js";
 import {
   createRequestListener,
@@ -1531,5 +1537,112 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
 
     expect(res.statusCode).toBe(404);
     expect(res.end).toHaveBeenCalledWith();
+  });
+});
+
+/**
+ * `chat-web-empleado`, tarea 10 (ADR 199, ADR 201) -- `GET /chat`,
+ * `GET /chat/app.js`, `GET /chat/app.css`. Públicas (sin sesión), CSP vía
+ * `respondHtmlChat` (que delega en `respondHtml` SIN modificarlo -- ver el
+ * describe de `GET /confirmar/:token` más abajo para la verificación
+ * negativa) más `respondAsset` para los dos assets estáticos.
+ */
+describe("createRequestListener — GET /chat, GET /chat/app.js, GET /chat/app.css (chat-web-empleado, tarea 10)", () => {
+  it("GET /chat -- 200, text/html, CSP literal exacta y X-Content-Type-Options: nosniff, sin sesión", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: RUTA_CHAT, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.end).toHaveBeenCalledWith(renderChatHtml());
+  });
+
+  it("GET /chat/app.js -- 200, application/javascript, mismos headers de seguridad", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: RUTA_CHAT_SCRIPT, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/javascript; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(res.headers.get("X-Request-Id")).toBe(REQUEST_ID);
+    expect(res.end).toHaveBeenCalledWith(CHAT_CLIENT_JS);
+  });
+
+  it("GET /chat/app.css -- 200, text/css, mismos headers de seguridad", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: RUTA_CHAT_ESTILOS, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/css; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.end).toHaveBeenCalledWith(CHAT_CSS);
+  });
+
+  it.each([RUTA_CHAT, RUTA_CHAT_SCRIPT, RUTA_CHAT_ESTILOS])(
+    "%s responde igual sin sesión -- público, sin datos de negocio (no consulta ningún store)",
+    async (ruta) => {
+      const sesionStore = fakeSesionStore();
+      const deps = makeDeps({ sesionStore });
+      const listener = createRequestListener(deps);
+      const req = new FakeRequest({ method: "GET", url: ruta, headers: {} });
+      const res = new FakeResponse();
+
+      listener(req, res);
+      await esperarRespuesta(res);
+
+      expect(res.statusCode).toBe(200);
+      expect(sesionStore.buscar).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["POST", RUTA_CHAT],
+    ["POST", RUTA_CHAT_SCRIPT],
+    ["POST", RUTA_CHAT_ESTILOS],
+  ])("método equivocado (%s %s) -- 404 vacío, sin caso especial", (metodo, ruta) => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: metodo, url: ruta, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.end).toHaveBeenCalledWith();
+  });
+
+  it("GET /confirmar/:token NO gana la cabecera CSP -- respondHtml sigue sin tocar (verificación negativa)", async () => {
+    const onConsultaVenta = vi.fn().mockResolvedValue(VENTA_PUBLICA);
+    const deps = makeDeps({ onConsultaVenta });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: `${RUTA_CONFIRMAR_PREFIJO}token-1`, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Security-Policy")).toBeUndefined();
+    expect(res.headers.get("X-Content-Type-Options")).toBeUndefined();
   });
 });

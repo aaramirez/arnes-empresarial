@@ -25,10 +25,15 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import {
+  CSP_CHAT,
   OPERACIONES_TIMEOUT_MS,
+  RUTA_CHAT,
+  RUTA_CHAT_ESTILOS,
+  RUTA_CHAT_SCRIPT,
   RUTA_CONFIRMAR_PREFIJO,
   RUTA_DEVOLUCION,
   RUTA_LOGIN,
+  RUTA_LOGOUT,
   RUTA_OPERACIONES,
   RUTA_SOPORTE,
   RUTA_VENTAS,
@@ -49,6 +54,8 @@ import {
   parseSoportePayload,
 } from "./payloads.js";
 import { renderConfirmacionHtml, renderLinkInvalidoHtml, renderResultadoHtml } from "./render.js";
+import { CHAT_CLIENT_JS } from "./chat-client.js";
+import { CHAT_CSS, renderChatHtml } from "./chat-page.js";
 import type { RegistrarVentaInput, RegistrarVentaResult } from "../../core/ventas/registrar-venta.js";
 import type { DecisionCliente, DecisionVentaResult } from "../../core/ventas/confirmar-venta.js";
 import type { DevolucionResult } from "../../core/ventas/procesar-devolucion.js";
@@ -258,6 +265,36 @@ function respondHtml(res: WebResponse, status: number, html: string, requestId: 
 /** LA página genérica de indistinguibilidad (R6): un solo cuerpo, byte a byte idéntico, para las 4 filas en negrita de la tabla. */
 function respondLinkInvalido(res: WebResponse, requestId: string): void {
   respondHtml(res, 404, renderLinkInvalidoHtml(), requestId);
+}
+
+/**
+ * Helper HERMANO de `respondHtml` (`chat-web-empleado`, ADR 199 pto 2) --
+ * **delega en `respondHtml` SIN modificarlo** y suma `Content-Security-Policy`
+ * y `X-Content-Type-Options: nosniff`. Modificar `respondHtml` directamente
+ * le pondría CSP a `GET /confirmar/:token`, que tiene `<form>` y por lo
+ * tanto `form-action 'none'` lo rompería (ADR 192 pto 5 lo excluye
+ * explícitamente). Punto obligatorio 6.
+ */
+function respondHtmlChat(res: WebResponse, html: string, requestId: string): void {
+  respondHtml(res, 200, html, requestId);
+  res.setHeader("Content-Security-Policy", CSP_CHAT);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+}
+
+/**
+ * Sirve `CHAT_CLIENT_JS`/`CHAT_CSS` -- `string` en memoria, **cero `fs`** en
+ * el camino de request (ADR 200 pto 1). Mismos dos headers de seguridad que
+ * `respondHtmlChat`, más `Cache-Control: no-store` y `X-Request-Id` (ADR
+ * 201, tabla de rutas).
+ */
+function respondAsset(res: WebResponse, contenido: string, contentType: string, requestId: string): void {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Content-Security-Policy", CSP_CHAT);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Request-Id", requestId);
+  res.end(contenido);
 }
 
 type LecturaCuerpo =
@@ -772,11 +809,24 @@ export function createRequestListener(deps: WebServerDeps): (req: WebRequest, re
       void handleOperaciones(req, res, requestId, deps);
       return;
     }
-    // `chat-web-empleado`, ADR 201 pto 3: en la raíz, no bajo `/chat/` -- la
-    // constante `RUTA_LOGOUT` la agrega `config.ts` recién en la tarea 9
-    // (Cadena C, en paralelo); literal acá para no adelantar esa tarea.
-    if (method === "POST" && path === "/logout") {
+    // `chat-web-empleado`, ADR 201 pto 3: en la raíz, no bajo `/chat/`.
+    if (method === "POST" && path === RUTA_LOGOUT) {
       handleLogout(req, res, requestId, deps);
+      return;
+    }
+    // `chat-web-empleado`, tarea 10 (ADR 199, ADR 201): las tres rutas del
+    // chat son PÚBLICAS -- sin sesión, sin dato de negocio, idénticas para
+    // cualquier solicitante.
+    if (method === "GET" && path === RUTA_CHAT) {
+      respondHtmlChat(res, renderChatHtml(), requestId);
+      return;
+    }
+    if (method === "GET" && path === RUTA_CHAT_SCRIPT) {
+      respondAsset(res, CHAT_CLIENT_JS, "application/javascript; charset=utf-8", requestId);
+      return;
+    }
+    if (method === "GET" && path === RUTA_CHAT_ESTILOS) {
+      respondAsset(res, CHAT_CSS, "text/css; charset=utf-8", requestId);
       return;
     }
 
