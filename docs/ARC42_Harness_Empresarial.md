@@ -385,6 +385,17 @@ Como corrección asociada (tarea 3): la rama genérica de `parsearComando` para 
 
 **Nota (v3.4.0)**: este bloque describe únicamente el camino de **escritura** de `solicitudes_a2a_entrantes` (lo que el Servidor A2A recibe y persiste). Desde v3.4.0 existe además un camino de **lectura** sobre la misma tabla — `/ver-solicitudes-a2a [a2aTaskId]` — pero ese comando vive en el Registro de Comandos (bloque de construcción 3, no éste) y no toca nada de lo descripto acá: `startA2AServer`, `src/adapters/a2a/server.ts` y `src/build-on-a2a-entrante.ts` permanecen sin cambios. Ver la nota v3.4.0 del bloque 3.
 
+**Nota (v3.8.0, `consultas-negocio-a2a-entrante`, ADR 174-187)**: hasta esta versión, el turno A2A entrante sólo podía delegar en el servidor de conocimiento (`mcp__conocimiento__*`) — el Agent Card prometía consultar "proyectos", "incidentes", "solicitudes internas" y "ventas registradas", pero ningún turno real podía responder eso con datos concretos (deuda documentada en `docs/progreso/v3.0-a2a-servidor/evidencia-verificacion-manual.md:124-126`, "Hallazgo 1"). Esta versión agrega un segundo servidor MCP, `mcp__consultas__consultar_negocio`, con **cuatro** operaciones de sólo lectura y agregadas, ninguna con identidad de empleado:
+
+- **Estado de actividad/PR** por `(proyectoId, referenciaExterna)` — estado y última actualización, nunca el `id` interno ni el responsable.
+- **Solicitudes internas pendientes** — conteo total y desglose por tipo, nunca `solicitanteId` ni el texto libre de `detalle`.
+- **Reporte de comisiones por período** — total comisionado y conteos agregados del período, nunca la tabla completa por vendedor (esa tabla completa sigue siendo exclusiva de `/reporte-comisiones`, con sesión de empleado vigente).
+- **Reembolsos pendientes de aprobación** — conteo total y monto sumado, nunca `vendedorId`/`vendedorNombre`/`clienteId` por fila.
+
+**Qué NO puede hacer un agente externo por esta vía**: ninguna de las cuatro operaciones escribe — `BuildOnA2AEntranteDeps` pasa de ocho a **nueve** campos (el noveno, `createConsultas`, es una segunda fábrica de sólo lectura) sin ganar ningún puerto de escritura, invariante verificado por test de firma. Tampoco hay resolución de identidad por llamador: el bearer del token A2A autentica la conexión, no a una persona, así que ninguna operación puede filtrar "mis solicitudes" o "mis ventas" — sólo agregados del dominio completo. El `mcpServers` de este turno sigue siendo el conjunto exacto `{conocimiento, consultas}`, nunca incluye `mcp__operaciones__*` (el servidor de escritura del turno de Empleado autenticado), verificado por un test de igualdad de conjunto, no de contención.
+
+**Nota histórica de proceso**: esta PR (tareas 11-15 de `consultas-negocio-a2a-entrante`) estuvo gateada durante el desarrollo — no podía abrirse hasta que `operaciones-negocio-conversacionales` mergeara a `main`, porque el test de conjunto exacto de `mcpServers` necesita que `mcp__operaciones__*` exista de verdad para poder afirmar su ausencia contra un servidor real, no uno hipotético. Ver `openspec/changes/consultas-negocio-a2a-entrante/tasks.md`, sección "Orden de merge y gating obligatorio".
+
 # Vista de Ejecución
 
 ## Escenario de ejecución 1: Turno conversacional básico
