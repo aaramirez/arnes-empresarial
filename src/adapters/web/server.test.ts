@@ -116,6 +116,32 @@ class FakeResponse implements WebResponse {
 }
 
 /**
+ * Doble ESTRICTO de `http.ServerResponse` -- a diferencia de `FakeResponse`
+ * de arriba, éste sí reproduce la semántica real de Node: `setHeader` tras
+ * `end()` lanza (mismo error que `ERR_HTTP_HEADERS_SENT`). Hallazgo del
+ * Reviewer sobre `respondHtmlChat` (chat-web-empleado): `FakeResponse` no
+ * detectaba el orden incorrecto porque no distinguía "ya terminé de
+ * responder" de "todavía puedo setear headers". Se usa en las rutas de chat
+ * para que este bug no pueda reaparecer sin que un test lo agarre.
+ */
+class StrictFakeResponse implements WebResponse {
+  statusCode = 200;
+  headers = new Map<string, string>();
+  private ended = false;
+  end = vi.fn((..._args: unknown[]) => {
+    this.ended = true;
+  });
+
+  setHeader(name: string, value: string): unknown {
+    if (this.ended) {
+      throw new Error(`ERR_HTTP_HEADERS_SENT: no se puede setear '${name}' después de end()`);
+    }
+    this.headers.set(name, value);
+    return this;
+  }
+}
+
+/**
  * Espera a que la respuesta se haya completado. NO se usa `res.statusCode`
  * como condición de espera: `FakeResponse.statusCode` arranca en `200`
  * (mismo default que `http.ServerResponse`), así que esperar
@@ -1630,6 +1656,27 @@ describe("createRequestListener — GET /chat, GET /chat/app.js, GET /chat/app.c
     expect(res.statusCode).toBe(404);
     expect(res.end).toHaveBeenCalledWith();
   });
+
+  it.each([
+    ["GET /chat", RUTA_CHAT],
+    ["GET /chat/app.js", RUTA_CHAT_SCRIPT],
+    ["GET /chat/app.css", RUTA_CHAT_ESTILOS],
+  ])(
+    "%s no setea headers después de end() -- doble estricto (hallazgo Reviewer, ERR_HTTP_HEADERS_SENT)",
+    async (_nombre, ruta) => {
+      const deps = makeDeps();
+      const listener = createRequestListener(deps);
+      const req = new FakeRequest({ method: "GET", url: ruta, headers: {} });
+      const res = new StrictFakeResponse();
+
+      expect(() => listener(req, res)).not.toThrow();
+      await esperarRespuesta(res as unknown as FakeResponse);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    },
+  );
 
   it("GET /confirmar/:token NO gana la cabecera CSP -- respondHtml sigue sin tocar (verificación negativa)", async () => {
     const onConsultaVenta = vi.fn().mockResolvedValue(VENTA_PUBLICA);

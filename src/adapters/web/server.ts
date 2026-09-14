@@ -207,22 +207,36 @@ function extraerBearerToken(req: WebRequest): string | undefined {
   return token === "" ? undefined : token;
 }
 
+/** Resultado de `resolverSesionDesdeRequest`: la sesión resuelta junto con el token crudo que la resolvió. */
+interface SesionResuelta {
+  readonly sesion: SesionEmpleado;
+  readonly token: string;
+}
+
 /**
  * Resuelve la `SesionEmpleado` de un `POST /operaciones` a partir de su
- * header `Authorization`. `undefined` en CUALQUIERA de: header ausente,
- * token sin coincidencia en `sesionStore`, o sesión vencida -- los tres
- * casos son indistinguibles desde acá (mismo criterio que
- * `SesionEmpleadoStore.buscar`, ADR 173 pto 4).
+ * header `Authorization`, junto con el `token` crudo ya extraído --
+ * corrección sobre el hallazgo Reviewer #5 (bajo): antes el caller
+ * (`handleOperaciones`) volvía a llamar `extraerBearerToken(req)` para
+ * resolver `conversacionStore.paraSesion`, duplicando el parseo del bearer
+ * token y forzando un `as string` porque esta función no exponía el token.
+ * `undefined` en CUALQUIERA de: header ausente, token sin coincidencia en
+ * `sesionStore`, o sesión vencida -- los tres casos son indistinguibles
+ * desde acá (mismo criterio que `SesionEmpleadoStore.buscar`, ADR 173 pto 4).
  */
 function resolverSesionDesdeRequest(
   req: WebRequest,
   sesionStore: SesionEmpleadoStore,
-): SesionEmpleado | undefined {
+): SesionResuelta | undefined {
   const token = extraerBearerToken(req);
   if (token === undefined) {
     return undefined;
   }
-  return sesionStore.buscar(token);
+  const sesion = sesionStore.buscar(token);
+  if (sesion === undefined) {
+    return undefined;
+  }
+  return { sesion, token };
 }
 
 /**
@@ -252,13 +266,22 @@ function respondJson(res: WebResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * `Cache-Control: no-store` + `X-Request-Id` -- compartido por `respondHtml`,
+ * `respondAsset` y `handleLogout` (`chat-web-empleado`, hallazgo Reviewer #1:
+ * extraído para no repetir el par en cada función que responde).
+ */
+function aplicarHeadersNoStore(res: WebResponse, requestId: string): void {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Request-Id", requestId);
+}
+
 /** Headers de toda respuesta HTML (ADR 20, punto 5): Content-Type, Cache-Control, Referrer-Policy, X-Request-Id. */
 function respondHtml(res: WebResponse, status: number, html: string, requestId: string): void {
   res.statusCode = status;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
+  aplicarHeadersNoStore(res, requestId);
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-Request-Id", requestId);
   res.end(html);
 }
 
@@ -268,17 +291,33 @@ function respondLinkInvalido(res: WebResponse, requestId: string): void {
 }
 
 /**
+ * `Content-Security-Policy` + `X-Content-Type-Options: nosniff` --
+ * compartido por `respondHtmlChat` y `respondAsset` (`chat-web-empleado`,
+ * hallazgo Reviewer #1). Extraído para no repetir el par literal en las dos
+ * funciones que sirven contenido de `/chat/*`.
+ */
+function aplicarHeadersSeguridadChat(res: WebResponse): void {
+  res.setHeader("Content-Security-Policy", CSP_CHAT);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+}
+
+/**
  * Helper HERMANO de `respondHtml` (`chat-web-empleado`, ADR 199 pto 2) --
  * **delega en `respondHtml` SIN modificarlo** y suma `Content-Security-Policy`
  * y `X-Content-Type-Options: nosniff`. Modificar `respondHtml` directamente
  * le pondría CSP a `GET /confirmar/:token`, que tiene `<form>` y por lo
  * tanto `form-action 'none'` lo rompería (ADR 192 pto 5 lo excluye
  * explícitamente). Punto obligatorio 6.
+ *
+ * CORRECCIÓN (hallazgo Reviewer #1, CRÍTICO): los headers propios se setean
+ * ANTES de delegar en `respondHtml` -- que es quien llama `res.end()`.
+ * Setearlos DESPUÉS de `respondHtml(...)` (como estaba) es setear headers
+ * después de `end()`, que contra un `http.ServerResponse` real lanza
+ * `ERR_HTTP_HEADERS_SENT`.
  */
 function respondHtmlChat(res: WebResponse, html: string, requestId: string): void {
+  aplicarHeadersSeguridadChat(res);
   respondHtml(res, 200, html, requestId);
-  res.setHeader("Content-Security-Policy", CSP_CHAT);
-  res.setHeader("X-Content-Type-Options", "nosniff");
 }
 
 /**
@@ -290,10 +329,8 @@ function respondHtmlChat(res: WebResponse, html: string, requestId: string): voi
 function respondAsset(res: WebResponse, contenido: string, contentType: string, requestId: string): void {
   res.statusCode = 200;
   res.setHeader("Content-Type", contentType);
-  res.setHeader("Content-Security-Policy", CSP_CHAT);
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Request-Id", requestId);
+  aplicarHeadersSeguridadChat(res);
+  aplicarHeadersNoStore(res, requestId);
   res.end(contenido);
 }
 
@@ -657,12 +694,13 @@ async function handleOperaciones(
     return;
   }
 
-  const sesion = resolverSesionDesdeRequest(req, sesionStore);
-  if (sesion === undefined) {
+  const resuelto = resolverSesionDesdeRequest(req, sesionStore);
+  if (resuelto === undefined) {
     logEvent(requestId, "web-no-autorizado", {});
     respondJson(res, 401, { error: "no autorizado" });
     return;
   }
+  const { sesion, token } = resuelto;
 
   const jsonResult = parseJsonBody(lectura.body);
   if (!jsonResult.ok) {
@@ -684,10 +722,9 @@ async function handleOperaciones(
   const confirmacion = confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId);
   // `conversacion` sale de la ranura POR TOKEN (ADR 196 §2.1 -- NUNCA por
   // `empleadoId` ni por ningún campo del body), simétrica a la resolución
-  // de `confirmacion` de arriba. `extraerBearerToken` ya se validó al
-  // resolver `sesion`; se reevalúa acá porque `resolverSesionDesdeRequest`
-  // no expone el token crudo.
-  const conversacion = conversacionStore.paraSesion(extraerBearerToken(req) as string);
+  // de `confirmacion` de arriba. `token` ya salió de `resolverSesionDesdeRequest`
+  // -- no se vuelve a parsear el bearer token (hallazgo Reviewer #5).
+  const conversacion = conversacionStore.paraSesion(token);
 
   const turno = deps.onOperacionesEmpleado({
     consulta: payloadResult.valor.consulta,
@@ -762,8 +799,7 @@ function handleLogout(req: WebRequest, res: WebResponse, requestId: string, deps
   }
 
   res.statusCode = 204;
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Request-Id", requestId);
+  aplicarHeadersNoStore(res, requestId);
   res.end();
 }
 
