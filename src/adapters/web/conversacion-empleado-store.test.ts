@@ -119,6 +119,31 @@ describe("crearConversacionEmpleadoStore — eliminar es idempotente", () => {
   });
 });
 
+describe("crearConversacionEmpleadoStore — serialización por ticket (hallazgo Reviewer #3, ALTO)", () => {
+  it("un turno emitido DESPUÉS gana, aunque el emitido antes se registre después en el tiempo real", () => {
+    const store = crearConversacionEmpleadoStore();
+    const puertoViejo = store.paraSesion("token-1");
+    const puertoNuevo = store.paraSesion("token-1");
+
+    // Orden de finalización invertido al de emisión: el puerto emitido
+    // SEGUNDO (`puertoNuevo`) registra su turno primero en el tiempo real.
+    puertoNuevo.registrarTurno("caso-nuevo");
+    puertoViejo.registrarTurno("caso-viejo");
+
+    expect(store.paraSesion("token-1").casoAnterior()).toBe("caso-nuevo");
+  });
+
+  it("sin superposición, un único puerto sigue registrando turnos con normalidad", () => {
+    const store = crearConversacionEmpleadoStore();
+    const puerto = store.paraSesion("token-1");
+
+    puerto.registrarTurno("caso-A");
+    puerto.registrarTurno("caso-B");
+
+    expect(puerto.casoAnterior()).toBe("caso-B");
+  });
+});
+
 describe("crearConversacionEmpleadoStore — aislamiento entre tokens (punto obligatorio 2)", () => {
   it("dos tokens distintos nunca comparten casoAnterior(), ni con registrarTurno intercalados", () => {
     const store = crearConversacionEmpleadoStore();

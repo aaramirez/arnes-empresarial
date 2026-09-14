@@ -28,6 +28,18 @@ interface ConversacionEntry {
   turnos: number;
   /** ISO-8601 UTC del último `registrarTurno` (o de la creación, si ninguno todavía). */
   ultimaActividad: string;
+  /**
+   * Hallazgo Reviewer #3 (ALTO): último "ticket" emitido por `paraSesion`
+   * para esta entrada. Cada `paraSesion` sobre un token existente (sin
+   * rotar) incrementa este contador y lo captura por closure en el puerto
+   * devuelto -- `registrarTurno` sólo aplica su escritura si su ticket
+   * capturado sigue siendo el más reciente emitido. Resuelve la carrera de
+   * un turno vencido por `OPERACIONES_TIMEOUT_MS` (responde 504 pero sigue
+   * corriendo en el fondo, `server.ts:514`) que termina DESPUÉS de que un
+   * reintento del usuario ya avanzó la memoria -- sin esto, el turno viejo
+   * pisaría silenciosamente el más nuevo.
+   */
+  ticketEmitido: number;
 }
 
 export interface ConversacionEmpleadoStore {
@@ -51,6 +63,7 @@ export function crearConversacionEmpleadoStore(deps?: {
       ultimoCasoId: undefined,
       turnos: 0,
       ultimaActividad: now(),
+      ticketEmitido: 0,
     };
   }
 
@@ -67,10 +80,18 @@ export function crearConversacionEmpleadoStore(deps?: {
         conversaciones.set(token, entry);
       }
       const entryRef = entry;
+      entryRef.ticketEmitido += 1;
+      const ticket = entryRef.ticketEmitido;
 
       return {
         casoAnterior: () => entryRef.ultimoCasoId,
         registrarTurno: (casoId: string) => {
+          // Ticket superado por un `paraSesion` más reciente sobre el MISMO
+          // token -- no-op silencioso e intencional (turno viejo, ya
+          // superado; hallazgo Reviewer #3).
+          if (ticket !== entryRef.ticketEmitido) {
+            return;
+          }
           entryRef.ultimoCasoId = casoId;
           entryRef.turnos += 1;
           entryRef.ultimaActividad = now();
