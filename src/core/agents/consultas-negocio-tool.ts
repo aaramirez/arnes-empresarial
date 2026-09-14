@@ -121,6 +121,24 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
 };
 
 /**
+ * Tope de longitud para los tres campos string que alguna de las cuatro
+ * operaciones acepta (`periodo`, `proyectoId`, `referenciaExterna`). Mismo
+ * VALOR que `MAX_STRING_LENGTH` en `src/core/operaciones/validar-operacion.ts`
+ * (y, en cascada, `src/adapters/web/payloads.ts`) — duplicado literal a
+ * propósito, no importado: `src/core/agents` y `src/core/operaciones` son
+ * módulos hermanos sin relación de dependencia entre sí (mismo criterio
+ * "sin dependencias externas" que ya justifica la duplicación en
+ * `validar-operacion.ts`) — esta validación estricta no puede depender de
+ * que un módulo ajeno se resuelva bien.
+ *
+ * Hallazgo de Reviewer (`consultas-negocio-a2a-entrante`): `validarConsultaNegocio`
+ * sólo comprobaba presencia de campo y whitelist de claves, nunca tipo ni
+ * longitud — mismo hueco que `validar-operacion.ts` ya había cerrado tras un
+ * hallazgo anterior de Reviewer sobre el change hermano.
+ */
+const MAX_STRING_LENGTH = 256;
+
+/**
  * `raw` es el objeto zod plano ya parseado por el adaptador MCP (tarea 6,
  * fuera de esta tarea): todos los campos posibles declarados opcionales a
  * nivel del wrapper. Esta función NUNCA lanza: devuelve el mismo objeto
@@ -153,6 +171,25 @@ export function validarConsultaNegocio(
   const campoFaltante = camposRequeridos.find((campo) => raw[campo] === undefined);
   if (campoFaltante !== undefined) {
     return { rechazo: `falta el campo requerido ${campoFaltante} para ${operacion}` };
+  }
+
+  // Tipo/longitud, mismo criterio que `validar-operacion.ts`: cada campo
+  // permitido (salvo `operacion` mismo) tiene que ser un `string` de a lo
+  // sumo `MAX_STRING_LENGTH` — ninguna de las cuatro operaciones tiene hoy
+  // un campo numérico (a diferencia del hermano con `monto`), así que no
+  // hace falta una tabla de excepciones por campo.
+  const campoInvalido = camposPermitidos.find((campo) => {
+    if (campo === "operacion") {
+      return false;
+    }
+    const valor = raw[campo];
+    if (valor === undefined) {
+      return false;
+    }
+    return typeof valor !== "string" || valor.length > MAX_STRING_LENGTH;
+  });
+  if (campoInvalido !== undefined) {
+    return { rechazo: `valor inválido para ${campoInvalido} en ${operacion}` };
   }
 
   return raw as unknown as OperacionConsulta;

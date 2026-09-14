@@ -113,6 +113,58 @@ describe("validarConsultaNegocio — operación fuera del conjunto cerrado", () 
 });
 
 /**
+ * Hallazgo de Reviewer (`consultas-negocio-a2a-entrante`): `validarConsultaNegocio`
+ * sólo comprobaba presencia de campo y whitelist de claves, nunca tipo ni
+ * longitud — mismo hueco que `validar-operacion.ts` del change hermano ya
+ * había cerrado (`MAX_STRING_LENGTH = 256`).
+ */
+describe("validarConsultaNegocio — tope de longitud y tipo (Hallazgo de Reviewer, mismo criterio que validar-operacion.ts)", () => {
+  const LARGO_INVALIDO = "x".repeat(257);
+
+  it("periodo de más de 256 caracteres ⇒ rechazo", () => {
+    const resultado = validarConsultaNegocio({ operacion: "reporte_comisiones", periodo: LARGO_INVALIDO });
+    expect(resultado).toHaveProperty("rechazo");
+  });
+
+  it("proyectoId de más de 256 caracteres ⇒ rechazo", () => {
+    const resultado = validarConsultaNegocio({
+      operacion: "estado_actividad",
+      proyectoId: LARGO_INVALIDO,
+      referenciaExterna: "PR-1",
+    });
+    expect(resultado).toHaveProperty("rechazo");
+  });
+
+  it("referenciaExterna de más de 256 caracteres ⇒ rechazo", () => {
+    const resultado = validarConsultaNegocio({
+      operacion: "estado_actividad",
+      proyectoId: "proyecto-1",
+      referenciaExterna: LARGO_INVALIDO,
+    });
+    expect(resultado).toHaveProperty("rechazo");
+  });
+
+  it("periodo no-string (número) ⇒ rechazo", () => {
+    const resultado = validarConsultaNegocio({ operacion: "reporte_comisiones", periodo: 202608 });
+    expect(resultado).toHaveProperty("rechazo");
+  });
+
+  it("proyectoId no-string (objeto) ⇒ rechazo", () => {
+    const resultado = validarConsultaNegocio({
+      operacion: "estado_actividad",
+      proyectoId: { id: "proyecto-1" },
+      referenciaExterna: "PR-1",
+    });
+    expect(resultado).toHaveProperty("rechazo");
+  });
+
+  it("exactamente 256 caracteres (borde) ⇒ acepta", () => {
+    const input = { operacion: "reporte_comisiones", periodo: "x".repeat(256) };
+    expect(validarConsultaNegocio(input)).toBe(input);
+  });
+});
+
+/**
  * handleConsultaNegocio — tarea 5 (PR3, orquestación + recorte, ADR 180/186).
  */
 
