@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONVERSACION_INACTIVIDAD_MS,
+  CONVERSACION_MAX_TURNOS,
   DEFAULT_WEB_MAX_BODY_BYTES,
   DEFAULT_WEB_PUBLIC_URL,
   isWebEnabled,
@@ -9,6 +11,13 @@ import {
   RUTA_OPERACIONES,
   SOPORTE_TIMEOUT_MS,
 } from "./config.js";
+
+describe("CONVERSACION_INACTIVIDAD_MS / CONVERSACION_MAX_TURNOS (ADR 197)", () => {
+  it("son los techos exactos de rotación perezosa de la conversación", () => {
+    expect(CONVERSACION_INACTIVIDAD_MS).toBe(30 * 60_000);
+    expect(CONVERSACION_MAX_TURNOS).toBe(40);
+  });
+});
 
 describe("resolveWebConfig", () => {
   it("returns all defaults for an empty env, with the listener disabled", () => {

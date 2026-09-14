@@ -43,6 +43,16 @@ export const RUTA_OPERACIONES = "/operaciones";
 export const OPERACIONES_TIMEOUT_MS = 120_000;
 
 /**
+ * Techos de rotación perezosa de la conversación (`chat-web-empleado`, ADR
+ * 197). Evaluados en el ACCESO (`ConversacionEmpleadoStore.paraSesion`), no
+ * con un timer — mismo criterio que `SesionEmpleadoStore.buscar` con
+ * `sesionVigente`. Al superarlos la entrada ROTA (nunca rechaza).
+ */
+export const CONVERSACION_INACTIVIDAD_MS = 30 * 60_000;
+/** Ídem, por cantidad de turnos en vez de tiempo. */
+export const CONVERSACION_MAX_TURNOS = 40;
+
+/**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
  * raw value is missing, blank, not a number, or not strictly greater than
  * zero. Never throws. Mismo criterio que `resolvePositiveNumber` de
