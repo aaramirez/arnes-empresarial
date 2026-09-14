@@ -57,6 +57,8 @@ import type { SesionEmpleado } from "../../core/auth/sesion.js";
 import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
 import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
 import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import type { ConversacionEmpleadoStore } from "./conversacion-empleado-store.js";
+import type { ConversacionEmpleadoPort } from "../../core/conversacion/conversacion-contract.js";
 
 /**
  * DECISIÓN PARA EL REVIEWER: `SoporteResult` todavía no existe como módulo
@@ -111,11 +113,15 @@ export interface WebServerDeps {
     readonly consulta: string;
     readonly sesion: SesionEmpleado;
     readonly confirmacion: ConfirmacionOperacionPort;
+    /** `chat-web-empleado`, ADR 196 pto 3 — memoria conversacional, escopeada por el MISMO token que `sesion` (nunca por `empleadoId`). */
+    readonly conversacion: ConversacionEmpleadoPort;
   }) => Promise<SoporteResult>;
   /** ídem, ADR 173 pto 4: resuelve el `Bearer <token>` de `POST /operaciones` a una `SesionEmpleado`. */
   readonly sesionStore: SesionEmpleadoStore;
   /** ídem, ADR 173 pto 4: ranura de confirmación por-empleado de `cancelar_solicitud_interna`. */
   readonly confirmacionOperacionesStore: ConfirmacionOperacionesStore;
+  /** `chat-web-empleado`, ADR 196 §2: ranura de memoria conversacional por-TOKEN de sesión HTTP (nunca por `empleadoId`, ADR 196 §2.1). */
+  readonly conversacionStore: ConversacionEmpleadoStore;
   readonly logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
   /** `randomUUID` en producción; contador determinista en tests. Ver §9.1. */
   readonly newRequestId?: () => string;
@@ -603,7 +609,7 @@ async function handleOperaciones(
   requestId: string,
   deps: WebServerDeps,
 ): Promise<void> {
-  const { config, logEvent, sesionStore, confirmacionOperacionesStore } = deps;
+  const { config, logEvent, sesionStore, confirmacionOperacionesStore, conversacionStore } = deps;
 
   const lectura = await leerCuerpoConTope(req, res, config, requestId, RUTA_OPERACIONES, logEvent);
   if (!lectura.ok) {
@@ -639,8 +645,19 @@ async function handleOperaciones(
   // del slot único de la TUI, y siempre resuelta ANTES de invocar el turno
   // (reconciliación 2 de `tasks.md`).
   const confirmacion = confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId);
+  // `conversacion` sale de la ranura POR TOKEN (ADR 196 §2.1 -- NUNCA por
+  // `empleadoId` ni por ningún campo del body), simétrica a la resolución
+  // de `confirmacion` de arriba. `extraerBearerToken` ya se validó al
+  // resolver `sesion`; se reevalúa acá porque `resolverSesionDesdeRequest`
+  // no expone el token crudo.
+  const conversacion = conversacionStore.paraSesion(extraerBearerToken(req) as string);
 
-  const turno = deps.onOperacionesEmpleado({ consulta: payloadResult.valor.consulta, sesion, confirmacion });
+  const turno = deps.onOperacionesEmpleado({
+    consulta: payloadResult.valor.consulta,
+    sesion,
+    confirmacion,
+    conversacion,
+  });
   // Misma carrera contra timeout que `handleSoporte`, con su propia
   // constante independiente (`OPERACIONES_TIMEOUT_MS`, ADR 173 pto 3).
   const resultado = await Promise.race<TurnoResultado>([
@@ -664,6 +681,15 @@ async function handleOperaciones(
     return;
   }
 
+  // ADR 197 pto 3 -- traza de rotación de la conversación, SIN el token
+  // (ADR 193 pto 3): un `conversacionId` distinto entre dos mensajes es la
+  // evidencia de que la conversación rotó. Nota de desviación: `design.md`
+  // §3 pto 3 menciona también un campo `turnos`, pero `ConversacionEmpleadoPort`
+  // (§13, tarea 1) no lo expone -- se omite acá en vez de inventar un valor
+  // que el puerto no puede dar.
+  logEvent(resultado.valor.casoId, "operaciones-conversacion", {
+    conversacionId: conversacion.conversacionId(),
+  });
   respondJson(res, 200, { casoId: resultado.valor.casoId, respuesta: resultado.valor.respuesta });
 }
 

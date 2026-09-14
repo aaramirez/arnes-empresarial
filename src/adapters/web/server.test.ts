@@ -27,6 +27,8 @@ import type { ConfirmacionOperacionPort } from "../../core/operaciones/operacion
 import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../../core/operaciones/operaciones-contract.js";
 import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
 import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import type { ConversacionEmpleadoStore } from "./conversacion-empleado-store.js";
+import type { ConversacionEmpleadoPort } from "../../core/conversacion/conversacion-contract.js";
 import { CONVERSATIONAL_AGENT_ID, getAgentDefinition } from "../../core/agents/definitions.js";
 
 const CONFIG: WebConfig = {
@@ -144,6 +146,25 @@ function fakeConfirmacionOperacionesStore(
   };
 }
 
+/** chat-web-empleado, tarea 4 — doble plano de `ConversacionEmpleadoPort` (ADR 196). */
+function fakeConversacion(overrides: Partial<ConversacionEmpleadoPort> = {}): ConversacionEmpleadoPort {
+  return {
+    casoAnterior: vi.fn().mockReturnValue(undefined),
+    registrarTurno: vi.fn(),
+    conversacionId: vi.fn().mockReturnValue("conv-1"),
+    ...overrides,
+  };
+}
+
+/** chat-web-empleado, tarea 4 — doble plano de `ConversacionEmpleadoStore` (ADR 196 §2). */
+function fakeConversacionStore(overrides: Partial<ConversacionEmpleadoStore> = {}): ConversacionEmpleadoStore {
+  return {
+    paraSesion: vi.fn().mockReturnValue(fakeConversacion()),
+    eliminar: vi.fn(),
+    ...overrides,
+  };
+}
+
 function makeDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
   return {
     config: CONFIG,
@@ -156,6 +177,7 @@ function makeDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
     onOperacionesEmpleado: vi.fn(),
     sesionStore: fakeSesionStore(),
     confirmacionOperacionesStore: fakeConfirmacionOperacionesStore(),
+    conversacionStore: fakeConversacionStore(),
     logEvent: vi.fn(),
     newRequestId: () => REQUEST_ID,
     ...overrides,
@@ -1185,11 +1207,15 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
   it("with a valid token (emitted by /login), invokes the turn with the resolved session -- empleadoId ALWAYS comes from the session, never from the body", async () => {
     const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
     const confirmacionDelEmpleado = fakeConfirmacion();
+    const conversacionDelToken = fakeConversacion();
     const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
     const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
       paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
     });
-    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, confirmacionOperacionesStore });
+    const conversacionStore = fakeConversacionStore({
+      paraSesion: vi.fn().mockReturnValue(conversacionDelToken),
+    });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, confirmacionOperacionesStore, conversacionStore });
     const listener = createRequestListener(deps);
     const req = new FakeRequest({
       method: "POST",
@@ -1205,10 +1231,13 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
 
     expect(sesionStore.buscar).toHaveBeenCalledWith("token-valido");
     expect(confirmacionOperacionesStore.paraEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
+    // `conversacionStore.paraSesion` se resuelve por el MISMO token que la sesión -- simétrico a `confirmacion` (ADR 196 §2.1).
+    expect(conversacionStore.paraSesion).toHaveBeenCalledWith("token-valido");
     expect(onOperacionesEmpleado).toHaveBeenCalledWith({
       consulta: "quiero registrar una venta",
       sesion: SESION_EMPLEADO,
       confirmacion: confirmacionDelEmpleado,
+      conversacion: conversacionDelToken,
     });
     expect(res.statusCode).toBe(200);
     expect(res.end).toHaveBeenCalledWith(JSON.stringify(OPERACIONES_RESULT));
@@ -1289,5 +1318,65 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
 
     expect(agenteConversacional).toBeDefined();
     expect(agenteConversacional?.allowedTools).not.toContain(OPERACIONES_TOOL_QUALIFIED_NAME);
+  });
+
+  /**
+   * chat-web-empleado, tarea 4 — punto obligatorio 2: el origen del "caso
+   * anterior" NUNCA viene del cliente (spec `memoria-conversacional-empleado`).
+   */
+  it("punto obligatorio 2: un campo 'conversacionId' inventado en el body NO cambia qué token resuelve conversacionStore.paraSesion", async () => {
+    const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    // Fuzz simple: un campo inventado en el body, del todo ajeno al payload esperado, no tiene efecto.
+    req.emitBody([
+      jsonBody({ consulta: "quiero registrar una venta", conversacionId: "conversacion-ajena-inventada" }),
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(conversacionStore.paraSesion).toHaveBeenCalledTimes(1);
+    expect(conversacionStore.paraSesion).toHaveBeenCalledWith("token-valido");
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("el evento logueado tras un turno exitoso incluye conversacionId pero NUNCA el token", async () => {
+    const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
+    const conversacionDelToken = fakeConversacion({ conversacionId: vi.fn().mockReturnValue("conv-log-1") });
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const conversacionStore = fakeConversacionStore({
+      paraSesion: vi.fn().mockReturnValue(conversacionDelToken),
+    });
+    const logEvent = vi.fn();
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, conversacionStore, logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-secreto-nunca-logueado" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logEvent).toHaveBeenCalledWith(
+      OPERACIONES_RESULT.casoId,
+      "operaciones-conversacion",
+      expect.objectContaining({ conversacionId: "conv-log-1" }),
+    );
+    for (const llamada of logEvent.mock.calls) {
+      expect(JSON.stringify(llamada)).not.toContain("token-secreto-nunca-logueado");
+    }
   });
 });
