@@ -86,7 +86,7 @@ import {
 import { startTui } from "./adapters/tui/start-tui.js";
 import { createKnowledgeAdapter, type KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import { buildOnSubmit } from "./build-on-submit.js";
-import { buildOnActivity, createDelegacionStore } from "./build-on-activity.js";
+import { buildOnActivity, createDelegacionStore, ActividadTipoEstadoInvalidoError } from "./build-on-activity.js";
 import { createBoardAdapter, resolveBotLogin } from "./adapters/board/index.js";
 import { resolveBoardConfig } from "./adapters/board/config.js";
 import { startWebhookServer, type WebhookAdapter } from "./adapters/webhooks/index.js";
@@ -112,7 +112,7 @@ import { createConsultasAdapter, type ConsultasNegocioAdapter } from "./adapters
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import type { RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
-import type { ActividadEstado } from "./core/activity/activity-contract.js";
+import { ACTIVIDAD_ESTADOS, type ActividadEstado } from "./core/activity/activity-contract.js";
 import type { SolicitudEstado, SolicitudTipo } from "./core/solicitudes/solicitudes-contract.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
@@ -609,14 +609,35 @@ void gitAdapter.barrido
 //    `listEscalacionesReembolso` tal cual (ADR 177 pto 3).
 //  - `actividadPort` cierra `findActividadPorReferencia` sobre el par
 //    `(proyectoId, referenciaExterna)` — nunca expone `getActividadById`
-//    (ADR 187) — y castea `estado` a `ActividadEstado`, mismo criterio que
-//    `toPortActividad` (`build-on-activity.ts:156`).
-//  - `solicitudesPort` reusa `listSolicitudesInternas` SIN filtro (la A2A
-//    entrante no tiene `solicitanteId` que filtrar, ADR 180 pto 1) — la
-//    consulta ya filtra `estado = pendiente_aprobacion_humana` en SQL, así
-//    que el cast de `tipo`/`estado` es seguro sin repetir la validación
-//    completa de `toPortSolicitud` (`build-on-comando-empleado.ts`, privada
-//    a ese módulo y fuera de alcance de este change).
+//    (ADR 187) — y valida `estado` contra `ACTIVIDAD_ESTADOS` antes de
+//    castear, mismo criterio REAL que `toPortActividad`
+//    (`build-on-activity.ts:147-158`, "en vez de castear a ciegas"): si no
+//    calza, lanza `ActividadTipoEstadoInvalidoError` — seguro acá porque
+//    `consultarSeguro`/`handleConsultaNegocio` (`consultas-negocio-tool.ts`,
+//    Punto obligatorio 3) ya atrapa cualquier `throw` de un puerto y lo
+//    traduce al mensaje "NO SE PUDO CONSULTAR...", nunca lo propaga.
+//  - `solicitudesPort`/`reembolsosPort` pasan un `limite` explícito (Hallazgo
+//    de Reviewer): sin él, heredan el `LIMIT` por defecto de 20 filas de
+//    `repository.ts` (`LIMITE_LISTADO_SOLICITUDES_DEFAULT`/
+//    `LIMITE_LISTADO_ESCALACIONES_DEFAULT`) y `consultas-negocio-tool.ts`
+//    reporta `array.length` como "Total" sin ningún indicio de truncamiento.
+//    No existe en el repo una convención previa de "límite alto explícito"
+//    para replicar (verificado por grep de `limite:` en `main.ts`/
+//    `build-on-comando-empleado.ts`: el único caso, `LIMITE_LISTADO_A2A_ENTRANTES`,
+//    es un DEFAULT de 20, no un techo alto) — `LIMITE_ALTO_CONSULTAS_A2A_ENTRANTE`
+//    es un valor nuevo, elegido para este wiring puntual. Es seguro: el
+//    arnés modela una sola empresa (no un SaaS multi-tenant), así que 10 000
+//    filas es un techo muy por encima de cualquier volumen real de
+//    solicitudes internas o reembolsos pendientes simultáneos, y SQLite
+//    resuelve un `LIMIT 10000` sobre estas tablas sin costo perceptible.
+//    `solicitudesPort` reusa `listSolicitudesInternas` SIN FILTRO de
+//    identidad (la A2A entrante no tiene `solicitanteId` que filtrar, ADR
+//    180 pto 1) — la consulta ya filtra `estado = pendiente_aprobacion_humana`
+//    en SQL, así que el cast de `tipo`/`estado` es seguro sin repetir la
+//    validación completa de `toPortSolicitud` (`build-on-comando-empleado.ts`,
+//    privada a ese módulo y fuera de alcance de este change).
+const LIMITE_ALTO_CONSULTAS_A2A_ENTRANTE = 10_000;
+
 const createConsultas = (casoId: string): ConsultasNegocioAdapter =>
   createConsultasAdapter({
     casoId,
@@ -627,21 +648,29 @@ const createConsultas = (casoId: string): ConsultasNegocioAdapter =>
     actividadPort: {
       buscarPorReferencia: (input) => {
         const actividad = findActividadPorReferencia(db, input.proyectoId, input.referenciaExterna);
-        return actividad
-          ? { estado: actividad.estado as ActividadEstado, updatedAt: actividad.updatedAt }
-          : undefined;
+        if (!actividad) {
+          return undefined;
+        }
+        if (!(ACTIVIDAD_ESTADOS as readonly string[]).includes(actividad.estado)) {
+          throw new ActividadTipoEstadoInvalidoError(actividad.id, actividad.tipo, actividad.estado);
+        }
+        return { estado: actividad.estado as ActividadEstado, updatedAt: actividad.updatedAt };
       },
     },
     solicitudesPort: {
       listarPendientes: () =>
-        listSolicitudesInternas(db, {}).map((row) => ({
+        listSolicitudesInternas(db, { limite: LIMITE_ALTO_CONSULTAS_A2A_ENTRANTE }).map((row) => ({
           ...row,
           tipo: row.tipo as SolicitudTipo,
           estado: row.estado as SolicitudEstado,
         })),
     },
     reembolsosPort: {
-      listPendientes: () => listEscalacionesReembolso(db, { estado: "reembolso_pendiente" }),
+      listPendientes: () =>
+        listEscalacionesReembolso(db, {
+          estado: "reembolso_pendiente",
+          limite: LIMITE_ALTO_CONSULTAS_A2A_ENTRANTE,
+        }),
     },
     logEvent: (event, fields) => logTurnEvent(casoId, event, fields),
   });
