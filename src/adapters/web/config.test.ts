@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   CONVERSACION_INACTIVIDAD_MS,
   CONVERSACION_MAX_TURNOS,
+  CSP_CHAT,
   DEFAULT_WEB_MAX_BODY_BYTES,
   DEFAULT_WEB_PUBLIC_URL,
   isWebEnabled,
   OPERACIONES_TIMEOUT_MS,
   resolveWebConfig,
+  RUTA_CHAT,
+  RUTA_CHAT_ESTILOS,
+  RUTA_CHAT_SCRIPT,
   RUTA_LOGIN,
+  RUTA_LOGOUT,
   RUTA_OPERACIONES,
   SOPORTE_TIMEOUT_MS,
 } from "./config.js";
@@ -125,6 +130,21 @@ describe("isWebEnabled", () => {
 
   it("returns true when port is a positive value", () => {
     expect(isWebEnabled(resolveWebConfig({ WEB_PORT: "8080" }))).toBe(true);
+  });
+});
+
+describe("rutas de chat y CSP_CHAT (chat-web-empleado, tarea 9, ADR 199, ADR 201)", () => {
+  it("las cuatro constantes de ruta tienen los valores exactos", () => {
+    expect(RUTA_CHAT).toBe("/chat");
+    expect(RUTA_CHAT_SCRIPT).toBe("/chat/app.js");
+    expect(RUTA_CHAT_ESTILOS).toBe("/chat/app.css");
+    expect(RUTA_LOGOUT).toBe("/logout");
+  });
+
+  it("CSP_CHAT es EXACTAMENTE el literal de design.md §5 -- comparación completa, nunca toContain", () => {
+    expect(CSP_CHAT).toEqual(
+      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    );
   });
 });
 
