@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.js";
 import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../operaciones/operaciones-contract.js";
+import { CONSULTAS_TOOL_QUALIFIED_NAME } from "./consultas-negocio-tool.js";
 import {
   CONVERSATIONAL_AGENT_ID,
   construirAgenteEmpleadoOperaciones,
@@ -36,7 +37,11 @@ describe("agent registry", () => {
     expect(agent?.id).toBe(CONVERSATIONAL_AGENT_ID);
     expect(agent?.model).toBe(DEFAULT_AGENT_MODEL);
     expect(agent?.systemPrompt.length).toBeGreaterThan(0);
-    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"]);
+    expect(agent?.allowedTools).toEqual([
+      KNOWLEDGE_TOOL_QUALIFIED_NAME,
+      "Skill",
+      CONSULTAS_TOOL_QUALIFIED_NAME,
+    ]);
   });
 
   it("returns undefined for an unknown agent id", () => {
@@ -90,29 +95,38 @@ describe("agent registry", () => {
   it("keeps systemPrompt and allowedTools unchanged after adding description", () => {
     const agent = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
 
-    expect(agent?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"]);
+    expect(agent?.allowedTools).toEqual([
+      KNOWLEDGE_TOOL_QUALIFIED_NAME,
+      "Skill",
+      CONSULTAS_TOOL_QUALIFIED_NAME,
+    ]);
     expect(agent?.systemPrompt).toMatch(/no tenés delegación a otros agentes/);
   });
 });
 
 describe("construirAgenteEmpleadoOperaciones (operaciones-negocio-conversacionales, ADR 164, tarea 6)", () => {
-  it("devuelve un AgentDefinition con allowedTools de TRES entradas: conocimiento, Skill y la tool de operaciones", () => {
+  it("devuelve un AgentDefinition con allowedTools de CUATRO entradas: conocimiento, Skill, consultas de negocio y la tool de operaciones (consultas-negocio-a2a-entrante, tarea 9)", () => {
     const agente = construirAgenteEmpleadoOperaciones();
 
-    expect(agente.allowedTools).toHaveLength(3);
+    expect(agente.allowedTools).toHaveLength(4);
     expect(agente.allowedTools).toEqual([
       KNOWLEDGE_TOOL_QUALIFIED_NAME,
       "Skill",
+      CONSULTAS_TOOL_QUALIFIED_NAME,
       OPERACIONES_TOOL_QUALIFIED_NAME,
     ]);
   });
 
-  it("NO muta CONVERSATIONAL_AGENT.allowedTools — sigue en DOS entradas (regresión R1)", () => {
+  it("NO muta CONVERSATIONAL_AGENT.allowedTools — sigue en TRES entradas, nunca gana la tool de operaciones (regresión R1)", () => {
     construirAgenteEmpleadoOperaciones();
 
     const conversacional = getAgentDefinition(CONVERSATIONAL_AGENT_ID);
-    expect(conversacional?.allowedTools).toHaveLength(2);
-    expect(conversacional?.allowedTools).toEqual([KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"]);
+    expect(conversacional?.allowedTools).toHaveLength(3);
+    expect(conversacional?.allowedTools).toEqual([
+      KNOWLEDGE_TOOL_QUALIFIED_NAME,
+      "Skill",
+      CONSULTAS_TOOL_QUALIFIED_NAME,
+    ]);
     expect(conversacional?.allowedTools).not.toContain(OPERACIONES_TOOL_QUALIFIED_NAME);
   });
 

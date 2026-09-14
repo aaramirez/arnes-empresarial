@@ -24,6 +24,7 @@
  */
 import { KNOWLEDGE_TOOL_QUALIFIED_NAME } from "../knowledge/knowledge-contract.js";
 import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../operaciones/operaciones-contract.js";
+import { CONSULTAS_TOOL_QUALIFIED_NAME } from "./consultas-negocio-tool.js";
 import {
   WORKTREE_TEST_TOOL_QUALIFIED_NAME,
   type WorktreeAbierto,
@@ -143,7 +144,18 @@ const CONVERSATIONAL_AGENT: AgentDefinition = {
   // se omite), la tool `Skill` queda afuera si no se la lista acá, sin
   // importar qué tenga `skills`. Sin esta entrada, `citar-conocimiento`
   // (y cualquier skill futura) nunca se invoca para este agente.
-  allowedTools: [KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill"],
+  //
+  // `CONSULTAS_TOOL_QUALIFIED_NAME` (`consultas-negocio-a2a-entrante`, tarea
+  // 9, ADR 174/176): a diferencia de `OPERACIONES_TOOL_QUALIFIED_NAME` —que
+  // sólo entra al `AgentDefinition` construido por
+  // `construirAgenteEmpleadoOperaciones`, nunca acá—, la tool de consultas
+  // de sólo lectura SÍ entra directo a `CONVERSATIONAL_AGENT`, porque los
+  // CUATRO turnos que comparten este registro (TUI, `/soporte`, webhook y
+  // A2A entrante) la necesitan por igual. Que figure en `allowedTools` no la
+  // vuelve alcanzable: la frontera real es `mcpServers` por turno (ADR 176,
+  // Aclaración 2 de `proposal.md`) — un turno sin el servidor `consultas` en
+  // su `mcpServers` no puede invocarla aunque esté en esta lista.
+  allowedTools: [KNOWLEDGE_TOOL_QUALIFIED_NAME, "Skill", CONSULTAS_TOOL_QUALIFIED_NAME],
   model: DEFAULT_AGENT_MODEL,
 };
 
