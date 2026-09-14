@@ -59,9 +59,10 @@ export interface AgentCardJson {
 const NOMBRE = "Arnés Empresarial";
 
 const DESCRIPCION =
-  "Arnés de agentes de IA de una empresa. Responde consultas sobre el estado de proyectos, actividades de desarrollo, incidentes, solicitudes internas y ventas registradas.";
+  "Arnés de agentes de IA de una empresa. Responde consultas de sólo lectura sobre el estado de actividades de desarrollo (PRs), solicitudes internas pendientes, el reporte de comisiones por período y los reembolsos pendientes de aprobación.";
 
-const VERSION = "3.0.0";
+/** Minor (ADR 185 pto 4): capacidad nueva compatible hacia atrás — corrige el card a las 4 operaciones reales de `consultar_negocio` (tarea 11). */
+const VERSION = "3.1.0";
 
 const CAPABILITIES: AgentCardCapabilities = {
   streaming: false,
@@ -81,12 +82,12 @@ const SKILL_CONSULTA_ARNES: AgentCardSkill = {
   id: "consulta-arnes",
   name: "Consulta al arnés empresarial",
   description:
-    "Respondé una consulta en lenguaje natural sobre el estado de proyectos, actividades de desarrollo, incidentes, solicitudes internas y ventas registradas en el arnés. Es una consulta de sólo lectura: el arnés no modifica nada a pedido de un agente externo.",
-  tags: ["consulta", "estado", "proyectos", "incidentes", "solo-lectura"],
+    "Respondé una consulta en lenguaje natural sobre el estado de actividades de desarrollo, solicitudes internas pendientes, comisiones por período y reembolsos pendientes de aprobación. Es una consulta de sólo lectura y agregada: el arnés no modifica nada a pedido de un agente externo ni devuelve datos personales de empleados o clientes.",
+  tags: ["consulta", "estado", "solicitudes", "solo-lectura"],
   examples: [
     "¿En qué estado está la revisión del PR 42 del proyecto X?",
-    "¿Qué incidentes abiertos hay hoy?",
-    "¿Cuántas ventas quedaron pendientes de confirmación esta semana?",
+    "¿Cuántas solicitudes internas quedaron pendientes de aprobación?",
+    "¿Cuál fue el total comisionado en el período actual?",
   ],
 };
 
