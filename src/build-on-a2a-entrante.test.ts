@@ -37,6 +37,9 @@ import {
 import type { MemoryPort, HandleTurnResult } from "./core/turn-selector/handle-turn.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import type { ConsultasNegocioAdapter } from "./adapters/consultas/index.js";
+import { CONSULTAS_MCP_SERVER_NAME } from "./core/agents/consultas-negocio-tool.js";
+import { KNOWLEDGE_MCP_SERVER_NAME } from "./core/knowledge/knowledge-contract.js";
+import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
 
 vi.mock("./core/turn-selector/handle-turn.js", () => ({
@@ -456,5 +459,52 @@ describe("buildOnA2AEntrante — límite estructural (ADR 98, enmendado por ADR 
     expect(importLines).not.toMatch(/adapters\/a2a\/client/);
     expect(importLines).not.toMatch(/adapters\/web\//);
     expect(importLines).not.toMatch(/adapters\/webhooks\//);
+    // Aditivo y nombrado (ADR 174 pto 6 / ADR 98 pto 3, tarea 8) — el import
+    // del noveno campo, nunca relajado a un `contains` genérico.
+    expect(importLines).toMatch(/consultas\/index\.js/);
+  });
+
+  it("compone mcpServers como la UNIÓN EXACTA de conocimiento + consultas — nunca incluye operaciones (ADR 176, tarea 8)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const createKnowledge = (): KnowledgeAdapter => ({
+        mcpServers: { [KNOWLEDGE_MCP_SERVER_NAME]: {} as never },
+        feedback: { saveTurnResult: vi.fn(), discardPendingCitations: vi.fn() },
+      });
+      const createConsultas = (): ConsultasNegocioAdapter => ({
+        mcpServers: { [CONSULTAS_MCP_SERVER_NAME]: {} as never },
+      });
+
+      const handlers = buildOnA2AEntrante(
+        makeBaseDeps(db, {
+          newId: makeCounterNewId("caso"),
+          now: () => TIMESTAMP,
+          createKnowledge,
+          createConsultas,
+        }),
+      );
+
+      const resultado = await handlers.onSolicitudA2A({
+        a2aTaskId: "task-1",
+        texto: "consulta cualquiera",
+        origenTransporte: "203.0.113.5",
+        hayCupo: true,
+      });
+      if (resultado.estado !== TASK_STATE_SUBMITTED) {
+        throw new Error("unreachable");
+      }
+      await resultado.turno;
+
+      const depsPasadosAHandleTurn = mockedHandleTurn.mock.calls[0]?.[2] as { mcpServers: Record<string, unknown> };
+      // Igualdad de CONJUNTO, nunca `contains` — ADR 176 pto 2.
+      expect(Object.keys(depsPasadosAHandleTurn.mcpServers).sort()).toEqual(
+        [CONSULTAS_MCP_SERVER_NAME, KNOWLEDGE_MCP_SERVER_NAME].sort(),
+      );
+      // Escrito contra el servidor REAL de `operaciones-negocio-conversacionales`
+      // (ya mergeado en `main` — ADR 176 pto 4): nunca un nombre hipotético.
+      expect(depsPasadosAHandleTurn.mcpServers).not.toHaveProperty(OPERACIONES_MCP_SERVER_NAME);
+    } finally {
+      db.close();
+    }
   });
 });
