@@ -185,6 +185,27 @@ Con `HARNESS_A2A_ENTRANTE_TOKEN` seteado y el arnés levantado, el servidor expo
 
    Reintentar cada `HARNESS_A2A_POLL_INTERVAL_MS` (mismo intervalo que usa el Cliente A2A saliente propio) hasta un estado terminal. En `TASK_STATE_COMPLETED`, el texto de la respuesta viaja en `result.task.artifacts`.
 
+### Consultas de negocio del turno A2A entrante
+
+Desde v3.8.0 (`consultas-negocio-a2a-entrante`), el turno disparado por una solicitud A2A entrante tiene, además del servidor de conocimiento (`mcp__conocimiento__*`), un segundo servidor MCP de sólo lectura: `mcp__consultas__consultar_negocio`. Cierra la brecha entre lo que el Agent Card promete y lo que el turno podía responder antes de esta versión (ver "Hallazgo 1" en `docs/progreso/v3.0-a2a-servidor/evidencia-verificacion-manual.md`).
+
+Un agente externo puede preguntar, en lenguaje natural, por estas **cuatro** operaciones — todas agregadas, ninguna con datos personales:
+
+| Pregunta de ejemplo | Qué responde | Qué NO incluye |
+| --- | --- | --- |
+| "¿En qué estado está la revisión del PR 42 del proyecto X?" | Estado y última actualización de la actividad, por `(proyectoId, referenciaExterna)`. | El `id` interno de la actividad ni su responsable (`responsableId`). |
+| "¿Cuántas solicitudes internas quedaron pendientes de aprobación?" | Conteo total y desglose por tipo (`vacaciones`/`gasto`/`reclamo_comision`). | `solicitanteId` ni el texto libre de `detalle`. |
+| "¿Cuál fue el total comisionado en el período actual?" | `periodo`, cantidad de vendedores con ventas, sumas agregadas y `totalComisionado`. | La tabla completa por vendedor (`vendedorNombre`, montos individuales) — esa tabla completa sigue siendo exclusiva de `/reporte-comisiones`, con sesión de empleado vigente. |
+| "¿Cuántos reembolsos están pendientes de aprobación?" | Conteo total y monto sumado de reembolsos pendientes. | `vendedorId`, `vendedorNombre`, `clienteId` ni `ventaId` por fila. |
+
+**Qué NO puede hacer un agente externo por esta vía**:
+
+- **Ninguna escritura.** Las cuatro operaciones son de sólo lectura; ningún puerto nuevo tiene un método con efecto, y `reporte.ts`/`repository.ts` no se modificaron.
+- **Ninguna identidad por llamador.** El bearer del token A2A autentica la conexión, no a una persona — no hay forma de preguntar "mis solicitudes" o "mis ventas": sólo agregados del dominio completo.
+- **Nada fuera de las cuatro operaciones.** Un `operacion` fuera del conjunto cerrado (`reporte_comisiones`, `estado_actividad`, `solicitudes_pendientes`, `reembolsos_pendientes`) se rechaza antes de tocar cualquier lector del dominio.
+
+> **Nota histórica**: esta capacidad (tareas 11-15 de `consultas-negocio-a2a-entrante`) se desarrolló en una PR encadenada que estuvo gateada hasta que `operaciones-negocio-conversacionales` mergeó a `main` — el test que garantiza que este turno nunca ve `mcp__operaciones__*` (el servidor de escritura del turno de Empleado autenticado) necesita que ese servidor exista de verdad para poder afirmar su ausencia. Ver `openspec/changes/consultas-negocio-a2a-entrante/tasks.md`.
+
 ### Tool MCP `mcp__worktree__run_tests`
 
 Expuesta únicamente al Developer cuando trabaja dentro de un worktree aislado. No acepta parámetros — siempre corre la suite completa (`vitest run`) fijada al `cwd` del worktree, sin poder filtrar por archivo, patrón ni test individual. Devuelve el resultado real (verde o rojo) con la salida de vitest, o indica explícitamente si la corrida no se pudo ejecutar en vez de afirmar que los tests pasan.

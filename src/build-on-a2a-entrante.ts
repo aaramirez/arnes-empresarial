@@ -10,13 +10,16 @@
  * Y de los tipos del adaptador `src/adapters/a2a/server.ts` (los tres
  * callbacks que ese módulo consume, ya cerrados sobre `db`).
  *
- * **ADR 98 — la escritura es INEXPRESABLE por firma**: `BuildOnA2AEntranteDeps`
- * tiene EXACTAMENTE los mismos ocho campos que `BuildOnSoporteDeps`, ni uno
- * más. Ningún puerto de escritura (`board`, store de `actividades`,
- * `escritura`, `ClienteA2APort`) puede colarse acá sin tocar esta interfaz —
- * es la garantía mecánica de que el turno entrante es de sólo lectura, no
- * una declaración (spec `solicitud-a2a-entrante`, requirement "El turno
- * entrante es de lectura").
+ * **ADR 98 — la escritura es INEXPRESABLE por firma, enmendado por ADR 174
+ * (`consultas-negocio-a2a-entrante`)**: `BuildOnA2AEntranteDeps` tenía
+ * EXACTAMENTE los mismos ocho campos que `BuildOnSoporteDeps`. El ADR 174
+ * amplía el CONTEO a NUEVE, nunca el INVARIANTE: el noveno campo,
+ * `createConsultas`, es una SEGUNDA fábrica de LECTURA por `casoId` —réplica
+ * en forma de `createKnowledge`—, no una excepción. Ningún puerto de
+ * escritura (`board`, store de `actividades`, `escritura`, `ClienteA2APort`)
+ * puede colarse acá sin tocar esta interfaz — es la garantía mecánica de que
+ * el turno entrante es de sólo lectura, no una declaración (spec
+ * `solicitud-a2a-entrante`, requirement "El turno entrante es de lectura").
  *
  * Contraste deliberado con `build-on-soporte.ts`: allá el rechazo de
  * `handleTurn` PROPAGA porque hay un navegador esperando un `502`. Acá
@@ -60,6 +63,7 @@ import type {
   CancelacionA2AResultado,
 } from "./adapters/a2a/server.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
+import type { ConsultasNegocioAdapter } from "./adapters/consultas/index.js";
 
 /**
  * `casos.tipo` es `TEXT` sin `CHECK` — mismo criterio que
@@ -86,6 +90,8 @@ export interface BuildOnA2AEntranteDeps {
   readonly agents: ReturnType<typeof bootstrapHarness>["agents"];
   /** La MISMA fábrica por `casoId` que `build-on-soporte.ts` ya usa — un `KnowledgeAdapter` por turno. */
   readonly createKnowledge: (casoId: string) => KnowledgeAdapter;
+  /** NOVENO campo (ADR 174). Réplica en forma de `createKnowledge` — un `ConsultasNegocioAdapter` por caso. */
+  readonly createConsultas: (casoId: string) => ConsultasNegocioAdapter;
   readonly newId?: () => string; // default: randomUUID
   readonly now?: () => string; // default: () => new Date().toISOString()
   readonly logDeps?: LogTurnEventDeps; // omitir en producción (default: archivo)
@@ -121,7 +127,7 @@ function filaAVista(row: SolicitudA2AEntranteRow): SolicitudA2AEntranteVista {
  * `startA2AServer` (design.md §5.2).
  */
 export function buildOnA2AEntrante(deps: BuildOnA2AEntranteDeps): A2AEntranteHandlers {
-  const { db, memory, hooks, agents, createKnowledge, logDeps } = deps;
+  const { db, memory, hooks, agents, createKnowledge, createConsultas, logDeps } = deps;
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
 
@@ -165,13 +171,18 @@ export function buildOnA2AEntrante(deps: BuildOnA2AEntranteDeps): A2AEntranteHan
       const inicio = now();
       const prompt = buildSolicitudA2APrompt(texto);
       const knowledge = createKnowledge(casoId);
+      const consultas = createConsultas(casoId);
 
       const result = await handleTurn(casoId, prompt, {
         memory,
         hooks,
         candidateAgents: agents,
         ...(logDeps ? { logDeps } : {}),
-        mcpServers: knowledge.mcpServers,
+        // Unión EXACTA de conocimiento + consultas (ADR 176 pto 2) — nunca
+        // `mcp__operaciones__*` del change hermano. `knowledgeFeedback` sigue
+        // apuntando SÓLO a `knowledge.feedback`: `consultas` no tiene
+        // `feedback` (ADR 181 pto 2), no hay nada que drenar de esa fuente.
+        mcpServers: { ...knowledge.mcpServers, ...consultas.mcpServers },
         knowledgeFeedback: knowledge.feedback,
       });
 

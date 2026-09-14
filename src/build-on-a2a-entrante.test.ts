@@ -36,6 +36,10 @@ import {
 } from "./adapters/memory/repository.js";
 import type { MemoryPort, HandleTurnResult } from "./core/turn-selector/handle-turn.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
+import type { ConsultasNegocioAdapter } from "./adapters/consultas/index.js";
+import { CONSULTAS_MCP_SERVER_NAME } from "./core/agents/consultas-negocio-tool.js";
+import { KNOWLEDGE_MCP_SERVER_NAME } from "./core/knowledge/knowledge-contract.js";
+import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
 
 vi.mock("./core/turn-selector/handle-turn.js", () => ({
@@ -85,6 +89,11 @@ function makeFakeKnowledge(): (casoId: string) => KnowledgeAdapter {
   );
 }
 
+/** Molde EXACTO de `makeFakeKnowledge` — noveno campo (ADR 174, tarea 7). Sin `feedback` (ADR 181). */
+function makeFakeConsultas(): (casoId: string) => ConsultasNegocioAdapter {
+  return vi.fn((): ConsultasNegocioAdapter => ({ mcpServers: {} }));
+}
+
 /** Captura líneas en memoria en vez de tocar el filesystem real — mismo criterio que `build-on-soporte.test.ts`. */
 function fakeLogDeps(): LogTurnEventDeps & { readonly lines: string[] } {
   const lines: string[] = [];
@@ -108,6 +117,7 @@ function makeCounterNewId(prefix = "id"): () => string {
 
 interface BaseDepsOverrides {
   readonly createKnowledge?: (casoId: string) => KnowledgeAdapter;
+  readonly createConsultas?: (casoId: string) => ConsultasNegocioAdapter;
   readonly newId?: () => string;
   readonly now?: () => string;
   readonly logDeps?: LogTurnEventDeps;
@@ -121,6 +131,7 @@ function makeBaseDeps(db: Database.Database, overrides: BaseDepsOverrides = {}):
     hooks: createHookEngine(),
     agents: overrides.agents ?? [makeAgent("agente-conversacional")],
     createKnowledge: overrides.createKnowledge ?? makeFakeKnowledge(),
+    createConsultas: overrides.createConsultas ?? makeFakeConsultas(),
     ...(overrides.newId ? { newId: overrides.newId } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.logDeps ? { logDeps: overrides.logDeps } : {}),
@@ -413,8 +424,8 @@ describe("buildOnA2AEntrante — onConsultarTarea / onCancelarTarea (síncronos)
   });
 });
 
-describe("buildOnA2AEntrante — límite estructural (ADR 98)", () => {
-  it("BuildOnA2AEntranteDeps tiene EXACTAMENTE los mismos ocho campos que BuildOnSoporteDeps, ningún puerto de escritura", () => {
+describe("buildOnA2AEntrante — límite estructural (ADR 98, enmendado por ADR 174)", () => {
+  it("BuildOnA2AEntranteDeps tiene EXACTAMENTE nueve campos, ninguno puerto de escritura (consultas-negocio-a2a-entrante, tarea 7)", () => {
     const source = readFileSync(new URL("./build-on-a2a-entrante.ts", import.meta.url), "utf8");
 
     const interfaceMatch = source.match(/export interface BuildOnA2AEntranteDeps \{([\s\S]*?)\n\}/);
@@ -423,7 +434,7 @@ describe("buildOnA2AEntrante — límite estructural (ADR 98)", () => {
 
     const campos = Array.from(body.matchAll(/readonly (\w+)\??:/g)).map((m) => m[1]).sort();
     expect(campos).toEqual(
-      ["agents", "createKnowledge", "db", "hooks", "logDeps", "memory", "newId", "now"].sort(),
+      ["agents", "createConsultas", "createKnowledge", "db", "hooks", "logDeps", "memory", "newId", "now"].sort(),
     );
 
     // Escaneamos los `import ... from "..."` reales, no comentarios que
@@ -433,12 +444,67 @@ describe("buildOnA2AEntrante — límite estructural (ADR 98)", () => {
       .filter((line) => /^\s*import\b/.test(line))
       .join("\n");
 
+    // Los ocho puertos de escritura de la tabla del ADR 98 pto 2 — ninguno
+    // puede colarse ni siquiera como import de tipo.
     expect(importLines).not.toMatch(/\bboard\b/i);
     expect(importLines).not.toMatch(/ActivityStorePort/);
+    expect(importLines).not.toMatch(/ActivityBoardPort/);
     expect(importLines).not.toMatch(/escritura/i);
+    expect(importLines).not.toMatch(/WorktreePort/);
     expect(importLines).not.toMatch(/ClienteA2APort/);
+    expect(importLines).not.toMatch(/\bnotifier\b/i);
+    expect(importLines).not.toMatch(/VentaStorePort/);
+    expect(importLines).not.toMatch(/SolicitudStorePort/);
+    expect(importLines).not.toMatch(/KeyedQueue/);
     expect(importLines).not.toMatch(/adapters\/a2a\/client/);
     expect(importLines).not.toMatch(/adapters\/web\//);
     expect(importLines).not.toMatch(/adapters\/webhooks\//);
+    // Aditivo y nombrado (ADR 174 pto 6 / ADR 98 pto 3, tarea 8) — el import
+    // del noveno campo, nunca relajado a un `contains` genérico.
+    expect(importLines).toMatch(/consultas\/index\.js/);
+  });
+
+  it("compone mcpServers como la UNIÓN EXACTA de conocimiento + consultas — nunca incluye operaciones (ADR 176, tarea 8)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const createKnowledge = (): KnowledgeAdapter => ({
+        mcpServers: { [KNOWLEDGE_MCP_SERVER_NAME]: {} as never },
+        feedback: { saveTurnResult: vi.fn(), discardPendingCitations: vi.fn() },
+      });
+      const createConsultas = (): ConsultasNegocioAdapter => ({
+        mcpServers: { [CONSULTAS_MCP_SERVER_NAME]: {} as never },
+      });
+
+      const handlers = buildOnA2AEntrante(
+        makeBaseDeps(db, {
+          newId: makeCounterNewId("caso"),
+          now: () => TIMESTAMP,
+          createKnowledge,
+          createConsultas,
+        }),
+      );
+
+      const resultado = await handlers.onSolicitudA2A({
+        a2aTaskId: "task-1",
+        texto: "consulta cualquiera",
+        origenTransporte: "203.0.113.5",
+        hayCupo: true,
+      });
+      if (resultado.estado !== TASK_STATE_SUBMITTED) {
+        throw new Error("unreachable");
+      }
+      await resultado.turno;
+
+      const depsPasadosAHandleTurn = mockedHandleTurn.mock.calls[0]?.[2] as { mcpServers: Record<string, unknown> };
+      // Igualdad de CONJUNTO, nunca `contains` — ADR 176 pto 2.
+      expect(Object.keys(depsPasadosAHandleTurn.mcpServers).sort()).toEqual(
+        [CONSULTAS_MCP_SERVER_NAME, KNOWLEDGE_MCP_SERVER_NAME].sort(),
+      );
+      // Escrito contra el servidor REAL de `operaciones-negocio-conversacionales`
+      // (ya mergeado en `main` — ADR 176 pto 4): nunca un nombre hipotético.
+      expect(depsPasadosAHandleTurn.mcpServers).not.toHaveProperty(OPERACIONES_MCP_SERVER_NAME);
+    } finally {
+      db.close();
+    }
   });
 });

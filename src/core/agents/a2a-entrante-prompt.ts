@@ -13,9 +13,14 @@
  * que `buildSoportePrompt` (Hito 4, `src/core/ventas/soporte-prompt.ts`) y
  * `buildActivityPrompt` (Hito 3, `src/core/activity/activity-prompt.ts`).
  *
- * Import: ninguno — este módulo no depende de ningún otro contrato del
- * núcleo, cumpliendo la regla de `AGENTS.md` (`src/core/` no importa de
- * `src/adapters/*`, ni del SDK, ni de Node).
+ * Módulo sin dependencias de código: ninguna — no depende de ningún otro
+ * contrato del núcleo, cumpliendo la regla de `AGENTS.md` (`src/core/` no
+ * trae nada de `src/adapters/*`, ni del SDK, ni de Node). El nombre
+ * calificado de la tool de consultas (`mcp__consultas__consultar_negocio`,
+ * tarea 6/9) se referencia ACÁ como literal fijo, sin traerlo desde
+ * `consultas-negocio-tool.ts` — mantiene el invariante de este módulo
+ * (verificado por test); la correspondencia exacta con
+ * `CONSULTAS_TOOL_QUALIFIED_NAME` la fija el test de la tarea 12.
  */
 
 /** Tope de truncado del texto entrante del prompt sintético. Ver design.md §5.1. */
@@ -47,7 +52,12 @@ function truncarTexto(texto: string, maxChars: number): string {
  *     servicial podría intentar "resolver" la solicitud modificando datos o
  *     reenviándola a otro agente, y esta vía de entrada no tiene ningún
  *     puerto de escritura (ADR 98).
- *  4. Instrucción de honestidad: si falta información para responder con
+ *  4. INSTRUCCIÓN DE USO DE LA TOOL (tarea 12, Hallazgo 1): antes de
+ *     responder con una generalidad, usar `mcp__consultas__consultar_negocio`
+ *     para consultar datos reales de negocio. Es el síntoma que originó este
+ *     change (`proposal.md` R9) — sin este empujón explícito, el modelo
+ *     tiende a responder en abstracto aun teniendo la tool disponible.
+ *  5. Instrucción de honestidad: si falta información para responder con
  *     certeza, decirlo explícitamente en vez de inventar una respuesta.
  */
 export function buildSolicitudA2APrompt(texto: string): string {
@@ -61,6 +71,10 @@ export function buildSolicitudA2APrompt(texto: string): string {
 
   secciones.push(
     "Limitación importante: esta solicitud es de sólo lectura. No podés modificar ningún dato del sistema, no podés confirmar ni ejecutar ninguna acción, y no podés delegar a otro agente. Respondé usando únicamente la información disponible, sin afirmar que realizaste alguna acción sobre el sistema.",
+  );
+
+  secciones.push(
+    "Antes de responder con una generalidad, usá la herramienta mcp__consultas__consultar_negocio para consultar el estado real de actividades, solicitudes internas, comisiones o reembolsos pendientes.",
   );
 
   secciones.push(
