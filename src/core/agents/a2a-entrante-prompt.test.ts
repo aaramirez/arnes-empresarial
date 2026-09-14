@@ -2,6 +2,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { buildSolicitudA2APrompt, MAX_SOLICITUD_A2A_CHARS } from "./a2a-entrante-prompt.js";
+import { CONSULTAS_TOOL_QUALIFIED_NAME } from "./consultas-negocio-tool.js";
+
+/**
+ * Literal pinneado de la sección de limitación de sólo lectura
+ * (`a2a-entrante-prompt.ts:62-64`). Tarea 12 exige que este fragmento quede
+ * byte por byte igual — este test lo verifica por comparación exacta de
+ * substring, no por `toContain` parcial de una palabra suelta.
+ */
+const LIMITACION_SOLO_LECTURA_LITERAL =
+  "Limitación importante: esta solicitud es de sólo lectura. No podés modificar ningún dato del sistema, no podés confirmar ni ejecutar ninguna acción, y no podés delegar a otro agente. Respondé usando únicamente la información disponible, sin afirmar que realizaste alguna acción sobre el sistema.";
 
 /**
  * Spec `solicitud-a2a-entrante` req. "`CASO_TIPO_A2A_ENTRANTE` y el prompt
@@ -89,6 +99,34 @@ describe("buildSolicitudA2APrompt — texto vacío no lanza (función total)", (
   it("no lanza con un texto vacío y devuelve un string no vacío", () => {
     expect(() => buildSolicitudA2APrompt("")).not.toThrow();
     expect(buildSolicitudA2APrompt("").length).toBeGreaterThan(0);
+  });
+});
+
+describe("buildSolicitudA2APrompt — la limitación de sólo lectura queda byte por byte igual (tarea 12)", () => {
+  it("conserva literal, sin cambios, la sección completa de limitación de sólo lectura", () => {
+    const prompt = buildSolicitudA2APrompt("¿Cuál es el estado del caso 7?");
+    expect(prompt).toContain(LIMITACION_SOLO_LECTURA_LITERAL);
+  });
+});
+
+describe("buildSolicitudA2APrompt — instrucción de uso de consultar_negocio (tarea 12, Hallazgo 1)", () => {
+  it("instruye usar la tool de consultas antes de responder con una generalidad, referenciando el nombre real de la tool", () => {
+    const prompt = buildSolicitudA2APrompt("¿Cuántas solicitudes hay pendientes?");
+
+    expect(prompt).toContain(CONSULTAS_TOOL_QUALIFIED_NAME);
+    expect(prompt.toLowerCase()).toContain("antes de responder con una generalidad");
+  });
+
+  it("la instrucción de uso de la tool queda entre la limitación de sólo lectura y la instrucción de honestidad", () => {
+    const prompt = buildSolicitudA2APrompt("¿Cuál es el estado del caso 7?");
+    const promptLower = prompt.toLowerCase();
+
+    const idxLimitacion = promptLower.indexOf("sólo lectura");
+    const idxTool = prompt.indexOf(CONSULTAS_TOOL_QUALIFIED_NAME);
+    const idxHonestidad = promptLower.indexOf("inventar");
+
+    expect(idxTool).toBeGreaterThan(idxLimitacion);
+    expect(idxHonestidad).toBeGreaterThan(idxTool);
   });
 });
 
