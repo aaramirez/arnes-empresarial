@@ -72,10 +72,13 @@ import {
   createCaso,
   createSesionAgente,
   CasoNotFoundError,
+  findActividadPorReferencia,
   getCasoById,
   getLatestSesionAgente,
   insertAccionEmpleado,
   listComisionesPorPeriodo,
+  listEscalacionesReembolso,
+  listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
   updateCaso,
   type Caso,
@@ -105,9 +108,12 @@ import { buildOnComandoEmpleado } from "./build-on-comando-empleado.js";
 import { createGitAdapter } from "./adapters/git/index.js";
 import { resolveGitConfig, resolveWorktreeConfig } from "./adapters/git/config.js";
 import { buildOnA2AEntrante } from "./build-on-a2a-entrante.js";
+import { createConsultasAdapter, type ConsultasNegocioAdapter } from "./adapters/consultas/index.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import type { RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
+import type { ActividadEstado } from "./core/activity/activity-contract.js";
+import type { SolicitudEstado, SolicitudTipo } from "./core/solicitudes/solicitudes-contract.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "./core/agents/definitions.js";
 import { invokeModel } from "./core/turn-selector/invoke-model.js";
@@ -592,7 +598,55 @@ void gitAdapter.barrido
 //     proceso sigue sin Servidor A2A — que el puerto esté ocupado no puede
 //     impedir que el empleado use la TUI (R9 de la propuesta, precedente
 //     `webhooks/index.ts:46-49`).
-const a2aEntrante = buildOnA2AEntrante({ db, memory, hooks, agents, createKnowledge });
+// `createConsultas` (`consultas-negocio-a2a-entrante`, tarea 10, ADR 174/182
+// §9): a diferencia de `createKnowledge`, NO entra a `StartupResult` — sólo
+// este bloque de A2A entrante lo consume, así que se construye LOCAL acá,
+// mismo criterio que `onSoporte`/`buildOnOperacionesEmpleado` arman sus
+// propios colaboradores locales a su propio bloque. Closures inline sobre
+// `repository.ts`, molde EXACTO del `reporteStore` de
+// `build-on-comando-empleado.ts` (sin `createXStore`, ADR 182 pto 3-4):
+//  - `reporteStore`/`reembolsosPort` reusan `ReporteStorePort`/
+//    `listEscalacionesReembolso` tal cual (ADR 177 pto 3).
+//  - `actividadPort` cierra `findActividadPorReferencia` sobre el par
+//    `(proyectoId, referenciaExterna)` — nunca expone `getActividadById`
+//    (ADR 187) — y castea `estado` a `ActividadEstado`, mismo criterio que
+//    `toPortActividad` (`build-on-activity.ts:156`).
+//  - `solicitudesPort` reusa `listSolicitudesInternas` SIN filtro (la A2A
+//    entrante no tiene `solicitanteId` que filtrar, ADR 180 pto 1) — la
+//    consulta ya filtra `estado = pendiente_aprobacion_humana` en SQL, así
+//    que el cast de `tipo`/`estado` es seguro sin repetir la validación
+//    completa de `toPortSolicitud` (`build-on-comando-empleado.ts`, privada
+//    a ese módulo y fuera de alcance de este change).
+const createConsultas = (casoId: string): ConsultasNegocioAdapter =>
+  createConsultasAdapter({
+    casoId,
+    reporteStore: {
+      listComisionesPorPeriodo: (periodo) => listComisionesPorPeriodo(db, periodo),
+      listVentasEnReembolsoPendiente: () => listVentasEnReembolsoPendiente(db),
+    },
+    actividadPort: {
+      buscarPorReferencia: (input) => {
+        const actividad = findActividadPorReferencia(db, input.proyectoId, input.referenciaExterna);
+        return actividad
+          ? { estado: actividad.estado as ActividadEstado, updatedAt: actividad.updatedAt }
+          : undefined;
+      },
+    },
+    solicitudesPort: {
+      listarPendientes: () =>
+        listSolicitudesInternas(db, {}).map((row) => ({
+          ...row,
+          tipo: row.tipo as SolicitudTipo,
+          estado: row.estado as SolicitudEstado,
+        })),
+    },
+    reembolsosPort: {
+      listPendientes: () => listEscalacionesReembolso(db, { estado: "reembolso_pendiente" }),
+    },
+    logEvent: (event, fields) => logTurnEvent(casoId, event, fields),
+  });
+
+const a2aEntrante = buildOnA2AEntrante({ db, memory, hooks, agents, createKnowledge, createConsultas });
 
 let a2aServidor: A2AServerAdapter | undefined;
 try {

@@ -29,6 +29,7 @@
  * sus argumentos.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 vi.mock("./adapters/memory/db.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/memory/db.js")>();
@@ -57,6 +58,11 @@ vi.mock("./build-on-comando-empleado.js", async (importOriginal) => {
 vi.mock("./build-on-operaciones-empleado.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./build-on-operaciones-empleado.js")>();
   return { ...actual, buildOnOperacionesEmpleado: vi.fn(actual.buildOnOperacionesEmpleado) };
+});
+
+vi.mock("./build-on-a2a-entrante.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./build-on-a2a-entrante.js")>();
+  return { ...actual, buildOnA2AEntrante: vi.fn(actual.buildOnA2AEntrante) };
 });
 
 const ENV_KEYS_A_LIMPIAR = [
@@ -143,5 +149,56 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
     expect(registroDeComando).toBeDefined();
     expect(registroDeOperaciones).toBeDefined();
     expect(registroDeComando).toBe(registroDeOperaciones);
+  });
+});
+
+describe("main.ts -- wiring de createConsultas local al bloque de A2A entrante (consultas-negocio-a2a-entrante, tarea 10)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  it("buildOnA2AEntrante recibe un createConsultas que produce un adaptador con mcpServers no vacío", async () => {
+    await import("./main.js");
+
+    const { buildOnA2AEntrante } = await import("./build-on-a2a-entrante.js");
+    const a2aEntranteMock = vi.mocked(buildOnA2AEntrante);
+
+    expect(a2aEntranteMock).toHaveBeenCalledTimes(1);
+
+    const { createConsultas } = a2aEntranteMock.mock.calls[0]?.[0] ?? {};
+    expect(typeof createConsultas).toBe("function");
+
+    const adaptador = createConsultas?.("caso-de-prueba");
+    expect(adaptador).toBeDefined();
+    expect(Object.keys(adaptador?.mcpServers ?? {}).length).toBeGreaterThan(0);
+  });
+
+  it("createConsultas es LOCAL al bloque de A2A entrante — no entra a StartupResult ni al objeto que arma createKnowledge", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+
+    const startupResultMatch = source.match(/interface StartupResult \{([\s\S]*?)\n\}/);
+    expect(startupResultMatch).not.toBeNull();
+    expect(startupResultMatch?.[1] ?? "").not.toMatch(/createConsultas/);
+
+    const startHarnessReturnMatch = source.match(/return \{ agents, hooks, memory, caso, db, createKnowledge,[^}]*\};/);
+    expect(startHarnessReturnMatch).not.toBeNull();
+    expect(startHarnessReturnMatch?.[0] ?? "").not.toMatch(/createConsultas/);
   });
 });
