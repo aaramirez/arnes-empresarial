@@ -694,6 +694,43 @@ async function handleOperaciones(
 }
 
 /**
+ * `POST /logout` (`chat-web-empleado`, ADR 201 pto 4-7, ADR 202). Inversa de
+ * `/login`, en la raíz, no bajo `/chat/`. SIEMPRE responde `204` sin body —
+ * token válido, vencido, inexistente o ausente son indistinguibles desde
+ * afuera (mismo criterio que `SesionEmpleadoStore.buscar`,
+ * `sesion-empleado-store.ts:13-16`). No lee el body (no hace falta
+ * `leerCuerpoConTope`) pero igual lo drena (`req.resume()`) antes de
+ * responder, para no dejar el socket a medio consumir.
+ *
+ * Orden de composición EXACTO, no se reordena (ADR 202 pto 2): el
+ * `empleadoId` sólo se puede leer mientras la sesión existe, por eso
+ * `confirmacionOperacionesStore` se consulta ANTES de `sesionStore.eliminar`
+ * -- `sesionStore.buscar` (sin borrar todavía) → `confirmacion.consumir()`
+ * (si había sesión) → `conversacionStore.eliminar` → `sesionStore.eliminar`.
+ * El handler compone; ningún store llama a otro.
+ */
+function handleLogout(req: WebRequest, res: WebResponse, requestId: string, deps: WebServerDeps): void {
+  const { sesionStore, confirmacionOperacionesStore, conversacionStore } = deps;
+
+  req.resume();
+
+  const token = extraerBearerToken(req);
+  if (token !== undefined) {
+    const sesion = sesionStore.buscar(token);
+    if (sesion !== undefined) {
+      confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId).consumir();
+    }
+    conversacionStore.eliminar(token);
+    sesionStore.eliminar(token);
+  }
+
+  res.statusCode = 204;
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Request-Id", requestId);
+  res.end();
+}
+
+/**
  * El listener HTTP, aislado del ciclo de vida del servidor para poder
  * testear cada respuesta con dobles planos.
  *
@@ -733,6 +770,13 @@ export function createRequestListener(deps: WebServerDeps): (req: WebRequest, re
     }
     if (method === "POST" && path === RUTA_OPERACIONES) {
       void handleOperaciones(req, res, requestId, deps);
+      return;
+    }
+    // `chat-web-empleado`, ADR 201 pto 3: en la raíz, no bajo `/chat/` -- la
+    // constante `RUTA_LOGOUT` la agrega `config.ts` recién en la tarea 9
+    // (Cadena C, en paralelo); literal acá para no adelantar esa tarea.
+    if (method === "POST" && path === "/logout") {
+      handleLogout(req, res, requestId, deps);
       return;
     }
 

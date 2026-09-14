@@ -46,6 +46,7 @@ class FakeRequest implements WebRequest {
   url?: string | undefined;
   headers: Record<string, string | string[] | undefined>;
   destroy = vi.fn();
+  resume = vi.fn();
 
   private listeners: {
     data: Array<(chunk: Buffer) => void>;
@@ -133,6 +134,7 @@ function fakeSesionStore(overrides: Partial<SesionEmpleadoStore> = {}): SesionEm
   return {
     crear: vi.fn().mockReturnValue("token-nuevo"),
     buscar: vi.fn().mockReturnValue(undefined),
+    eliminar: vi.fn(),
     ...overrides,
   };
 }
@@ -1378,5 +1380,156 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
     for (const llamada of logEvent.mock.calls) {
       expect(JSON.stringify(llamada)).not.toContain("token-secreto-nunca-logueado");
     }
+  });
+});
+
+/**
+ * `chat-web-empleado`, tarea 6 (ADR 201 pto 4-7, ADR 202) -- `POST /logout`.
+ * Orden exacto de composición: `sesionStore.buscar` (el `empleadoId` sólo se
+ * puede leer mientras la sesión existe) → `confirmacionOperacionesStore` →
+ * `conversacionStore.eliminar` → `sesionStore.eliminar` → `204` SIEMPRE.
+ */
+describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, ADR 201 pto 4-7, ADR 202)", () => {
+  it("token válido -- responde 204 y compone las tres piezas de estado en el orden exacto (confirmacion, conversacion, sesion)", async () => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const confirmacionDelEmpleado = fakeConfirmacion();
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
+      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
+    });
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: "Bearer token-valido" } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(res.end).toHaveBeenCalledWith();
+    expect(req.resume).toHaveBeenCalled();
+    expect(sesionStore.buscar).toHaveBeenCalledWith("token-valido");
+    expect(confirmacionOperacionesStore.paraEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
+    expect(confirmacionDelEmpleado.consumir).toHaveBeenCalled();
+    expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-valido");
+    expect(sesionStore.eliminar).toHaveBeenCalledWith("token-valido");
+
+    // Orden: confirmacion se consume ANTES que conversacionStore.eliminar, que va ANTES que sesionStore.eliminar.
+    const ordenConsumir = (confirmacionDelEmpleado.consumir as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const ordenConversacion = (conversacionStore.eliminar as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const ordenSesion = (sesionStore.eliminar as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(ordenConsumir).toBeDefined();
+    expect(ordenConversacion).toBeDefined();
+    expect(ordenSesion).toBeDefined();
+    expect(ordenConsumir as number).toBeLessThan(ordenConversacion as number);
+    expect(ordenConversacion as number).toBeLessThan(ordenSesion as number);
+  });
+
+  it("un token usado tras logout es indistinguible de uno vencido -- POST /operaciones posterior da 401", async () => {
+    vi.useFakeTimers();
+    const sesiones = new Map<string, SesionEmpleado>([["token-valido", SESION_EMPLEADO]]);
+    const sesionStore = fakeSesionStore({
+      buscar: vi.fn((token: string) => sesiones.get(token)),
+      eliminar: vi.fn((token: string) => {
+        sesiones.delete(token);
+      }),
+    });
+    const onOperacionesEmpleado = vi.fn();
+    const deps = makeDeps({ sesionStore, onOperacionesEmpleado });
+    const listener = createRequestListener(deps);
+
+    const logoutReq = new FakeRequest({
+      method: "POST",
+      url: "/logout",
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const logoutRes = new FakeResponse();
+    listener(logoutReq, logoutRes);
+    await esperarRespuesta(logoutRes);
+    expect(logoutRes.statusCode).toBe(204);
+
+    const operacionesReq = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const operacionesRes = new FakeResponse();
+    listener(operacionesReq, operacionesRes);
+    operacionesReq.emitBody([jsonBody({ consulta: "hola" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(operacionesRes.statusCode).toBe(401);
+    expect(onOperacionesEmpleado).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["vencido/inexistente", "Bearer token-vencido-o-inexistente"],
+    ["ausente", undefined],
+  ])("token %s -- responde 204 igual (punto obligatorio 8)", async (_label, authHeaderValue) => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(undefined) });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: "/logout",
+      headers: authHeaderValue === undefined ? {} : { authorization: authHeaderValue },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(req.resume).toHaveBeenCalled();
+    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
+  });
+
+  it("token inexistente -- conversacionStore.eliminar y sesionStore.eliminar igual se invocan (idempotentes), sin consumir confirmacion", async () => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(undefined) });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: "/logout",
+      headers: { authorization: "Bearer token-vencido-o-inexistente" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-vencido-o-inexistente");
+    expect(sesionStore.eliminar).toHaveBeenCalledWith("token-vencido-o-inexistente");
+    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
+  });
+
+  it("no lee el body pero lo drena (req.resume) antes de responder", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(req.resume).toHaveBeenCalled();
+  });
+
+  it("método equivocado sobre /logout (GET) -- 404 vacío, sin caso especial", () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: "/logout", headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.end).toHaveBeenCalledWith();
   });
 });

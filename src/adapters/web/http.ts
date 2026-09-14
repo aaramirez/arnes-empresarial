@@ -24,6 +24,12 @@ export interface WebRequest {
   on(event: "end", listener: () => void): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
   destroy(error?: Error): unknown;
+  /**
+   * Pone el stream en modo `flowing` sin leer el body (`chat-web-empleado`,
+   * ADR 201 pto 5): `POST /logout` no necesita el cuerpo pero igual hay que
+   * drenarlo antes de responder, para no dejar el socket a medio consumir.
+   */
+  resume(): unknown;
 }
 
 export interface WebResponse {
