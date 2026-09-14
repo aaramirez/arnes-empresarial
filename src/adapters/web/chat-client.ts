@@ -108,6 +108,12 @@ export const CHAT_CLIENT_JS = `
             mensajeTextarea.value = mensajePendiente;
             mensajePendiente = "";
           }
+        }).catch(function () {
+          // Hallazgo Reviewer #2 (ALTO): respuesta.json() puede rechazar
+          // (body malformado con status 200) sin que el onRejected de
+          // arriba lo agarre -- ese onRejected sólo cubre el rechazo del
+          // fetch() original, no el de esta promesa encadenada.
+          loginError.textContent = MENSAJE_ERROR_RED;
         });
       },
       function () {
@@ -166,6 +172,13 @@ export const CHAT_CLIENT_JS = `
           mensajeTextarea.value = "";
           enVuelo = false;
           cambiarEstado("respondido");
+        }).catch(function () {
+          // Hallazgo Reviewer #2 (ALTO): sin este catch, un body
+          // malformado con status 200 dejaba enVuelo en true para
+          // siempre -- el chat quedaba trabado en "Esperando respuesta…"
+          // sin poder recuperarse.
+          enVuelo = false;
+          cambiarEstado("error", MENSAJE_ERROR_RED);
         });
       },
       function () {

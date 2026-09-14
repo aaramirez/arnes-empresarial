@@ -116,6 +116,19 @@ function respuestaJson(status: number, cuerpo: unknown): { ok: boolean; status: 
   };
 }
 
+/**
+ * `respuesta.ok` en `true` (ej. `200`) pero `json()` rechaza -- body JSON
+ * malformado con status "exitoso" (proxy raro, gateway a medio cortar,
+ * hallazgo Reviewer #2). El bug original dejaba este rechazo sin capturar.
+ */
+function respuestaJsonMalformado(status: number): { ok: boolean; status: number; json: () => Promise<unknown> } {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.reject(new Error("cuerpo JSON malformado")),
+  };
+}
+
 function montarCliente(fetchDouble: (...args: unknown[]) => unknown): {
   elementos: Record<string, ElementoFake>;
   documento: ReturnType<typeof crearDocumentoFake>;
@@ -297,6 +310,38 @@ describe("CHAT_CLIENT_JS -- tabla de errores (ADR 204), sin leer body.error", ()
 
     expect(elementos["mensaje-textarea"]!.value).toBe("mensaje importante");
     expect(fetchDouble).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("CHAT_CLIENT_JS -- rechazo no capturado de respuesta.json() (hallazgo Reviewer #2, ALTO)", () => {
+  it("manejarEnvio: body JSON malformado con status 200 no deja enVuelo trabado -- pasa a estado de error", async () => {
+    const fetchDouble = vi
+      .fn()
+      .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+      .mockResolvedValueOnce(respuestaJsonMalformado(200));
+    const { elementos } = montarCliente(fetchDouble);
+    await loguear(elementos);
+
+    elementos["mensaje-textarea"]!.value = "hola";
+    elementos["enviar-boton"]!.disparar("click");
+    await tick();
+
+    expect(elementos["estado-mensaje"]!.textContent).toBe("No hubo respuesta del servidor.");
+    expect(elementos["enviar-boton"]!.disabled).toBe(false);
+    expect(elementos["mensaje-textarea"]!.disabled).toBe(false);
+  });
+
+  it("manejarLogin: body JSON malformado con status 200 muestra el error de red, sin quedar colgado", async () => {
+    const fetchDouble = vi.fn().mockResolvedValueOnce(respuestaJsonMalformado(200));
+    const { elementos } = montarCliente(fetchDouble);
+
+    elementos["empleado-id-input"]!.value = "emp-1";
+    elementos["password-input"]!.value = "pass";
+    elementos["login-boton"]!.disparar("click");
+    await tick();
+
+    expect(elementos["login-error"]!.textContent).toBe("No hubo respuesta del servidor.");
+    expect(elementos["chat-view"]!.hidden).toBe(true);
   });
 });
 
