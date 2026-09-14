@@ -67,6 +67,7 @@ import { createHookEngine } from "../../core/hooks/hook-engine.js";
 import { DEFAULT_AGENT_MODEL, type AgentDefinition } from "../../core/agents/definitions.js";
 import type { MemoryPort, HandleTurnResult } from "../../core/turn-selector/handle-turn.js";
 import type { KnowledgeAdapter } from "../../adapters/knowledge/index.js";
+import type { ConsultasNegocioAdapter } from "../../adapters/consultas/index.js";
 
 vi.mock("../../core/turn-selector/handle-turn.js", () => ({
   handleTurn: vi.fn(),
@@ -107,6 +108,11 @@ function makeFakeKnowledge(): (casoId: string) => KnowledgeAdapter {
       },
     }),
   );
+}
+
+/** Noveno campo (ADR 174, `consultas-negocio-a2a-entrante` tarea 7) — molde EXACTO de `makeFakeKnowledge`, sin `feedback` (ADR 181). */
+function makeFakeConsultas(): (casoId: string) => ConsultasNegocioAdapter {
+  return vi.fn((): ConsultasNegocioAdapter => ({ mcpServers: {} }));
 }
 
 /**
@@ -157,6 +163,7 @@ async function iniciarServidorDePrueba(
     hooks: createHookEngine(),
     agents: [makeAgent()],
     createKnowledge: makeFakeKnowledge(),
+    createConsultas: makeFakeConsultas(),
   });
 
   const config: A2AServerConfig = {
