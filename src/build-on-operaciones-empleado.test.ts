@@ -25,7 +25,11 @@ import { getCasoById } from "./adapters/memory/repository.js";
 import type { MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
 import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
+import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import type { SesionEmpleado } from "./core/auth/sesion.js";
+import { createSolicitudStore } from "./build-on-comando-empleado.js";
+import { SOLICITUD_TIPO_GASTO } from "./core/solicitudes/solicitudes-contract.js";
+import { CASO_ESTADO_PENDIENTE_APROBACION_HUMANA } from "./core/hitl/hitl-contract.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import type { VentaNotifierPort } from "./core/ventas/ventas-contract.js";
 import type { VentasConfig } from "./core/ventas/ventas-config.js";
@@ -62,6 +66,46 @@ function fakeConfirmacion(): ConfirmacionOperacionPort {
     estaConfirmada: vi.fn().mockReturnValue(false),
     marcarPendiente: vi.fn(),
     consumir: vi.fn(),
+  };
+}
+
+/**
+ * Molde EXACTO del doble de `ConfirmacionOperacionPort` de
+ * `operaciones-contract.test.ts` — implementación REAL del predicado
+ * `origenCasoId !== casoIdActual` (ADR 166 pto 3), no un `vi.fn()` fijo.
+ * Necesario para el punto obligatorio 1 (tarea 3): probar que el invariante
+ * de autoconfirmación sigue vivo con la memoria conversacional activa.
+ */
+function realBehaviorConfirmacion(): ConfirmacionOperacionPort {
+  let pendiente:
+    | { solicitudId: string; empleadoId: string; casoId: string; origenCasoId: string }
+    | undefined;
+
+  return {
+    estaConfirmada: (solicitudId, empleadoId, casoIdActual) =>
+      pendiente !== undefined &&
+      pendiente.solicitudId === solicitudId &&
+      pendiente.empleadoId === empleadoId &&
+      pendiente.origenCasoId !== casoIdActual,
+    marcarPendiente: (input) => {
+      pendiente = { ...input };
+    },
+    consumir: () => {
+      pendiente = undefined;
+    },
+  };
+}
+
+/** chat-web-empleado, tarea 3 — doble plano de `ConversacionEmpleadoPort` (ADR 196). */
+function fakeConversacion(overrides: {
+  readonly casoAnterior?: () => string | undefined;
+  readonly registrarTurno?: (casoId: string) => void;
+  readonly conversacionId?: () => string;
+} = {}): ConversacionEmpleadoPort {
+  return {
+    casoAnterior: overrides.casoAnterior ?? (() => undefined),
+    registrarTurno: overrides.registrarTurno ?? vi.fn(),
+    conversacionId: overrides.conversacionId ?? (() => "conv-1"),
   };
 }
 
@@ -117,12 +161,13 @@ interface BaseDepsOverrides {
   readonly newToken?: () => string;
   readonly now?: () => string;
   readonly logDeps?: LogTurnEventDeps;
+  readonly memory?: MemoryPort;
 }
 
 function makeBaseDeps(db: Database.Database, overrides: BaseDepsOverrides = {}): BuildOnOperacionesEmpleadoDeps {
   return {
     db,
-    memory: fakeMemory(),
+    memory: overrides.memory ?? fakeMemory(),
     hooks: createHookEngine(),
     ventasConfig: fakeVentasConfig(),
     notifier: fakeNotifier(),
@@ -152,7 +197,7 @@ describe("buildOnOperacionesEmpleado", () => {
       const newId = makeCounterNewId("caso");
       const handler = buildOnOperacionesEmpleado(makeBaseDeps(db, { newId, now: () => TIMESTAMP }));
 
-      await handler({ consulta: "Cancelame la solicitud sol-1", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "Cancelame la solicitud sol-1", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       expect(order).toEqual(["caso-existe:handleTurn"]);
 
@@ -171,7 +216,7 @@ describe("buildOnOperacionesEmpleado", () => {
         makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
       );
 
-      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       const deps = mockedHandleTurn.mock.calls[0]?.[2];
       expect(deps).toBeDefined();
@@ -190,7 +235,7 @@ describe("buildOnOperacionesEmpleado", () => {
       );
       const consulta = "Registrame una venta de 500 para el cliente 123";
 
-      await handler({ consulta, sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta, sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       expect(mockedHandleTurn.mock.calls[0]?.[1]).toBe(buildOperacionesEmpleadoPrompt(consulta));
     } finally {
@@ -205,7 +250,7 @@ describe("buildOnOperacionesEmpleado", () => {
         makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
       );
 
-      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       const deps = mockedHandleTurn.mock.calls[0]?.[2];
       expect(deps).toBeDefined();
@@ -225,7 +270,7 @@ describe("buildOnOperacionesEmpleado", () => {
       );
 
       await expect(
-        handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion() }),
+        handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() }),
       ).rejects.toBe(error);
     } finally {
       db.close();
@@ -238,9 +283,9 @@ describe("buildOnOperacionesEmpleado", () => {
       const newId = () => "caso-fijo";
       const handler = buildOnOperacionesEmpleado(makeBaseDeps(db, { newId, now: () => TIMESTAMP }));
 
-      await handler({ consulta: "primera consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "primera consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
       await expect(
-        handler({ consulta: "segunda consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion() }),
+        handler({ consulta: "segunda consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() }),
       ).rejects.toThrow();
 
       expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
@@ -256,7 +301,7 @@ describe("buildOnOperacionesEmpleado", () => {
         makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
       );
 
-      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       const deps = mockedHandleTurn.mock.calls[0]?.[2];
       expect(deps).toBeDefined();
@@ -274,7 +319,7 @@ describe("buildOnOperacionesEmpleado", () => {
         makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, logDeps }),
       );
 
-      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       const deps = mockedHandleTurn.mock.calls[0]?.[2];
       expect(deps).toBeDefined();
@@ -292,7 +337,7 @@ describe("buildOnOperacionesEmpleado", () => {
         makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, logDeps }),
       );
 
-      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion() });
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
 
       const logged = parseLastLine(logDeps.lines);
       expect(logged.casoId).toBe("caso-1");
@@ -316,6 +361,7 @@ describe("buildOnOperacionesEmpleado", () => {
         consulta: "Registrame una venta",
         sesion: fakeSesion(),
         confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
       });
 
       expect(result).toEqual({ casoId: "caso-1", respuesta: "Venta registrada con éxito." });
@@ -352,10 +398,348 @@ describe("buildOnOperacionesEmpleado", () => {
         return outcomeBase;
       });
 
-      await handler({ consulta: "Cancelame una solicitud", sesion, confirmacion });
+      await handler({ consulta: "Cancelame una solicitud", sesion, confirmacion, conversacion: fakeConversacion() });
 
       expect(capturedText).toBe("No tenés solicitudes pendientes para cancelar.");
       expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * chat-web-empleado, tarea 3 (ADR 196 ptos 5-9) — decorador de memoria
+ * conversacional. `handleTurn` sigue MOCKEADO (molde del archivo, arriba):
+ * se inspecciona el `memory` que el handler arma y le pasa a `handleTurn`
+ * (`deps.memory` capturado de `mockedHandleTurn.mock.calls`), invocándolo
+ * directamente para verificar la redirección — mismo criterio que las
+ * aserciones ya existentes sobre `deps.candidateAgents`/`deps.mcpServers`.
+ */
+describe("buildOnOperacionesEmpleado — decorador de memoria conversacional (ADR 196)", () => {
+  it("con casoAnterior() previo: getLatestSesionAgente se resuelve contra el caso ANTERIOR, no contra el del turno actual", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const memoriaOriginal = fakeMemory();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, memory: memoriaOriginal }),
+      );
+
+      await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion(),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion({ casoAnterior: () => "caso-anterior-fijo" }),
+      });
+
+      const deps = mockedHandleTurn.mock.calls[0]?.[2];
+      expect(deps).toBeDefined();
+      deps?.memory.getLatestSesionAgente("caso-1", "agente-x");
+
+      expect(memoriaOriginal.getLatestSesionAgente).toHaveBeenCalledWith("caso-anterior-fijo", "agente-x");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("sin casoAnterior() previo: la redirección delega en el MISMO casoId del turno (no en 'caso-anterior-fijo')", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const memoriaOriginal = fakeMemory();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, memory: memoriaOriginal }),
+      );
+
+      await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion(),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion({ casoAnterior: () => undefined }),
+      });
+
+      const deps = mockedHandleTurn.mock.calls[0]?.[2];
+      deps?.memory.getLatestSesionAgente("caso-1", "agente-x");
+
+      expect(memoriaOriginal.getLatestSesionAgente).toHaveBeenCalledWith("caso-1", "agente-x");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("getCasoById/updateCaso/createSesionAgente delegan SIN redirigir (único método redirigido: getLatestSesionAgente)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const memoriaOriginal = fakeMemory();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, memory: memoriaOriginal }),
+      );
+
+      await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion(),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion({ casoAnterior: () => "caso-anterior-fijo" }),
+      });
+
+      const deps = mockedHandleTurn.mock.calls[0]?.[2];
+      deps?.memory.getCasoById("caso-1");
+      deps?.memory.updateCaso("caso-1", { estado: "cerrado", updatedAt: TIMESTAMP });
+      deps?.memory.createSesionAgente({
+        id: "sa-1",
+        casoId: "caso-1",
+        agentId: "agente-x",
+        sdkSessionId: "sdk-1",
+        createdAt: TIMESTAMP,
+      });
+
+      expect(memoriaOriginal.getCasoById).toHaveBeenCalledWith("caso-1");
+      expect(memoriaOriginal.updateCaso).toHaveBeenCalledWith("caso-1", { estado: "cerrado", updatedAt: TIMESTAMP });
+      expect(memoriaOriginal.createSesionAgente).toHaveBeenCalledWith({
+        id: "sa-1",
+        casoId: "caso-1",
+        agentId: "agente-x",
+        sdkSessionId: "sdk-1",
+        createdAt: TIMESTAMP,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("un turno EXITOSO llama registrarTurno(casoId) DESPUÉS de que handleTurn resolvió", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const order: string[] = [];
+      mockedHandleTurn.mockImplementation(async () => {
+        order.push("handleTurn-resuelto");
+        return outcomeBase;
+      });
+      const registrarTurno = vi.fn((casoId: string) => {
+        order.push(`registrarTurno:${casoId}`);
+      });
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion(),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion({ registrarTurno }),
+      });
+
+      expect(registrarTurno).toHaveBeenCalledWith("caso-1");
+      expect(order).toEqual(["handleTurn-resuelto", "registrarTurno:caso-1"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("un turno FALLIDO nunca llama registrarTurno — la memoria no avanza (ADR 196 pto 7)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const error = new TurnFailedError("model", new Error("el modelo falló"));
+      mockedHandleTurn.mockRejectedValueOnce(error);
+      const registrarTurno = vi.fn();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      await expect(
+        handler({
+          consulta: "consulta cualquiera",
+          sesion: fakeSesion(),
+          confirmacion: fakeConfirmacion(),
+          conversacion: fakeConversacion({ registrarTurno }),
+        }),
+      ).rejects.toBe(error);
+
+      expect(registrarTurno).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("dos ConversacionEmpleadoPort distintos (dos tokens simulados) nunca cruzan su resolución de resume", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const memoriaOriginal = fakeMemory();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, memory: memoriaOriginal }),
+      );
+
+      await handler({
+        consulta: "consulta del empleado A",
+        sesion: fakeSesion({ empleadoId: "empleado-A" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion({ casoAnterior: () => "caso-A-anterior" }),
+      });
+      const depsA = mockedHandleTurn.mock.calls[0]?.[2];
+      depsA?.memory.getLatestSesionAgente("caso-2", "agente-x");
+
+      await handler({
+        consulta: "consulta del empleado B",
+        sesion: fakeSesion({ empleadoId: "empleado-B" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion({ casoAnterior: () => "caso-B-anterior" }),
+      });
+      const depsB = mockedHandleTurn.mock.calls[1]?.[2];
+      depsB?.memory.getLatestSesionAgente("caso-3", "agente-x");
+
+      expect(memoriaOriginal.getLatestSesionAgente).toHaveBeenNthCalledWith(1, "caso-A-anterior", "agente-x");
+      expect(memoriaOriginal.getLatestSesionAgente).toHaveBeenNthCalledWith(2, "caso-B-anterior", "agente-x");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * chat-web-empleado, tarea 3 — punto obligatorio 1 (R1, el riesgo
+ * estructural del change): con memoria conversacional activa, dos
+ * invocaciones de `cancelar_solicitud_interna` DENTRO DEL MISMO mensaje
+ * (mismo `casoId`, ergo mismo `handleTurn`) siguen sin poder
+ * autoconfirmarse. Usa `realBehaviorConfirmacion()` (predicado real, no un
+ * `vi.fn()` fijo) y una solicitud sembrada de verdad en SQLite en memoria
+ * vía `createSolicitudStore` (mismo store real que usa el módulo bajo
+ * prueba internamente).
+ */
+describe("buildOnOperacionesEmpleado — autoconfirmación imposible con memoria activa (ADR 189 pto 4, punto obligatorio 1)", () => {
+  it("dos invocaciones de cancelar_solicitud_interna en el MISMO mensaje: la segunda NO confirma la primera", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const solicitudStore = createSolicitudStore(db);
+      const solicitud = solicitudStore.crearSolicitudConCaso({
+        caso: { id: "caso-solicitud-previo", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+        solicitud: {
+          id: "sol-1",
+          solicitanteId: "empleado-1",
+          tipo: SOLICITUD_TIPO_GASTO,
+          detalle: "taxi al cliente",
+          estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+        },
+        timestamp: TIMESTAMP,
+      });
+      expect(solicitud.id).toBe("sol-1");
+
+      const confirmacion = realBehaviorConfirmacion();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      const textos: string[] = [];
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
+          readonly instance: {
+            readonly _registeredTools: Record<
+              string,
+              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+            >;
+          };
+        };
+        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+
+        // Primera invocación: PROPONE la cancelación (marcarPendiente, origenCasoId = casoId de ESTE turno).
+        const primera = await registeredTool?.handler(
+          { operacion: "cancelar_solicitud_interna", solicitudId: "sol-1" },
+          {},
+        );
+        textos.push(primera?.content[0]?.text ?? "");
+
+        // Segunda invocación, DENTRO DEL MISMO MENSAJE (mismo casoId): intenta confirmar lo que la primera propuso.
+        const segunda = await registeredTool?.handler(
+          { operacion: "cancelar_solicitud_interna", solicitudId: "sol-1" },
+          {},
+        );
+        textos.push(segunda?.content[0]?.text ?? "");
+
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "Cancelá la solicitud sol-1",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion,
+        conversacion: fakeConversacion(),
+      });
+
+      // Las DOS respuestas piden confirmación — NINGUNA ejecuta la cancelación (autoconfirmación estructuralmente imposible).
+      expect(textos[0]).toContain("Confirmá");
+      expect(textos[1]).toContain("Confirmá");
+      expect(solicitudStore.listarSolicitudesPendientes({ solicitudId: "sol-1" })[0]?.estado).toBe(
+        CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("propuesta en el turno N, confirmación en el turno N+1 (memoria activa entre ambos) SIGUE confirmando", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const solicitudStore = createSolicitudStore(db);
+      solicitudStore.crearSolicitudConCaso({
+        caso: { id: "caso-solicitud-previo-2", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+        solicitud: {
+          id: "sol-2",
+          solicitanteId: "empleado-1",
+          tipo: SOLICITUD_TIPO_GASTO,
+          detalle: "taxi al cliente",
+          estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+        },
+        timestamp: TIMESTAMP,
+      });
+
+      const confirmacion = realBehaviorConfirmacion();
+      const newId = makeCounterNewId("caso");
+      const handler = buildOnOperacionesEmpleado(makeBaseDeps(db, { newId, now: () => TIMESTAMP }));
+      const conversacion = fakeConversacion();
+
+      // Turno N: propone.
+      let textoTurnoN = "";
+      mockedHandleTurn.mockImplementationOnce(async (_casoId, _prompt, deps) => {
+        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
+          readonly instance: {
+            readonly _registeredTools: Record<
+              string,
+              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+            >;
+          };
+        };
+        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+        const resultado = await registeredTool?.handler(
+          { operacion: "cancelar_solicitud_interna", solicitudId: "sol-2" },
+          {},
+        );
+        textoTurnoN = resultado?.content[0]?.text ?? "";
+        return outcomeBase;
+      });
+      await handler({ consulta: "Cancelá sol-2", sesion: fakeSesion({ empleadoId: "empleado-1" }), confirmacion, conversacion });
+      expect(textoTurnoN).toContain("Confirmá");
+
+      // Turno N+1: confirma (mensaje POSTERIOR y DISTINTO — casoId nuevo).
+      let textoTurnoN1 = "";
+      mockedHandleTurn.mockImplementationOnce(async (_casoId, _prompt, deps) => {
+        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
+          readonly instance: {
+            readonly _registeredTools: Record<
+              string,
+              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+            >;
+          };
+        };
+        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+        const resultado = await registeredTool?.handler(
+          { operacion: "cancelar_solicitud_interna", solicitudId: "sol-2" },
+          {},
+        );
+        textoTurnoN1 = resultado?.content[0]?.text ?? "";
+        return outcomeBase;
+      });
+      await handler({ consulta: "Sí, confirmalo", sesion: fakeSesion({ empleadoId: "empleado-1" }), confirmacion, conversacion });
+
+      expect(textoTurnoN1).not.toContain("Confirmá");
+      expect(solicitudStore.listarSolicitudesPendientes({ solicitudId: "sol-2" })).toHaveLength(0);
     } finally {
       db.close();
     }
