@@ -70,4 +70,50 @@ describe("crearSesionEmpleadoStore", () => {
     expect(store.buscar(token)).toBe(store.buscar("token-inexistente"));
     expect(store.buscar(token)).toBeUndefined();
   });
+
+  /**
+   * `chat-web-empleado`, tarea 5 (ADR 195 pto 1, ADR 202 pto 1) -- tercer
+   * método, aditivo. `crear`/`buscar` no cambian de firma ni de
+   * comportamiento (cubierto por los tests de arriba, sin tocarlos).
+   */
+  describe("eliminar", () => {
+    it("token existente y vigente -- tras eliminar, buscar devuelve undefined", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
+      const token = store.crear(sesion);
+
+      store.eliminar(token);
+
+      expect(store.buscar(token)).toBeUndefined();
+    });
+
+    it("token vencido -- eliminar no lanza (idempotente, mismo criterio que buscar)", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesion: SesionEmpleado = {
+        empleadoId: "emp-1",
+        iniciadaEn: new Date(Date.now() - 120_000).toISOString(),
+        expiraEn: new Date(Date.now() - 60_000).toISOString(),
+      };
+      const token = store.crear(sesion);
+
+      expect(() => store.eliminar(token)).not.toThrow();
+    });
+
+    it("token inexistente -- eliminar no lanza", () => {
+      const store = crearSesionEmpleadoStore();
+
+      expect(() => store.eliminar("token-inexistente")).not.toThrow();
+    });
+
+    it("token ya eliminado -- eliminar de nuevo no lanza", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
+      const token = store.crear(sesion);
+
+      store.eliminar(token);
+
+      expect(() => store.eliminar(token)).not.toThrow();
+      expect(store.buscar(token)).toBeUndefined();
+    });
+  });
 });

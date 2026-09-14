@@ -18,6 +18,7 @@ function fakeSesionStore(): SesionEmpleadoStore {
   return {
     crear: vi.fn().mockReturnValue("token-generado"),
     buscar: vi.fn(),
+    eliminar: vi.fn(),
   };
 }
 

@@ -23,6 +23,13 @@ export interface SesionEmpleadoStore {
   crear(sesion: SesionEmpleado): string;
   /** `undefined` si el token no existe O si la sesión asociada venció — mismo caso desde afuera. */
   buscar(token: string): SesionEmpleado | undefined;
+  /**
+   * Borra la entrada del `Map` esté vigente, vencida o no exista
+   * (`chat-web-empleado`, ADR 195 pto 1 / ADR 202 pto 1). Idempotente:
+   * nunca lanza, mismo criterio de indistinguibilidad que `buscar`. Método
+   * aditivo — `crear`/`buscar` no cambian de firma ni comportamiento.
+   */
+  eliminar(token: string): void;
 }
 
 export function crearSesionEmpleadoStore(): SesionEmpleadoStore {
@@ -37,6 +44,9 @@ export function crearSesionEmpleadoStore(): SesionEmpleadoStore {
     buscar(token) {
       const sesion = sesiones.get(token);
       return sesionVigente(sesion, new Date().toISOString()) ? sesion : undefined;
+    },
+    eliminar(token) {
+      sesiones.delete(token);
     },
   };
 }
