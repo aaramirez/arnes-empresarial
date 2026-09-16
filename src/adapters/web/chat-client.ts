@@ -167,6 +167,18 @@ export const CHAT_CLIENT_JS = `
           return undefined;
         }
         return respuesta.json().then(function (cuerpo) {
+          // Hallazgo Reviewer 2da ronda #2: valida la FORMA del cuerpo
+          // ANTES de tocar el DOM. Un cuerpo null o sin .respuesta string
+          // (ej. {}) no tira -- cuerpo.respuesta sería simplemente
+          // undefined y el turno "Vos" ya habría quedado escrito para
+          // cuando se detecta el problema, duplicándose en un reintento.
+          // Se trata igual que el resto de las fallas: mismo estado de
+          // error, nada agregado a la transcripción todavía.
+          if (!cuerpo || typeof cuerpo.respuesta !== "string") {
+            enVuelo = false;
+            cambiarEstado("error", MENSAJE_ERROR_RED);
+            return undefined;
+          }
           agregarTurno("Vos", texto);
           agregarTurno("Arnés", cuerpo.respuesta);
           mensajeTextarea.value = "";

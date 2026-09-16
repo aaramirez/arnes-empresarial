@@ -345,6 +345,32 @@ describe("CHAT_CLIENT_JS -- rechazo no capturado de respuesta.json() (hallazgo R
   });
 });
 
+describe("CHAT_CLIENT_JS -- forma inesperada del body de /operaciones (hallazgo Reviewer 2da ronda #2)", () => {
+  it.each([
+    ["objeto vacío", {}],
+    ["null", null],
+  ])(
+    "manejarEnvio: body %s (sin .respuesta string) no escribe ningún turno y conserva el texto para reintentar",
+    async (_label, cuerpo) => {
+      const fetchDouble = vi
+        .fn()
+        .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+        .mockResolvedValueOnce(respuestaJson(200, cuerpo));
+      const { elementos } = montarCliente(fetchDouble);
+      await loguear(elementos);
+
+      elementos["mensaje-textarea"]!.value = "hola";
+      elementos["enviar-boton"]!.disparar("click");
+      await tick();
+
+      expect(elementos.mensajes!.children).toHaveLength(0);
+      expect(elementos["mensaje-textarea"]!.value).toBe("hola");
+      expect(elementos["estado-mensaje"]!.textContent).toBe("No hubo respuesta del servidor.");
+      expect(elementos["enviar-boton"]!.disabled).toBe(false);
+    },
+  );
+});
+
 describe("CHAT_CLIENT_JS -- logout", () => {
   it("llama POST /logout con el token Bearer y vuelve a la vista de login", async () => {
     const fetchDouble = vi
