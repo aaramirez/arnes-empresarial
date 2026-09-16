@@ -43,6 +43,13 @@ export const RESULTADO_APLICADA = "aplicada"; // /aplicar-propuesta
 export const RESULTADO_DESCARTADA = "descartada"; // /descartar-propuesta
 export const RESULTADO_NO_APLICABLE = "no_aplicable";
 export const RESULTADO_CANCELADA = "cancelada"; // /cancelar-solicitud (ADR 132/133)
+// Los cinco literales de `comando` de abajo (autorizacion-empleado, ADR 161) ya no
+// llegan sólo por la TUI: desde `aprobacion-conversacional-hitl` (ADR 218 pto 4)
+// también los escribe el dispatcher conversacional (`operacion:resolver_solicitud`,
+// `operacion:resolver_reembolso`), que reusa el mismo literal de `comando` que el
+// comando de TUI dado de baja habría escrito (`COMANDO_POR_ACCION_SOLICITUD`/
+// `COMANDO_POR_ACCION_REEMBOLSO` en `ejecutar-operacion.ts`). Cero contrato/valor
+// nuevo — mismos dos `resultado`, misma tabla, un origen más.
 export const RESULTADO_NO_AUTORIZADO = "no_autorizado"; // /aprobar-reembolso, /rechazar-reembolso, /reabrir-reembolso, /aprobar-solicitud, /rechazar-solicitud (autorizacion-empleado, ADR 161)
 export const RESULTADO_AUTOAPROBACION_PROHIBIDA = "autoaprobacion_prohibida"; // /aprobar-solicitud, /rechazar-solicitud (autorizacion-empleado, ADR 161)
 export const RESULTADO_AUTODEGRADACION_PROHIBIDA = "autodegradacion_prohibida"; // /asignar-rol (comandos-administracion-empleados, ADR 182, tarea 7)
