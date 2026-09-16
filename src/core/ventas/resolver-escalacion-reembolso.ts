@@ -65,7 +65,13 @@ export type ResolverEscalacionResult =
       readonly ventaId?: string;
       readonly casoId?: string;
     }
-  | { readonly resultado: "no_autorizado"; readonly accion: AccionEscalacion; readonly ventaId: string; readonly casoId: string };
+  | { readonly resultado: "no_autorizado"; readonly accion: AccionEscalacion; readonly ventaId: string; readonly casoId: string }
+  | {
+      readonly resultado: "autoaprobacion_prohibida";
+      readonly accion: AccionEscalacion;
+      readonly itemId: string;
+      readonly casoId: string;
+    };
 
 function listar(
   store: VentaStorePort,
@@ -108,7 +114,15 @@ function aplicarCas(
  *  E. `!puedeResolverAjeno(rolPort, empleadoId)` (ADR 153/159) → `no_autorizado`
  *     con `{ accion, ventaId, casoId }`, evento `reembolso-resolucion-no-autorizada`.
  *     ★ NO escribe en `ventas` ni `casos`. ★
- *  F. `confirmado === true` (con rol elevado) → el método CAS que corresponda, con
+ *  E-bis. `venta.vendedorId === sesion.empleadoId` (ADR 211 pto 5, ADR 215; R7) →
+ *     `autoaprobacion_prohibida` con `{ accion, itemId, casoId }`, evento
+ *     `reembolso-autoaprobacion-rechazada`. Evaluada DESPUÉS del gate de rol E
+ *     (ADR 159: orden de evaluación fijo, rol base + venta propia sigue dando
+ *     `no_autorizado`, nunca `autoaprobacion_prohibida`), con independencia de
+ *     si el rol es elevado. NO dispara para `vendedorId` ajeno al espacio de
+ *     identidad de empleados del canal conversacional (p. ej. una venta dada
+ *     de alta por `POST /ventas`). ★ NO escribe en `ventas` ni `casos`. ★
+ *  F. `confirmado === true` (con rol elevado y sin autoaprobación) → el método CAS que corresponda, con
  *     `{ ventaId, casoId, empleadoId: sesion.empleadoId, accionId: newId(), ahora: now() }`.
  *     `undefined` (el CAS no matcheó) → `no_aplicable` con `motivo: "cas"`.
  *     Fila → evento `reembolso-escalacion-aprobada|rechazada|reabierta`.
@@ -155,6 +169,11 @@ export function resolverEscalacionReembolso(
   if (!puedeResolverAjeno(deps.rolPort, sesion.empleadoId)) {
     logEvent(venta.casoId, "reembolso-resolucion-no-autorizada", { accion, ventaId, empleadoId: sesion.empleadoId });
     return { resultado: "no_autorizado", accion, ventaId, casoId: venta.casoId };
+  }
+
+  if (venta.vendedorId === sesion.empleadoId) {
+    logEvent(venta.casoId, "reembolso-autoaprobacion-rechazada", { accion, ventaId, empleadoId: sesion.empleadoId });
+    return { resultado: "autoaprobacion_prohibida", accion, itemId: ventaId, casoId: venta.casoId };
   }
 
   const resolucionInput: ResolucionEscalacionInput = {

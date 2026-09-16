@@ -369,6 +369,88 @@ describe("resolverEscalacionReembolso", () => {
     });
   });
 
+  describe("prohibición de autoaprobación de reembolso (R7, spec `reembolso-resolucion-escalacion`)", () => {
+    /**
+     * Doble de `VentaStorePort` que LANZA si alguno de los tres métodos de
+     * escritura de escalación es invocado — así "cero escrituras" no depende
+     * de una aserción `not.toHaveBeenCalled()` que el implementador podría
+     * omitir, sino de que el propio test explota si el predicado no corta
+     * antes de llegar al CAS.
+     */
+    function makeStoreQueLanzaEnEscritura(escalacion: EscalacionListada): VentaStorePort {
+      return makeStore({
+        listarReembolsosPendientes: vi.fn(() => [escalacion]),
+        listarReembolsosRechazados: vi.fn(() => [escalacion]),
+        aprobarEscalacionReembolso: vi.fn(() => {
+          throw new Error("no debía llegar al CAS de aprobar: la autoaprobación no cortó antes");
+        }),
+        rechazarEscalacionReembolso: vi.fn(() => {
+          throw new Error("no debía llegar al CAS de rechazar: la autoaprobación no cortó antes");
+        }),
+        reabrirEscalacionReembolso: vi.fn(() => {
+          throw new Error("no debía llegar al CAS de reabrir: la autoaprobación no cortó antes");
+        }),
+      });
+    }
+
+    it.each([ACCION_APROBAR, ACCION_RECHAZAR, ACCION_REABRIR] as const)(
+      "venta propia (vendedorId = empleadoId de la sesión), rol elevado, accion=%s → autoaprobacion_prohibida, CERO escrituras",
+      (accion) => {
+        const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9", vendedorId: SESION.empleadoId });
+        const store = makeStoreQueLanzaEnEscritura(escalacion);
+        const deps = makeDeps({ store, rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+
+        const resultado = resolverEscalacionReembolso(
+          { accion, ventaId: "venta-1", confirmado: true, sesion: SESION },
+          deps,
+        );
+
+        expect(resultado).toEqual({
+          resultado: "autoaprobacion_prohibida",
+          accion,
+          itemId: "venta-1",
+          casoId: "caso-9",
+        });
+      },
+    );
+
+    it("escenario negativo obligatorio: vendedorId externo (molde venta dada de alta por POST /ventas) → el predicado no dispara, procede normal", () => {
+      const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9", vendedorId: "vendedor-externo" });
+      const venta = buildVenta({ estado: VENTA_ESTADO_REEMBOLSADA });
+      const store = makeStore({
+        listarReembolsosPendientes: vi.fn(() => [escalacion]),
+        aprobarEscalacionReembolso: vi.fn(() => venta),
+      });
+      const deps = makeDeps({ store, rolPort: makeRolPort(ROL_ADMINISTRADOR) });
+
+      const resultado = resolverEscalacionReembolso(
+        { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+        deps,
+      );
+
+      expect(resultado.resultado).toBe("aplicada");
+      expect(store.aprobarEscalacionReembolso).toHaveBeenCalled();
+    });
+
+    it("orden de evaluación (ADR 159): rol base + venta propia → no_autorizado, NUNCA autoaprobacion_prohibida", () => {
+      const escalacion = buildEscalacion({ ventaId: "venta-1", casoId: "caso-9", vendedorId: SESION.empleadoId });
+      const store = makeStoreQueLanzaEnEscritura(escalacion);
+      const deps = makeDeps({ store, rolPort: makeRolPort(ROL_EMPLEADO) });
+
+      const resultado = resolverEscalacionReembolso(
+        { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: SESION },
+        deps,
+      );
+
+      expect(resultado).toEqual({
+        resultado: "no_autorizado",
+        accion: ACCION_APROBAR,
+        ventaId: "venta-1",
+        casoId: "caso-9",
+      });
+    });
+  });
+
   it("es SÍNCRONA: no devuelve una Promise ni un objeto thenable", () => {
     const deps = makeDeps();
 
