@@ -228,6 +228,38 @@ describe("validarOperacion — strings sobre el tope de 256 caracteres se rechaz
   });
 });
 
+describe("validarOperacion — resolver_solicitud: forma mínima se acepta (aprobacion-conversacional-hitl, tarea 7)", () => {
+  it("{ operacion, accion } solo se acepta (modo listado)", () => {
+    const input = { operacion: "resolver_solicitud", accion: "aprobar" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("{ operacion, accion, solicitudId } se acepta", () => {
+    const input = { operacion: "resolver_solicitud", accion: "rechazar", solicitudId: "sol-1" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+});
+
+describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION: whitelist estricta de accion/decision (ADR 217, aprobacion-conversacional-hitl, tarea 7)", () => {
+  it("resolver_solicitud con accion:'reabrir' ⇒ rechazo ('reabrir' es de resolver_reembolso, no de resolver_solicitud)", () => {
+    expect(validarOperacion({ operacion: "resolver_solicitud", accion: "reabrir" })).toBeUndefined();
+  });
+
+  it("resolver_solicitud con accion:'cancelar' ⇒ rechazo ('cancelar' NUNCA es válido acá, ADR 217 — es de cancelar_solicitud_interna)", () => {
+    expect(validarOperacion({ operacion: "resolver_solicitud", accion: "cancelar" })).toBeUndefined();
+  });
+
+  it("resolver_decision_venta con decision:'algo-invalido' ⇒ rechazo (cobertura nueva, antes dependía de zod)", () => {
+    expect(validarOperacion({ operacion: "resolver_decision_venta", token: "t", decision: "algo-invalido" })).toBeUndefined();
+  });
+
+  it("confirmado como clave en resolver_solicitud ⇒ rechazo (regresión §0.1)", () => {
+    expect(
+      validarOperacion({ operacion: "resolver_solicitud", accion: "aprobar", confirmado: true }),
+    ).toBeUndefined();
+  });
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();
