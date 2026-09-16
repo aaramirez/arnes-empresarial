@@ -22,7 +22,6 @@ import {
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_SOLICITUD,
-  type AccionSolicitudModelo,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
   type OperacionNegocio,
@@ -42,6 +41,7 @@ import { crearSolicitudInterna, type CrearSolicitudInternaResult } from "../soli
 import {
   ACCION_CANCELAR_SOLICITUD,
   resolverSolicitudInterna,
+  type AccionSolicitud,
   type ResolverSolicitudDeps,
 } from "../solicitudes/resolver-solicitud-interna.js";
 import { type SolicitudStorePort } from "../solicitudes/solicitudes-contract.js";
@@ -224,117 +224,51 @@ function registrar(
   }
 }
 
-/**
- * Secuencia exacta (ADR 166, tasks.md tarea 3 punto 3): sin `solicitudId` ⇒
- * listado, SIN tocar la ranura. Con `solicitudId` y `confirmacion.estaConfirmada`
- * `false` ⇒ `requiere_confirmacion` + `marcarPendiente({..., origenCasoId})`.
- * Con `estaConfirmada` `true` ⇒ se CONSUME antes de ejecutar (mismo orden que
- * `manejarResolucionSolicitud`, `build-on-comando-empleado.ts`) y se aplica el
- * CAS con `confirmado: true`.
- */
-async function ejecutarCancelarSolicitud(
-  solicitudId: string | undefined,
-  input: EjecutarOperacionInput,
-  deps: EjecutarOperacionDeps,
-): Promise<string> {
-  const resolverDeps: ResolverSolicitudDeps = {
-    store: deps.solicitudStore,
-    newId: deps.newId,
-    now: deps.now,
-    logEvent: deps.logEvent,
-    rolPort: deps.rolPort,
-  };
-
-  if (solicitudId === undefined) {
-    const resultado = resolverSolicitudInterna(
-      { accion: ACCION_CANCELAR_SOLICITUD, confirmado: false, sesion: input.sesion },
-      resolverDeps,
-    );
-    if (resultado.resultado !== "listado") {
-      return "No se pudo listar tus solicitudes pendientes.";
-    }
-    if (resultado.items.length === 0) {
-      return "No tenés solicitudes pendientes para cancelar.";
-    }
-    return resultado.items.map((item) => `- ${item.id} (${item.tipo}): ${item.detalle}`).join("\n");
-  }
-
-  const llave: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: solicitudId, accion: "cancelar" };
-  const yaConfirmada = input.confirmacion.estaConfirmada(llave, input.sesion.empleadoId, input.casoIdActual);
-
-  if (!yaConfirmada) {
-    const resultado = resolverSolicitudInterna(
-      { accion: ACCION_CANCELAR_SOLICITUD, solicitudId, confirmado: false, sesion: input.sesion },
-      resolverDeps,
-    );
-
-    if (resultado.resultado === "no_aplicable" || resultado.resultado === "no_es_dueno") {
-      return `No hay ninguna solicitud ${solicitudId} tuya pendiente de cancelación.`;
-    }
-    if (resultado.resultado !== "requiere_confirmacion") {
-      return "No se pudo procesar esa cancelación.";
-    }
-
-    input.confirmacion.marcarPendiente({
-      ...llave,
-      casoId: resultado.item.casoId,
-      empleadoId: input.sesion.empleadoId,
-      origenCasoId: input.casoIdActual,
-    });
-    return `Vas a cancelar la solicitud ${solicitudId} (${resultado.item.detalle}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la cancelación.`;
-  }
-
-  // Coincide: se CONSUME antes de ejecutar (ADR 36, mismo orden que la TUI).
-  input.confirmacion.consumir(llave);
-  const resultado = resolverSolicitudInterna(
-    { accion: ACCION_CANCELAR_SOLICITUD, solicitudId, confirmado: true, sesion: input.sesion },
-    resolverDeps,
-  );
-
-  if (resultado.resultado === "aplicada") {
-    return `Listo: la solicitud ${solicitudId} quedó ${resultado.estadoFinal}.`;
-  }
-  // Camino CAS-perdido (ADR 188 hallazgo 1): la ÚNICA rama de esta operación
-  // que audita desde acá — el camino feliz de arriba ya viajó dentro de la
-  // transacción de `cancelarSolicitudInterna` (`repository.ts`), auditarlo
-  // de nuevo lo DUPLICARÍA. `MOTIVO_NO_ENCONTRADA`/`no_es_dueno` no llegan a
-  // este punto (ya fueron devueltos por el `if` de más arriba del CAS
-  // perdido de `resolverSolicitudInterna` en los pasos previos de esta
-  // función), pero el guard de `motivo`/`casoId` deja explícito que sólo el
-  // CAS perdido con `casoId` conocido escribe fila.
-  if (resultado.resultado === "no_aplicable" && resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
-    registrar(
-      { comando: COMANDO_CANCELAR_SOLICITUD, casoId: resultado.casoId, resultado: RESULTADO_NO_APLICABLE },
-      input.sesion,
-      input.casoIdActual,
-      deps,
-    );
-  }
-  return "No se pudo completar la cancelación: puede que ya no esté pendiente.";
-}
-
-/** `aprobar`→`/aprobar-solicitud`, `rechazar`→`/rechazar-solicitud` (ADR 210 pto 1, tarea 9). */
-const COMANDO_POR_ACCION_SOLICITUD: Record<AccionSolicitudModelo, string> = {
+/** `cancelar`→`/cancelar-solicitud`, `aprobar`→`/aprobar-solicitud`, `rechazar`→`/rechazar-solicitud` (ADR 210 pto 1, tarea 9; unificado hallazgo Reviewer 2). */
+const COMANDO_POR_ACCION_SOLICITUD: Record<AccionSolicitud, string> = {
+  cancelar: COMANDO_CANCELAR_SOLICITUD,
   aprobar: COMANDO_APROBAR_SOLICITUD,
   rechazar: COMANDO_RECHAZAR_SOLICITUD,
 };
 
+/** Textos propios de cada acción — lo único que distingue `ejecutarCancelarSolicitud` de `ejecutarResolverSolicitud` (hallazgo Reviewer 2). */
+interface TextosAccionSolicitud {
+  readonly sinId: string;
+  readonly listadoVacio: string;
+  readonly noAplicable: (solicitudId: string) => string;
+  readonly noProcesable: string;
+  readonly confirmacionPendiente: (solicitudId: string, detalle: string) => string;
+  readonly noCompletada: string;
+}
+
 /**
- * Molde de `ejecutarCancelarSolicitud`, generalizado a las dos acciones
- * AJENAS del dominio solicitud (ADR 206-207). A diferencia de `cancelar`
- * (autoservicio, ADR 130), `aprobar`/`rechazar` SÍ atraviesan el gate de rol
- * y la prohibición de autoaprobación de `resolverSolicitudInterna` — pero
- * ESTE dispatcher no reimplementa nada de eso, sólo traduce el `Result` a
- * texto (ADR 207 pto 2, R2: el riesgo real es que alguien reimplemente el
- * gate acá, no que falte). Texto de autoaprobación reusado literal del
- * vigente de la TUI (`build-on-comando-empleado.ts:1336`, ADR 216 pto 5).
+ * Control de flujo COMPARTIDO por `ejecutarCancelarSolicitud` (ADR 166) y
+ * `ejecutarResolverSolicitud` (ADR 206-207) — extraído tras hallazgo Reviewer
+ * 2 (refactor puro, comportamiento observable idéntico, verificado por la
+ * suite existente de ambas). Secuencia exacta (ADR 166, tasks.md tarea 3
+ * punto 3): sin `solicitudId` ⇒ listado, SIN tocar la ranura. Con
+ * `solicitudId` y `estaConfirmada() === false` ⇒ `requiere_confirmacion` +
+ * `marcarPendiente({..., origenCasoId})`. Con `estaConfirmada() === true` ⇒
+ * se CONSUME antes de ejecutar (ADR 36, mismo orden que la TUI).
+ *
+ * `aprobar`/`rechazar` SÍ atraviesan el gate de rol y la prohibición de
+ * autoaprobación de `resolverSolicitudInterna`; `cancelar` (autoservicio,
+ * ADR 130) nunca produce esas dos variantes de `Result` — pero este
+ * dispatcher no reimplementa ningún gate, sólo traduce el `Result` a texto
+ * (ADR 207 pto 2, R2), así que las dos ramas conviven acá sin riesgo para
+ * `cancelar`: simplemente nunca se disparan para esa acción.
+ *
+ * Camino CAS-perdido (ADR 188 hallazgo 1): la ÚNICA rama de esta operación
+ * que audita desde acá — el camino feliz ya viajó dentro de la transacción
+ * del store, auditarlo de nuevo lo DUPLICARÍA.
  */
-async function ejecutarResolverSolicitud(
-  operacion: OperacionResolverSolicitud,
+async function ejecutarAccionSolicitud(
+  accion: AccionSolicitud,
+  solicitudId: string | undefined,
   input: EjecutarOperacionInput,
   deps: EjecutarOperacionDeps,
+  textos: TextosAccionSolicitud,
 ): Promise<string> {
-  const { accion, solicitudId } = operacion;
   const resolverDeps: ResolverSolicitudDeps = {
     store: deps.solicitudStore,
     newId: deps.newId,
@@ -346,10 +280,10 @@ async function ejecutarResolverSolicitud(
   if (solicitudId === undefined) {
     const resultado = resolverSolicitudInterna({ accion, confirmado: false, sesion: input.sesion }, resolverDeps);
     if (resultado.resultado !== "listado") {
-      return "No se pudo listar las solicitudes.";
+      return textos.sinId;
     }
     if (resultado.items.length === 0) {
-      return "No hay solicitudes para listar.";
+      return textos.listadoVacio;
     }
     return resultado.items.map((item) => `- ${item.id} (${item.tipo}): ${item.detalle}`).join("\n");
   }
@@ -363,11 +297,11 @@ async function ejecutarResolverSolicitud(
       resolverDeps,
     );
 
-    if (resultado.resultado === "no_aplicable") {
-      return `No hay ninguna solicitud ${solicitudId} pendiente de resolución.`;
+    if (resultado.resultado === "no_aplicable" || resultado.resultado === "no_es_dueno") {
+      return textos.noAplicable(solicitudId);
     }
     if (resultado.resultado !== "requiere_confirmacion") {
-      return "No se pudo procesar esa resolución.";
+      return textos.noProcesable;
     }
 
     input.confirmacion.marcarPendiente({
@@ -376,7 +310,7 @@ async function ejecutarResolverSolicitud(
       empleadoId: input.sesion.empleadoId,
       origenCasoId: input.casoIdActual,
     });
-    return `Vas a ${accion} la solicitud ${solicitudId} (${resultado.item.detalle}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución.`;
+    return textos.confirmacionPendiente(solicitudId, resultado.item.detalle);
   }
 
   // Coincide: se CONSUME antes de ejecutar (ADR 36, mismo orden que la TUI).
@@ -414,9 +348,6 @@ async function ejecutarResolverSolicitud(
     return `No podés ${accion} tu propia solicitud, aunque tengas rol elevado.`;
   }
 
-  // Camino CAS-perdido (mismo criterio que `ejecutarCancelarSolicitud`): el
-  // camino feliz de arriba ya viajó dentro de la transacción del store,
-  // auditarlo de nuevo lo DUPLICARÍA.
   if (resultado.resultado === "no_aplicable" && resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
     registrar(
       { comando: COMANDO_POR_ACCION_SOLICITUD[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_APLICABLE },
@@ -425,7 +356,47 @@ async function ejecutarResolverSolicitud(
       deps,
     );
   }
-  return "No se pudo completar la resolución: puede que ya no esté pendiente.";
+  return textos.noCompletada;
+}
+
+/** Wrapper de `ejecutarAccionSolicitud` para `cancelar_solicitud_interna` (ADR 166) — textos propios de la acción autoservicio. */
+async function ejecutarCancelarSolicitud(
+  solicitudId: string | undefined,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  return ejecutarAccionSolicitud(ACCION_CANCELAR_SOLICITUD, solicitudId, input, deps, {
+    sinId: "No se pudo listar tus solicitudes pendientes.",
+    listadoVacio: "No tenés solicitudes pendientes para cancelar.",
+    noAplicable: (id) => `No hay ninguna solicitud ${id} tuya pendiente de cancelación.`,
+    noProcesable: "No se pudo procesar esa cancelación.",
+    confirmacionPendiente: (id, detalle) =>
+      `Vas a cancelar la solicitud ${id} (${detalle}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la cancelación.`,
+    noCompletada: "No se pudo completar la cancelación: puede que ya no esté pendiente.",
+  });
+}
+
+/**
+ * Wrapper de `ejecutarAccionSolicitud` para `resolver_solicitud` (ADR
+ * 206-207, tarea 9) — textos propios de `aprobar`/`rechazar`. Texto de
+ * autoaprobación reusado literal del vigente de la TUI
+ * (`build-on-comando-empleado.ts:1336`, ADR 216 pto 5).
+ */
+async function ejecutarResolverSolicitud(
+  operacion: OperacionResolverSolicitud,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  const { accion, solicitudId } = operacion;
+  return ejecutarAccionSolicitud(accion, solicitudId, input, deps, {
+    sinId: "No se pudo listar las solicitudes.",
+    listadoVacio: "No hay solicitudes para listar.",
+    noAplicable: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
+    noProcesable: "No se pudo procesar esa resolución.",
+    confirmacionPendiente: (id, detalle) =>
+      `Vas a ${accion} la solicitud ${id} (${detalle}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución.`,
+    noCompletada: "No se pudo completar la resolución: puede que ya no esté pendiente.",
+  });
 }
 
 /**
