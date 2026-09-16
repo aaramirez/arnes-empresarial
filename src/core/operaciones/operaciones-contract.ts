@@ -115,30 +115,52 @@ export type OperacionNegocio =
   | OperacionConsultarReporteComisiones;
 
 /**
- * Puerto de confirmación humana para `cancelar_solicitud_interna` (ADR 166).
- * El schema de la tool NUNCA tiene un campo `confirmado` — es inexpresable
- * por el modelo, en cualquier operación (mismo criterio "inexpresable, no
- * testeado" que `definicion-skills` ADR 108 y `autorizacion-empleado` ADR
- * 159). `confirmado` lo decide EXCLUSIVAMENTE el composition root, comparando
- * contra el estado de este puerto.
+ * Puerto de confirmación humana para las operaciones de dos pasos del canal
+ * conversacional (ADR 166, generalizado a multi-slot por `aprobacion-
+ * conversacional-hitl`, ADR 209/212/213). El schema de la tool NUNCA tiene un
+ * campo `confirmado` — es inexpresable por el modelo, en cualquier operación
+ * (mismo criterio "inexpresable, no testeado" que `definicion-skills` ADR
+ * 108 y `autorizacion-empleado` ADR 159). `confirmado` lo decide
+ * EXCLUSIVAMENTE el composition root, comparando contra el estado de este
+ * puerto.
  *
- * Decisión de secuencia del checkpoint humano (ver doc-comment de módulo, no
- * un hallazgo de este archivo): la interfaz vive acá en Unit 1; su
- * implementación real por-empleado (`confirmacion-operaciones-store.ts`,
- * ADR 173 pto 4) llega en Unit 3 (tarea 8), y el wiring inline sobre la
- * ranura de la TUI descrito por el ADR 167 §6 pt 3 quedó SUPERSEDIDO por el
- * ADR 172/173 — `build-on-comando-empleado.ts` nunca construye esta
- * implementación. Ninguno de los dos existe todavía en esta Unit 1;
- * `ejecutar-operacion.ts` (tarea 3, esta misma Unit) sólo conoce el TIPO.
+ * ★ `LlaveConfirmacion` generaliza la ranura única de `cancelar_solicitud_
+ * interna` (ADR 166) para que `resolver_reembolso` y `resolver_solicitud`
+ * convivan sin pisarse: `dominio` + `itemId` son la LLAVE (ADR 212), `accion`
+ * es PREDICADO (ADR 213) — un pedido posterior con `accion` distinta sobre
+ * el mismo `dominio`/`itemId` NO coincide con la ranura pendiente: se trata
+ * como una intención nueva que reemplaza a la anterior, nunca ejecuta la
+ * acción vieja ni la nueva sin confirmar (hallazgo de seguridad de esta
+ * fase). El invariante `origenCasoId !== casoIdActual` (ADR 166 pto 3) se
+ * conserva SIN relajarse.
+ *
+ * Implementación concreta por-empleado en
+ * `adapters/web/confirmacion-operaciones-store.ts` (`aprobacion-
+ * conversacional-hitl`, tarea 2, misma Unit) — la interfaz vive acá por
+ * convención hexagonal, es un tipo puro sin comportamiento.
  */
+export const DOMINIO_REEMBOLSO = "reembolso";
+export const DOMINIO_SOLICITUD = "solicitud";
+/** Vocabulario REUSADO de la ranura única de la TUI (`build-on-comando-empleado.ts:272-299`, ADR 55). */
+export type DominioConfirmacion = typeof DOMINIO_REEMBOLSO | typeof DOMINIO_SOLICITUD;
+export type AccionConfirmable = "aprobar" | "rechazar" | "reabrir" | "cancelar";
+
+/** Identifica UNA ranura. `dominio` + `itemId` son la LLAVE (ADR 212); `accion` es PREDICADO (ADR 213). */
+export interface LlaveConfirmacion {
+  readonly dominio: DominioConfirmacion;
+  /** ★ `itemId`, no `solicitudId` — ahora también transporta un `ventaId` (ADR 209 pto 3). */
+  readonly itemId: string;
+  readonly accion: AccionConfirmable;
+}
+
 export interface ConfirmacionOperacionPort {
-  /** `true` si hay una cancelación pendiente que ESTE turno puede confirmar (`origenCasoId !== casoIdActual`, ADR 166 pto 3). */
-  estaConfirmada(solicitudId: string, empleadoId: string, casoIdActual: string): boolean;
-  marcarPendiente(input: {
-    readonly solicitudId: string;
+  /** `true` si hay una pendiente de ESTA llave Y ESTA acción que este turno puede confirmar (`origenCasoId !== casoIdActual`, ADR 166 pto 3 — predicado INTACTO). */
+  estaConfirmada(llave: LlaveConfirmacion, empleadoId: string, casoIdActual: string): boolean;
+  marcarPendiente(input: LlaveConfirmacion & {
     readonly casoId: string;
     readonly empleadoId: string;
     readonly origenCasoId: string;
   }): void;
-  consumir(): void;
+  /** Consume UNA ranura. ★ Nunca "todas las del empleado" — eso es `limpiarEmpleado`, y vive en el adaptador (ADR 214 pto 4). */
+  consumir(llave: LlaveConfirmacion): void;
 }
