@@ -24,7 +24,11 @@ import { openDatabase } from "./adapters/memory/db.js";
 import { getCasoById } from "./adapters/memory/repository.js";
 import type { MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
-import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
+import type {
+  AccionConfirmable,
+  ConfirmacionOperacionPort,
+  DominioConfirmacion,
+} from "./core/operaciones/operaciones-contract.js";
 import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import type { SesionEmpleado } from "./core/auth/sesion.js";
 import { createSolicitudStore } from "./build-on-comando-empleado.js";
@@ -75,16 +79,30 @@ function fakeConfirmacion(): ConfirmacionOperacionPort {
  * `origenCasoId !== casoIdActual` (ADR 166 pto 3), no un `vi.fn()` fijo.
  * Necesario para el punto obligatorio 1 (tarea 3): probar que el invariante
  * de autoconfirmación sigue vivo con la memoria conversacional activa.
+ *
+ * `aprobacion-conversacional-hitl`, tarea 1/2: migrado a `LlaveConfirmacion`
+ * (`dominio` + `itemId` + `accion`) — este archivo sólo ejercita
+ * `cancelar_solicitud_interna`, así que la llave real es siempre
+ * `{ dominio: DOMINIO_SOLICITUD, itemId: solicitudId, accion: "cancelar" }`.
  */
 function realBehaviorConfirmacion(): ConfirmacionOperacionPort {
   let pendiente:
-    | { solicitudId: string; empleadoId: string; casoId: string; origenCasoId: string }
+    | {
+        dominio: DominioConfirmacion;
+        itemId: string;
+        accion: AccionConfirmable;
+        empleadoId: string;
+        casoId: string;
+        origenCasoId: string;
+      }
     | undefined;
 
   return {
-    estaConfirmada: (solicitudId, empleadoId, casoIdActual) =>
+    estaConfirmada: (llave, empleadoId, casoIdActual) =>
       pendiente !== undefined &&
-      pendiente.solicitudId === solicitudId &&
+      pendiente.dominio === llave.dominio &&
+      pendiente.itemId === llave.itemId &&
+      pendiente.accion === llave.accion &&
       pendiente.empleadoId === empleadoId &&
       pendiente.origenCasoId !== casoIdActual,
     marcarPendiente: (input) => {

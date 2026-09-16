@@ -14,6 +14,7 @@
  * (regla no negociable de `AGENTS.md`).
  */
 import {
+  DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_CREAR_SOLICITUD_INTERNA,
@@ -21,6 +22,7 @@ import {
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   type ConfirmacionOperacionPort,
+  type LlaveConfirmacion,
   type OperacionNegocio,
   type OperacionRegistrarVenta,
 } from "./operaciones-contract.js";
@@ -250,7 +252,8 @@ async function ejecutarCancelarSolicitud(
     return resultado.items.map((item) => `- ${item.id} (${item.tipo}): ${item.detalle}`).join("\n");
   }
 
-  const yaConfirmada = input.confirmacion.estaConfirmada(solicitudId, input.sesion.empleadoId, input.casoIdActual);
+  const llave: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: solicitudId, accion: "cancelar" };
+  const yaConfirmada = input.confirmacion.estaConfirmada(llave, input.sesion.empleadoId, input.casoIdActual);
 
   if (!yaConfirmada) {
     const resultado = resolverSolicitudInterna(
@@ -266,7 +269,7 @@ async function ejecutarCancelarSolicitud(
     }
 
     input.confirmacion.marcarPendiente({
-      solicitudId,
+      ...llave,
       casoId: resultado.item.casoId,
       empleadoId: input.sesion.empleadoId,
       origenCasoId: input.casoIdActual,
@@ -275,7 +278,7 @@ async function ejecutarCancelarSolicitud(
   }
 
   // Coincide: se CONSUME antes de ejecutar (ADR 36, mismo orden que la TUI).
-  input.confirmacion.consumir();
+  input.confirmacion.consumir(llave);
   const resultado = resolverSolicitudInterna(
     { accion: ACCION_CANCELAR_SOLICITUD, solicitudId, confirmado: true, sesion: input.sesion },
     resolverDeps,
