@@ -156,11 +156,7 @@ import {
   type SolicitudStorePort,
   type SolicitudTipo,
 } from "./core/solicitudes/solicitudes-contract.js";
-import {
-  ACCION_CANCELAR_SOLICITUD,
-  resolverSolicitudInterna,
-  type AccionSolicitud,
-} from "./core/solicitudes/resolver-solicitud-interna.js";
+import { type AccionSolicitud } from "./core/solicitudes/resolver-solicitud-interna.js";
 import {
   LINEAS_PAGINA_PATCH,
   PROPUESTA_ESTADO_APLICADA,
