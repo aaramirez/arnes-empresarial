@@ -175,18 +175,18 @@ describe("construirAgenteEmpleadoOperaciones (operaciones-negocio-conversacional
 describe("construirAgenteEmpleadoOperaciones — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
   /** Texto literal de ADR 220 pto 2 — compartido, sin refactor, por las tres superficies de prompt. */
   const TEXTO_ACCION_INEQUIVOCA =
-    "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción (`aprobar`, `rechazar` o `reabrir`) " +
-    "tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo " +
+    "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un reembolso (`aprobar`, `rechazar` o " +
+    "`reabrir`), la acción tiene que salir de una frase inequívoca del empleado. " +
+    "Si dice algo ambiguo " +
     "—'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá " +
     "cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la " +
     "acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca " +
     "más razonable.";
 
-  it("el systemPrompt incluye el texto exacto de ADR 220 pto 2, incluido 'ni del dictamen'", () => {
+  it("el systemPrompt incluye el texto exacto de ADR 220 pto 2, con 'reabrir' scoped solo a reembolso", () => {
     const agente = construirAgenteEmpleadoOperaciones();
 
     expect(agente.systemPrompt).toContain(TEXTO_ACCION_INEQUIVOCA);
-    expect(agente.systemPrompt).toContain("ni del dictamen");
   });
 
   it("suma la enumeración de resolver escalaciones de reembolso y solicitudes internas", () => {

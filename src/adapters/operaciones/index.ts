@@ -115,9 +115,9 @@ export const OPERACIONES_TOOL_DESCRIPTION =
   "resolver (aprobar/rechazar/reabrir) una escalación de reembolso ajena, " +
   "o consultar el reporte de comisiones de un período. Nunca calculás " +
   "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. " +
-  "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción " +
-  "(`aprobar`, `rechazar` o `reabrir`) tiene que salir de una frase inequívoca del " +
-  "empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
+  "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un " +
+  "reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una " +
+  "frase inequívoca del empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
   "'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca " +
   "elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que " +
   "parezca más razonable. Si la respuesta pide confirmación, comunicásela al " +

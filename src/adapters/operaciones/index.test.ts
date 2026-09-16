@@ -38,15 +38,26 @@ function fakeConfirmacion(): ConfirmacionOperacionPort {
   };
 }
 
-async function invokeOperacionesTool(
+/**
+ * Único punto de casteo/lookup de `_registeredTools` (undocumented internal del
+ * SDK instalado, ver comentario de archivo arriba). `invokeOperacionesTool` y el
+ * test de `OPERACIONES_TOOL_DESCRIPTION` reusan este helper en vez de duplicar el
+ * cast (aprobacion-conversacional-hitl, hallazgos-review-unit5).
+ */
+function getRegisteredOperacionesTool(
   adapter: ReturnType<typeof createOperacionesAdapter>,
-  args: Readonly<Record<string, unknown>>,
-): Promise<{ readonly content: readonly [{ readonly type: "text"; readonly text: string }] }> {
+): {
+  readonly handler: (args: unknown, extra: unknown) => Promise<unknown>;
+  readonly description?: string;
+} {
   const server = adapter.mcpServers[OPERACIONES_MCP_SERVER_NAME] as unknown as {
     readonly instance: {
       readonly _registeredTools: Record<
         string,
-        { readonly handler: (args: unknown, extra: unknown) => Promise<unknown> }
+        {
+          readonly handler: (args: unknown, extra: unknown) => Promise<unknown>;
+          readonly description?: string;
+        }
       >;
     };
   };
@@ -54,6 +65,14 @@ async function invokeOperacionesTool(
   if (registeredTool === undefined) {
     throw new Error(`test setup error: tool "${OPERACIONES_TOOL_NAME}" was not registered`);
   }
+  return registeredTool;
+}
+
+async function invokeOperacionesTool(
+  adapter: ReturnType<typeof createOperacionesAdapter>,
+  args: Readonly<Record<string, unknown>>,
+): Promise<{ readonly content: readonly [{ readonly type: "text"; readonly text: string }] }> {
+  const registeredTool = getRegisteredOperacionesTool(adapter);
   return (await registeredTool.handler(args, {})) as {
     readonly content: readonly [{ readonly type: "text"; readonly text: string }];
   };
@@ -298,25 +317,27 @@ describe("createOperacionesAdapter — nunca lanza", () => {
 describe("OPERACIONES_TOOL_DESCRIPTION — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
   /** Texto literal de ADR 220 pto 2 — el mismo, duplicado a propósito, en las tres superficies de prompt. */
   const TEXTO_ACCION_INEQUIVOCA =
-    "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción " +
-    "(`aprobar`, `rechazar` o `reabrir`) tiene que salir de una frase inequívoca del " +
-    "empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
+    "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un " +
+    "reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una " +
+    "frase inequívoca del empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
     "'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca " +
     "elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que " +
     "parezca más razonable.";
 
-  it("incluye el texto exacto de ADR 220 pto 2, incluido 'ni del dictamen'", () => {
+  it("incluye el texto exacto de ADR 220 pto 2, con 'reabrir' scoped solo a reembolso", () => {
     expect(OPERACIONES_TOOL_DESCRIPTION).toContain(TEXTO_ACCION_INEQUIVOCA);
-    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("ni del dictamen");
+  });
+
+  it("regresión: la frase de confirmación original NO cambió ni una letra", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
+      "Si la respuesta pide confirmación, comunicásela al empleado tal cual y esperá que te lo vuelva a pedir en un mensaje nuevo antes de invocar la misma operación otra vez.",
+    );
   });
 
   it("es la misma descripción registrada en la tool real del servidor MCP", () => {
     const adapter = createOperacionesAdapter(makeDeps());
-    const server = adapter.mcpServers[OPERACIONES_MCP_SERVER_NAME] as unknown as {
-      readonly instance: { readonly _registeredTools: Record<string, { readonly description?: string }> };
-    };
-    const registeredTool = server.instance._registeredTools[OPERACIONES_TOOL_NAME];
+    const registeredTool = getRegisteredOperacionesTool(adapter);
 
-    expect(registeredTool?.description).toBe(OPERACIONES_TOOL_DESCRIPTION);
+    expect(registeredTool.description).toBe(OPERACIONES_TOOL_DESCRIPTION);
   });
 });

@@ -211,9 +211,10 @@ const INSTRUCCION_OPERACIONES_EMPLEADO =
   "cliente, consultas del reporte de comisiones que te pida el empleado, y " +
   "resolver escalaciones de reembolso y solicitudes internas que te toque " +
   "validar. Nunca calculás ni proponés un monto, porcentaje o veredicto vos " +
-  "mismo — eso lo hace la herramienta. Cuando el empleado te pida resolver un " +
-  "reembolso o una solicitud, la acción (`aprobar`, `rechazar` o `reabrir`) " +
-  "tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo " +
+  "mismo — eso lo hace la herramienta. Cuando el empleado te pida resolver una " +
+  "solicitud (`aprobar` o `rechazar`) o un reembolso (`aprobar`, `rechazar` o " +
+  "`reabrir`), la acción tiene que salir de una frase inequívoca del empleado. " +
+  "Si dice algo ambiguo " +
   "—'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá " +
   "cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la " +
   "acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca " +
