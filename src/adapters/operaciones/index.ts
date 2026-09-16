@@ -124,7 +124,7 @@ export function createOperacionesAdapter(deps: OperacionesAdapterDeps): Operacio
           // `operaciones-contract.ts` (whitelist "sin imports", tarea 2) así
           // que no puede devolver el tipo de la unión discriminada — pero YA
           // garantizó, campo por campo, que `validado` tiene exactamente la
-          // forma de una de las seis variantes de `OperacionNegocio`.
+          // forma de una de las siete variantes de `OperacionNegocio`.
           const operacion = validado as unknown as OperacionNegocio;
           const texto = await deps.ejecutar({
             operacion,
