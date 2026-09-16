@@ -979,6 +979,45 @@ describe("ejecutarOperacion — auditoría en registro_acciones_empleado (Enmien
     });
   });
 
+  it("resolver_solicitud: solicitudId inexistente ⇒ CERO llamadas a registrarAccion, mensaje propio (hallazgo Reviewer 1, molde cancelar_solicitud_interna)", async () => {
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => false) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar", solicitudId: "sol-inexistente" }, { confirmacion }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto).toBe("No hay ninguna solicitud sol-inexistente pendiente de resolución.");
+  });
+
+  it("resolver_solicitud: camino CAS perdido ⇒ UNA llamada con COMANDO_APROBAR_SOLICITUD/RESULTADO_NO_APLICABLE (hallazgo Reviewer 1, molde cancelar_solicitud_interna)", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1", solicitanteId: "otro-empleado" });
+    const solicitudStore = makeSolicitudStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      aprobarSolicitud: vi.fn(() => undefined),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar", solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_APROBAR_SOLICITUD,
+      resultado: RESULTADO_NO_APLICABLE,
+      casoId: "caso-solicitud-1",
+      empleadoId: SESION.empleadoId,
+    });
+  });
+
   it("registrarAccion que LANZA: el texto de negocio es idéntico al del camino feliz y se emite accion-empleado-registro-fallido, no el catch global", async () => {
     const venta = buildVenta({ estado: VENTA_ESTADO_CONFIRMADA, monto: 100 });
     const store = makeVentaStore({
