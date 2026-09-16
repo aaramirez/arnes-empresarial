@@ -144,6 +144,18 @@ describe("crearConversacionEmpleadoStore — serialización por ticket (hallazgo
   });
 });
 
+describe("crearConversacionEmpleadoStore — eliminar invalida un puerto emitido en vuelo (hallazgo Reviewer 2da ronda #3)", () => {
+  it("un registrarTurno tardío sobre un puerto emitido ANTES de eliminar no revive la entrada ni lanza", () => {
+    const store = crearConversacionEmpleadoStore();
+    const puertoViejo = store.paraSesion("token-1");
+
+    store.eliminar("token-1");
+
+    expect(() => puertoViejo.registrarTurno("caso-tardio")).not.toThrow();
+    expect(store.paraSesion("token-1").casoAnterior()).toBeUndefined();
+  });
+});
+
 describe("crearConversacionEmpleadoStore — aislamiento entre tokens (punto obligatorio 2)", () => {
   it("dos tokens distintos nunca comparten casoAnterior(), ni con registrarTurno intercalados", () => {
     const store = crearConversacionEmpleadoStore();

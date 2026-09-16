@@ -38,8 +38,23 @@ interface ConversacionEntry {
    * corriendo en el fondo, `server.ts:514`) que termina DESPUÉS de que un
    * reintento del usuario ya avanzó la memoria -- sin esto, el turno viejo
    * pisaría silenciosamente el más nuevo.
+   *
+   * Hallazgo Reviewer 2da ronda #3: este mecanismo cubre AHORA dos casos --
+   * el de arriba (turno tardío tras un `paraSesion` más nuevo SOBRE EL MISMO
+   * token, ya vigente antes de este hallazgo) Y un turno tardío tras un
+   * `eliminar(token)` (nuevo, ver `invalidada`).
    */
   ticketEmitido: number;
+  /**
+   * Hallazgo Reviewer 2da ronda #3: `eliminar` la pone en `true` antes de
+   * borrar la entrada del `Map`. `registrarTurno` la chequea junto con el
+   * ticket -- si está `true`, no-op, igual que un ticket vencido. Hoy es
+   * inocuo aun sin este flag (el objeto queda inalcanzable tras `delete`,
+   * un `paraSesion` posterior crea una entrada nueva sin relación), pero no
+   * estaba documentado ni testeado como invariante -- este flag lo hace
+   * explícito y a prueba de un futuro refactor que comparta la referencia.
+   */
+  invalidada: boolean;
 }
 
 export interface ConversacionEmpleadoStore {
@@ -64,6 +79,7 @@ export function crearConversacionEmpleadoStore(deps?: {
       turnos: 0,
       ultimaActividad: now(),
       ticketEmitido: 0,
+      invalidada: false,
     };
   }
 
@@ -87,9 +103,10 @@ export function crearConversacionEmpleadoStore(deps?: {
         casoAnterior: () => entryRef.ultimoCasoId,
         registrarTurno: (casoId: string) => {
           // Ticket superado por un `paraSesion` más reciente sobre el MISMO
-          // token -- no-op silencioso e intencional (turno viejo, ya
-          // superado; hallazgo Reviewer #3).
-          if (ticket !== entryRef.ticketEmitido) {
+          // token, O entrada invalidada por un `eliminar` posterior -- en
+          // ambos casos no-op silencioso e intencional (turno viejo, ya
+          // superado; hallazgo Reviewer #3 y hallazgo Reviewer 2da ronda #3).
+          if (ticket !== entryRef.ticketEmitido || entryRef.invalidada) {
             return;
           }
           entryRef.ultimoCasoId = casoId;
@@ -100,6 +117,10 @@ export function crearConversacionEmpleadoStore(deps?: {
       };
     },
     eliminar(token: string): void {
+      const entry = conversaciones.get(token);
+      if (entry !== undefined) {
+        entry.invalidada = true;
+      }
       conversaciones.delete(token);
     },
   };
