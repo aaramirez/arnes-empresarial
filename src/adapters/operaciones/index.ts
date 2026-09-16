@@ -97,16 +97,32 @@ const OPERACIONES_TOOL_SCHEMA = {
 /** Exportado para test directo del schema zod (aprobacion-conversacional-hitl, tarea 8) — la forma en el borde MCP, sin pasar por el handler. */
 export const OPERACIONES_TOOL_ZOD_SCHEMA = z.object(OPERACIONES_TOOL_SCHEMA);
 
-const OPERACIONES_TOOL_DESCRIPTION =
+/**
+ * Exportado para test directo del contenido del prompt (aprobacion-conversacional-hitl,
+ * tarea 15, molde `OPERACIONES_TOOL_ZOD_SCHEMA` de la tarea 8) — mismo criterio de
+ * exportar constantes de sólo-lectura para verificación de contenido sin pasar por
+ * el registro MCP.
+ *
+ * `aprobacion-conversacional-hitl`, tarea 15 (ADR 220 pto 1-3): suma la frase sobre
+ * `accion` inequívoca, texto literal compartido con `INSTRUCCION_OPERACIONES_EMPLEADO`
+ * (`definitions.ts`) y `buildOperacionesEmpleadoPrompt` (`soporte-prompt.ts`).
+ */
+export const OPERACIONES_TOOL_DESCRIPTION =
   "Ejecutá una operación de negocio en nombre del empleado autenticado de este turno: " +
   "resolver una decisión de venta ya tomada por el cliente, procesar una devolución, " +
   "crear o cancelar una solicitud interna propia, registrar una venta nueva ya pactada " +
   "con el cliente, resolver (aprobar/rechazar) una solicitud interna ajena escalada, " +
   "resolver (aprobar/rechazar/reabrir) una escalación de reembolso ajena, " +
   "o consultar el reporte de comisiones de un período. Nunca calculás " +
-  "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. Si " +
-  "la respuesta pide confirmación, comunicásela al empleado tal cual y esperá que te lo " +
-  "vuelva a pedir en un mensaje nuevo antes de invocar la misma operación otra vez.";
+  "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. " +
+  "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción " +
+  "(`aprobar`, `rechazar` o `reabrir`) tiene que salir de una frase inequívoca del " +
+  "empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
+  "'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca " +
+  "elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que " +
+  "parezca más razonable. Si la respuesta pide confirmación, comunicásela al " +
+  "empleado tal cual y esperá que te lo vuelva a pedir en un mensaje nuevo antes " +
+  "de invocar la misma operación otra vez.";
 
 /**
  * Builds an `OperacionesAdapter`: an in-process MCP server exposing the

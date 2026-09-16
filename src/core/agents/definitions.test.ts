@@ -172,6 +172,40 @@ describe("construirAgenteEmpleadoOperaciones (operaciones-negocio-conversacional
   });
 });
 
+describe("construirAgenteEmpleadoOperaciones — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
+  /** Texto literal de ADR 220 pto 2 — compartido, sin refactor, por las tres superficies de prompt. */
+  const TEXTO_ACCION_INEQUIVOCA =
+    "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción (`aprobar`, `rechazar` o `reabrir`) " +
+    "tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo " +
+    "—'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá " +
+    "cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la " +
+    "acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca " +
+    "más razonable.";
+
+  it("el systemPrompt incluye el texto exacto de ADR 220 pto 2, incluido 'ni del dictamen'", () => {
+    const agente = construirAgenteEmpleadoOperaciones();
+
+    expect(agente.systemPrompt).toContain(TEXTO_ACCION_INEQUIVOCA);
+    expect(agente.systemPrompt).toContain("ni del dictamen");
+  });
+
+  it("suma la enumeración de resolver escalaciones de reembolso y solicitudes internas", () => {
+    const agente = construirAgenteEmpleadoOperaciones();
+
+    expect(agente.systemPrompt).toContain(
+      "resolver escalaciones de reembolso y solicitudes internas que te toque validar",
+    );
+  });
+
+  it("regresión: la frase de confirmación original NO cambió ni una letra", () => {
+    const agente = construirAgenteEmpleadoOperaciones();
+
+    expect(agente.systemPrompt).toContain(
+      'Si la herramienta te devuelve un pedido de confirmación, comunicáselo tal cual al empleado y esperá su respuesta explícita en un mensaje siguiente antes de volver a invocar la misma operación: nunca decidas vos que "ya quedó confirmado".',
+    );
+  });
+});
+
 describe("SUBAGENT_REGISTRY (Hito 5, tarea 5, ADR 44/51/52)", () => {
   const SUBAGENT_IDS = [
     PLANNER_AGENT_ID,

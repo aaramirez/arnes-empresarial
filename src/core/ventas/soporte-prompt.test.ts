@@ -163,6 +163,30 @@ describe("buildOperacionesEmpleadoPrompt — incluye la consulta del empleado", 
   });
 });
 
+describe("buildOperacionesEmpleadoPrompt — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
+  /** Texto literal de ADR 220 pto 2 — el mismo, duplicado a propósito, en las tres superficies de prompt. */
+  const TEXTO_ACCION_INEQUIVOCA =
+    "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción (`aprobar`, `rechazar` o `reabrir`) " +
+    "tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo " +
+    "—'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá " +
+    "cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la " +
+    "acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca " +
+    "más razonable.";
+
+  it("incluye el texto exacto de ADR 220 pto 2, incluido 'ni del dictamen'", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Resolvé la solicitud S1");
+
+    expect(prompt).toContain(TEXTO_ACCION_INEQUIVOCA);
+    expect(prompt).toContain("ni del dictamen");
+  });
+
+  it("suma la mención de resolver escalaciones de reembolso y solicitudes internas", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Resolvé la solicitud S1");
+
+    expect(prompt.toLowerCase()).toContain("escalaciones de reembolso y solicitudes internas");
+  });
+});
+
 describe("buildSoportePrompt — byte-idéntica tras agregar buildOperacionesEmpleadoPrompt (ADR 168 pto 1, regresión)", () => {
   it("sigue incluyendo la limitación de cliente sin cambios", () => {
     const prompt = buildSoportePrompt("¿Me pueden cancelar la compra?");

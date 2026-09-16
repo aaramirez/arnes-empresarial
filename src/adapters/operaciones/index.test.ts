@@ -10,7 +10,12 @@ import {
 } from "../../core/operaciones/operaciones-contract.js";
 import type { EjecutarOperacionInput } from "../../core/operaciones/ejecutar-operacion.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
-import { createOperacionesAdapter, OPERACIONES_TOOL_ZOD_SCHEMA, type OperacionesAdapterDeps } from "./index.js";
+import {
+  createOperacionesAdapter,
+  OPERACIONES_TOOL_DESCRIPTION,
+  OPERACIONES_TOOL_ZOD_SCHEMA,
+  type OperacionesAdapterDeps,
+} from "./index.js";
 
 /**
  * Tests for `createOperacionesAdapter` (`operaciones-negocio-conversacionales`,
@@ -287,5 +292,31 @@ describe("createOperacionesAdapter — nunca lanza", () => {
 
     const result = await invokeOperacionesTool(adapter, { operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA });
     expect(result.content[0].text.length).toBeGreaterThan(0);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
+  /** Texto literal de ADR 220 pto 2 — el mismo, duplicado a propósito, en las tres superficies de prompt. */
+  const TEXTO_ACCION_INEQUIVOCA =
+    "Cuando el empleado te pida resolver un reembolso o una solicitud, la acción " +
+    "(`aprobar`, `rechazar` o `reabrir`) tiene que salir de una frase inequívoca del " +
+    "empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
+    "'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca " +
+    "elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que " +
+    "parezca más razonable.";
+
+  it("incluye el texto exacto de ADR 220 pto 2, incluido 'ni del dictamen'", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(TEXTO_ACCION_INEQUIVOCA);
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("ni del dictamen");
+  });
+
+  it("es la misma descripción registrada en la tool real del servidor MCP", () => {
+    const adapter = createOperacionesAdapter(makeDeps());
+    const server = adapter.mcpServers[OPERACIONES_MCP_SERVER_NAME] as unknown as {
+      readonly instance: { readonly _registeredTools: Record<string, { readonly description?: string }> };
+    };
+    const registeredTool = server.instance._registeredTools[OPERACIONES_TOOL_NAME];
+
+    expect(registeredTool?.description).toBe(OPERACIONES_TOOL_DESCRIPTION);
   });
 });

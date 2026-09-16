@@ -93,18 +93,23 @@ export function buildSoportePrompt(consulta: string): string {
  *
  * `buildSoportePrompt` (la de cliente) NO se edita — ver arriba, byte a
  * byte igual que antes de esta función.
+ *
+ * `aprobacion-conversacional-hitl`, tarea 15 (ADR 220 pto 1-2): suma, DUPLICADA
+ * a propósito de `definitions.ts` (sin refactor a constante compartida — mismo
+ * criterio "sin imports" de este módulo), la mención de resolver escalaciones
+ * de reembolso/solicitud y la instrucción sobre `accion` inequívoca.
  */
 export function buildOperacionesEmpleadoPrompt(consulta: string): string {
   const secciones: string[] = [];
 
   secciones.push(
-    "Sos el agente conversacional de este producto, en un turno de empleado autenticado con acceso a la herramienta de operaciones de negocio. Tu trabajo es resolver la consulta del empleado descripta abajo de la forma más útil posible.",
+    "Sos el agente conversacional de este producto, en un turno de empleado autenticado con acceso a la herramienta de operaciones de negocio. Tu trabajo es resolver la consulta del empleado descripta abajo de la forma más útil posible, incluida la resolución de escalaciones de reembolso y solicitudes internas que le toque validar.",
   );
 
   secciones.push(`Consulta del empleado:\n${truncarTexto(consulta, MAX_SOPORTE_CONSULTA_CHARS)}`);
 
   secciones.push(
-    "Nunca calculás ni proponés vos un monto, porcentaje o veredicto — eso lo hace siempre la herramienta de operaciones. Si la herramienta te devuelve un pedido de confirmación, comunicáselo al empleado tal cual y esperá su respuesta explícita en un mensaje nuevo antes de volver a invocar la misma operación: nunca decidas vos que ya quedó confirmado.",
+    "Nunca calculás ni proponés vos un monto, porcentaje o veredicto — eso lo hace siempre la herramienta de operaciones. Cuando el empleado te pida resolver un reembolso o una solicitud, la acción (`aprobar`, `rechazar` o `reabrir`) tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca más razonable. Si la herramienta te devuelve un pedido de confirmación, comunicáselo al empleado tal cual y esperá su respuesta explícita en un mensaje nuevo antes de volver a invocar la misma operación: nunca decidas vos que ya quedó confirmado.",
   );
 
   return secciones.join("\n\n");
