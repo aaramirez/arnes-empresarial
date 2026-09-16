@@ -14,7 +14,9 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_SOLICITUD,
   type AccionConfirmable,
+  type AccionSolicitudModelo,
   type ConfirmacionOperacionPort,
   type DominioConfirmacion,
   type LlaveConfirmacion,
@@ -25,6 +27,7 @@ import {
   type OperacionProcesarDevolucion,
   type OperacionRegistrarVenta,
   type OperacionResolverDecisionVenta,
+  type OperacionResolverSolicitud,
 } from "./operaciones-contract.js";
 
 /**
@@ -40,7 +43,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera las seis operaciones del contrato (ADR 163/171/174)", () => {
+  it("OPERACIONES_NEGOCIO enumera las siete operaciones del contrato en este punto (ADR 163/171/174/206 — la octava llega con resolver_reembolso)", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -48,8 +51,9 @@ describe("operaciones-contract constants", () => {
       OPERACION_CANCELAR_SOLICITUD_INTERNA,
       OPERACION_REGISTRAR_VENTA,
       OPERACION_CONSULTAR_REPORTE_COMISIONES,
+      OPERACION_RESOLVER_SOLICITUD,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(6);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(7);
   });
 });
 
@@ -115,6 +119,23 @@ describe("OperacionNegocio — cada input mínimo tipa correctamente", () => {
     expect(generico.operacion).toBe("registrar_venta");
     // vendedorId NUNCA es campo del modelo (ADR 147 pto 1, ADR 171 pto 2) — sale de sesion.empleadoId por closure.
     expect("vendedorId" in op).toBe(false);
+  });
+
+  it("resolver_solicitud: accion + solicitudId opcional, sin campo confirmado (ADR 206)", () => {
+    const listado: OperacionResolverSolicitud = {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+    };
+    const conId: OperacionResolverSolicitud = {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "rechazar",
+      solicitudId: "sol-1",
+    };
+    const generico: OperacionNegocio = listado;
+    expect(generico.operacion).toBe("resolver_solicitud");
+    expect(conId.solicitudId).toBe("sol-1");
+    // `confirmado` NUNCA es campo de esta interfaz — lo decide el composition root (ADR 206, §0.1).
+    expect("confirmado" in listado).toBe(false);
   });
 
   it("consultar_reporte_comisiones: único campo opcional periodo, sin dinero ni identidad (ADR 174)", () => {
@@ -201,6 +222,22 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     void op;
   }
 
+  function _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado(): void {
+    const op: OperacionResolverSolicitud = {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1) — lo decide el composition root.
+      confirmado: true,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar(): void {
+    // @ts-expect-error — "cancelar" nunca es un AccionSolicitudModelo (ADR 217) — esa acción es de `cancelar_solicitud_interna`, no de `resolver_solicitud`.
+    const accionInvalida: AccionSolicitudModelo = "cancelar";
+    void accionInvalida;
+  }
+
   it("las funciones de arriba nunca se invocan — la garantía es tsc --noEmit, no runtime", () => {
     expect(typeof _chequeoDeTipos_resolverDecisionVentaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_procesarDevolucionNoAceptaPorcentaje).toBe("function");
@@ -208,6 +245,8 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     expect(typeof _chequeoDeTipos_cancelarSolicitudInternaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_consultarReporteComisionesNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_registrarVentaNoAceptaPeriodo).toBe("function");
+    expect(typeof _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado).toBe("function");
+    expect(typeof _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar).toBe("function");
   });
 });
 

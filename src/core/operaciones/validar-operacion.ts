@@ -33,6 +33,8 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   registrar_venta: ["operacion", "clienteId", "clienteEmail", "planAnterior", "planNuevo", "monto", "vendedorNombre"],
   // ★ ÚNICA operación cuya whitelist incluye `periodo` (ADR 174 pto 1).
   consultar_reporte_comisiones: ["operacion", "periodo"],
+  // `aprobacion-conversacional-hitl`, ADR 206/217 — solicitudId ausente = modo listado.
+  resolver_solicitud: ["operacion", "accion", "solicitudId"],
 };
 
 /** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
@@ -43,6 +45,7 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   cancelar_solicitud_interna: [],
   registrar_venta: ["clienteId", "clienteEmail", "planNuevo", "monto", "vendedorNombre"],
   consultar_reporte_comisiones: [],
+  resolver_solicitud: ["accion"],
 };
 
 /**
@@ -77,6 +80,25 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   cancelar_solicitud_interna: [],
   registrar_venta: ["monto"],
   consultar_reporte_comisiones: [],
+  resolver_solicitud: [],
+};
+
+/**
+ * Cuarta tabla (ADR 217 pto 2-3): campos cuyo VALOR, no sólo su tipo/presencia,
+ * está acotado a un conjunto cerrado — separa "acota forma" (zod, en el borde
+ * MCP) de "acota significado" (acá). Sólo dos filas hoy: `resolver_decision_
+ * venta.decision` (cierra la dependencia implícita de zod, aditivo, sin
+ * cambio de comportamiento observable) y `resolver_solicitud.accion`.
+ * ★ `"cancelar"` NUNCA entra en `resolver_solicitud.accion` — esa acción es
+ * exclusiva de `cancelar_solicitud_interna`, un `switch` exhaustivo distinto
+ * (ADR 217); incluirla acá permitiría que `resolver_solicitud
+ * {accion:"cancelar"}` pasara esta validación y llegara al dispatcher, que la
+ * rechazaría recién en un `switch` interno — falla cerrado por accidente, no
+ * por diseño.
+ */
+const VALORES_PERMITIDOS_POR_OPERACION: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  resolver_decision_venta: { decision: ["confirmar", "rechazar"] },
+  resolver_solicitud: { accion: ["aprobar", "rechazar"] },
 };
 
 /**
@@ -115,6 +137,7 @@ export function validarOperacion(
   }
 
   const camposNumericos = CAMPOS_NUMERICOS_POR_OPERACION[operacion] ?? [];
+  const valoresPermitidos = VALORES_PERMITIDOS_POR_OPERACION[operacion];
   const tieneValorInvalido = camposPermitidos.some((campo) => {
     if (campo === "operacion") {
       return false;
@@ -126,7 +149,14 @@ export function validarOperacion(
     if (camposNumericos.includes(campo)) {
       return typeof valor !== "number" || !Number.isFinite(valor) || valor <= 0;
     }
-    return typeof valor !== "string" || valor.length > MAX_STRING_LENGTH;
+    if (typeof valor !== "string" || valor.length > MAX_STRING_LENGTH) {
+      return true;
+    }
+    const listaPermitida = valoresPermitidos?.[campo];
+    if (listaPermitida !== undefined && !listaPermitida.includes(valor)) {
+      return true;
+    }
+    return false;
   });
   if (tieneValorInvalido) {
     return undefined;

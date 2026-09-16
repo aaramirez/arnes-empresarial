@@ -81,7 +81,6 @@ import {
 import {
   COMANDO_APLICAR_PROPUESTA,
   COMANDO_APROBAR_REEMBOLSO,
-  COMANDO_APROBAR_SOLICITUD,
   COMANDO_ASIGNAR_ROL,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_CONSULTAR_KPI,
@@ -91,13 +90,11 @@ import {
   COMANDO_LOGIN,
   COMANDO_REABRIR_REEMBOLSO,
   COMANDO_RECHAZAR_REEMBOLSO,
-  COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_REPORTE_COMISIONES,
   COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
-  RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_AUTODEGRADACION_PROHIBIDA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
@@ -159,13 +156,7 @@ import {
   type SolicitudStorePort,
   type SolicitudTipo,
 } from "./core/solicitudes/solicitudes-contract.js";
-import {
-  ACCION_APROBAR_SOLICITUD,
-  ACCION_CANCELAR_SOLICITUD,
-  ACCION_RECHAZAR_SOLICITUD,
-  resolverSolicitudInterna,
-  type AccionSolicitud,
-} from "./core/solicitudes/resolver-solicitud-interna.js";
+import { type AccionSolicitud } from "./core/solicitudes/resolver-solicitud-interna.js";
 import {
   LINEAS_PAGINA_PATCH,
   PROPUESTA_ESTADO_APLICADA,
@@ -748,36 +739,6 @@ export function formatearDetalleSolicitudA2A(vista: SolicitudA2AEntranteVistaEmp
 }
 
 /**
- * `comando` de `registro_acciones_empleado` para cada `AccionSolicitud`
- * (Hito 5, tarea 23) — análoga a `ACCION_ESCALACION_INFO`, pero más chica:
- * a diferencia de `aprobar`/`rechazar`/`reabrir` reembolso, acá NO hay
- * `estadoOrigen`/`estadoCaso` que branchear en este archivo — esa transición
- * la resuelve enteramente `resolverSolicitudTransaccional` del lado del
- * store (`repository.ts`, tarea 19); este dispatcher solo necesita saber a
- * qué `comando` corresponde cada acción para la escritura FUERA de
- * transacción del motivo `MOTIVO_CAS` (ver `manejarResolucionSolicitud`).
- */
-const ACCION_SOLICITUD_COMANDO: Record<AccionSolicitud, string> = {
-  [ACCION_APROBAR_SOLICITUD]: COMANDO_APROBAR_SOLICITUD,
-  [ACCION_RECHAZAR_SOLICITUD]: COMANDO_RECHAZAR_SOLICITUD,
-  [ACCION_CANCELAR_SOLICITUD]: COMANDO_CANCELAR_SOLICITUD,
-};
-
-/**
- * Mensaje de "no encontrada" por `AccionSolicitud` (ADR 132, ADR 130 pto 5).
- * `aprobar`/`rechazar` reproducen el literal previo BYTE POR BYTE — cambiarlo
- * regresionaría sus tests actuales, que no se tocan. `cancelar` evita sugerir
- * "no existe": el mismo texto cubre tanto "no existe" como "ya fue resuelta"
- * (ADR 125 — sin lector sin filtro de estado que los distinga).
- */
-const MENSAJE_SOLICITUD_NO_ENCONTRADA: Record<AccionSolicitud, (id: string) => string> = {
-  [ACCION_APROBAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
-  [ACCION_RECHAZAR_SOLICITUD]: (id) => `No hay ninguna solicitud ${id} pendiente de resolución.`,
-  [ACCION_CANCELAR_SOLICITUD]: (id) =>
-    `No hay ninguna solicitud ${id} tuya pendiente de cancelación. Si ya fue aprobada, rechazada o cancelada, no se puede retirar.`,
-};
-
-/**
  * `comando` de `registro_acciones_empleado` para cada `AccionPropuesta`
  * (Hito 5.1, tarea 32) — mismo criterio que `ACCION_SOLICITUD_COMANDO`: la
  * transición CAS + fila de auditoría del camino feliz la resuelve
@@ -792,55 +753,6 @@ const ACCION_PROPUESTA_COMANDO: Record<AccionPropuesta, string> = {
 };
 
 /**
- * Una línea por solicitud — mismo criterio que `formatearLineaEscalacion`.
- * Formato elegido (sin texto literal fijado por el diseño, tarea 23):
- * `id`, `solicitante`, `tipo`, `detalle`, `estado` y `caso` siempre; el
- * `dictamen` se agrega solo si existe (mismo binario que `confirmedAt` en
- * `formatearLineaEscalacion` — su ausencia es la traza de que el validador
- * no corrió o falló, ADR 49, no algo que deba imprimirse como vacío).
- */
-function formatearLineaSolicitud(s: SolicitudInterna): string {
-  const base = `- solicitud ${s.id} | solicitante ${s.solicitanteId} | tipo ${s.tipo} | detalle ${s.detalle} | estado ${s.estado} | caso ${s.casoId}`;
-  return s.dictamen === undefined ? base : `${base} | dictamen ${s.dictamen}`;
-}
-
-/**
- * Mensaje del listado sin id cuando `items` viene vacío, por `AccionSolicitud`
- * (ADR 144 pto 4). `aprobar`/`rechazar` reproducen el literal histórico byte
- * por byte — listan toda la organización (`:72` no derogado, ADR 144 pto 2),
- * así que "no hay solicitudes para listar" sigue siendo la lectura correcta.
- * `cancelar` es distinto a propósito: desde la tarea 16 su listado ya viene
- * filtrado por `solicitanteId` (`soloPropias`), así que un `items` vacío acá
- * NO significa que no haya solicitudes en la organización — sólo que el
- * propio empleado no tiene ninguna pendiente. Reusar el mensaje genérico
- * insinuaría lo primero.
- */
-const MENSAJE_LISTADO_SOLICITUDES_VACIO: Record<AccionSolicitud, string> = {
-  [ACCION_APROBAR_SOLICITUD]: "No hay solicitudes para listar.",
-  [ACCION_RECHAZAR_SOLICITUD]: "No hay solicitudes para listar.",
-  [ACCION_CANCELAR_SOLICITUD]: "No tenés solicitudes pendientes para cancelar.",
-};
-
-function formatearListadoSolicitudes(items: readonly SolicitudInterna[], accion: AccionSolicitud): string {
-  if (items.length === 0) {
-    return MENSAJE_LISTADO_SOLICITUDES_VACIO[accion];
-  }
-  return items.map(formatearLineaSolicitud).join("\n");
-}
-
-/**
- * Eco de confirmación de `/aprobar-solicitud`/`/rechazar-solicitud` (§6.4,
- * parte 2). A diferencia de `formatearEco` (reembolsos), NO recibe la
- * `accion`: no hay ninguna salvedad dominio-específica que dependa de ella
- * (el único caso análogo en reembolsos es `reabrir`, que agrega el dato de
- * quién rechazó antes) — `aprobar`/`rechazar` solicitud son simétricos en
- * el texto del eco, la diferencia vive enteramente en qué transición aplica
- * el CAS del lado del store.
- */
-function formatearEcoSolicitud(solicitud: SolicitudInterna): string {
-  return `solicitud ${solicitud.id} · tipo ${solicitud.tipo} · detalle ${solicitud.detalle} · caso ${solicitud.casoId} — repetí el comando para confirmar.`;
-}
-
 /**
  * Tipo de `casos.tipo` para `/consultar-kpi` (Hito 6, tarea 20, ADR 85).
  * Const de MÓDULO, no de `ventas-contract.ts`: mismo precedente que
@@ -1237,122 +1149,17 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   }
 
   /**
-   * Resolución de `/aprobar-solicitud`/`/rechazar-solicitud` en dos pasos
-   * (Hito 5, tarea 23, §6.4 parte 2, ADR 36, ADR 55). Molde EXACTO de
-   * `manejarEscalacion`, adaptado al dominio solicitud: delega toda la
-   * lógica pura y síncrona a `resolverSolicitudInterna` (tarea 18) y al
-   * CAS transaccional de `SolicitudStorePort` (tarea 19) — acá solo se
-   * arma/compara/consume `confirmacionPendiente` (rama `dominio:
-   * "solicitud"` de la unión, ADR 55) y se traduce el resultado a
-   * `TuiTurnResult`.
-   *
-   * Escritura de `registrar(...)`: SOLO para `resultado: "no_aplicable"`
-   * con `motivo: MOTIVO_CAS` — si el CAS hubiese matcheado, la fila ya
-   * viajó DENTRO de la transacción SQL de `aprobarSolicitudInterna`/
-   * `rechazarSolicitudInterna` (`repository.ts`, tarea 19,
-   * `resolverSolicitudTransaccional`); si no hubo transacción (el CAS no
-   * matcheó), no hay otra fila posible, así que se escribe FUERA, igual
-   * que el molde de `manejarEscalacion` (líneas 389-403 de `v1.4.0`). Para
-   * `MOTIVO_NO_ENCONTRADA` NO se registra: no hay `casoId` que
-   * correlacionar (`resolver-solicitud-interna.ts`, ese branch no lo
-   * incluye) y `resolverSolicitudInterna` ya logueó el evento
-   * `solicitud-resolucion-no-aplicable` internamente — duplicarlo acá
-   * sería una segunda escritura del mismo hecho.
+   * `cancelar_solicitud` (`ComandoEmpleado`) sigue existiendo como tipo,
+   * pero SIN descriptor propio desde `operaciones-negocio-conversacionales`
+   * (tarea 14, código muerto preexistente) — y ahora, con la baja de
+   * `manejarResolucionSolicitud` (`aprobacion-conversacional-hitl`, ADR 210
+   * pto 1, tarea 10: `/aprobar-solicitud`/`/rechazar-solicitud` se
+   * resuelven vía `resolver_solicitud`, ADR 206), este handler tampoco
+   * tiene mecanismo propio que reimplementar — es inalcanzable desde
+   * `parsearComando` (`switch (comando.tipo)` de más abajo lo exige sólo
+   * por exhaustividad de tipos).
    */
-  function manejarResolucionSolicitud(
-    accion: AccionSolicitud,
-    solicitudIdInput: string | undefined,
-    ahora: string,
-  ): TuiTurnResult {
-    const sesionActual = sesion as SesionEmpleado;
-
-    if (solicitudIdInput === undefined) {
-      const resultado = resolverSolicitudInterna(
-        { accion, confirmado: false, sesion: sesionActual },
-        { store: solicitudStore, newId, now, logEvent, rolPort },
-      );
-      if (resultado.resultado !== "listado") {
-        return sistema("No se pudo listar las solicitudes.");
-      }
-      return sistema(formatearListadoSolicitudes(resultado.items, accion));
-    }
-
-    const coincide =
-      confirmacionPendiente !== undefined &&
-      confirmacionPendiente.dominio === "solicitud" &&
-      confirmacionPendiente.solicitudId === solicitudIdInput &&
-      confirmacionPendiente.accion === accion &&
-      confirmacionPendiente.empleadoId === sesionActual.empleadoId;
-
-    if (!coincide) {
-      const resultado = resolverSolicitudInterna(
-        { accion, solicitudId: solicitudIdInput, confirmado: false, sesion: sesionActual },
-        { store: solicitudStore, newId, now, logEvent, rolPort },
-      );
-
-      if (resultado.resultado === "no_aplicable") {
-        return sistema(MENSAJE_SOLICITUD_NO_ENCONTRADA[accion](solicitudIdInput));
-      }
-      // Chequeo de dueño (ADR 130): corre ANTES de armar el eco, así que
-      // cubre este paso Y el paso confirmado con una sola rama acá.
-      if (resultado.resultado === "no_es_dueno") {
-        return sistema(`La solicitud ${resultado.itemId} no es tuya: sólo quien la creó puede cancelarla.`);
-      }
-      if (resultado.resultado !== "requiere_confirmacion") {
-        return sistema("No se pudo procesar ese comando.");
-      }
-
-      confirmacionPendiente = {
-        dominio: "solicitud",
-        accion,
-        solicitudId: solicitudIdInput,
-        casoId: resultado.item.casoId,
-        empleadoId: sesionActual.empleadoId,
-        expiraEn: new Date(Date.parse(ahora) + CONFIRMACION_TTL_MINUTOS * 60_000).toISOString(),
-      };
-      return sistema(formatearEcoSolicitud(resultado.item));
-    }
-
-    // Coincide: se CONSUME antes de ejecutar (ADR 36).
-    confirmacionPendiente = undefined;
-    const resultado = resolverSolicitudInterna(
-      { accion, solicitudId: solicitudIdInput, confirmado: true, sesion: sesionActual },
-      { store: solicitudStore, newId, now, logEvent, rolPort },
-    );
-
-    if (resultado.resultado === "aplicada") {
-      return sistema(`Listo: la solicitud ${solicitudIdInput} quedó ${resultado.estadoFinal}.`);
-    }
-
-    if (resultado.resultado === "no_autorizado") {
-      registrar({ comando: ACCION_SOLICITUD_COMANDO[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_AUTORIZADO }, ahora);
-      return sistema(`No estás autorizado para ${accion} esa solicitud: se requiere rol elevado.`);
-    }
-    if (resultado.resultado === "autoaprobacion_prohibida") {
-      registrar(
-        { comando: ACCION_SOLICITUD_COMANDO[accion], casoId: resultado.casoId, resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA },
-        ahora,
-      );
-      return sistema(`No podés ${accion} tu propia solicitud, aunque tengas rol elevado.`);
-    }
-
-    if (resultado.resultado === "no_aplicable") {
-      if (resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
-        // La fila ya se hubiese escrito DENTRO de la transacción si el CAS
-        // matcheaba; acá no hubo transacción, así que se escribe FUERA —
-        // único caso en que este comando privilegiado pasa por `registrar`.
-        registrar(
-          {
-            comando: ACCION_SOLICITUD_COMANDO[accion],
-            casoId: resultado.casoId,
-            resultado: RESULTADO_NO_APLICABLE,
-          },
-          ahora,
-        );
-      }
-      return sistema("Esa solicitud ya no está pendiente: no se aplicó nada.");
-    }
-
+  function manejarCancelarSolicitudInalcanzable(): TuiTurnResult {
     return sistema("No se pudo procesar ese comando.");
   }
 
@@ -1927,12 +1734,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarEscalacion(ACCION_REABRIR, comando.ventaId, ahora);
       case "solicitar":
         return manejarSolicitud(comando, ahora);
-      case "aprobar_solicitud":
-        return manejarResolucionSolicitud(ACCION_APROBAR_SOLICITUD, comando.solicitudId, ahora);
-      case "rechazar_solicitud":
-        return manejarResolucionSolicitud(ACCION_RECHAZAR_SOLICITUD, comando.solicitudId, ahora);
       case "cancelar_solicitud":
-        return manejarResolucionSolicitud(ACCION_CANCELAR_SOLICITUD, comando.solicitudId, ahora);
+        return manejarCancelarSolicitudInalcanzable();
       case "ver_propuesta":
         return manejarVerPropuesta(comando, ahora);
       case "ver_solicitudes_a2a":

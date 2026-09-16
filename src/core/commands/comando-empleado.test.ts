@@ -245,48 +245,22 @@ describe("parsearComando", () => {
     },
   );
 
-  it.each<["aprobar_solicitud" | "rechazar_solicitud", string]>([
-    ["aprobar_solicitud", "/aprobar-solicitud"],
-    ["rechazar_solicitud", "/rechazar-solicitud"],
-  ])("%s sin id → solicitudId ausente", (tipo, prefijo) => {
-    expect(parsearComando(prefijo)).toEqual({ tipo });
-  });
-
-  describe("forma id_opcional_solicitud — el tipo se lee del descriptor, no de una cadena de nombres (ADR 56)", () => {
-    // Mismo criterio que el describe de "forma id_opcional" de arriba: recorre
-    // DESCRIPTORES dinámicamente vía COMANDOS, así el test cubre cualquier
-    // comando de forma "id_opcional_solicitud" que exista hoy o se agregue
-    // mañana, sin hardcodear los nombres.
-    type DescriptorConTipo = { readonly nombre: string; readonly tipo: string; readonly forma: string };
-    const descriptoresIdOpcionalSolicitud = (COMANDOS as unknown as readonly DescriptorConTipo[]).filter(
-      (d) => d.forma === "id_opcional_solicitud",
-    );
-
-    it("hay al menos un descriptor de forma id_opcional_solicitud (no testear un array vacío)", () => {
-      expect(descriptoresIdOpcionalSolicitud.length).toBeGreaterThan(0);
-    });
-
-    it.each(descriptoresIdOpcionalSolicitud.map((d) => [d.nombre, d.tipo] as const))(
-      "%s sin solicitudId → tipo devuelto == descriptor.tipo declarado (%s)",
-      (nombre, tipoDeclarado) => {
-        expect(parsearComando(nombre)).toEqual({ tipo: tipoDeclarado });
-      },
-    );
-  });
-
-  it("/aprobar-solicitud <solicitudId> → solicitudId presente", () => {
-    expect(parsearComando("/aprobar-solicitud sol-1")).toEqual({
-      tipo: "aprobar_solicitud",
-      solicitudId: "sol-1",
-    });
-  });
-
-  it("/rechazar-solicitud <solicitudId> → solicitudId presente", () => {
-    expect(parsearComando("/rechazar-solicitud sol-9")).toEqual({
-      tipo: "rechazar_solicitud",
-      solicitudId: "sol-9",
-    });
-  });
+  it.each([
+    "/aprobar-solicitud",
+    "/aprobar-solicitud sol-1",
+    "/rechazar-solicitud",
+    "/rechazar-solicitud sol-9",
+  ])(
+    "%j → ayuda/desconocido: /aprobar-solicitud y /rechazar-solicitud ya no son comandos (baja, aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10 — se resuelven por conversación vía la herramienta `operaciones`, resolver_solicitud)",
+    (texto) => {
+      const comandoToken = texto.split(" ")[0];
+      expect(parsearComando(texto)).toEqual({
+        tipo: "ayuda",
+        motivo: "desconocido",
+        comando: comandoToken,
+      });
+    },
+  );
 
   it.each(["/cancelar-solicitud", "/cancelar-solicitud S-7"])(
     "%j → ayuda/desconocido: /cancelar-solicitud ya no es un comando (baja, operaciones-negocio-conversacionales, ADR 148 pto 2, tarea 14 — se resuelve por conversación vía la herramienta `operaciones`)",
@@ -476,9 +450,9 @@ describe("parsearComando", () => {
 });
 
 describe("formatearAyuda", () => {
-  it("lista los DIECIOCHO descriptores (diecisiete tras /asignar-rol, comandos-administracion-empleados tarea 7, más /crear-empleado, tarea 8) — conteo final del change, verificado contra el estado real de main (banner de tasks.md)", () => {
+  it("lista los DIECISÉIS descriptores (18 − 2 por la baja de /aprobar-solicitud y /rechazar-solicitud, aprobacion-conversacional-hitl, tarea 10) — conteo tras Unit 3, verificado contra el estado real de main (banner de tasks.md)", () => {
     const texto = formatearAyuda();
-    expect(COMANDOS).toHaveLength(18);
+    expect(COMANDOS).toHaveLength(16);
     for (const descriptor of COMANDOS) {
       expect(texto).toContain(descriptor.uso);
     }
@@ -511,13 +485,6 @@ describe("formatearAyuda", () => {
 });
 
 describe("esComandoPrivilegiado", () => {
-  it.each(["aprobar_solicitud", "rechazar_solicitud"] as const)(
-    "%s es privilegiado (ADR 56, exige sesión vigente)",
-    (tipo) => {
-      expect(esComandoPrivilegiado(tipo)).toBe(true);
-    },
-  );
-
   it("solicitar ya no es privilegiado: sin descriptor, esComandoPrivilegiado cae al default false (baja, operaciones-negocio-conversacionales, tarea 14)", () => {
     expect(esComandoPrivilegiado("solicitar")).toBe(false);
   });
@@ -573,29 +540,29 @@ describe("regresión — descriptores previos conservan nombre y forma tras la b
     ]);
   });
 
-  it("los dos descriptores de solicitud de Hito 5 que sobreviven (índices 6-7, sin /solicitar dado de baja) conservan nombre y forma (design.md §5.7, ADR 56)", () => {
+  it("los dos descriptores de solicitud de Hito 5 (/aprobar-solicitud, /rechazar-solicitud) se dieron de baja (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10) — el índice 6 ahora es /ver-propuesta, sin hueco", () => {
     expect(descriptores.slice(6, 8).map((d) => [d.nombre, d.forma] as const)).toEqual([
-      ["/aprobar-solicitud", "id_opcional_solicitud"],
-      ["/rechazar-solicitud", "id_opcional_solicitud"],
+      ["/ver-propuesta", "id_opcional_propuesta"],
+      ["/aplicar-propuesta", "id_mas_resto"],
     ]);
   });
 });
 
-describe("regresión — los tres descriptores de la tarea 29 van antes de /ayuda, que sigue último (ADR 69; índices recalculados tras la baja de autoservicio, tarea 14)", () => {
+describe("regresión — los tres descriptores de la tarea 29 van antes de /ayuda, que sigue último (ADR 69; índices recalculados tras la baja de autoservicio, tarea 14, y la baja de /aprobar-solicitud/rechazar-solicitud, aprobacion-conversacional-hitl tarea 10)", () => {
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("los tres descriptores ocupan los índices 8-10, en el orden de design.md §5.9 / ADR 69", () => {
-    expect(descriptores.slice(8, 11).map((d) => [d.nombre, d.forma] as const)).toEqual([
+  it("los tres descriptores ocupan los índices 6-8, en el orden de design.md §5.9 / ADR 69", () => {
+    expect(descriptores.slice(6, 9).map((d) => [d.nombre, d.forma] as const)).toEqual([
       ["/ver-propuesta", "id_opcional_propuesta"],
       ["/aplicar-propuesta", "id_mas_resto"],
       ["/descartar-propuesta", "id_mas_resto"],
     ]);
   });
 
-  it("/ayuda sigue último (índice 17, DIECIOCHO descriptores — conteo final del change: baja de /devolucion, /solicitar, /cancelar-solicitud (tarea 14) + alta de /estado-bot-prs (tarea 3) + /asignar-rol (tarea 7) + /crear-empleado (tarea 8))", () => {
-    expect(descriptores).toHaveLength(18);
-    expect(descriptores[17]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
+  it("/ayuda sigue último (índice 15, DIECISÉIS descriptores — conteo tras Unit 3: baja de /devolucion, /solicitar, /cancelar-solicitud (tarea 14) + baja de /aprobar-solicitud, /rechazar-solicitud (aprobacion-conversacional-hitl, tarea 10) + alta de /estado-bot-prs (tarea 3) + /asignar-rol (tarea 7) + /crear-empleado (tarea 8))", () => {
+    expect(descriptores).toHaveLength(16);
+    expect(descriptores[15]).toMatchObject({ nombre: "/ayuda", forma: "sin_argumentos" });
   });
 });
 
@@ -609,8 +576,8 @@ describe("regresión — /asignar-rol (comandos-administracion-empleados, tarea 
   };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("/asignar-rol ocupa el índice 15, forma NUEVA id_mas_resto_rol, privilegiado true, secreto false, requiereAdministrador true", () => {
-    expect(descriptores[15]).toMatchObject({
+  it("/asignar-rol ocupa el índice 13, forma NUEVA id_mas_resto_rol, privilegiado true, secreto false, requiereAdministrador true", () => {
+    expect(descriptores[13]).toMatchObject({
       nombre: "/asignar-rol",
       forma: "id_mas_resto_rol",
       privilegiado: true,
@@ -630,8 +597,8 @@ describe("regresión — /crear-empleado (comandos-administracion-empleados, tar
   };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("/crear-empleado ocupa el índice 16, forma NUEVA id_mas_resto_password, privilegiado true, secreto true (2º del repo tras /login), requiereAdministrador true", () => {
-    expect(descriptores[16]).toMatchObject({
+  it("/crear-empleado ocupa el índice 14, forma NUEVA id_mas_resto_password, privilegiado true, secreto true (2º del repo tras /login), requiereAdministrador true", () => {
+    expect(descriptores[14]).toMatchObject({
       nombre: "/crear-empleado",
       forma: "id_mas_resto_password",
       privilegiado: true,
@@ -650,8 +617,8 @@ describe("regresión — /estado-bot-prs (comandos-administracion-empleados, tar
   type DescriptorConForma = { readonly nombre: string; readonly forma: string; readonly requiereAdministrador: boolean };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("/estado-bot-prs ocupa el índice 14, forma reusada 'sin_argumentos', requiereAdministrador false", () => {
-    expect(descriptores[14]).toMatchObject({
+  it("/estado-bot-prs ocupa el índice 12, forma reusada 'sin_argumentos', requiereAdministrador false", () => {
+    expect(descriptores[12]).toMatchObject({
       nombre: "/estado-bot-prs",
       forma: "sin_argumentos",
       requiereAdministrador: false,
@@ -663,8 +630,8 @@ describe("regresión — el descriptor de la tarea 19 va antes de /ayuda, que si
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("/consultar-kpi ocupa el índice 11, en el orden de design.md §5.7.1 / ADR 85", () => {
-    expect(descriptores[11]).toMatchObject({ nombre: "/consultar-kpi", forma: "id_mas_resto" });
+  it("/consultar-kpi ocupa el índice 9, en el orden de design.md §5.7.1 / ADR 85", () => {
+    expect(descriptores[9]).toMatchObject({ nombre: "/consultar-kpi", forma: "id_mas_resto" });
   });
 });
 
@@ -672,8 +639,8 @@ describe("regresión — el descriptor de comando-reporte-comisiones (tarea 3) v
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("/reporte-comisiones ocupa el índice 12, en el orden de design.md §3 / ADR 119", () => {
-    expect(descriptores[12]).toMatchObject({ nombre: "/reporte-comisiones", forma: "id_opcional_periodo" });
+  it("/reporte-comisiones ocupa el índice 10, en el orden de design.md §3 / ADR 119", () => {
+    expect(descriptores[10]).toMatchObject({ nombre: "/reporte-comisiones", forma: "id_opcional_periodo" });
   });
 });
 
@@ -688,53 +655,49 @@ describe("regresión — el descriptor de la tarea 5 (comando-visibilidad-a2a-en
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("/ver-solicitudes-a2a ocupa el índice 13, forma NUEVA id_opcional_a2a_task (comando-visibilidad-a2a-entrante, tarea 5, design.md §3)", () => {
-    expect(descriptores[13]).toMatchObject({ nombre: "/ver-solicitudes-a2a", forma: "id_opcional_a2a_task" });
+  it("/ver-solicitudes-a2a ocupa el índice 11, forma NUEVA id_opcional_a2a_task (comando-visibilidad-a2a-entrante, tarea 5, design.md §3)", () => {
+    expect(descriptores[11]).toMatchObject({ nombre: "/ver-solicitudes-a2a", forma: "id_opcional_a2a_task" });
   });
 });
 
-describe("Forma no gana un miembro nuevo por /cancelar-solicitud (comando-cancelar-solicitud, tarea 9 — reusa id_opcional_solicitud); SÍ gana uno por /ver-solicitudes-a2a (comando-visibilidad-a2a-entrante, tarea 5 — id_opcional_a2a_task es forma NUEVA, no reusada)", () => {
+describe("Forma pierde un miembro por la baja de /aprobar-solicitud/rechazar-solicitud (aprobacion-conversacional-hitl, tarea 10 — id_opcional_solicitud deja de estar en uso); no gana uno por /cancelar-solicitud (comando-cancelar-solicitud, tarea 9 — reusaba id_opcional_solicitud, ya retirada); SÍ gana uno por /ver-solicitudes-a2a (comando-visibilidad-a2a-entrante, tarea 5 — id_opcional_a2a_task es forma NUEVA, no reusada)", () => {
   // `Forma` es un tipo privado de comando-empleado.ts, no exportado: se
   // verifica en runtime sobre el conjunto de valores `forma` realmente en
   // uso en COMANDOS, que es la proyección observable del tipo. El número de
-  // referencia es 7 (no 6): al momento de esta tarea, `id_opcional_periodo`
-  // ya había sido incorporado por `comando-reporte-comisiones` (mergeado a
-  // main antes que este change) sin que `/cancelar-solicitud` sumara una
-  // séptima -- reusó `id_opcional_solicitud`. `id_opcional_a2a_task`
-  // (`design.md` §3, ADR 56) sí es una forma nueva, distinta de las seis ya
-  // existentes: sube el conteo real a siete. `id_mas_resto_rol`
-  // (comandos-administracion-empleados, tarea 7, ADR 184) es otra forma
-  // nueva, distinta de las siete anteriores: sube el conteo a ocho.
-  // `id_mas_resto_password` (tarea 8, ADR 184) es otra forma nueva más:
-  // sube el conteo a nueve.
+  // referencia llegó a nueve tras /crear-empleado (comandos-administracion-
+  // empleados, tarea 8) — la baja de /aprobar-solicitud/rechazar-solicitud
+  // (aprobacion-conversacional-hitl, tarea 10) deja `id_opcional_solicitud`
+  // sin ningún descriptor que la use: baja el conteo real a ocho.
   type DescriptorConForma = { readonly nombre: string; readonly forma: string };
   const descriptores = COMANDOS as unknown as readonly DescriptorConForma[];
 
-  it("el conjunto de formas distintas en uso tiene nueve miembros (no ocho) tras agregar /crear-empleado", () => {
+  it("el conjunto de formas distintas en uso tiene ocho miembros (no nueve) tras la baja de /aprobar-solicitud/rechazar-solicitud", () => {
     const formasDistintas = new Set(descriptores.map((d) => d.forma));
-    expect(formasDistintas.size).toBe(9);
+    expect(formasDistintas.size).toBe(8);
   });
 });
 
-describe("regresión crítica — los cinco comandos HITL bloqueados por el ADR 151 siguen matcheando sin cambio (operaciones-negocio-conversacionales tarea 14 sólo da de baja autoservicio, no HITL — ADR 151 sigue BLOQUEADO)", () => {
+describe("regresión crítica — los tres comandos HITL de reembolso, bloqueados por el ADR 151, siguen matcheando sin cambio (operaciones-negocio-conversacionales tarea 14 sólo da de baja autoservicio, no HITL — ADR 151 sigue BLOQUEADO para reembolso hasta la tarea 14 de aprobacion-conversacional-hitl); los dos de solicitud (/aprobar-solicitud, /rechazar-solicitud) YA bajaron (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10)", () => {
   it.each([
     ["/aprobar-reembolso", { tipo: "aprobar_reembolso" }],
     ["/rechazar-reembolso", { tipo: "rechazar_reembolso" }],
     ["/reabrir-reembolso", { tipo: "reabrir_reembolso" }],
-    ["/aprobar-solicitud", { tipo: "aprobar_solicitud" }],
-    ["/rechazar-solicitud", { tipo: "rechazar_solicitud" }],
   ] as const)("%s sigue reconocido, sin id → %o", (comando, esperado) => {
     expect(parsearComando(comando)).toEqual(esperado);
   });
 
+  it.each(["aprobar_reembolso", "rechazar_reembolso", "reabrir_reembolso"] as const)(
+    "%s sigue privilegiado (exige sesión vigente, sin cambio)",
+    (tipo) => {
+      expect(esComandoPrivilegiado(tipo)).toBe(true);
+    },
+  );
+
   it.each([
-    "aprobar_reembolso",
-    "rechazar_reembolso",
-    "reabrir_reembolso",
-    "aprobar_solicitud",
-    "rechazar_solicitud",
-  ] as const)("%s sigue privilegiado (exige sesión vigente, sin cambio)", (tipo) => {
-    expect(esComandoPrivilegiado(tipo)).toBe(true);
+    ["/aprobar-solicitud", "/aprobar-solicitud"],
+    ["/rechazar-solicitud", "/rechazar-solicitud"],
+  ])("%s YA NO matchea (dado de baja, tarea 10) → ayuda/desconocido", (comando, comandoEsperado) => {
+    expect(parsearComando(comando)).toEqual({ tipo: "ayuda", motivo: "desconocido", comando: comandoEsperado });
   });
 });
 
@@ -744,7 +707,7 @@ describe("requiereAdministrador (comandos-administracion-empleados, tarea 2, ADR
   it("todo descriptor que NO es administrativo (los quince originales más /estado-bot-prs, tarea 3) sigue declarando requiereAdministrador === false", () => {
     type DescriptorConRequiereAdministrador = { readonly nombre: string; readonly requiereAdministrador: boolean };
     const descriptores = COMANDOS as unknown as readonly DescriptorConRequiereAdministrador[];
-    expect(descriptores).toHaveLength(18);
+    expect(descriptores).toHaveLength(16);
     for (const descriptor of descriptores) {
       if (DESCRIPTORES_ADMINISTRADOR.has(descriptor.nombre)) continue;
       expect(descriptor.requiereAdministrador).toBe(false);
