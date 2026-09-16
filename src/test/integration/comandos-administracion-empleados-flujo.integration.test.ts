@@ -8,6 +8,11 @@ import {
   type BuildOnComandoEmpleadoDeps,
 } from "../../build-on-comando-empleado.js";
 import { createVentaStore } from "../../build-on-venta.js";
+import {
+  ACCION_APROBAR,
+  resolverEscalacionReembolso,
+  type ResolverEscalacionDeps,
+} from "../../core/ventas/resolver-escalacion-reembolso.js";
 import { altaCredencialEmpleado } from "../../empleados.js";
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
 import { type CredencialesEmpleadoPort } from "../../core/auth/credenciales-contract.js";
@@ -20,11 +25,19 @@ import {
   confirmarVentaConComision,
   escalarReembolso,
 } from "../../adapters/memory/repository.js";
-import { VENTA_ESTADO_REEMBOLSADA } from "../../core/ventas/ventas-contract.js";
+import { VENTA_ESTADO_REEMBOLSADA, type VentaNotifierPort } from "../../core/ventas/ventas-contract.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "../../adapters/tui/tui-port.js";
 import type { VentasConfig } from "../../core/ventas/ventas-config.js";
 import type { AuthConfig } from "../../core/auth/auth-config.js";
 import type { SoporteResult } from "../../build-on-soporte.js";
+import { ejecutarOperacion, type EjecutarOperacionDeps } from "../../core/operaciones/ejecutar-operacion.js";
+import { OPERACION_RESOLVER_REEMBOLSO } from "../../core/operaciones/operaciones-contract.js";
+import { crearConfirmacionOperacionesStore } from "../../adapters/web/confirmacion-operaciones-store.js";
+import { getSubagentDefinition } from "../../core/agents/definitions.js";
+import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
+import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
+import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
+import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
 
 /**
  * `comandos-administracion-empleados`, tarea 12 — verificación del
@@ -98,6 +111,67 @@ async function login(handler: SubmitPromptHandler, empleadoId: string, password:
   return handler(`/login ${empleadoId} ${password}`);
 }
 
+/**
+ * `EjecutarOperacionDeps` real para ejercitar `resolver_reembolso` a través
+ * de `ejecutarOperacion` — el dispatcher REAL del canal conversacional
+ * (aprobacion-conversacional-hitl, hallazgo Reviewer de test-coverage, Unit
+ * 4). `store` y `rolPort` son closures reales sobre `db` (mismo molde que
+ * `realRolPort` arriba); el resto de los campos son requeridos por el TIPO
+ * de `EjecutarOperacionDeps` pero `ejecutarResolverReembolso` nunca los
+ * invoca — cada uno es un doble que EXPLOTA si algún día se llama, para que
+ * un cambio futuro que sí los toque no pase inadvertido en este test.
+ */
+function realEjecutarOperacionDepsParaReembolso(db: Database.Database): EjecutarOperacionDeps {
+  function noUsado(nombre: string): () => never {
+    return () => {
+      throw new Error(`${nombre} no debería invocarse resolviendo resolver_reembolso`);
+    };
+  }
+
+  const solicitudStore: SolicitudStorePort = {
+    crearSolicitudConCaso: noUsado("crearSolicitudConCaso"),
+    adjuntarDictamen: noUsado("adjuntarDictamen"),
+    listarSolicitudesPendientes: noUsado("listarSolicitudesPendientes"),
+    aprobarSolicitud: noUsado("aprobarSolicitud"),
+    rechazarSolicitud: noUsado("rechazarSolicitud"),
+    cancelarSolicitud: noUsado("cancelarSolicitud"),
+  };
+  const reporteStore: ReporteStorePort = {
+    listComisionesPorPeriodo: noUsado("listComisionesPorPeriodo"),
+    listVentasEnReembolsoPendiente: noUsado("listVentasEnReembolsoPendiente"),
+  };
+  const delegacionStore: DelegacionStorePort = {
+    crearDelegacion: noUsado("crearDelegacion"),
+    completarDelegacion: noUsado("completarDelegacion"),
+  };
+  const despacharDeps: DespacharDelegacionDeps = {
+    store: delegacionStore,
+    invocar: noUsado("invocar"),
+    getSubagente: getSubagentDefinition,
+    newId: () => "id-no-usado",
+    now: () => TIMESTAMP,
+    logEvent: () => undefined,
+  };
+  const notifier: VentaNotifierPort = { notificarLinkConfirmacion: noUsado("notificarLinkConfirmacion") };
+  const registro: RegistroAccionesEmpleadoPort = { registrarAccion: noUsado("registrarAccion") };
+
+  return {
+    store: createVentaStore(db),
+    solicitudStore,
+    config: { comisionPorcentaje: 0.1, reembolsoUmbral: 500, tokenTtlHoras: 72, ventaGrandeUmbral: 5000 },
+    notifier,
+    baseUrlPublica: "https://ventas.example.com",
+    reporteStore,
+    despacharDeps,
+    rolPort: realRolPort(db),
+    registro,
+    newId: () => "accion-1",
+    newToken: () => "token-no-usado",
+    now: () => TIMESTAMP,
+    logEvent: () => undefined,
+  };
+}
+
 describe("comandos-administracion-empleados — flujo end-to-end contra código real (tarea 12, verificación del entregable)", () => {
   it("bootstrap por CLI (equivalente) → login → /crear-empleado → /asignar-rol → 'ana' aprueba un reembolso — el rol asignado por TUI surte el MISMO efecto que uno asignado por CLI, sin ningún paso adicional para 'ana'", async () => {
     const db = openDatabase(":memory:");
@@ -149,18 +223,39 @@ describe("comandos-administracion-empleados — flujo end-to-end contra código 
       escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-v1", ahora: TIMESTAMP });
 
       // 6. 'ana' hace login (SU primer login — no es "re-login", es su único
-      //    login) y ejecuta /aprobar-reembolso SIN ningún paso adicional:
-      //    el rol que le asignó el administrador por TUI ya es efectivo.
+      //    login): el rol que le asignó el administrador por TUI ya es
+      //    efectivo. La resolución de reembolso YA NO es un comando de TUI
+      //    (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 14 —
+      //    /aprobar-reembolso se dio de baja, se resuelve por conversación
+      //    vía resolver_reembolso, ADR 206) — se ejercita acá directamente
+      //    contra `resolverEscalacionReembolso` (el núcleo real), con el
+      //    MISMO `store`/`rolPort` reales sobre `db` que usaría el
+      //    dispatcher: prueba que el rol asignado por TUI surte el MISMO
+      //    efecto también por ese camino, sin ningún paso adicional para 'ana'.
       const handlerAna = buildOnComandoEmpleado(realDeps(db));
       const loginAna = await login(handlerAna, "ana", "password-de-ana-123");
       expect(loginAna.responseText.toLowerCase()).toContain("sesión abierta");
 
-      const eco = await handlerAna("/aprobar-reembolso venta-1");
-      expect(eco.responseText.toLowerCase()).toContain("repetí el comando para confirmar");
+      const resolverDeps: ResolverEscalacionDeps = {
+        store: createVentaStore(db),
+        newId: () => "accion-1",
+        now: () => TIMESTAMP,
+        logEvent: () => undefined,
+        rolPort: realRolPort(db),
+      };
+      const sesionAna = { empleadoId: "ana", iniciadaEn: TIMESTAMP };
 
-      const confirmacion = await handlerAna("/aprobar-reembolso venta-1");
-      expect(confirmacion.responseText.toLowerCase()).not.toContain("no estás autorizado");
-      expect(confirmacion.responseText.toLowerCase()).not.toContain("administrador");
+      const eco = resolverEscalacionReembolso(
+        { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: false, sesion: sesionAna },
+        resolverDeps,
+      );
+      expect(eco.resultado).toBe("requiere_confirmacion");
+
+      const confirmacion = resolverEscalacionReembolso(
+        { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: sesionAna },
+        resolverDeps,
+      );
+      expect(confirmacion.resultado).toBe("aplicada");
 
       const venta = db.prepare("SELECT estado FROM ventas WHERE id = ?").get("venta-1") as { estado: string };
       expect(venta.estado).toBe(VENTA_ESTADO_REEMBOLSADA);
@@ -189,6 +284,109 @@ describe("comandos-administracion-empleados — flujo end-to-end contra código 
       const estadoBot = await handler("/estado-bot-prs");
       expect(estadoBot.responseText.toLowerCase()).not.toContain("no estás autorizado");
       expect(estadoBot.responseText.toLowerCase()).not.toContain("requiere rol administrador");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("resolver_reembolso vía ejecutarOperacion (dispatcher real, dos turnos: eco + confirmación) — un rol leído de una DB real se respeta de punta a punta (hallazgo Reviewer, test-coverage, aprobacion-conversacional-hitl Unit 4)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      // Rol base por AUSENCIA de fila en roles_empleado (ADR 154 pto 5) — sin
+      // ningún doble de RolEmpleadoPort, la lectura es la fila (inexistente) real.
+      altaCredencialEmpleado(db, { empleadoId: "base", password: "basepass123", ahora: TIMESTAMP });
+      // Rol administrador vía la MISMA escritura que usa /asignar-rol (tarea 7
+      // de comandos-administracion-empleados) — DB real, no un mock de rol.
+      altaCredencialEmpleado(db, { empleadoId: "ana", password: "password-de-ana-123", ahora: TIMESTAMP });
+      upsertRolEmpleado(db, { empleadoId: "ana", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+
+      createVentaConCaso(db, {
+        vendedor: { id: "vend-1", nombre: "Vendedor Uno" },
+        caso: { id: "caso-v1", tipo: "venta", estado: "pendiente_confirmacion", createdAt: TIMESTAMP, updatedAt: TIMESTAMP },
+        venta: {
+          id: "venta-1",
+          clienteId: "cliente-1",
+          planNuevo: "plan-x",
+          monto: 1000,
+          estado: "pendiente_confirmacion",
+          tokenConfirmacion: "tok-venta-1",
+        },
+        timestamp: TIMESTAMP,
+      });
+      confirmarVentaConComision(db, {
+        ventaId: "venta-1",
+        comisionId: "comision-1",
+        comisionMonto: 100,
+        periodo: "2026-01",
+        ahora: TIMESTAMP,
+      });
+      escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-v1", ahora: TIMESTAMP });
+
+      const ejecutarDeps = realEjecutarOperacionDepsParaReembolso(db);
+      const confirmacionStore = crearConfirmacionOperacionesStore();
+
+      // 1. Rol base ⇒ `no_autorizado`, a través del dispatcher REAL — no de
+      //    `resolverEscalacionReembolso` invocada directamente (eso es lo que
+      //    el hallazgo de test-coverage marcó como saltado): el `rolPort` que
+      //    ve `ejecutarOperacion` lee la fila (ausente) de la DB real. Dos
+      //    turnos: el gate de rol sólo se evalúa tras `confirmado: true`.
+      const confirmacionBase = confirmacionStore.paraEmpleado("base");
+      await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" },
+          sesion: { empleadoId: "base", iniciadaEn: TIMESTAMP },
+          confirmacion: confirmacionBase,
+          casoIdActual: "caso-turno-base-1",
+        },
+        ejecutarDeps,
+      );
+      const rechazo = await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" },
+          sesion: { empleadoId: "base", iniciadaEn: TIMESTAMP },
+          confirmacion: confirmacionBase,
+          casoIdActual: "caso-turno-base-2",
+        },
+        ejecutarDeps,
+      );
+      expect(rechazo).toContain("No estás autorizado");
+      const ventaTrasRechazo = db.prepare("SELECT estado FROM ventas WHERE id = ?").get("venta-1") as {
+        estado: string;
+      };
+      expect(ventaTrasRechazo.estado).not.toBe(VENTA_ESTADO_REEMBOLSADA);
+
+      // 2. Rol administrador, leído de la MISMA DB real — dos turnos por el
+      //    MISMO camino (`ejecutarOperacion`): eco (sin confirmar, casoId de
+      //    turno 1) y confirmación (casoId de turno 2, nuevo — el predicado
+      //    `origenCasoId !== casoIdActual` exige un turno posterior real).
+      const sesionAna = { empleadoId: "ana", iniciadaEn: TIMESTAMP };
+      const confirmacionAna = confirmacionStore.paraEmpleado("ana");
+
+      const eco = await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" },
+          sesion: sesionAna,
+          confirmacion: confirmacionAna,
+          casoIdActual: "caso-turno-1",
+        },
+        ejecutarDeps,
+      );
+      expect(eco).toContain("Vas a aprobar el reembolso de la venta venta-1");
+
+      const resultado = await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" },
+          sesion: sesionAna,
+          confirmacion: confirmacionAna,
+          casoIdActual: "caso-turno-2",
+        },
+        ejecutarDeps,
+      );
+      expect(resultado).toContain("Listo: el reembolso de la venta venta-1 quedó");
+      expect(resultado).toContain(VENTA_ESTADO_REEMBOLSADA);
+
+      const venta = db.prepare("SELECT estado FROM ventas WHERE id = ?").get("venta-1") as { estado: string };
+      expect(venta.estado).toBe(VENTA_ESTADO_REEMBOLSADA);
     } finally {
       db.close();
     }

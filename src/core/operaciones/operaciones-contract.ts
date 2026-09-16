@@ -46,6 +46,8 @@ export const OPERACION_REGISTRAR_VENTA = "registrar_venta";
 export const OPERACION_CONSULTAR_REPORTE_COMISIONES = "consultar_reporte_comisiones";
 /** `aprobacion-conversacional-hitl`, ADR 206 — dominio solicitud del canal conversacional. */
 export const OPERACION_RESOLVER_SOLICITUD = "resolver_solicitud";
+/** `aprobacion-conversacional-hitl`, ADR 206 — dominio reembolso del canal conversacional; octava y última operación del contrato. */
+export const OPERACION_RESOLVER_REEMBOLSO = "resolver_reembolso";
 
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
@@ -55,6 +57,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_REGISTRAR_VENTA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_RESOLVER_SOLICITUD,
+  OPERACION_RESOLVER_REEMBOLSO,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -126,6 +129,22 @@ export interface OperacionResolverSolicitud {
   readonly solicitudId?: string;
 }
 
+/**
+ * `aprobacion-conversacional-hitl`, ADR 206. Mismo criterio que
+ * `AccionSolicitudModelo` — elección de operación que el modelo comunica,
+ * nunca un campo `confirmado`. A diferencia del dominio solicitud, `"reabrir"`
+ * SÍ es un valor válido acá (`resolverEscalacionReembolso` ya lo soporta
+ * desde `tui-canal-empleado`). **Nunca** incluye `"cancelar"` (ADR 217).
+ */
+export type AccionReembolsoModelo = "aprobar" | "rechazar" | "reabrir";
+
+/** `ventaId` ausente ⇒ modo listado, sin tocar ninguna ranura de confirmación (mismo criterio que `resolver_solicitud`). */
+export interface OperacionResolverReembolso {
+  readonly operacion: typeof OPERACION_RESOLVER_REEMBOLSO;
+  readonly accion: AccionReembolsoModelo;
+  readonly ventaId?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
@@ -133,7 +152,8 @@ export type OperacionNegocio =
   | OperacionCancelarSolicitudInterna
   | OperacionRegistrarVenta
   | OperacionConsultarReporteComisiones
-  | OperacionResolverSolicitud;
+  | OperacionResolverSolicitud
+  | OperacionResolverReembolso;
 
 /**
  * Puerto de confirmación humana para las operaciones de dos pasos del canal

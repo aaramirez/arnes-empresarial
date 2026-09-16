@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
+  DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
@@ -9,6 +10,7 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
@@ -16,10 +18,13 @@ import {
 } from "./operaciones-contract.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "./ejecutar-operacion.js";
 import {
+  CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+  CASO_ESTADO_RESUELTO,
   VENTA_ESTADO_CONFIRMADA,
   VENTA_ESTADO_PENDIENTE_CONFIRMACION,
   VENTA_ESTADO_REEMBOLSADA,
   type CrearVentaConCasoInput,
+  type EscalacionListada,
   type NotificacionResultado,
   type Venta,
   type VentaNotifierPort,
@@ -41,9 +46,11 @@ import type { ReporteStorePort } from "../ventas/reporte-contract.js";
 import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado, type RolEmpleadoPort } from "../auth/rol-contract.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
 import {
+  COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_DEVOLUCION,
+  COMANDO_RECHAZAR_REEMBOLSO,
   COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_REGISTRAR_VENTA,
   COMANDO_REPORTE_COMISIONES,
@@ -121,6 +128,19 @@ function makeVentaStore(overrides: Partial<VentaStorePort> = {}): VentaStorePort
 function makeNotifier(overrides: Partial<VentaNotifierPort> = {}): VentaNotifierPort {
   return {
     notificarLinkConfirmacion: vi.fn(async (): Promise<NotificacionResultado> => ({ enviado: true })),
+    ...overrides,
+  };
+}
+
+function buildEscalacion(overrides: Partial<EscalacionListada> = {}): EscalacionListada {
+  return {
+    ventaId: "venta-1",
+    vendedorId: "empleado-1",
+    vendedorNombre: "Vendedor Uno",
+    clienteId: "cliente-1",
+    monto: 1000,
+    casoId: "caso-venta-1",
+    reaperturasPrevias: 0,
     ...overrides,
   };
 }
@@ -628,6 +648,341 @@ describe("ejecutarOperacion — resolver_solicitud (ADR 206-207, aprobacion-conv
   });
 });
 
+/* ── Bloque 3-bis (ADR 206-207, ADR 211, ADR 216, ADR 218): resolver_reembolso, tarea 13 ── */
+
+describe("ejecutarOperacion — resolver_reembolso (ADR 206-207, ADR 211, ADR 216, ADR 218, aprobacion-conversacional-hitl, tarea 13)", () => {
+  it("sin ventaId ⇒ listado, SIN tocar la ranura de confirmación", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1" });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion();
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toContain("venta-1");
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("sin ventaId ⇒ el listado incluye vendedor, cliente y monto formateado (hallazgo Reviewer, mismo criterio que formatearLineaEscalacion de la TUI vieja)", async () => {
+    const venta = buildEscalacion({
+      ventaId: "venta-1",
+      vendedorNombre: "Vendedor Uno",
+      clienteId: "cliente-9",
+      monto: 150000,
+      casoId: "caso-venta-1",
+    });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar" }), deps);
+
+    expect(texto).toContain("venta-1");
+    expect(texto).toContain("Vendedor Uno");
+    expect(texto).toContain("cliente-9");
+    expect(texto).toContain("caso-venta-1");
+    // formatMoney (reporte.ts) — dos decimales, no el número crudo.
+    expect(texto).toContain("150000.00");
+  });
+
+  it("accion:'reabrir' sin ventaId ⇒ el listado lista rechazadas, no pendientes (hallazgo Reviewer, cobertura del listado por accion)", async () => {
+    const rechazada = buildEscalacion({ ventaId: "venta-2" });
+    const listarReembolsosPendientes = vi.fn(() => []);
+    const listarReembolsosRechazados = vi.fn(() => [rechazada]);
+    const store = makeVentaStore({ listarReembolsosPendientes, listarReembolsosRechazados });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "reabrir" }), deps);
+
+    expect(listarReembolsosRechazados).toHaveBeenCalled();
+    expect(listarReembolsosPendientes).not.toHaveBeenCalled();
+    expect(texto).toContain("venta-2");
+  });
+
+  it("con ventaId y estaConfirmada() === false ⇒ requiere_confirmacion + marcarPendiente con LlaveConfirmacion{dominio:'reembolso', itemId, accion}", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1" });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => false) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    const llave: LlaveConfirmacion = { dominio: DOMINIO_REEMBOLSO, itemId: "venta-1", accion: "aprobar" };
+    expect(confirmacion.estaConfirmada).toHaveBeenCalledWith(llave, SESION.empleadoId, CASO_ACTUAL);
+    expect(confirmacion.marcarPendiente).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dominio: DOMINIO_REEMBOLSO,
+        itemId: "venta-1",
+        accion: "aprobar",
+        casoId: "caso-venta-1",
+        empleadoId: SESION.empleadoId,
+        origenCasoId: CASO_ACTUAL,
+      }),
+    );
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(texto).toContain("venta-1");
+  });
+
+  it("accion:'reabrir' con estaConfirmada() === false ⇒ eco agrega rechazadaPor/rechazadaAt/reaperturasPrevias (molde reusado de formatearEco de la TUI, hallazgo Reviewer 3)", async () => {
+    const venta = buildEscalacion({
+      ventaId: "venta-1",
+      casoId: "caso-venta-1",
+      rechazadaPor: "beto",
+      rechazadaAt: "2026-08-30T00:00:00.000Z",
+      reaperturasPrevias: 2,
+    });
+    const store = makeVentaStore({ listarReembolsosRechazados: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => false) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "reabrir", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toBe(
+      "Vas a reabrir el reembolso de la venta venta-1 (monto 1000). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución. rechazada por beto el 2026-08-30T00:00:00.000Z · reaperturas previas: 2.",
+    );
+  });
+
+  it("accion:'reabrir' sin rechazadaPor/rechazadaAt previos ⇒ eco usa los fallback 'desconocido'/'fecha desconocida'", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", reaperturasPrevias: 0 });
+    const store = makeVentaStore({ listarReembolsosRechazados: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => false) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "reabrir", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toContain("rechazada por desconocido el fecha desconocida · reaperturas previas: 0.");
+  });
+
+  it("accion:'aprobar'/'rechazar' con estaConfirmada() === false ⇒ eco NO agrega la salvedad de reabrir", async () => {
+    const venta = buildEscalacion({
+      ventaId: "venta-1",
+      casoId: "caso-venta-1",
+      rechazadaPor: "beto",
+      rechazadaAt: "2026-08-30T00:00:00.000Z",
+      reaperturasPrevias: 2,
+    });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => false) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toBe(
+      "Vas a aprobar el reembolso de la venta venta-1 (monto 1000). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución.",
+    );
+  });
+
+  it("ventaId inexistente, accion:'aprobar'/'rechazar' ⇒ el mensaje dice 'pendiente de resolución' (hallazgo Reviewer, correctness)", async () => {
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => []) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-fantasma" }),
+      deps,
+    );
+
+    expect(texto).toBe("No hay ninguna escalación de reembolso venta-fantasma pendiente de resolución.");
+  });
+
+  it("ventaId inexistente, accion:'reabrir' ⇒ el mensaje dice 'rechazada', NO 'pendiente' (hallazgo Reviewer, correctness — la precondición real de reabrir es reembolso_rechazado)", async () => {
+    const store = makeVentaStore({ listarReembolsosRechazados: vi.fn(() => []) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "reabrir", ventaId: "venta-fantasma" }),
+      deps,
+    );
+
+    expect(texto).toContain("rechazada");
+    expect(texto).not.toContain("pendiente de resolución");
+  });
+
+  it("rol base ⇒ no_autorizado, CERO escrituras en store, fila de auditoría del intento con comando:'/aprobar-reembolso'", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: "otro-empleado" });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_EMPLEADO);
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, rolPort, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_APROBAR_REEMBOLSO,
+      resultado: RESULTADO_NO_AUTORIZADO,
+      casoId: "caso-venta-1",
+      ventaId: "venta-1",
+    });
+    // Texto literal reusado de la TUI (ADR 216 pto 5, build-on-comando-empleado.ts:1080) — NO reescrito.
+    expect(texto).toBe("No estás autorizado para aprobar esa escalación de reembolso: se requiere rol elevado.");
+  });
+
+  it("rechazar con rol base ⇒ no_autorizado, fila de auditoría con comando:'/rechazar-reembolso'", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: "otro-empleado" });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_EMPLEADO);
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, rolPort, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "rechazar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_RECHAZAR_REEMBOLSO,
+      resultado: RESULTADO_NO_AUTORIZADO,
+    });
+  });
+
+  it("★ R7 canal conversacional: autoaprobación (vendedorId === empleadoId) ⇒ autoaprobacion_prohibida, fila de auditoría con RESULTADO_AUTOAPROBACION_PROHIBIDA, texto distinguible del rechazo por rol (ADR 216 pto 1)", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: SESION.empleadoId });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_ADMINISTRADOR);
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, rolPort, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_APROBAR_REEMBOLSO,
+      resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA,
+      casoId: "caso-venta-1",
+      ventaId: "venta-1",
+    });
+    // Texto literal ADR 216 pto 1 — distinguible del rechazo por rol ("No estás autorizado").
+    expect(texto).toBe("No podés aprobar el reembolso de tu propia venta, aunque tengas rol elevado.");
+    expect(texto).not.toContain("No estás autorizado");
+  });
+
+  it("orden de evaluación (ADR 159, regresión de la tarea 5 alcanzable por el canal conversacional): rol base + venta propia ⇒ no_autorizado, NUNCA autoaprobacion_prohibida", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: SESION.empleadoId });
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_EMPLEADO);
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, rolPort, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({ resultado: RESULTADO_NO_AUTORIZADO });
+    expect(texto).toContain("No estás autorizado");
+  });
+
+  it("listado sin id ⇒ CERO escrituras (regresión, molde resolver_solicitud)", async () => {
+    const store = makeVentaStore({ listarReembolsosPendientes: vi.fn(() => []) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar" }),
+      deps,
+    );
+
+    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto).toContain("No hay escalaciones de reembolso");
+  });
+
+  it("confirmado tras eco ⇒ CAS aplica, el dispatcher NO escribe fila del camino feliz (ya la escribe la transacción)", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: "otro-empleado" });
+    const store = makeVentaStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => buildVenta({ id: "venta-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(confirmacion.consumir).toHaveBeenCalledTimes(1);
+    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto).toContain("venta-1");
+  });
+
+  it("confirmado tras eco, accion:'aprobar' ⇒ el mensaje de éxito incluye el estado del CASO, no solo el de la venta (hallazgo Reviewer, correctness — molde ACCION_ESCALACION_INFO de la TUI vieja)", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: "otro-empleado" });
+    const store = makeVentaStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => buildVenta({ id: "venta-1", estado: VENTA_ESTADO_REEMBOLSADA })),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toBe(
+      `Listo: el reembolso de la venta venta-1 quedó ${VENTA_ESTADO_REEMBOLSADA} y el caso caso-venta-1 en ${CASO_ESTADO_RESUELTO}.`,
+    );
+  });
+
+  it("confirmado tras eco, accion:'reabrir' ⇒ el estado del caso es CASO_ESTADO_PENDIENTE_APROBACION_HUMANA, distinto del de aprobar/rechazar", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: "otro-empleado" });
+    const store = makeVentaStore({
+      listarReembolsosRechazados: vi.fn(() => [venta]),
+      reabrirEscalacionReembolso: vi.fn(() => buildVenta({ id: "venta-1", estado: "reembolso_pendiente" })),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const deps = makeDeps({ store });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "reabrir", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toContain(`caso caso-venta-1 en ${CASO_ESTADO_PENDIENTE_APROBACION_HUMANA}`);
+  });
+
+  it("★ test mecánico ampliado (ADR 207 pto 2, ADR 211, R2): el archivo fuente no compara vendedorId con empleadoId (el dispatcher NUNCA reimplementa el predicado de autoaprobación), no importa 'autorizacion-resolucion', no menciona 'puedeResolverAjeno'", () => {
+    const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/autorizacion-resolucion/);
+    expect(source).not.toMatch(/puedeResolverAjeno/);
+    expect(source).not.toMatch(/vendedorId\s*===\s*[\w.]*empleadoId/);
+    expect(source).not.toMatch(/empleadoId\s*===\s*[\w.]*vendedorId/);
+  });
+});
+
 /* ── Bloque 4 (ADR 174 pto 2): consultar_reporte_comisiones ── */
 
 describe("ejecutarOperacion — consultar_reporte_comisiones (ADR 174 pto 2, R12)", () => {
@@ -1014,6 +1369,31 @@ describe("ejecutarOperacion — auditoría en registro_acciones_empleado (Enmien
       comando: COMANDO_APROBAR_SOLICITUD,
       resultado: RESULTADO_NO_APLICABLE,
       casoId: "caso-solicitud-1",
+      empleadoId: SESION.empleadoId,
+    });
+  });
+
+  it("resolver_reembolso: camino CAS perdido ⇒ UNA llamada con COMANDO_APROBAR_REEMBOLSO/RESULTADO_NO_APLICABLE (hallazgo Reviewer, test-coverage, molde resolver_solicitud)", async () => {
+    const venta = buildEscalacion({ ventaId: "venta-1", casoId: "caso-venta-1", vendedorId: "otro-empleado" });
+    const store = makeVentaStore({
+      listarReembolsosPendientes: vi.fn(() => [venta]),
+      aprobarEscalacionReembolso: vi.fn(() => undefined),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_APROBAR_REEMBOLSO,
+      resultado: RESULTADO_NO_APLICABLE,
+      casoId: "caso-venta-1",
+      ventaId: "venta-1",
       empleadoId: SESION.empleadoId,
     });
   });

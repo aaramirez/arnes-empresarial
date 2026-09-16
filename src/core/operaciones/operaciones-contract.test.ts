@@ -14,8 +14,10 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   type AccionConfirmable,
+  type AccionReembolsoModelo,
   type AccionSolicitudModelo,
   type ConfirmacionOperacionPort,
   type DominioConfirmacion,
@@ -27,6 +29,7 @@ import {
   type OperacionProcesarDevolucion,
   type OperacionRegistrarVenta,
   type OperacionResolverDecisionVenta,
+  type OperacionResolverReembolso,
   type OperacionResolverSolicitud,
 } from "./operaciones-contract.js";
 
@@ -43,7 +46,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera las siete operaciones del contrato en este punto (ADR 163/171/174/206 — la octava llega con resolver_reembolso)", () => {
+  it("OPERACIONES_NEGOCIO enumera las ocho operaciones del contrato, final (ADR 163/171/174/206)", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -52,8 +55,9 @@ describe("operaciones-contract constants", () => {
       OPERACION_REGISTRAR_VENTA,
       OPERACION_CONSULTAR_REPORTE_COMISIONES,
       OPERACION_RESOLVER_SOLICITUD,
+      OPERACION_RESOLVER_REEMBOLSO,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(7);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(8);
   });
 });
 
@@ -136,6 +140,28 @@ describe("OperacionNegocio — cada input mínimo tipa correctamente", () => {
     expect(conId.solicitudId).toBe("sol-1");
     // `confirmado` NUNCA es campo de esta interfaz — lo decide el composition root (ADR 206, §0.1).
     expect("confirmado" in listado).toBe(false);
+  });
+
+  it("resolver_reembolso: accion + ventaId opcional, sin campo confirmado, tres valores de accion (ADR 206)", () => {
+    const listado: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+    };
+    const conId: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "reabrir",
+      ventaId: "v1",
+    };
+    const generico: OperacionNegocio = listado;
+    expect(generico.operacion).toBe("resolver_reembolso");
+    expect(conId.ventaId).toBe("v1");
+    // `confirmado` NUNCA es campo de esta interfaz — lo decide el composition root (ADR 206, §0.1).
+    expect("confirmado" in listado).toBe(false);
+
+    const aprobar: AccionReembolsoModelo = "aprobar";
+    const rechazar: AccionReembolsoModelo = "rechazar";
+    const reabrir: AccionReembolsoModelo = "reabrir";
+    expect([aprobar, rechazar, reabrir]).toEqual(["aprobar", "rechazar", "reabrir"]);
   });
 
   it("consultar_reporte_comisiones: único campo opcional periodo, sin dinero ni identidad (ADR 174)", () => {
@@ -238,6 +264,32 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     void accionInvalida;
   }
 
+  function _chequeoDeTipos_resolverReembolsoNoAceptaMonto(): void {
+    const op: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+      // @ts-expect-error — `monto` no es campo de `resolver_reembolso`.
+      monto: 50,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado(): void {
+    const op: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1) — lo decide el composition root.
+      confirmado: true,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_accionReembolsoModeloNoAceptaCancelar(): void {
+    // @ts-expect-error — "cancelar" nunca es un AccionReembolsoModelo (ADR 217) — esa acción es exclusiva de `cancelar_solicitud_interna`.
+    const accionInvalida: AccionReembolsoModelo = "cancelar";
+    void accionInvalida;
+  }
+
   it("las funciones de arriba nunca se invocan — la garantía es tsc --noEmit, no runtime", () => {
     expect(typeof _chequeoDeTipos_resolverDecisionVentaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_procesarDevolucionNoAceptaPorcentaje).toBe("function");
@@ -247,6 +299,9 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     expect(typeof _chequeoDeTipos_registrarVentaNoAceptaPeriodo).toBe("function");
     expect(typeof _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado).toBe("function");
     expect(typeof _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar).toBe("function");
+    expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado).toBe("function");
+    expect(typeof _chequeoDeTipos_accionReembolsoModeloNoAceptaCancelar).toBe("function");
   });
 });
 
