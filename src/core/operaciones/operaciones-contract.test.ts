@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  DOMINIO_REEMBOLSO,
+  DOMINIO_SOLICITUD,
   OPERACIONES_MCP_SERVER_NAME,
   OPERACIONES_NEGOCIO,
   OPERACIONES_TOOL_NAME,
@@ -12,7 +14,10 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  type AccionConfirmable,
   type ConfirmacionOperacionPort,
+  type DominioConfirmacion,
+  type LlaveConfirmacion,
   type OperacionCancelarSolicitudInterna,
   type OperacionConsultarReporteComisiones,
   type OperacionCrearSolicitudInterna,
@@ -206,35 +211,61 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
   });
 });
 
-describe("ConfirmacionOperacionPort (ADR 166)", () => {
-  it("marcarPendiente + estaConfirmada + consumir tipan y se comportan según el guard origenCasoId !== casoIdActual", () => {
+describe("ConfirmacionOperacionPort — LlaveConfirmacion (ADR 209/212/213)", () => {
+  it("marcarPendiente + estaConfirmada + consumir reciben LlaveConfirmacion en las tres firmas, guard origenCasoId !== casoIdActual intacto", () => {
     let pendiente:
-      | { solicitudId: string; empleadoId: string; casoId: string; origenCasoId: string }
+      | {
+          dominio: DominioConfirmacion;
+          itemId: string;
+          accion: AccionConfirmable;
+          empleadoId: string;
+          casoId: string;
+          origenCasoId: string;
+        }
       | undefined;
 
+    // Doble que implementa el puerto nuevo — compila con las tres firmas exactas (tarea 1).
     const port: ConfirmacionOperacionPort = {
-      estaConfirmada: (solicitudId, empleadoId, casoIdActual) =>
+      estaConfirmada: (llave, empleadoId, casoIdActual) =>
         pendiente !== undefined &&
-        pendiente.solicitudId === solicitudId &&
+        pendiente.dominio === llave.dominio &&
+        pendiente.itemId === llave.itemId &&
+        pendiente.accion === llave.accion &&
         pendiente.empleadoId === empleadoId &&
         pendiente.origenCasoId !== casoIdActual,
       marcarPendiente: (input) => {
         pendiente = { ...input };
       },
-      consumir: () => {
+      consumir: (_llave) => {
         pendiente = undefined;
       },
     };
 
-    port.marcarPendiente({ solicitudId: "s1", casoId: "c1", empleadoId: "e1", origenCasoId: "caso-turno-1" });
+    const llave: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "s1", accion: "cancelar" };
+
+    port.marcarPendiente({ ...llave, casoId: "c1", empleadoId: "e1", origenCasoId: "caso-turno-1" });
 
     // Mismo turno que creó la ranura ⇒ nunca autoconfirma (ADR 166).
-    expect(port.estaConfirmada("s1", "e1", "caso-turno-1")).toBe(false);
+    expect(port.estaConfirmada(llave, "e1", "caso-turno-1")).toBe(false);
     // Turno posterior ⇒ sí confirma.
-    expect(port.estaConfirmada("s1", "e1", "caso-turno-2")).toBe(true);
+    expect(port.estaConfirmada(llave, "e1", "caso-turno-2")).toBe(true);
 
-    port.consumir();
-    expect(port.estaConfirmada("s1", "e1", "caso-turno-2")).toBe(false);
+    port.consumir(llave);
+    expect(port.estaConfirmada(llave, "e1", "caso-turno-2")).toBe(false);
+  });
+
+  it("DominioConfirmacion es una unión cerrada de DOS literales, sin 'propuesta' (ADR 212 pto 4)", () => {
+    const reembolso: DominioConfirmacion = DOMINIO_REEMBOLSO;
+    const solicitud: DominioConfirmacion = DOMINIO_SOLICITUD;
+    expect(reembolso).toBe("reembolso");
+    expect(solicitud).toBe("solicitud");
+
+    function _chequeoDeTipos_dominioConfirmacionNoAceptaPropuesta(): void {
+      // @ts-expect-error — "propuesta" nunca es un DominioConfirmacion; esa ranura es de la TUI, no de esta capability (ADR 212 pto 4).
+      const dominioInvalido: DominioConfirmacion = "propuesta";
+      void dominioInvalido;
+    }
+    expect(typeof _chequeoDeTipos_dominioConfirmacionNoAceptaPropuesta).toBe("function");
   });
 });
 

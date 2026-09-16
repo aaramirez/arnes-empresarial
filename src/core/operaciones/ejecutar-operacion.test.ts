@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_CREAR_SOLICITUD_INTERNA,
@@ -7,6 +8,7 @@ import {
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   type ConfirmacionOperacionPort,
+  type LlaveConfirmacion,
   type OperacionNegocio,
 } from "./operaciones-contract.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "./ejecutar-operacion.js";
@@ -394,6 +396,9 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
 
 /* ── Bloque 3 (ADR 166): cancelar_solicitud_interna — doble paso con ConfirmacionOperacionPort ── */
 
+/** `aprobacion-conversacional-hitl`, tarea 3 (ADR 214 pto 1) — `ejecutarCancelarSolicitud` migró a `LlaveConfirmacion`, `dominio: "solicitud"` + `accion: "cancelar"`, cero convivencia con la forma vieja. */
+const LLAVE_CANCELAR_SOL_1: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "sol-1", accion: "cancelar" };
+
 describe("ejecutarOperacion — cancelar_solicitud_interna (ADR 166)", () => {
   it("sin solicitudId ⇒ listado, SIN tocar la ranura de confirmación", async () => {
     const solicitud = buildSolicitud({ id: "sol-1", detalle: "una semana en marzo" });
@@ -423,10 +428,12 @@ describe("ejecutarOperacion — cancelar_solicitud_interna (ADR 166)", () => {
       deps,
     );
 
-    expect(confirmacion.estaConfirmada).toHaveBeenCalledWith("sol-1", SESION.empleadoId, CASO_ACTUAL);
+    expect(confirmacion.estaConfirmada).toHaveBeenCalledWith(LLAVE_CANCELAR_SOL_1, SESION.empleadoId, CASO_ACTUAL);
     expect(confirmacion.marcarPendiente).toHaveBeenCalledWith(
       expect.objectContaining({
-        solicitudId: "sol-1",
+        dominio: DOMINIO_SOLICITUD,
+        itemId: "sol-1",
+        accion: "cancelar",
         casoId: "caso-solicitud-1",
         empleadoId: SESION.empleadoId,
         origenCasoId: CASO_ACTUAL,
@@ -449,6 +456,7 @@ describe("ejecutarOperacion — cancelar_solicitud_interna (ADR 166)", () => {
     );
 
     expect(confirmacion.consumir).toHaveBeenCalledTimes(1);
+    expect(confirmacion.consumir).toHaveBeenCalledWith(LLAVE_CANCELAR_SOL_1);
     expect(solicitudStore.cancelarSolicitud).toHaveBeenCalledTimes(1);
     expect(texto).toContain("sol-1");
   });
