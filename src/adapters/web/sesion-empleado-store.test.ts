@@ -116,4 +116,60 @@ describe("crearSesionEmpleadoStore", () => {
       expect(store.buscar(token)).toBeUndefined();
     });
   });
+
+  /**
+   * `chat-web-empleado`, hallazgo Reviewer 2da ronda #1 (CRÍTICO): dos
+   * sesiones concurrentes del MISMO empleado (dos tokens) no deben pisarse
+   * al cerrar sesión. Método aditivo -- `crear`/`buscar`/`eliminar` no
+   * cambian de firma ni de comportamiento.
+   */
+  describe("otraSesionVigente", () => {
+    it("false si el empleado sólo tiene la sesión que se está por cerrar", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
+      const token = store.crear(sesion);
+
+      expect(store.otraSesionVigente("emp-1", token)).toBe(false);
+    });
+
+    it("true si el mismo empleado tiene OTRA sesión vigente además de la que se excluye", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
+      const tokenA = store.crear(sesion);
+      const tokenB = store.crear(sesion);
+
+      expect(store.otraSesionVigente("emp-1", tokenA)).toBe(true);
+      expect(store.otraSesionVigente("emp-1", tokenB)).toBe(true);
+    });
+
+    it("false si la OTRA sesión del mismo empleado ya venció", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesionVigente: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
+      const sesionVencida: SesionEmpleado = {
+        empleadoId: "emp-1",
+        iniciadaEn: new Date(Date.now() - 120_000).toISOString(),
+        expiraEn: new Date(Date.now() - 60_000).toISOString(),
+      };
+      const tokenVigente = store.crear(sesionVigente);
+      store.crear(sesionVencida);
+
+      expect(store.otraSesionVigente("emp-1", tokenVigente)).toBe(false);
+    });
+
+    it("false si la otra sesión vigente pertenece a OTRO empleado", () => {
+      const store = crearSesionEmpleadoStore();
+      const sesionA: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
+      const sesionB: SesionEmpleado = { empleadoId: "emp-2", iniciadaEn: new Date().toISOString() };
+      const tokenA = store.crear(sesionA);
+      store.crear(sesionB);
+
+      expect(store.otraSesionVigente("emp-1", tokenA)).toBe(false);
+    });
+
+    it("false si el empleadoId no tiene ninguna sesión en el store", () => {
+      const store = crearSesionEmpleadoStore();
+
+      expect(store.otraSesionVigente("emp-inexistente", "token-cualquiera")).toBe(false);
+    });
+  });
 });

@@ -31,7 +31,12 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
   onSoporte: () => Promise<never>;
   onLogin: () => Promise<never>;
   onOperacionesEmpleado: () => Promise<never>;
-  sesionStore: { crear: () => string; buscar: () => undefined; eliminar: () => void };
+  sesionStore: {
+    crear: () => string;
+    buscar: () => undefined;
+    eliminar: () => void;
+    otraSesionVigente: () => boolean;
+  };
   confirmacionOperacionesStore: { paraEmpleado: () => never };
   conversacionStore: { paraSesion: () => never; eliminar: () => void };
   logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
@@ -48,6 +53,7 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
       crear: vi.fn().mockReturnValue("token"),
       buscar: vi.fn().mockReturnValue(undefined),
       eliminar: vi.fn(),
+      otraSesionVigente: vi.fn().mockReturnValue(false),
     },
     confirmacionOperacionesStore: {
       paraEmpleado: (): never => {

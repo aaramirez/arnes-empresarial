@@ -780,8 +780,28 @@ async function handleOperaciones(
  * `empleadoId` sólo se puede leer mientras la sesión existe, por eso
  * `confirmacionOperacionesStore` se consulta ANTES de `sesionStore.eliminar`
  * -- `sesionStore.buscar` (sin borrar todavía) → `confirmacion.consumir()`
- * (si había sesión) → `conversacionStore.eliminar` → `sesionStore.eliminar`.
- * El handler compone; ningún store llama a otro.
+ * (si había sesión Y ninguna OTRA sesión vigente del mismo empleado, ver
+ * abajo) → `conversacionStore.eliminar` → `sesionStore.eliminar`. El
+ * handler compone; ningún store llama a otro.
+ *
+ * Nota deliberada (hallazgo Reviewer 2da ronda #4): NO usa
+ * `resolverSesionDesdeRequest` -- a diferencia de `handleOperaciones`, este
+ * handler necesita el token CRUDO incluso cuando `sesionStore.buscar` no
+ * encuentra sesión (token vencido pero todavía presente en el `Map`), para
+ * poder limpiar `conversacionStore`/`sesionStore` de esa entrada
+ * (`conversacionStore.eliminar(token)`/`sesionStore.eliminar(token)` se
+ * llaman igual en ese caso -- test "token inexistente" de este describe).
+ * `resolverSesionDesdeRequest` devuelve `undefined` en ese mismo caso y
+ * descarta el token junto con la sesión, así que reusarlo acá perdería esa
+ * limpieza. Mantener la extracción manual es la única forma de no
+ * regresionar ese comportamiento ya cubierto por test.
+ *
+ * Hallazgo Reviewer 2da ronda #1 (CRÍTICO): `confirmacionOperacionesStore`
+ * está keyeada por `empleadoId`, no por sesión -- si el empleado tiene OTRA
+ * sesión vigente además de la que se está cerrando, NO se consume su
+ * confirmación (podría estar en curso desde esa otra sesión). Las dos
+ * últimas líneas (`conversacionStore.eliminar`/`sesionStore.eliminar`, que
+ * sí son por token) se ejecutan siempre igual.
  */
 function handleLogout(req: WebRequest, res: WebResponse, requestId: string, deps: WebServerDeps): void {
   const { sesionStore, confirmacionOperacionesStore, conversacionStore } = deps;
@@ -791,7 +811,7 @@ function handleLogout(req: WebRequest, res: WebResponse, requestId: string, deps
   const token = extraerBearerToken(req);
   if (token !== undefined) {
     const sesion = sesionStore.buscar(token);
-    if (sesion !== undefined) {
+    if (sesion !== undefined && !sesionStore.otraSesionVigente(sesion.empleadoId, token)) {
       confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId).consumir();
     }
     conversacionStore.eliminar(token);

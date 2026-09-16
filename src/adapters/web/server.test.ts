@@ -31,8 +31,8 @@ import type { VentaPublica } from "../../core/ventas/ventas-contract.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
 import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
 import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../../core/operaciones/operaciones-contract.js";
-import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
-import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import { crearSesionEmpleadoStore, type SesionEmpleadoStore } from "./sesion-empleado-store.js";
+import { crearConfirmacionOperacionesStore, type ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
 import type { ConversacionEmpleadoStore } from "./conversacion-empleado-store.js";
 import type { ConversacionEmpleadoPort } from "../../core/conversacion/conversacion-contract.js";
 import { CONVERSATIONAL_AGENT_ID, getAgentDefinition } from "../../core/agents/definitions.js";
@@ -167,6 +167,7 @@ function fakeSesionStore(overrides: Partial<SesionEmpleadoStore> = {}): SesionEm
     crear: vi.fn().mockReturnValue("token-nuevo"),
     buscar: vi.fn().mockReturnValue(undefined),
     eliminar: vi.fn(),
+    otraSesionVigente: vi.fn().mockReturnValue(false),
     ...overrides,
   };
 }
@@ -1455,6 +1456,101 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
     expect(ordenSesion).toBeDefined();
     expect(ordenConsumir as number).toBeLessThan(ordenConversacion as number);
     expect(ordenConversacion as number).toBeLessThan(ordenSesion as number);
+  });
+
+  /**
+   * Hallazgo Reviewer 2da ronda #1 (CRÍTICO): `confirmacionOperacionesStore`
+   * está keyeado por `empleadoId`, no por sesión -- dos sesiones concurrentes
+   * del mismo empleado no deben pisarse la confirmación pendiente al cerrar
+   * UNA de ellas.
+   */
+  it("empleado con OTRA sesión vigente -- logout de una NO consume la confirmación de la otra, pero sigue limpiando conversacion/sesion por token", async () => {
+    const sesionStore = fakeSesionStore({
+      buscar: vi.fn().mockReturnValue(SESION_EMPLEADO),
+      otraSesionVigente: vi.fn().mockReturnValue(true),
+    });
+    const confirmacionDelEmpleado = fakeConfirmacion();
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
+      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
+    });
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: "Bearer token-b" } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(sesionStore.otraSesionVigente).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId, "token-b");
+    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
+    expect(confirmacionDelEmpleado.consumir).not.toHaveBeenCalled();
+    expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-b");
+    expect(sesionStore.eliminar).toHaveBeenCalledWith("token-b");
+  });
+
+  it("dos sesiones reales del mismo empleado -- logout de la sesión B no invalida la confirmación pendiente de la sesión A", async () => {
+    const empleadoId = "emp-concurrente";
+    const sesionStore = crearSesionEmpleadoStore();
+    const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const tokenA = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+    const tokenB = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+
+    // Sesión A tiene una confirmación pendiente marcada (simula un turno previo).
+    confirmacionOperacionesStore.paraEmpleado(empleadoId).marcarPendiente({
+      solicitudId: "sol-1",
+      casoId: "caso-1",
+      empleadoId,
+      origenCasoId: "caso-0",
+    });
+
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: `Bearer ${tokenB}` } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    // B quedó deslogueado igual.
+    expect(sesionStore.buscar(tokenB)).toBeUndefined();
+    // La confirmación pendiente de A SIGUE viva -- un turno posterior en un
+    // caso nuevo la sigue viendo como confirmada (mismo criterio que
+    // `estaConfirmada`, ADR 166 pto 3).
+    expect(confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada("sol-1", empleadoId, "caso-nuevo")).toBe(
+      true,
+    );
+  });
+
+  it("empleado con UNA sola sesión (caso normal) -- logout consume la confirmación igual que antes, sin regresión", async () => {
+    const empleadoId = "emp-solo";
+    const sesionStore = crearSesionEmpleadoStore();
+    const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+
+    confirmacionOperacionesStore.paraEmpleado(empleadoId).marcarPendiente({
+      solicitudId: "sol-1",
+      casoId: "caso-1",
+      empleadoId,
+      origenCasoId: "caso-0",
+    });
+
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: `Bearer ${token}` } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada("sol-1", empleadoId, "caso-nuevo")).toBe(
+      false,
+    );
   });
 
   it("un token usado tras logout es indistinguible de uno vencido -- POST /operaciones posterior da 401", async () => {
