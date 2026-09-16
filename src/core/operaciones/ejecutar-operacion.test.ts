@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   DOMINIO_SOLICITUD,
@@ -7,6 +9,7 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_SOLICITUD,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
   type OperacionNegocio,
@@ -23,6 +26,7 @@ import {
   type VentaStorePort,
 } from "../ventas/ventas-contract.js";
 import {
+  SOLICITUD_ESTADO_APROBADA,
   SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_TIPO_GASTO,
@@ -34,20 +38,24 @@ import { getSubagentDefinition } from "../agents/definitions.js";
 import type { InvocacionSubagenteResult, InvocarSubagente } from "../agents/subagents.js";
 import type { ComisionConVenta, VentaPendienteReembolso } from "../ventas/reporte.js";
 import type { ReporteStorePort } from "../ventas/reporte-contract.js";
-import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../auth/rol-contract.js";
+import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado, type RolEmpleadoPort } from "../auth/rol-contract.js";
 import type { SesionEmpleado } from "../auth/sesion.js";
 import {
+  COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_DEVOLUCION,
+  COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_REGISTRAR_VENTA,
   COMANDO_REPORTE_COMISIONES,
   COMANDO_RESOLVER_DECISION_VENTA,
   COMANDO_SOLICITAR,
   RESULTADO_ATENDIDA,
+  RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_CONFIRMADA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_NO_APLICABLE,
+  RESULTADO_NO_AUTORIZADO,
   RESULTADO_RECHAZADA,
   RESULTADO_REEMBOLSADA,
   type AccionEmpleado,
@@ -459,6 +467,164 @@ describe("ejecutarOperacion — cancelar_solicitud_interna (ADR 166)", () => {
     expect(confirmacion.consumir).toHaveBeenCalledWith(LLAVE_CANCELAR_SOL_1);
     expect(solicitudStore.cancelarSolicitud).toHaveBeenCalledTimes(1);
     expect(texto).toContain("sol-1");
+  });
+});
+
+/* ── Bloque 3-bis (ADR 206-207, aprobacion-conversacional-hitl, tarea 9): resolver_solicitud ── */
+
+describe("ejecutarOperacion — resolver_solicitud (ADR 206-207, aprobacion-conversacional-hitl, tarea 9)", () => {
+  it("sin solicitudId ⇒ listado, SIN tocar la ranura de confirmación", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", tipo: SOLICITUD_TIPO_GASTO, detalle: "una semana en marzo" });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const confirmacion = makeConfirmacion();
+    const deps = makeDeps({ solicitudStore });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toContain("sol-1");
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("con solicitudId y estaConfirmada() === false ⇒ requiere_confirmacion + marcarPendiente con LlaveConfirmacion{dominio:'solicitud', itemId, accion}", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1" });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => false) });
+    const deps = makeDeps({ solicitudStore });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar", solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    const llave: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "sol-1", accion: "aprobar" };
+    expect(confirmacion.estaConfirmada).toHaveBeenCalledWith(llave, SESION.empleadoId, CASO_ACTUAL);
+    expect(confirmacion.marcarPendiente).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dominio: DOMINIO_SOLICITUD,
+        itemId: "sol-1",
+        accion: "aprobar",
+        casoId: "caso-solicitud-1",
+        empleadoId: SESION.empleadoId,
+        origenCasoId: CASO_ACTUAL,
+      }),
+    );
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(texto).toContain("sol-1");
+  });
+
+  it("rol base ⇒ no_autorizado, CERO escrituras en solicitudStore, fila de auditoría del intento con comando:'/aprobar-solicitud'", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1", solicitanteId: "otro-empleado" });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_EMPLEADO);
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, rolPort, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar", solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(solicitudStore.rechazarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_APROBAR_SOLICITUD,
+      resultado: RESULTADO_NO_AUTORIZADO,
+      casoId: "caso-solicitud-1",
+    });
+    expect(texto).toContain("No estás autorizado");
+  });
+
+  it("rechazar con rol base ⇒ no_autorizado, fila de auditoría con comando:'/rechazar-solicitud'", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1", solicitanteId: "otro-empleado" });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_EMPLEADO);
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, rolPort, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "rechazar", solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_RECHAZAR_SOLICITUD,
+      resultado: RESULTADO_NO_AUTORIZADO,
+    });
+  });
+
+  it("autoaprobación (solicitanteId === empleadoId) ⇒ autoaprobacion_prohibida, fila de auditoría con RESULTADO_AUTOAPROBACION_PROHIBIDA", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1", solicitanteId: SESION.empleadoId });
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const rolPort = makeRolPort(ROL_ADMINISTRADOR);
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, rolPort, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar", solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_APROBAR_SOLICITUD,
+      resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA,
+      casoId: "caso-solicitud-1",
+    });
+    expect(texto).toContain("No podés aprobar tu propia solicitud");
+  });
+
+  it("listado sin id ⇒ CERO escrituras (regresión, molde cancelar_solicitud_interna)", async () => {
+    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar" }),
+      deps,
+    );
+
+    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto).toContain("No hay solicitudes");
+  });
+
+  it("confirmado tras eco ⇒ CAS aplica, el dispatcher NO escribe fila del camino feliz (ya la escribe la transacción)", async () => {
+    const solicitud = buildSolicitud({ id: "sol-1", casoId: "caso-solicitud-1", solicitanteId: "otro-empleado" });
+    const solicitudStore = makeSolicitudStore({
+      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
+      aprobarSolicitud: vi.fn(() => buildSolicitud({ ...solicitud, estado: SOLICITUD_ESTADO_APROBADA })),
+    });
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ solicitudStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_RESOLVER_SOLICITUD, accion: "aprobar", solicitudId: "sol-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(confirmacion.consumir).toHaveBeenCalledTimes(1);
+    expect(solicitudStore.aprobarSolicitud).toHaveBeenCalledTimes(1);
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto).toContain("sol-1");
+  });
+
+  it("★ test mecánico: el archivo fuente no contiene 'autorizacion-resolucion' ni menciona 'puedeResolverAjeno' (ADR 207 pto 2, R2)", () => {
+    const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/autorizacion-resolucion/);
+    expect(source).not.toMatch(/puedeResolverAjeno/);
   });
 });
 

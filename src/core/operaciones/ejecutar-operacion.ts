@@ -21,10 +21,13 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_SOLICITUD,
+  type AccionSolicitudModelo,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
   type OperacionNegocio,
   type OperacionRegistrarVenta,
+  type OperacionResolverSolicitud,
 } from "./operaciones-contract.js";
 import { resolverDecisionVenta, type ConfirmarVentaDeps, type DecisionVentaResult } from "../ventas/confirmar-venta.js";
 import { procesarDevolucion, type DevolucionResult, type ProcesarDevolucionDeps } from "../ventas/procesar-devolucion.js";
@@ -49,17 +52,21 @@ import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
 import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
 import {
+  COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_DEVOLUCION,
+  COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_REGISTRAR_VENTA,
   COMANDO_REPORTE_COMISIONES,
   COMANDO_RESOLVER_DECISION_VENTA,
   COMANDO_SOLICITAR,
   RESULTADO_ATENDIDA,
+  RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_CONFIRMADA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
   RESULTADO_NO_APLICABLE,
+  RESULTADO_NO_AUTORIZADO,
   RESULTADO_RECHAZADA,
   RESULTADO_REEMBOLSADA,
   type AccionEmpleado,
@@ -306,6 +313,121 @@ async function ejecutarCancelarSolicitud(
   return "No se pudo completar la cancelación: puede que ya no esté pendiente.";
 }
 
+/** `aprobar`→`/aprobar-solicitud`, `rechazar`→`/rechazar-solicitud` (ADR 210 pto 1, tarea 9). */
+const COMANDO_POR_ACCION_SOLICITUD: Record<AccionSolicitudModelo, string> = {
+  aprobar: COMANDO_APROBAR_SOLICITUD,
+  rechazar: COMANDO_RECHAZAR_SOLICITUD,
+};
+
+/**
+ * Molde de `ejecutarCancelarSolicitud`, generalizado a las dos acciones
+ * AJENAS del dominio solicitud (ADR 206-207). A diferencia de `cancelar`
+ * (autoservicio, ADR 130), `aprobar`/`rechazar` SÍ atraviesan el gate de rol
+ * y la prohibición de autoaprobación de `resolverSolicitudInterna` — pero
+ * ESTE dispatcher no reimplementa nada de eso, sólo traduce el `Result` a
+ * texto (ADR 207 pto 2, R2: el riesgo real es que alguien reimplemente el
+ * gate acá, no que falte). Texto de autoaprobación reusado literal del
+ * vigente de la TUI (`build-on-comando-empleado.ts:1336`, ADR 216 pto 5).
+ */
+async function ejecutarResolverSolicitud(
+  operacion: OperacionResolverSolicitud,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  const { accion, solicitudId } = operacion;
+  const resolverDeps: ResolverSolicitudDeps = {
+    store: deps.solicitudStore,
+    newId: deps.newId,
+    now: deps.now,
+    logEvent: deps.logEvent,
+    rolPort: deps.rolPort,
+  };
+
+  if (solicitudId === undefined) {
+    const resultado = resolverSolicitudInterna({ accion, confirmado: false, sesion: input.sesion }, resolverDeps);
+    if (resultado.resultado !== "listado") {
+      return "No se pudo listar las solicitudes.";
+    }
+    if (resultado.items.length === 0) {
+      return "No hay solicitudes para listar.";
+    }
+    return resultado.items.map((item) => `- ${item.id} (${item.tipo}): ${item.detalle}`).join("\n");
+  }
+
+  const llave: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: solicitudId, accion };
+  const yaConfirmada = input.confirmacion.estaConfirmada(llave, input.sesion.empleadoId, input.casoIdActual);
+
+  if (!yaConfirmada) {
+    const resultado = resolverSolicitudInterna(
+      { accion, solicitudId, confirmado: false, sesion: input.sesion },
+      resolverDeps,
+    );
+
+    if (resultado.resultado === "no_aplicable") {
+      return `No hay ninguna solicitud ${solicitudId} pendiente de resolución.`;
+    }
+    if (resultado.resultado !== "requiere_confirmacion") {
+      return "No se pudo procesar esa resolución.";
+    }
+
+    input.confirmacion.marcarPendiente({
+      ...llave,
+      casoId: resultado.item.casoId,
+      empleadoId: input.sesion.empleadoId,
+      origenCasoId: input.casoIdActual,
+    });
+    return `Vas a ${accion} la solicitud ${solicitudId} (${resultado.item.detalle}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución.`;
+  }
+
+  // Coincide: se CONSUME antes de ejecutar (ADR 36, mismo orden que la TUI).
+  input.confirmacion.consumir(llave);
+  const resultado = resolverSolicitudInterna(
+    { accion, solicitudId, confirmado: true, sesion: input.sesion },
+    resolverDeps,
+  );
+
+  if (resultado.resultado === "aplicada") {
+    return `Listo: la solicitud ${solicitudId} quedó ${resultado.estadoFinal}.`;
+  }
+
+  if (resultado.resultado === "no_autorizado") {
+    registrar(
+      { comando: COMANDO_POR_ACCION_SOLICITUD[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_AUTORIZADO },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return `No estás autorizado para ${accion} esa solicitud: se requiere rol elevado.`;
+  }
+
+  if (resultado.resultado === "autoaprobacion_prohibida") {
+    registrar(
+      {
+        comando: COMANDO_POR_ACCION_SOLICITUD[accion],
+        casoId: resultado.casoId,
+        resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA,
+      },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return `No podés ${accion} tu propia solicitud, aunque tengas rol elevado.`;
+  }
+
+  // Camino CAS-perdido (mismo criterio que `ejecutarCancelarSolicitud`): el
+  // camino feliz de arriba ya viajó dentro de la transacción del store,
+  // auditarlo de nuevo lo DUPLICARÍA.
+  if (resultado.resultado === "no_aplicable" && resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
+    registrar(
+      { comando: COMANDO_POR_ACCION_SOLICITUD[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_APLICABLE },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+  }
+  return "No se pudo completar la resolución: puede que ya no esté pendiente.";
+}
+
 /**
  * ADR 171 pto 2/5, ADR 170 pto 5: `vendedorId` sale de `sesion.empleadoId`
  * (closure), NUNCA de `operacion` — que ni siquiera tiene ese campo
@@ -462,6 +584,9 @@ export async function ejecutarOperacion(
 
       case OPERACION_CONSULTAR_REPORTE_COMISIONES:
         return await ejecutarConsultarReporte(operacion.periodo, input.sesion, input.casoIdActual, deps);
+
+      case OPERACION_RESOLVER_SOLICITUD:
+        return await ejecutarResolverSolicitud(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;
