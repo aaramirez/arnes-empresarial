@@ -1,19 +1,22 @@
 /**
- * Ejecución de las seis operaciones del contrato (`operaciones-contract.ts`,
- * tarea 1) — dispatch puro hacia los casos de uso/funciones YA EXISTENTES de
- * `core/ventas`/`core/solicitudes`, SIN modificarlos (ADR 145 pto 5, ADR 167,
- * ADR 170/171/174, tarea 3). Traduce cada `Result` discriminado a texto para
- * el modelo, molde `knowledge-tool.ts` — NUNCA lanza, en ningún camino, ni
- * siquiera si una dependencia inyectada lanza sincrónicamente (mismo criterio
- * que `handleKnowledgeQuery`).
+ * Ejecución de las ocho operaciones del contrato (`operaciones-contract.ts`,
+ * tarea 1, ampliado a `resolver_solicitud`/`resolver_reembolso` por
+ * `aprobacion-conversacional-hitl`, tareas 9/13) — dispatch puro hacia los
+ * casos de uso/funciones YA EXISTENTES de `core/ventas`/`core/solicitudes`,
+ * SIN modificarlos (ADR 145 pto 5, ADR 167, ADR 170/171/174, tarea 3).
+ * Traduce cada `Result` discriminado a texto para el modelo, molde
+ * `knowledge-tool.ts` — NUNCA lanza, en ningún camino, ni siquiera si una
+ * dependencia inyectada lanza sincrónicamente (mismo criterio que
+ * `handleKnowledgeQuery`).
  *
  * Imports: `operaciones-contract.ts` (tarea 1, mismo directorio, para el tipo
- * de la unión discriminada y `ConfirmacionOperacionPort`) + los seis casos de
+ * de la unión discriminada y `ConfirmacionOperacionPort`) + los casos de
  * uso/funciones puras de `core/ventas`/`core/solicitudes` que este módulo
  * despacha, sin tocarlos. Ningún import de `src/adapters/*` ni del SDK
  * (regla no negociable de `AGENTS.md`).
  */
 import {
+  DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
@@ -21,16 +24,24 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
   type OperacionNegocio,
   type OperacionRegistrarVenta,
+  type OperacionResolverReembolso,
   type OperacionResolverSolicitud,
 } from "./operaciones-contract.js";
 import { resolverDecisionVenta, type ConfirmarVentaDeps, type DecisionVentaResult } from "../ventas/confirmar-venta.js";
 import { procesarDevolucion, type DevolucionResult, type ProcesarDevolucionDeps } from "../ventas/procesar-devolucion.js";
 import { registrarVenta, type RegistrarVentaDeps } from "../ventas/registrar-venta.js";
+import {
+  ACCION_REABRIR,
+  resolverEscalacionReembolso,
+  type AccionEscalacion,
+  type ResolverEscalacionDeps,
+} from "../ventas/resolver-escalacion-reembolso.js";
 import {
   type ConsultaRiesgoCreditoPort,
   type VentaNotifierPort,
@@ -52,9 +63,12 @@ import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
 import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
 import {
+  COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_DEVOLUCION,
+  COMANDO_REABRIR_REEMBOLSO,
+  COMANDO_RECHAZAR_REEMBOLSO,
   COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_REGISTRAR_VENTA,
   COMANDO_REPORTE_COMISIONES,
@@ -224,6 +238,27 @@ function registrar(
   }
 }
 
+/**
+ * Registro de auditoría compartido por las tres ramas "resultado no
+ * aplicado" (`no_autorizado`, `autoaprobacion_prohibida`,
+ * `no_aplicable`/CAS-perdido) de `ejecutarAccionSolicitud` Y
+ * `ejecutarResolverReembolso` (hallazgo Reviewer 4, duplicación). El único
+ * campo que varía entre ambas funciones es `ventaId` (ausente en
+ * solicitudes) — de ahí `extra`, en vez de un objeto de payload completo,
+ * que forzaría a repetir `comando`/`casoId`/`resultado` en cada call site
+ * de todos modos.
+ */
+function registrarResultadoAccion(
+  comando: string,
+  resultado: string,
+  casoId: string,
+  extra: { readonly ventaId?: string },
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): void {
+  registrar({ comando, casoId, resultado, ...extra }, input.sesion, input.casoIdActual, deps);
+}
+
 /** `cancelar`→`/cancelar-solicitud`, `aprobar`→`/aprobar-solicitud`, `rechazar`→`/rechazar-solicitud` (ADR 210 pto 1, tarea 9; unificado hallazgo Reviewer 2). */
 const COMANDO_POR_ACCION_SOLICITUD: Record<AccionSolicitud, string> = {
   cancelar: COMANDO_CANCELAR_SOLICITUD,
@@ -325,34 +360,36 @@ async function ejecutarAccionSolicitud(
   }
 
   if (resultado.resultado === "no_autorizado") {
-    registrar(
-      { comando: COMANDO_POR_ACCION_SOLICITUD[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_AUTORIZADO },
-      input.sesion,
-      input.casoIdActual,
+    registrarResultadoAccion(
+      COMANDO_POR_ACCION_SOLICITUD[accion],
+      RESULTADO_NO_AUTORIZADO,
+      resultado.casoId,
+      {},
+      input,
       deps,
     );
     return `No estás autorizado para ${accion} esa solicitud: se requiere rol elevado.`;
   }
 
   if (resultado.resultado === "autoaprobacion_prohibida") {
-    registrar(
-      {
-        comando: COMANDO_POR_ACCION_SOLICITUD[accion],
-        casoId: resultado.casoId,
-        resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA,
-      },
-      input.sesion,
-      input.casoIdActual,
+    registrarResultadoAccion(
+      COMANDO_POR_ACCION_SOLICITUD[accion],
+      RESULTADO_AUTOAPROBACION_PROHIBIDA,
+      resultado.casoId,
+      {},
+      input,
       deps,
     );
     return `No podés ${accion} tu propia solicitud, aunque tengas rol elevado.`;
   }
 
   if (resultado.resultado === "no_aplicable" && resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
-    registrar(
-      { comando: COMANDO_POR_ACCION_SOLICITUD[accion], casoId: resultado.casoId, resultado: RESULTADO_NO_APLICABLE },
-      input.sesion,
-      input.casoIdActual,
+    registrarResultadoAccion(
+      COMANDO_POR_ACCION_SOLICITUD[accion],
+      RESULTADO_NO_APLICABLE,
+      resultado.casoId,
+      {},
+      input,
       deps,
     );
   }
@@ -397,6 +434,134 @@ async function ejecutarResolverSolicitud(
       `Vas a ${accion} la solicitud ${id} (${detalle}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución.`,
     noCompletada: "No se pudo completar la resolución: puede que ya no esté pendiente.",
   });
+}
+
+/** `aprobar`→`/aprobar-reembolso`, `rechazar`→`/rechazar-reembolso`, `reabrir`→`/reabrir-reembolso` (ADR 210 pto 1, tarea 13). */
+const COMANDO_POR_ACCION_REEMBOLSO: Record<AccionEscalacion, string> = {
+  aprobar: COMANDO_APROBAR_REEMBOLSO,
+  rechazar: COMANDO_RECHAZAR_REEMBOLSO,
+  reabrir: COMANDO_REABRIR_REEMBOLSO,
+};
+
+/**
+ * Wrapper de `resolverEscalacionReembolso` para `resolver_reembolso` (ADR
+ * 206-207, ADR 211, ADR 216, ADR 218, tarea 13) — molde de
+ * `ejecutarResolverSolicitud`/`ejecutarAccionSolicitud`, adaptado a las
+ * SEIS ramas de `ResolverEscalacionResult` (dominio distinto, delega a una
+ * función core distinta — `resolverEscalacionReembolso`, no
+ * `resolverSolicitudInterna` — por eso NO comparte el helper
+ * `ejecutarAccionSolicitud`: las formas de `Result` no coinciden campo a
+ * campo — `autoaprobacion_prohibida` trae `itemId` acá en vez de un `casoId`
+ * suelto junto al de `no_autorizado`, y no existe una rama `no_es_dueno` —
+ * forzar una abstracción cross-dominio hoy sería prematura; señalado para
+ * que el Reviewer lo evalúe). Texto de autoaprobación LITERAL (ADR 216 pto
+ * 1), distinguible del rechazo por rol. **Cero lógica de autorización,
+ * incluido el predicado `vendedorId`/`empleadoId`** — el dispatcher SOLO
+ * traduce el `Result` que ya produjo `resolverEscalacionReembolso` (tarea 5,
+ * Unit 2).
+ */
+async function ejecutarResolverReembolso(
+  operacion: OperacionResolverReembolso,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  const { accion, ventaId } = operacion;
+  const resolverDeps: ResolverEscalacionDeps = {
+    store: deps.store,
+    newId: deps.newId,
+    now: deps.now,
+    logEvent: deps.logEvent,
+    rolPort: deps.rolPort,
+  };
+
+  if (ventaId === undefined) {
+    const resultado = resolverEscalacionReembolso({ accion, confirmado: false, sesion: input.sesion }, resolverDeps);
+    if (resultado.resultado !== "listado") {
+      return "No se pudo listar las escalaciones de reembolso.";
+    }
+    if (resultado.items.length === 0) {
+      return "No hay escalaciones de reembolso para listar.";
+    }
+    return resultado.items.map((item) => `- ${item.ventaId} (monto ${item.monto}): caso ${item.casoId}`).join("\n");
+  }
+
+  const llave: LlaveConfirmacion = { dominio: DOMINIO_REEMBOLSO, itemId: ventaId, accion };
+  const yaConfirmada = input.confirmacion.estaConfirmada(llave, input.sesion.empleadoId, input.casoIdActual);
+
+  if (!yaConfirmada) {
+    const resultado = resolverEscalacionReembolso(
+      { accion, ventaId, confirmado: false, sesion: input.sesion },
+      resolverDeps,
+    );
+
+    if (resultado.resultado === "no_aplicable") {
+      return `No hay ninguna escalación de reembolso ${ventaId} pendiente de resolución.`;
+    }
+    if (resultado.resultado !== "requiere_confirmacion") {
+      return "No se pudo procesar esa resolución.";
+    }
+
+    input.confirmacion.marcarPendiente({
+      ...llave,
+      casoId: resultado.venta.casoId,
+      empleadoId: input.sesion.empleadoId,
+      origenCasoId: input.casoIdActual,
+    });
+    const eco = `Vas a ${accion} el reembolso de la venta ${ventaId} (monto ${resultado.venta.monto}). Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la resolución.`;
+    if (accion !== ACCION_REABRIR) {
+      return eco;
+    }
+    const rechazadaPor = resultado.venta.rechazadaPor ?? "desconocido";
+    const rechazadaAt = resultado.venta.rechazadaAt ?? "fecha desconocida";
+    return `${eco} rechazada por ${rechazadaPor} el ${rechazadaAt} · reaperturas previas: ${resultado.venta.reaperturasPrevias}.`;
+  }
+
+  // Coincide: se CONSUME antes de ejecutar (ADR 36, mismo orden que la TUI).
+  input.confirmacion.consumir(llave);
+  const resultado = resolverEscalacionReembolso(
+    { accion, ventaId, confirmado: true, sesion: input.sesion },
+    resolverDeps,
+  );
+
+  if (resultado.resultado === "aplicada") {
+    return `Listo: el reembolso de la venta ${ventaId} quedó ${resultado.estadoFinal}.`;
+  }
+
+  if (resultado.resultado === "no_autorizado") {
+    registrarResultadoAccion(
+      COMANDO_POR_ACCION_REEMBOLSO[accion],
+      RESULTADO_NO_AUTORIZADO,
+      resultado.casoId,
+      { ventaId },
+      input,
+      deps,
+    );
+    return `No estás autorizado para ${accion} esa escalación de reembolso: se requiere rol elevado.`;
+  }
+
+  if (resultado.resultado === "autoaprobacion_prohibida") {
+    registrarResultadoAccion(
+      COMANDO_POR_ACCION_REEMBOLSO[accion],
+      RESULTADO_AUTOAPROBACION_PROHIBIDA,
+      resultado.casoId,
+      { ventaId },
+      input,
+      deps,
+    );
+    return `No podés ${accion} el reembolso de tu propia venta, aunque tengas rol elevado.`;
+  }
+
+  if (resultado.resultado === "no_aplicable" && resultado.motivo === MOTIVO_CAS && resultado.casoId !== undefined) {
+    registrarResultadoAccion(
+      COMANDO_POR_ACCION_REEMBOLSO[accion],
+      RESULTADO_NO_APLICABLE,
+      resultado.casoId,
+      { ventaId },
+      input,
+      deps,
+    );
+  }
+  return "No se pudo completar la resolución: puede que ya no esté pendiente.";
 }
 
 /**
@@ -558,6 +723,9 @@ export async function ejecutarOperacion(
 
       case OPERACION_RESOLVER_SOLICITUD:
         return await ejecutarResolverSolicitud(operacion, input, deps);
+
+      case OPERACION_RESOLVER_REEMBOLSO:
+        return await ejecutarResolverReembolso(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;

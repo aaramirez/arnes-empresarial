@@ -1,4 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type Database from "better-sqlite3";
+import { openDatabase } from "../memory/db.js";
+import { confirmarVentaConComision, escalarReembolso } from "../memory/repository.js";
+import { buildOnVenta, createVentaStore } from "../../build-on-venta.js";
+import { ejecutarOperacion, type EjecutarOperacionDeps } from "../../core/operaciones/ejecutar-operacion.js";
+import { OPERACION_REGISTRAR_VENTA, OPERACION_RESOLVER_REEMBOLSO } from "../../core/operaciones/operaciones-contract.js";
+import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
+import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
+import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
+import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
+import { getSubagentDefinition } from "../../core/agents/definitions.js";
+import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
+import type { VentasConfig } from "../../core/ventas/ventas-config.js";
 import {
   CSP_CHAT,
   OPERACIONES_TIMEOUT_MS,
@@ -27,7 +40,13 @@ import {
   type WebServerDeps,
 } from "./server.js";
 import type { RegistrarVentaResult } from "../../core/ventas/registrar-venta.js";
-import type { VentaPublica } from "../../core/ventas/ventas-contract.js";
+import {
+  VENTA_ESTADO_REEMBOLSADA,
+  VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+  type NotificacionResultado,
+  type VentaNotifierPort,
+  type VentaPublica,
+} from "../../core/ventas/ventas-contract.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
 import type { ConfirmacionOperacionPort, LlaveConfirmacion } from "../../core/operaciones/operaciones-contract.js";
 import {
@@ -471,6 +490,263 @@ describe("createRequestListener — POST /ventas", () => {
     expect(deps.logEvent).toHaveBeenCalledWith(REQUEST_ID, "web-handler-fallido", expect.anything());
     const body = JSON.parse(res.end.mock.calls[0]![0] as string) as { error: string };
     expect(body.error).not.toContain("store rompió");
+  });
+});
+
+/**
+ * `aprobacion-conversacional-hitl`, tarea 13 (ADR 211 pto 5, Success
+ * Criteria de `proposal.md`) — R7 verificada en los DOS SENTIDOS por el
+ * canal conversacional, contra código de producción REAL: `db` SQLite real
+ * (`:memory:`), `store` de ventas real (`createVentaStore(db)`), `onAltaVenta`
+ * real (`buildOnVenta(...).onAltaVenta`, la MISMA pieza que compone
+ * `main.ts` para `POST /ventas`). La resolución del reembolso se ejercita
+ * directamente contra `ejecutarOperacion` (el dispatcher real de la tarea
+ * 13) — no contra el turno conversacional completo (que exige invocar el
+ * modelo, fuera de alcance: CERO llamadas al modelo en las piezas
+ * deterministas, mismo criterio que el resto de `src/core/`).
+ */
+function realNotifierR7(): VentaNotifierPort {
+  return {
+    notificarLinkConfirmacion: vi.fn(async (): Promise<NotificacionResultado> => ({ enviado: true })),
+  };
+}
+
+function unusedSolicitudStoreR7(): SolicitudStorePort {
+  const unused = (): never => {
+    throw new Error("SolicitudStorePort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  return {
+    crearSolicitudConCaso: unused,
+    adjuntarDictamen: unused,
+    listarSolicitudesPendientes: unused,
+    aprobarSolicitud: unused,
+    rechazarSolicitud: unused,
+    cancelarSolicitud: unused,
+  };
+}
+
+function unusedReporteStoreR7(): ReporteStorePort {
+  const unused = (): never => {
+    throw new Error("ReporteStorePort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  return { listComisionesPorPeriodo: unused, listVentasEnReembolsoPendiente: unused };
+}
+
+function unusedDespacharDepsR7(): DespacharDelegacionDeps {
+  const unused = (): never => {
+    throw new Error("DespacharDelegacionDeps no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  const delegacionStore: DelegacionStorePort = { crearDelegacion: unused, completarDelegacion: unused };
+  return {
+    store: delegacionStore,
+    invocar: unused,
+    getSubagente: getSubagentDefinition,
+    newId: () => "id-no-usado",
+    now: () => "2026-01-01T00:00:00.000Z",
+    logEvent: vi.fn(),
+  };
+}
+
+const VENTAS_CONFIG_R7: VentasConfig = {
+  comisionPorcentaje: 0.1,
+  reembolsoUmbral: 500,
+  tokenTtlHoras: 72,
+  ventaGrandeUmbral: 5000,
+};
+
+function realRolPortR7(rol: RolEmpleado | undefined = ROL_ADMINISTRADOR): RolEmpleadoPort {
+  return { buscarRol: () => rol };
+}
+
+function makeRegistroR7(): RegistroAccionesEmpleadoPort {
+  return { registrarAccion: vi.fn() };
+}
+
+/** `EjecutarOperacionDeps` con `store` REAL (SQLite) — el resto son dobles inertes ("unused..."), sin uso en el camino de `resolver_reembolso`/`registrar_venta`. */
+function ejecutarDepsR7(db: Database.Database, overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOperacionDeps {
+  let contador = 0;
+  return {
+    store: createVentaStore(db),
+    solicitudStore: unusedSolicitudStoreR7(),
+    config: VENTAS_CONFIG_R7,
+    notifier: realNotifierR7(),
+    baseUrlPublica: "http://localhost:8080",
+    reporteStore: unusedReporteStoreR7(),
+    despacharDeps: unusedDespacharDepsR7(),
+    rolPort: realRolPortR7(),
+    registro: makeRegistroR7(),
+    newId: () => `id-r7-${contador++}`,
+    newToken: () => `token-r7-${contador++}`,
+    now: () => "2026-01-01T00:00:00.000Z",
+    logEvent: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("createRequestListener + ejecutarOperacion — R7 en los DOS sentidos por el canal conversacional (aprobacion-conversacional-hitl, tarea 13, ADR 211 pto 5)", () => {
+  it("★ (i) registrar_venta por el canal conversacional (empleado E) ⇒ vendedorId = E; E con rol elevado ⇒ autoaprobacion_prohibida al resolver su propio reembolso, cero cambios en ventas", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const deps = ejecutarDepsR7(db, { rolPort: realRolPortR7(ROL_ADMINISTRADOR) });
+      const sesionE: SesionEmpleado = { empleadoId: "empleado-E", iniciadaEn: "2026-01-01T00:00:00.000Z" };
+      const confirmacionEco: ConfirmacionOperacionPort = {
+        estaConfirmada: vi.fn().mockReturnValue(false),
+        marcarPendiente: vi.fn(),
+        consumir: vi.fn(),
+      };
+
+      // 1. registrar_venta por el canal conversacional — vendedorId sale de sesion.empleadoId, NUNCA de un campo de la operación.
+      const textoAlta = await ejecutarOperacion(
+        {
+          operacion: {
+            operacion: OPERACION_REGISTRAR_VENTA,
+            clienteId: "cliente-1",
+            clienteEmail: "cliente@example.com",
+            planNuevo: "premium",
+            monto: 1000,
+            vendedorNombre: "Empleado E",
+          },
+          sesion: sesionE,
+          confirmacion: confirmacionEco,
+          casoIdActual: "caso-turno-1",
+        },
+        deps,
+      );
+      const ventaIdMatch = /Venta (\S+) registrada \(caso (\S+)\)/.exec(textoAlta);
+      if (ventaIdMatch === null) {
+        throw new Error(`test setup error: no se pudo extraer ventaId/casoId de: ${textoAlta}`);
+      }
+      const ventaId = ventaIdMatch[1] as string;
+      const casoId = ventaIdMatch[2] as string;
+
+      const ventaFila = db.prepare("SELECT vendedor_id AS vendedorId FROM ventas WHERE id = ?").get(ventaId) as
+        | { vendedorId: string }
+        | undefined;
+      expect(ventaFila?.vendedorId).toBe("empleado-E");
+
+      // 2. Escalar a reembolso_pendiente (mismo molde que la integración TUI de comandos-administracion-empleados).
+      confirmarVentaConComision(db, {
+        ventaId,
+        comisionId: "comision-1",
+        comisionMonto: 100,
+        periodo: "2026-01",
+        ahora: "2026-01-01T00:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId, casoId, ahora: "2026-01-01T00:00:00.000Z" });
+
+      // 3. E (rol elevado) intenta aprobar SU PROPIO reembolso, en dos turnos (eco + confirmación).
+      await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId },
+          sesion: sesionE,
+          confirmacion: confirmacionEco,
+          casoIdActual: "caso-turno-2",
+        },
+        deps,
+      );
+      const confirmacionConfirmada: ConfirmacionOperacionPort = {
+        estaConfirmada: vi.fn().mockReturnValue(true),
+        marcarPendiente: vi.fn(),
+        consumir: vi.fn(),
+      };
+      const textoResolucion = await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId },
+          sesion: sesionE,
+          confirmacion: confirmacionConfirmada,
+          casoIdActual: "caso-turno-3",
+        },
+        deps,
+      );
+
+      expect(textoResolucion).toBe("No podés aprobar el reembolso de tu propia venta, aunque tengas rol elevado.");
+
+      const ventaTrasIntento = db.prepare("SELECT estado FROM ventas WHERE id = ?").get(ventaId) as { estado: string };
+      expect(ventaTrasIntento.estado).toBe(VENTA_ESTADO_REEMBOLSO_PENDIENTE);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("★ (ii) test negativo obligatorio: venta dada de alta por POST /ventas (sin sesión de empleado, vendedorId del payload externo) ⇒ un administrador SÍ puede resolver su reembolso", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const store = createVentaStore(db);
+      const ventaHandlers = buildOnVenta({
+        db,
+        store,
+        notifier: realNotifierR7(),
+        ventasConfig: VENTAS_CONFIG_R7,
+        baseUrlPublica: "http://localhost:8080",
+      });
+      const webDeps = makeDeps({ onAltaVenta: ventaHandlers.onAltaVenta });
+      const listener = createRequestListener(webDeps);
+      const req = new FakeRequest({ method: "POST", url: RUTA_VENTAS, headers: authHeader() });
+      const res = new FakeResponse();
+
+      // 1. Alta real vía POST /ventas — vendedorId viene del PAYLOAD externo, nunca de una sesión de empleado (que ni siquiera existe en esta ruta).
+      listener(req, res);
+      req.emitBody([
+        jsonBody({
+          vendedorId: "vend-externo",
+          vendedorNombre: "Vendedor Externo",
+          clienteId: "cliente-2",
+          clienteEmail: "cliente2@example.com",
+          planNuevo: "premium",
+          monto: 1000,
+        }),
+      ]);
+      await esperarRespuesta(res);
+      expect(res.statusCode).toBe(201);
+      const { ventaId, casoId } = JSON.parse(res.end.mock.calls[0]![0] as string) as {
+        ventaId: string;
+        casoId: string;
+      };
+
+      const ventaFila = db.prepare("SELECT vendedor_id AS vendedorId FROM ventas WHERE id = ?").get(ventaId) as {
+        vendedorId: string;
+      };
+      expect(ventaFila.vendedorId).toBe("vend-externo");
+
+      // 2. Escalar a reembolso_pendiente.
+      confirmarVentaConComision(db, {
+        ventaId,
+        comisionId: "comision-2",
+        comisionMonto: 100,
+        periodo: "2026-01",
+        ahora: "2026-01-01T00:00:00.000Z",
+      });
+      escalarReembolso(db, { ventaId, casoId, ahora: "2026-01-01T00:00:00.000Z" });
+
+      // 3. Un administrador (empleadoId distinto de "vend-externo", ni siquiera del mismo espacio de identidad) resuelve normalmente.
+      const deps = ejecutarDepsR7(db);
+      const sesionAdmin: SesionEmpleado = { empleadoId: "admin-1", iniciadaEn: "2026-01-01T00:00:00.000Z" };
+      const confirmacionConfirmada: ConfirmacionOperacionPort = {
+        estaConfirmada: vi.fn().mockReturnValue(true),
+        marcarPendiente: vi.fn(),
+        consumir: vi.fn(),
+      };
+
+      const textoResolucion = await ejecutarOperacion(
+        {
+          operacion: { operacion: OPERACION_RESOLVER_REEMBOLSO, accion: "aprobar", ventaId },
+          sesion: sesionAdmin,
+          confirmacion: confirmacionConfirmada,
+          casoIdActual: "caso-turno-1",
+        },
+        deps,
+      );
+
+      expect(textoResolucion).not.toContain("No podés");
+      expect(textoResolucion).toContain("quedó");
+
+      const ventaTrasResolucion = db.prepare("SELECT estado FROM ventas WHERE id = ?").get(ventaId) as {
+        estado: string;
+      };
+      expect(ventaTrasResolucion.estado).toBe(VENTA_ESTADO_REEMBOLSADA);
+    } finally {
+      db.close();
+    }
   });
 });
 
