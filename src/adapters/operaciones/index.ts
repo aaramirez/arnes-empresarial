@@ -79,16 +79,50 @@ const OPERACIONES_TOOL_SCHEMA = {
   monto: z.number().optional(),
   vendedorNombre: z.string().optional(),
   periodo: z.string().optional(),
+  /**
+   * `aprobacion-conversacional-hitl`, ADR 217 pto 3 — enum ampliado en la
+   * tarea 12 para incluir "reabrir" (dominio reembolso, Unit 4), además de
+   * "aprobar"/"rechazar" (dominio solicitud, Unit 3). "acota forma" (zod,
+   * acá) es deliberadamente más laxo que "acota significado"
+   * (`VALORES_PERMITIDOS_POR_OPERACION`, `validar-operacion.ts`, que sí
+   * distingue qué acción vale para cada operación — `resolver_solicitud`
+   * sigue sin aceptar "reabrir" a ese nivel, aunque el zod plano ya lo deje
+   * pasar).
+   */
+  accion: z.enum(["aprobar", "rechazar", "reabrir"]).optional(),
+  /** `aprobacion-conversacional-hitl`, ADR 206/217, tarea 12 — ausente = modo listado (mismo criterio que `solicitudId`). */
+  ventaId: z.string().optional(),
 };
 
-const OPERACIONES_TOOL_DESCRIPTION =
+/** Exportado para test directo del schema zod (aprobacion-conversacional-hitl, tarea 8) — la forma en el borde MCP, sin pasar por el handler. */
+export const OPERACIONES_TOOL_ZOD_SCHEMA = z.object(OPERACIONES_TOOL_SCHEMA);
+
+/**
+ * Exportado para test directo del contenido del prompt (aprobacion-conversacional-hitl,
+ * tarea 15, molde `OPERACIONES_TOOL_ZOD_SCHEMA` de la tarea 8) — mismo criterio de
+ * exportar constantes de sólo-lectura para verificación de contenido sin pasar por
+ * el registro MCP.
+ *
+ * `aprobacion-conversacional-hitl`, tarea 15 (ADR 220 pto 1-3): suma la frase sobre
+ * `accion` inequívoca, texto literal compartido con `INSTRUCCION_OPERACIONES_EMPLEADO`
+ * (`definitions.ts`) y `buildOperacionesEmpleadoPrompt` (`soporte-prompt.ts`).
+ */
+export const OPERACIONES_TOOL_DESCRIPTION =
   "Ejecutá una operación de negocio en nombre del empleado autenticado de este turno: " +
   "resolver una decisión de venta ya tomada por el cliente, procesar una devolución, " +
   "crear o cancelar una solicitud interna propia, registrar una venta nueva ya pactada " +
-  "con el cliente, o consultar el reporte de comisiones de un período. Nunca calculás " +
-  "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. Si " +
-  "la respuesta pide confirmación, comunicásela al empleado tal cual y esperá que te lo " +
-  "vuelva a pedir en un mensaje nuevo antes de invocar la misma operación otra vez.";
+  "con el cliente, resolver (aprobar/rechazar) una solicitud interna ajena escalada, " +
+  "resolver (aprobar/rechazar/reabrir) una escalación de reembolso ajena, " +
+  "o consultar el reporte de comisiones de un período. Nunca calculás " +
+  "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. " +
+  "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un " +
+  "reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una " +
+  "frase inequívoca del empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
+  "'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca " +
+  "elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que " +
+  "parezca más razonable. Si la respuesta pide confirmación, comunicásela al " +
+  "empleado tal cual y esperá que te lo vuelva a pedir en un mensaje nuevo antes " +
+  "de invocar la misma operación otra vez.";
 
 /**
  * Builds an `OperacionesAdapter`: an in-process MCP server exposing the
@@ -111,7 +145,7 @@ export function createOperacionesAdapter(deps: OperacionesAdapterDeps): Operacio
           // `operaciones-contract.ts` (whitelist "sin imports", tarea 2) así
           // que no puede devolver el tipo de la unión discriminada — pero YA
           // garantizó, campo por campo, que `validado` tiene exactamente la
-          // forma de una de las seis variantes de `OperacionNegocio`.
+          // forma de una de las ocho variantes de `OperacionNegocio`.
           const operacion = validado as unknown as OperacionNegocio;
           const texto = await deps.ejecutar({
             operacion,

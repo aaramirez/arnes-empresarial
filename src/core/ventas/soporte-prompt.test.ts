@@ -163,6 +163,37 @@ describe("buildOperacionesEmpleadoPrompt — incluye la consulta del empleado", 
   });
 });
 
+describe("buildOperacionesEmpleadoPrompt — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
+  /** Texto literal de ADR 220 pto 2 — el mismo, duplicado a propósito, en las tres superficies de prompt. */
+  const TEXTO_ACCION_INEQUIVOCA =
+    "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un reembolso (`aprobar`, `rechazar` o `reabrir`), " +
+    "la acción tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo " +
+    "—'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá " +
+    "cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la " +
+    "acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca " +
+    "más razonable.";
+
+  it("incluye el texto exacto de ADR 220 pto 2, con 'reabrir' scoped solo a reembolso", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Resolvé la solicitud S1");
+
+    expect(prompt).toContain(TEXTO_ACCION_INEQUIVOCA);
+  });
+
+  it("suma la mención de resolver escalaciones de reembolso y solicitudes internas", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Resolvé la solicitud S1");
+
+    expect(prompt.toLowerCase()).toContain("escalaciones de reembolso y solicitudes internas");
+  });
+
+  it("regresión: la frase de confirmación original NO cambió ni una letra", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Resolvé la solicitud S1");
+
+    expect(prompt).toContain(
+      "Si la herramienta te devuelve un pedido de confirmación, comunicáselo al empleado tal cual y esperá su respuesta explícita en un mensaje nuevo antes de volver a invocar la misma operación: nunca decidas vos que ya quedó confirmado.",
+    );
+  });
+});
+
 describe("buildSoportePrompt — byte-idéntica tras agregar buildOperacionesEmpleadoPrompt (ADR 168 pto 1, regresión)", () => {
   it("sigue incluyendo la limitación de cliente sin cambios", () => {
     const prompt = buildSoportePrompt("¿Me pueden cancelar la compra?");

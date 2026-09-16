@@ -33,6 +33,10 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   registrar_venta: ["operacion", "clienteId", "clienteEmail", "planAnterior", "planNuevo", "monto", "vendedorNombre"],
   // ★ ÚNICA operación cuya whitelist incluye `periodo` (ADR 174 pto 1).
   consultar_reporte_comisiones: ["operacion", "periodo"],
+  // `aprobacion-conversacional-hitl`, ADR 206/217 — solicitudId ausente = modo listado.
+  resolver_solicitud: ["operacion", "accion", "solicitudId"],
+  // `aprobacion-conversacional-hitl`, ADR 206/217 — ventaId ausente = modo listado.
+  resolver_reembolso: ["operacion", "accion", "ventaId"],
 };
 
 /** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
@@ -43,6 +47,8 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   cancelar_solicitud_interna: [],
   registrar_venta: ["clienteId", "clienteEmail", "planNuevo", "monto", "vendedorNombre"],
   consultar_reporte_comisiones: [],
+  resolver_solicitud: ["accion"],
+  resolver_reembolso: ["accion"],
 };
 
 /**
@@ -77,7 +83,42 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   cancelar_solicitud_interna: [],
   registrar_venta: ["monto"],
   consultar_reporte_comisiones: [],
+  resolver_solicitud: [],
+  resolver_reembolso: [],
 };
+
+/**
+ * Cuarta tabla (ADR 217 pto 2-3): campos cuyo VALOR, no sólo su tipo/presencia,
+ * está acotado a un conjunto cerrado — separa "acota forma" (zod, en el borde
+ * MCP) de "acota significado" (acá). Sólo dos filas hoy: `resolver_decision_
+ * venta.decision` (cierra la dependencia implícita de zod, aditivo, sin
+ * cambio de comportamiento observable) y `resolver_solicitud.accion`.
+ * ★ `"cancelar"` NUNCA entra en `resolver_solicitud.accion` — esa acción es
+ * exclusiva de `cancelar_solicitud_interna`, un `switch` exhaustivo distinto
+ * (ADR 217); incluirla acá permitiría que `resolver_solicitud
+ * {accion:"cancelar"}` pasara esta validación y llegara al dispatcher, que la
+ * rechazaría recién en un `switch` interno — falla cerrado por accidente, no
+ * por diseño. Mismo criterio para `resolver_reembolso.accion` (tarea 12):
+ * ★ `"cancelar"` NUNCA entra acá tampoco — esa acción sigue siendo exclusiva
+ * de `cancelar_solicitud_interna`, sin excepción por dominio.
+ */
+export const VALORES_PERMITIDOS_POR_OPERACION: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  resolver_decision_venta: { decision: ["confirmar", "rechazar"] },
+  resolver_solicitud: { accion: ["aprobar", "rechazar"] },
+  resolver_reembolso: { accion: ["aprobar", "rechazar", "reabrir"] },
+};
+
+/**
+ * Exportado ÚNICAMENTE para el test estructural de regresión (hallazgo
+ * Reviewer, altura/robustez) que verifica que toda operación con un campo
+ * "acción"/enum-like tiene su fila en `VALORES_PERMITIDOS_POR_OPERACION` —
+ * NUNCA para uso en runtime fuera de este módulo (`validarOperacion` sigue
+ * siendo la única función que consume esta tabla en producción). Exportar la
+ * tabla no relaja el invariante "sin imports" (es sobre imports DENTRO de
+ * este archivo, no sobre qué puede importar de él) ni cambia una sola línea
+ * del hot path del dispatcher.
+ */
+export { CAMPOS_POR_OPERACION };
 
 /**
  * `raw` es el objeto zod plano ya parseado por el adaptador MCP (tarea 4):
@@ -115,6 +156,7 @@ export function validarOperacion(
   }
 
   const camposNumericos = CAMPOS_NUMERICOS_POR_OPERACION[operacion] ?? [];
+  const valoresPermitidos = VALORES_PERMITIDOS_POR_OPERACION[operacion];
   const tieneValorInvalido = camposPermitidos.some((campo) => {
     if (campo === "operacion") {
       return false;
@@ -126,7 +168,14 @@ export function validarOperacion(
     if (camposNumericos.includes(campo)) {
       return typeof valor !== "number" || !Number.isFinite(valor) || valor <= 0;
     }
-    return typeof valor !== "string" || valor.length > MAX_STRING_LENGTH;
+    if (typeof valor !== "string" || valor.length > MAX_STRING_LENGTH) {
+      return true;
+    }
+    const listaPermitida = valoresPermitidos?.[campo];
+    if (listaPermitida !== undefined && !listaPermitida.includes(valor)) {
+      return true;
+    }
+    return false;
   });
   if (tieneValorInvalido) {
     return undefined;

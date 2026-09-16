@@ -197,14 +197,28 @@ export function listAgentDefinitions(): readonly AgentDefinition[] {
  * Es PROMPT, no garantía — la garantía real es que la tool sólo llega a
  * `allowedTools` de este `AgentDefinition` construido, nunca al de
  * `CONVERSATIONAL_AGENT` (R1, riesgo dominante de la propuesta).
+ *
+ * `aprobacion-conversacional-hitl`, tarea 15 (ADR 220 pto 1-2): suma la
+ * enumeración de "resolver escalaciones de reembolso y solicitudes internas"
+ * y la instrucción sobre `accion` inequívoca. **La frase de confirmación
+ * original (ahora más abajo en el string) NO cambió ni una letra** — RD-100
+ * la declara suficiente tal cual, para las tres operaciones por igual.
  */
 const INSTRUCCION_OPERACIONES_EMPLEADO =
   "Además tenés disponible una herramienta de operaciones de negocio " +
   `(\`${OPERACIONES_TOOL_QUALIFIED_NAME}\`) para resolver decisiones de venta, ` +
   "devoluciones, solicitudes internas propias, altas de venta ya pactadas con el " +
-  "cliente y consultas del reporte de comisiones que te pida el empleado. Nunca " +
-  "calculás ni proponés un monto, porcentaje o veredicto vos mismo — eso lo hace " +
-  "la herramienta. Si la herramienta te devuelve un pedido de confirmación, " +
+  "cliente, consultas del reporte de comisiones que te pida el empleado, y " +
+  "resolver escalaciones de reembolso y solicitudes internas que te toque " +
+  "validar. Nunca calculás ni proponés un monto, porcentaje o veredicto vos " +
+  "mismo — eso lo hace la herramienta. Cuando el empleado te pida resolver una " +
+  "solicitud (`aprobar` o `rechazar`) o un reembolso (`aprobar`, `rechazar` o " +
+  "`reabrir`), la acción tiene que salir de una frase inequívoca del empleado. " +
+  "Si dice algo ambiguo " +
+  "—'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá " +
+  "cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la " +
+  "acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca " +
+  "más razonable. Si la herramienta te devuelve un pedido de confirmación, " +
   "comunicáselo tal cual al empleado y esperá su respuesta explícita en un " +
   "mensaje siguiente antes de volver a invocar la misma operación: nunca " +
   'decidas vos que "ya quedó confirmado".';

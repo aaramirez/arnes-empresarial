@@ -44,6 +44,10 @@ export const OPERACION_CREAR_SOLICITUD_INTERNA = "crear_solicitud_interna";
 export const OPERACION_CANCELAR_SOLICITUD_INTERNA = "cancelar_solicitud_interna";
 export const OPERACION_REGISTRAR_VENTA = "registrar_venta";
 export const OPERACION_CONSULTAR_REPORTE_COMISIONES = "consultar_reporte_comisiones";
+/** `aprobacion-conversacional-hitl`, ADR 206 — dominio solicitud del canal conversacional. */
+export const OPERACION_RESOLVER_SOLICITUD = "resolver_solicitud";
+/** `aprobacion-conversacional-hitl`, ADR 206 — dominio reembolso del canal conversacional; octava y última operación del contrato. */
+export const OPERACION_RESOLVER_REEMBOLSO = "resolver_reembolso";
 
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
@@ -52,6 +56,8 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_RESOLVER_SOLICITUD,
+  OPERACION_RESOLVER_REEMBOLSO,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -106,39 +112,96 @@ export interface OperacionConsultarReporteComisiones {
   readonly periodo?: string;
 }
 
+/**
+ * `aprobacion-conversacional-hitl`, ADR 206. `accion` es la ELECCIÓN de
+ * operación que el modelo comunica — nunca un veredicto calculado ni un
+ * campo `confirmado` (§0.1, ese booleano es inexpresable por el modelo, lo
+ * decide el composition root contra `ConfirmacionOperacionPort`). **Nunca**
+ * incluye `"cancelar"` (ADR 217) — esa acción sigue siendo exclusiva de
+ * `cancelar_solicitud_interna`, un `switch` exhaustivo distinto.
+ */
+export type AccionSolicitudModelo = "aprobar" | "rechazar";
+
+/** `solicitudId` ausente ⇒ modo listado, sin tocar ninguna ranura de confirmación (mismo criterio que `cancelar_solicitud_interna`). */
+export interface OperacionResolverSolicitud {
+  readonly operacion: typeof OPERACION_RESOLVER_SOLICITUD;
+  readonly accion: AccionSolicitudModelo;
+  readonly solicitudId?: string;
+}
+
+/**
+ * `aprobacion-conversacional-hitl`, ADR 206. Mismo criterio que
+ * `AccionSolicitudModelo` — elección de operación que el modelo comunica,
+ * nunca un campo `confirmado`. A diferencia del dominio solicitud, `"reabrir"`
+ * SÍ es un valor válido acá (`resolverEscalacionReembolso` ya lo soporta
+ * desde `tui-canal-empleado`). **Nunca** incluye `"cancelar"` (ADR 217).
+ */
+export type AccionReembolsoModelo = "aprobar" | "rechazar" | "reabrir";
+
+/** `ventaId` ausente ⇒ modo listado, sin tocar ninguna ranura de confirmación (mismo criterio que `resolver_solicitud`). */
+export interface OperacionResolverReembolso {
+  readonly operacion: typeof OPERACION_RESOLVER_REEMBOLSO;
+  readonly accion: AccionReembolsoModelo;
+  readonly ventaId?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
   | OperacionCrearSolicitudInterna
   | OperacionCancelarSolicitudInterna
   | OperacionRegistrarVenta
-  | OperacionConsultarReporteComisiones;
+  | OperacionConsultarReporteComisiones
+  | OperacionResolverSolicitud
+  | OperacionResolverReembolso;
 
 /**
- * Puerto de confirmación humana para `cancelar_solicitud_interna` (ADR 166).
- * El schema de la tool NUNCA tiene un campo `confirmado` — es inexpresable
- * por el modelo, en cualquier operación (mismo criterio "inexpresable, no
- * testeado" que `definicion-skills` ADR 108 y `autorizacion-empleado` ADR
- * 159). `confirmado` lo decide EXCLUSIVAMENTE el composition root, comparando
- * contra el estado de este puerto.
+ * Puerto de confirmación humana para las operaciones de dos pasos del canal
+ * conversacional (ADR 166, generalizado a multi-slot por `aprobacion-
+ * conversacional-hitl`, ADR 209/212/213). El schema de la tool NUNCA tiene un
+ * campo `confirmado` — es inexpresable por el modelo, en cualquier operación
+ * (mismo criterio "inexpresable, no testeado" que `definicion-skills` ADR
+ * 108 y `autorizacion-empleado` ADR 159). `confirmado` lo decide
+ * EXCLUSIVAMENTE el composition root, comparando contra el estado de este
+ * puerto.
  *
- * Decisión de secuencia del checkpoint humano (ver doc-comment de módulo, no
- * un hallazgo de este archivo): la interfaz vive acá en Unit 1; su
- * implementación real por-empleado (`confirmacion-operaciones-store.ts`,
- * ADR 173 pto 4) llega en Unit 3 (tarea 8), y el wiring inline sobre la
- * ranura de la TUI descrito por el ADR 167 §6 pt 3 quedó SUPERSEDIDO por el
- * ADR 172/173 — `build-on-comando-empleado.ts` nunca construye esta
- * implementación. Ninguno de los dos existe todavía en esta Unit 1;
- * `ejecutar-operacion.ts` (tarea 3, esta misma Unit) sólo conoce el TIPO.
+ * ★ `LlaveConfirmacion` generaliza la ranura única de `cancelar_solicitud_
+ * interna` (ADR 166) para que `resolver_reembolso` y `resolver_solicitud`
+ * convivan sin pisarse: `dominio` + `itemId` son la LLAVE (ADR 212), `accion`
+ * es PREDICADO (ADR 213) — un pedido posterior con `accion` distinta sobre
+ * el mismo `dominio`/`itemId` NO coincide con la ranura pendiente: se trata
+ * como una intención nueva que reemplaza a la anterior, nunca ejecuta la
+ * acción vieja ni la nueva sin confirmar (hallazgo de seguridad de esta
+ * fase). El invariante `origenCasoId !== casoIdActual` (ADR 166 pto 3) se
+ * conserva SIN relajarse.
+ *
+ * Implementación concreta por-empleado en
+ * `adapters/web/confirmacion-operaciones-store.ts` (`aprobacion-
+ * conversacional-hitl`, tarea 2, misma Unit) — la interfaz vive acá por
+ * convención hexagonal, es un tipo puro sin comportamiento.
  */
+export const DOMINIO_REEMBOLSO = "reembolso";
+export const DOMINIO_SOLICITUD = "solicitud";
+/** Vocabulario REUSADO de la ranura única de la TUI (`build-on-comando-empleado.ts:272-299`, ADR 55). */
+export type DominioConfirmacion = typeof DOMINIO_REEMBOLSO | typeof DOMINIO_SOLICITUD;
+export type AccionConfirmable = "aprobar" | "rechazar" | "reabrir" | "cancelar";
+
+/** Identifica UNA ranura. `dominio` + `itemId` son la LLAVE (ADR 212); `accion` es PREDICADO (ADR 213). */
+export interface LlaveConfirmacion {
+  readonly dominio: DominioConfirmacion;
+  /** ★ `itemId`, no `solicitudId` — ahora también transporta un `ventaId` (ADR 209 pto 3). */
+  readonly itemId: string;
+  readonly accion: AccionConfirmable;
+}
+
 export interface ConfirmacionOperacionPort {
-  /** `true` si hay una cancelación pendiente que ESTE turno puede confirmar (`origenCasoId !== casoIdActual`, ADR 166 pto 3). */
-  estaConfirmada(solicitudId: string, empleadoId: string, casoIdActual: string): boolean;
-  marcarPendiente(input: {
-    readonly solicitudId: string;
+  /** `true` si hay una pendiente de ESTA llave Y ESTA acción que este turno puede confirmar (`origenCasoId !== casoIdActual`, ADR 166 pto 3 — predicado INTACTO). */
+  estaConfirmada(llave: LlaveConfirmacion, empleadoId: string, casoIdActual: string): boolean;
+  marcarPendiente(input: LlaveConfirmacion & {
     readonly casoId: string;
     readonly empleadoId: string;
     readonly origenCasoId: string;
   }): void;
-  consumir(): void;
+  /** Consume UNA ranura. ★ Nunca "todas las del empleado" — eso es `limpiarEmpleado`, y vive en el adaptador (ADR 214 pto 4). */
+  consumir(llave: LlaveConfirmacion): void;
 }

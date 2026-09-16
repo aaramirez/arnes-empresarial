@@ -779,10 +779,17 @@ async function handleOperaciones(
  * Orden de composición EXACTO, no se reordena (ADR 202 pto 2): el
  * `empleadoId` sólo se puede leer mientras la sesión existe, por eso
  * `confirmacionOperacionesStore` se consulta ANTES de `sesionStore.eliminar`
- * -- `sesionStore.buscar` (sin borrar todavía) → `confirmacion.consumir()`
- * (si había sesión Y ninguna OTRA sesión vigente del mismo empleado, ver
- * abajo) → `conversacionStore.eliminar` → `sesionStore.eliminar`. El
- * handler compone; ningún store llama a otro.
+ * -- `sesionStore.buscar` (sin borrar todavía) → `confirmacion
+ * OperacionesStore.limpiarEmpleado(empleadoId)` (si había sesión Y ninguna
+ * OTRA sesión vigente del mismo empleado, ver abajo) → `conversacionStore.
+ * eliminar` → `sesionStore.eliminar`. El handler compone; ningún store llama
+ * a otro.
+ *
+ * ★ `aprobacion-conversacional-hitl` (ADR 214 pto 4, R12): con la ranura
+ * multi-slot, `limpiarEmpleado` reemplaza al `paraEmpleado(...).consumir()`
+ * de una sola ranura -- borra TODAS las confirmaciones pendientes del
+ * empleado (reembolso, solicitud, cancelación), no sólo la última invocada.
+ * El orden de composición no cambió: cambia una llamada, no la secuencia.
  *
  * Nota deliberada (hallazgo Reviewer 2da ronda #4): NO usa
  * `resolverSesionDesdeRequest` -- a diferencia de `handleOperaciones`, este
@@ -812,7 +819,7 @@ function handleLogout(req: WebRequest, res: WebResponse, requestId: string, deps
   if (token !== undefined) {
     const sesion = sesionStore.buscar(token);
     if (sesion !== undefined && !sesionStore.otraSesionVigente(sesion.empleadoId, token)) {
-      confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId).consumir();
+      confirmacionOperacionesStore.limpiarEmpleado(sesion.empleadoId);
     }
     conversacionStore.eliminar(token);
     sesionStore.eliminar(token);

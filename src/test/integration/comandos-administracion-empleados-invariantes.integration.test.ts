@@ -64,8 +64,8 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
     expect(ROLES_EMPLEADO).toEqual(["empleado", "administrador"]);
   });
 
-  it("DESCRIPTORES queda en DIECIOCHO entradas — conteo final del change (banner de tasks.md)", () => {
-    expect(COMANDOS).toHaveLength(18);
+  it("DESCRIPTORES queda en TRECE entradas (final) — 18 menos los cinco comandos HITL, dados de baja por aprobacion-conversacional-hitl (ADR 210 pto 1): /aprobar-solicitud y /rechazar-solicitud (tarea 10) + /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso (tarea 14)", () => {
+    expect(COMANDOS).toHaveLength(13);
   });
 
   it("los tres descriptores nuevos del change (/estado-bot-prs, /asignar-rol, /crear-empleado) están todos ANTES de /ayuda, que sigue último", () => {
@@ -79,16 +79,11 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
     }
   });
 
-  it("ningún descriptor de los quince originales cambió de nombre/forma (regresión ya cubierta por comando-empleado.test.ts — repetida acá como cierre explícito del Success Criterion)", () => {
+  it("ningún descriptor de los diez originales sobrevivientes cambió de nombre/forma (regresión ya cubierta por comando-empleado.test.ts — repetida acá como cierre explícito del Success Criterion; los cinco comandos HITL se dieron de baja, aprobacion-conversacional-hitl, ADR 210 pto 1: /aprobar-solicitud y /rechazar-solicitud —tarea 10— + /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso —tarea 14—)", () => {
     const originales = [
       ["/login", "id_mas_resto"],
       ["/logout", "sin_argumentos"],
       ["/soporte", "id_mas_resto"],
-      ["/aprobar-reembolso", "id_opcional"],
-      ["/rechazar-reembolso", "id_opcional"],
-      ["/reabrir-reembolso", "id_opcional"],
-      ["/aprobar-solicitud", "id_opcional_solicitud"],
-      ["/rechazar-solicitud", "id_opcional_solicitud"],
       ["/ver-propuesta", "id_opcional_propuesta"],
       ["/aplicar-propuesta", "id_mas_resto"],
       ["/descartar-propuesta", "id_mas_resto"],
@@ -101,6 +96,19 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
     for (const [nombre, forma] of originales) {
       const encontrado = descriptores.find((d) => d.nombre === nombre);
       expect(encontrado).toMatchObject({ nombre, forma });
+    }
+  });
+
+  it("los cinco comandos HITL ya no ocupan ningún índice de COMANDOS (aprobacion-conversacional-hitl, ADR 210 pto 1: tareas 10 y 14)", () => {
+    const nombres = COMANDOS.map((d) => d.nombre);
+    for (const bajado of [
+      "/aprobar-solicitud",
+      "/rechazar-solicitud",
+      "/aprobar-reembolso",
+      "/rechazar-reembolso",
+      "/reabrir-reembolso",
+    ]) {
+      expect(nombres).not.toContain(bajado);
     }
   });
 

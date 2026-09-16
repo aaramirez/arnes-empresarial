@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  DOMINIO_REEMBOLSO,
+  DOMINIO_SOLICITUD,
   OPERACIONES_MCP_SERVER_NAME,
   OPERACIONES_NEGOCIO,
   OPERACIONES_TOOL_NAME,
@@ -12,7 +14,14 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
+  OPERACION_RESOLVER_SOLICITUD,
+  type AccionConfirmable,
+  type AccionReembolsoModelo,
+  type AccionSolicitudModelo,
   type ConfirmacionOperacionPort,
+  type DominioConfirmacion,
+  type LlaveConfirmacion,
   type OperacionCancelarSolicitudInterna,
   type OperacionConsultarReporteComisiones,
   type OperacionCrearSolicitudInterna,
@@ -20,6 +29,8 @@ import {
   type OperacionProcesarDevolucion,
   type OperacionRegistrarVenta,
   type OperacionResolverDecisionVenta,
+  type OperacionResolverReembolso,
+  type OperacionResolverSolicitud,
 } from "./operaciones-contract.js";
 
 /**
@@ -35,7 +46,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera las seis operaciones del contrato (ADR 163/171/174)", () => {
+  it("OPERACIONES_NEGOCIO enumera las ocho operaciones del contrato, final (ADR 163/171/174/206)", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -43,8 +54,10 @@ describe("operaciones-contract constants", () => {
       OPERACION_CANCELAR_SOLICITUD_INTERNA,
       OPERACION_REGISTRAR_VENTA,
       OPERACION_CONSULTAR_REPORTE_COMISIONES,
+      OPERACION_RESOLVER_SOLICITUD,
+      OPERACION_RESOLVER_REEMBOLSO,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(6);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(8);
   });
 });
 
@@ -110,6 +123,45 @@ describe("OperacionNegocio — cada input mínimo tipa correctamente", () => {
     expect(generico.operacion).toBe("registrar_venta");
     // vendedorId NUNCA es campo del modelo (ADR 147 pto 1, ADR 171 pto 2) — sale de sesion.empleadoId por closure.
     expect("vendedorId" in op).toBe(false);
+  });
+
+  it("resolver_solicitud: accion + solicitudId opcional, sin campo confirmado (ADR 206)", () => {
+    const listado: OperacionResolverSolicitud = {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+    };
+    const conId: OperacionResolverSolicitud = {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "rechazar",
+      solicitudId: "sol-1",
+    };
+    const generico: OperacionNegocio = listado;
+    expect(generico.operacion).toBe("resolver_solicitud");
+    expect(conId.solicitudId).toBe("sol-1");
+    // `confirmado` NUNCA es campo de esta interfaz — lo decide el composition root (ADR 206, §0.1).
+    expect("confirmado" in listado).toBe(false);
+  });
+
+  it("resolver_reembolso: accion + ventaId opcional, sin campo confirmado, tres valores de accion (ADR 206)", () => {
+    const listado: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+    };
+    const conId: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "reabrir",
+      ventaId: "v1",
+    };
+    const generico: OperacionNegocio = listado;
+    expect(generico.operacion).toBe("resolver_reembolso");
+    expect(conId.ventaId).toBe("v1");
+    // `confirmado` NUNCA es campo de esta interfaz — lo decide el composition root (ADR 206, §0.1).
+    expect("confirmado" in listado).toBe(false);
+
+    const aprobar: AccionReembolsoModelo = "aprobar";
+    const rechazar: AccionReembolsoModelo = "rechazar";
+    const reabrir: AccionReembolsoModelo = "reabrir";
+    expect([aprobar, rechazar, reabrir]).toEqual(["aprobar", "rechazar", "reabrir"]);
   });
 
   it("consultar_reporte_comisiones: único campo opcional periodo, sin dinero ni identidad (ADR 174)", () => {
@@ -196,6 +248,48 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     void op;
   }
 
+  function _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado(): void {
+    const op: OperacionResolverSolicitud = {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1) — lo decide el composition root.
+      confirmado: true,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar(): void {
+    // @ts-expect-error — "cancelar" nunca es un AccionSolicitudModelo (ADR 217) — esa acción es de `cancelar_solicitud_interna`, no de `resolver_solicitud`.
+    const accionInvalida: AccionSolicitudModelo = "cancelar";
+    void accionInvalida;
+  }
+
+  function _chequeoDeTipos_resolverReembolsoNoAceptaMonto(): void {
+    const op: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+      // @ts-expect-error — `monto` no es campo de `resolver_reembolso`.
+      monto: 50,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado(): void {
+    const op: OperacionResolverReembolso = {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1) — lo decide el composition root.
+      confirmado: true,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_accionReembolsoModeloNoAceptaCancelar(): void {
+    // @ts-expect-error — "cancelar" nunca es un AccionReembolsoModelo (ADR 217) — esa acción es exclusiva de `cancelar_solicitud_interna`.
+    const accionInvalida: AccionReembolsoModelo = "cancelar";
+    void accionInvalida;
+  }
+
   it("las funciones de arriba nunca se invocan — la garantía es tsc --noEmit, no runtime", () => {
     expect(typeof _chequeoDeTipos_resolverDecisionVentaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_procesarDevolucionNoAceptaPorcentaje).toBe("function");
@@ -203,38 +297,69 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     expect(typeof _chequeoDeTipos_cancelarSolicitudInternaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_consultarReporteComisionesNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_registrarVentaNoAceptaPeriodo).toBe("function");
+    expect(typeof _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado).toBe("function");
+    expect(typeof _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar).toBe("function");
+    expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado).toBe("function");
+    expect(typeof _chequeoDeTipos_accionReembolsoModeloNoAceptaCancelar).toBe("function");
   });
 });
 
-describe("ConfirmacionOperacionPort (ADR 166)", () => {
-  it("marcarPendiente + estaConfirmada + consumir tipan y se comportan según el guard origenCasoId !== casoIdActual", () => {
+describe("ConfirmacionOperacionPort — LlaveConfirmacion (ADR 209/212/213)", () => {
+  it("marcarPendiente + estaConfirmada + consumir reciben LlaveConfirmacion en las tres firmas, guard origenCasoId !== casoIdActual intacto", () => {
     let pendiente:
-      | { solicitudId: string; empleadoId: string; casoId: string; origenCasoId: string }
+      | {
+          dominio: DominioConfirmacion;
+          itemId: string;
+          accion: AccionConfirmable;
+          empleadoId: string;
+          casoId: string;
+          origenCasoId: string;
+        }
       | undefined;
 
+    // Doble que implementa el puerto nuevo — compila con las tres firmas exactas (tarea 1).
     const port: ConfirmacionOperacionPort = {
-      estaConfirmada: (solicitudId, empleadoId, casoIdActual) =>
+      estaConfirmada: (llave, empleadoId, casoIdActual) =>
         pendiente !== undefined &&
-        pendiente.solicitudId === solicitudId &&
+        pendiente.dominio === llave.dominio &&
+        pendiente.itemId === llave.itemId &&
+        pendiente.accion === llave.accion &&
         pendiente.empleadoId === empleadoId &&
         pendiente.origenCasoId !== casoIdActual,
       marcarPendiente: (input) => {
         pendiente = { ...input };
       },
-      consumir: () => {
+      consumir: (_llave) => {
         pendiente = undefined;
       },
     };
 
-    port.marcarPendiente({ solicitudId: "s1", casoId: "c1", empleadoId: "e1", origenCasoId: "caso-turno-1" });
+    const llave: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "s1", accion: "cancelar" };
+
+    port.marcarPendiente({ ...llave, casoId: "c1", empleadoId: "e1", origenCasoId: "caso-turno-1" });
 
     // Mismo turno que creó la ranura ⇒ nunca autoconfirma (ADR 166).
-    expect(port.estaConfirmada("s1", "e1", "caso-turno-1")).toBe(false);
+    expect(port.estaConfirmada(llave, "e1", "caso-turno-1")).toBe(false);
     // Turno posterior ⇒ sí confirma.
-    expect(port.estaConfirmada("s1", "e1", "caso-turno-2")).toBe(true);
+    expect(port.estaConfirmada(llave, "e1", "caso-turno-2")).toBe(true);
 
-    port.consumir();
-    expect(port.estaConfirmada("s1", "e1", "caso-turno-2")).toBe(false);
+    port.consumir(llave);
+    expect(port.estaConfirmada(llave, "e1", "caso-turno-2")).toBe(false);
+  });
+
+  it("DominioConfirmacion es una unión cerrada de DOS literales, sin 'propuesta' (ADR 212 pto 4)", () => {
+    const reembolso: DominioConfirmacion = DOMINIO_REEMBOLSO;
+    const solicitud: DominioConfirmacion = DOMINIO_SOLICITUD;
+    expect(reembolso).toBe("reembolso");
+    expect(solicitud).toBe("solicitud");
+
+    function _chequeoDeTipos_dominioConfirmacionNoAceptaPropuesta(): void {
+      // @ts-expect-error — "propuesta" nunca es un DominioConfirmacion; esa ranura es de la TUI, no de esta capability (ADR 212 pto 4).
+      const dominioInvalido: DominioConfirmacion = "propuesta";
+      void dominioInvalido;
+    }
+    expect(typeof _chequeoDeTipos_dominioConfirmacionNoAceptaPropuesta).toBe("function");
   });
 });
 

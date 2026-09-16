@@ -18,8 +18,8 @@ export const COMANDO_LOG_CORRELATION_ID = "tui-comando";
 export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
 
 /**
- * Unión discriminada de los DIECIOCHO comandos (ADR 21, 34, 56, 69, 85 + uno
- * de `comando-reporte-comisiones`, ADR 117/119 + uno de
+ * Unión discriminada de los DIECISÉIS comandos finales (ADR 21, 34, 56, 69, 85 +
+ * uno de `comando-reporte-comisiones`, ADR 117/119 + uno de
  * `comando-cancelar-solicitud`, ADR 127 + uno de
  * `comando-visibilidad-a2a-entrante`, ADR 138). `ayuda` no es un comando más: es
  * también el sumidero de todo lo malformado, y por eso el parser NO tiene
@@ -29,11 +29,22 @@ export type MotivoAyuda = "solicitada" | "desconocido" | "argumentos";
  *   loguea, no se persiste, no se devuelve en ningún `TuiTurnResult`, y no
  *   sobrevive a la llamada a `verificarPassword` (ADR 21 enmienda rev. 3).
  *
- * `solicitar`/`aprobar_solicitud`/`rechazar_solicitud` son de Hito 5 (§5.7,
- * ADR 56). `tipoSolicitud` es `string` (no un tipo de vocabulario cerrado):
- * este parser es puro y sin imports (comentario de cabecera), y no puede
- * importar `solicitudes-contract.ts` — la validación de `tipoSolicitud` vive
- * en el caso de uso (`crear-solicitud-interna.ts`).
+ * `solicitar` es de Hito 5 (§5.7, ADR 56). `tipoSolicitud` es `string` (no un
+ * tipo de vocabulario cerrado): este parser es puro y sin imports (comentario
+ * de cabecera), y no puede importar `solicitudes-contract.ts` — la
+ * validación de `tipoSolicitud` vive en el caso de uso
+ * (`crear-solicitud-interna.ts`).
+ *
+ * Los CINCO comandos HITL bloqueados por el ADR 151 se dieron de baja por
+ * `aprobacion-conversacional-hitl` (ADR 210 pto 1), en dos tareas: `aprobar_
+ * solicitud`/`rechazar_solicitud` (Hito 5, §5.7, ADR 56) en la tarea 10, y
+ * `aprobar_reembolso`/`rechazar_reembolso`/`reabrir_reembolso`
+ * (`tui-canal-empleado`) en la tarea 14 — todos se resuelven ahora por
+ * conversación vía la herramienta `operaciones` (`resolver_solicitud`/
+ * `resolver_reembolso`, ADR 206). A diferencia de `/devolucion`/`/solicitar`/
+ * `/cancelar-solicitud` (`operaciones-negocio-conversacionales`, tarea 14,
+ * change anterior), acá se retira el BRAZO DE TIPO completo de los cinco, no
+ * solo el descriptor: cero código muerto (R17).
  *
  * `ver_propuesta`/`aplicar_propuesta`/`descartar_propuesta` son de Hito 5.1
  * (§5.9, ADR 69) — mismo precedente que el ADR 56 de arriba: `propuestaId`
@@ -47,15 +58,13 @@ export type ComandoEmpleado =
   | { readonly tipo: "logout" }
   | { readonly tipo: "soporte"; readonly consulta: string }
   | { readonly tipo: "devolucion"; readonly token: string; readonly motivo?: string }
-  | { readonly tipo: "aprobar_reembolso"; readonly ventaId?: string }
-  | { readonly tipo: "rechazar_reembolso"; readonly ventaId?: string }
-  | { readonly tipo: "reabrir_reembolso"; readonly ventaId?: string }
   | { readonly tipo: "solicitar"; readonly tipoSolicitud: string; readonly detalle: string }
-  | { readonly tipo: "aprobar_solicitud"; readonly solicitudId?: string }
-  | { readonly tipo: "rechazar_solicitud"; readonly solicitudId?: string }
-  /** Brazo NUEVO de `comando-cancelar-solicitud` (ADR 127). Mismo shape que
-   *  `aprobar_solicitud`/`rechazar_solicitud`: `solicitudId` OPCIONAL, forma
-   *  `id_opcional_solicitud` reusada sin cambios. */
+  /** Brazo de `comando-cancelar-solicitud` (ADR 127) — `solicitudId` OPCIONAL.
+   *  `aprobar_solicitud`/`rechazar_solicitud` compartían esta misma forma
+   *  (`id_opcional_solicitud`) hasta su baja (`aprobacion-conversacional-hitl`,
+   *  ADR 210 pto 1, tarea 10) — este brazo es el ÚNICO sobreviviente de esa
+   *  forma, aunque tampoco tiene descriptor propio (código muerto desde
+   *  `operaciones-negocio-conversacionales`, tarea 14). */
   | { readonly tipo: "cancelar_solicitud"; readonly solicitudId?: string }
   | { readonly tipo: "ver_propuesta"; readonly propuestaId?: string }
   | { readonly tipo: "aplicar_propuesta"; readonly propuestaId: string }
@@ -93,9 +102,9 @@ export type ComandoEmpleado =
   | { readonly tipo: "ayuda"; readonly motivo: MotivoAyuda; readonly comando?: string };
 
 export interface DescriptorComando {
-  /** `"/aprobar-reembolso"`. */
+  /** `"/asignar-rol"`. */
   readonly nombre: string;
-  /** `"/aprobar-reembolso [ventaId]"` — una línea de uso. */
+  /** `"/asignar-rol <empleadoId> <rol>"` — una línea de uso. */
   readonly uso: string;
   /** Una línea de ayuda, en el idioma del resto de los mensajes. */
   readonly ayuda: string;
@@ -111,19 +120,28 @@ export interface DescriptorComando {
    * del gate de sesión), no el parser. Consumidor real: el paso 6.5 de
    * `buildOnComandoEmpleado` en `build-on-comando-empleado.ts` (ya en
    * producción) — hoy `true` solo para `/asignar-rol` y `/crear-empleado`,
-   * el resto de los dieciocho descriptores queda en `false`.
+   * el resto de los trece descriptores queda en `false`.
    */
   readonly requiereAdministrador: boolean;
 }
 
 /**
- * `"id_opcional_solicitud"` (ADR 56) es una forma distinta de
- * `"id_opcional"`: comparte el mismo patrón de parseo (primer token del
- * resto, o campo ausente si el resto está vacío), pero su clave de payload
- * es `solicitudId`, no `ventaId`. Una forma nueva por SHAPE de payload — no
- * un campo de configuración que obligaría a un cast en el `return` (ver el
- * comentario de la rama `"id_opcional"` más abajo, y el ADR 56 en
- * `design.md`).
+ * `"id_opcional_solicitud"` (ADR 56) fue una forma distinta de
+ * `"id_opcional"` — clave de payload `solicitudId`, no `ventaId` — usada por
+ * `/aprobar-solicitud`/`/rechazar-solicitud` hasta su baja
+ * (`aprobacion-conversacional-hitl`, ADR 210 pto 1, tarea 10). Se RETIRÓ
+ * entonces: ningún descriptor la usaba más (`cancelar_solicitud` conserva el
+ * brazo de `ComandoEmpleado` pero nunca tuvo descriptor propio desde
+ * `operaciones-negocio-conversacionales`, tarea 14 — código muerto
+ * preexistente, fuera de alcance de este change).
+ *
+ * `"id_opcional"` (ADR 21/34) — clave de payload `ventaId` — era la forma de
+ * `/aprobar-reembolso`/`/rechazar-reembolso`/`/reabrir-reembolso`, sus TRES
+ * únicos usuarios, hasta su baja (`aprobacion-conversacional-hitl`, ADR 210
+ * pto 1, tarea 14: se resuelven por conversación vía `resolver_reembolso`,
+ * ADR 206). Se RETIRA acá, mismo criterio que `id_opcional_solicitud`
+ * arriba: ningún descriptor la usa más. Cero valores no usados en `Forma`
+ * (R17).
  *
  * `"id_opcional_propuesta"` (ADR 69) es el mismo precedente otra vez: clave
  * de payload `propuestaId`, para `/ver-propuesta`.
@@ -151,9 +169,7 @@ export interface DescriptorComando {
  */
 type Forma =
   | "sin_argumentos"
-  | "id_opcional"
   | "id_mas_resto"
-  | "id_opcional_solicitud"
   | "id_opcional_propuesta"
   | "id_opcional_periodo"
   | "id_opcional_a2a_task"
@@ -167,14 +183,19 @@ interface DescriptorInterno extends DescriptorComando {
 }
 
 /**
- * Los quince descriptores (dieciocho tras `comando-visibilidad-a2a-entrante`,
- * menos `/devolucion`, `/solicitar` y `/cancelar-solicitud` — bajados por
- * `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14: los tres
- * eran comandos transaccionales de autoservicio, ahora se resuelven por
- * conversación vía la herramienta `operaciones`, ver spec
- * `herramienta-operaciones-negocio`. Los cinco `/aprobar-*`/`/rechazar-*`/
- * `/reabrir-*` NO bajan: el ADR 151 los declaró candidatos a conversación
- * pero su ejecución sigue BLOQUEADA por el checkpoint), en el orden en que
+ * Los TRECE descriptores finales (dieciocho tras
+ * `comando-visibilidad-a2a-entrante`, menos `/devolucion`, `/solicitar` y
+ * `/cancelar-solicitud` — bajados por `operaciones-negocio-conversacionales`,
+ * ADR 148 pto 2, tarea 14: los tres eran comandos transaccionales de
+ * autoservicio, ahora se resuelven por conversación vía la herramienta
+ * `operaciones`, ver spec `herramienta-operaciones-negocio`. De los cinco
+ * `/aprobar-*`/`/rechazar-*`/`/reabrir-*` que el ADR 151 declaró candidatos a
+ * conversación, los CINCO bajaron — `/aprobar-solicitud` y
+ * `/rechazar-solicitud` (`aprobacion-conversacional-hitl`, ADR 210 pto 1,
+ * tarea 10: se resuelven vía `resolver_solicitud`, ADR 206), y
+ * `/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`
+ * (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 14: se resuelven vía
+ * `resolver_reembolso`, ADR 206) — ADR 151 EJECUTADO), en el orden en que
  * `/ayuda` los imprime. Cada tanda nueva va ANTES de `/ayuda`, que sigue
  * último — los descriptores existentes no cambian de orden ni de forma.
  */
@@ -208,56 +229,6 @@ const DESCRIPTORES = [
     requiereAdministrador: false,
     forma: "id_mas_resto",
     tipo: "soporte",
-  },
-  {
-    nombre: "/aprobar-reembolso",
-    uso: "/aprobar-reembolso [ventaId]",
-    ayuda: "Aprueba un reembolso escalado (lista los pendientes si se omite el id).",
-    privilegiado: true,
-    secreto: false,
-    requiereAdministrador: false,
-    forma: "id_opcional",
-    tipo: "aprobar_reembolso",
-  },
-  {
-    nombre: "/rechazar-reembolso",
-    uso: "/rechazar-reembolso [ventaId]",
-    ayuda: "Rechaza un reembolso escalado (lista los pendientes si se omite el id).",
-    privilegiado: true,
-    secreto: false,
-    requiereAdministrador: false,
-    forma: "id_opcional",
-    tipo: "rechazar_reembolso",
-  },
-  {
-    nombre: "/reabrir-reembolso",
-    uso: "/reabrir-reembolso [ventaId]",
-    ayuda: "Reabre un reembolso previamente rechazado (lista los rechazados si se omite el id).",
-    privilegiado: true,
-    secreto: false,
-    requiereAdministrador: false,
-    forma: "id_opcional",
-    tipo: "reabrir_reembolso",
-  },
-  {
-    nombre: "/aprobar-solicitud",
-    uso: "/aprobar-solicitud [solicitudId]",
-    ayuda: "Aprueba una solicitud interna pendiente (lista las pendientes si se omite el id).",
-    privilegiado: true,
-    secreto: false,
-    requiereAdministrador: false,
-    forma: "id_opcional_solicitud",
-    tipo: "aprobar_solicitud",
-  },
-  {
-    nombre: "/rechazar-solicitud",
-    uso: "/rechazar-solicitud [solicitudId]",
-    ayuda: "Rechaza una solicitud interna pendiente (lista las pendientes si se omite el id).",
-    privilegiado: true,
-    secreto: false,
-    requiereAdministrador: false,
-    forma: "id_opcional_solicitud",
-    tipo: "rechazar_solicitud",
   },
   {
     nombre: "/ver-propuesta",
@@ -378,9 +349,12 @@ const DESCRIPTORES = [
 ] as const satisfies readonly DescriptorInterno[];
 
 /**
- * Los quince descriptores (dieciocho tras `comando-visibilidad-a2a-entrante`,
- * menos `/devolucion`, `/solicitar` y `/cancelar-solicitud` — bajados por
- * `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14), en el
+ * Los TRECE descriptores finales (dieciocho tras
+ * `comando-visibilidad-a2a-entrante`, menos `/devolucion`, `/solicitar` y
+ * `/cancelar-solicitud` — bajados por `operaciones-negocio-conversacionales`,
+ * ADR 148 pto 2, tarea 14 — y menos los cinco comandos HITL de
+ * `/aprobar-*`/`/rechazar-*`/`/reabrir-*` — bajados por
+ * `aprobacion-conversacional-hitl`, ADR 210 pto 1, tareas 10 y 14), en el
  * orden en que `/ayuda` los imprime.
  */
 export const COMANDOS: readonly DescriptorComando[] = DESCRIPTORES;
@@ -468,11 +442,14 @@ function splitPrimerEspacio(texto: string): { readonly primero: string; readonly
 }
 
 /**
- * Payload común a las 5 formas "id opcional de <algo>" (`id_opcional`,
- * `id_opcional_solicitud`, `id_opcional_propuesta`, `id_opcional_periodo`,
- * `id_opcional_a2a_task`; ADR 56, 69, 119, 138): primer token del resto de
- * la línea bajo la clave de payload `key`, o solo `{ tipo }` si no hay
- * resto. `tipo` se recibe ya resuelto por quien llama — `descriptor.tipo`
+ * Payload común a las 3 formas "id opcional de <algo>" (`id_opcional_
+ * propuesta`, `id_opcional_periodo`, `id_opcional_a2a_task`; ADR 69, 119,
+ * 138 — `id_opcional_solicitud` se retiró en `aprobacion-conversacional-hitl`,
+ * ADR 210 pto 1, tarea 10; `id_opcional` se retiró en la tarea 14 de esa
+ * misma serie, sus tres únicos usuarios de reembolso dados de baja): primer
+ * token del resto de la línea bajo la clave de payload `key`, o solo
+ * `{ tipo }` si no hay resto. `tipo` se recibe ya resuelto por quien llama —
+ * `descriptor.tipo`
  * es la ÚNICA fuente de verdad (viene de DESCRIPTORES, igual que
  * `esComandoPrivilegiado`) — gracias a que `DESCRIPTORES` está tipado como
  * `as const satisfies readonly DescriptorInterno[]`, TypeScript narrowea
@@ -526,20 +503,20 @@ function idMasRestoObligatorioPayload<T extends string, K extends string>(
  *  2. Primer token → busca descriptor por `nombre`. No matchea → `{ ayuda, "desconocido", comando }`.
  *  3. Parseo por forma:
  *     · sin argumentos: `/logout`, `/ayuda` (sobrantes ignorados).
- *     · id opcional (`ventaId`): primer token del resto, o campo ausente si el resto está vacío.
- *     · id opcional de solicitud (`solicitudId`, ADR 56): mismo patrón que "id opcional", clave de payload distinta.
- *     · id opcional de propuesta (`propuestaId`, ADR 69): mismo patrón otra vez, para `/ver-propuesta`.
+ *     · id opcional de propuesta (`propuestaId`, ADR 69): primer token del resto, o campo ausente si el resto está vacío, para `/ver-propuesta`.
  *     · id opcional de periodo (`periodo`, ADR 119): mismo patrón otra vez, para `/reporte-comisiones` — el
  *       formato de `periodo` NO se valida acá (ADR 123 pto 1).
  *     · id opcional de tarea A2A (`a2aTaskId`, ADR 56/138): mismo patrón otra vez, para `/ver-solicitudes-a2a`.
  *     · id + resto: `split` en el PRIMER espacio; el resto entero con `trim` de bordes.
  *  4. Argumento obligatorio ausente o vacío → `{ ayuda, "argumentos", comando }`.
  *     Obligatorios: `/login` (los DOS), `/soporte` (consulta), `/aplicar-propuesta` (propuestaId),
- *     `/descartar-propuesta` (propuestaId). (`/devolucion` y `/solicitar` ya no son comandos — bajados por
- *     `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14.)
- *     `motivo` de `/descartar-propuesta`, `ventaId` de los tres de reembolso, `solicitudId` de
- *     los dos de solicitud, `propuestaId` de `/ver-propuesta` y `a2aTaskId` de `/ver-solicitudes-a2a` son
- *     OPCIONALES.
+ *     `/descartar-propuesta` (propuestaId). (`/devolucion`, `/solicitar`, `/cancelar-solicitud` ya no son
+ *     comandos — bajados por `operaciones-negocio-conversacionales`, ADR 148 pto 2, tarea 14; los CINCO
+ *     comandos HITL —`/aprobar-solicitud`/`/rechazar-solicitud`/`/aprobar-reembolso`/`/rechazar-reembolso`/
+ *     `/reabrir-reembolso`— tampoco — bajados por `aprobacion-conversacional-hitl`, ADR 210 pto 1, tareas
+ *     10 y 14.)
+ *     `motivo` de `/descartar-propuesta`, `propuestaId` de `/ver-propuesta` y `a2aTaskId` de
+ *     `/ver-solicitudes-a2a` son OPCIONALES.
  *  5. `/ayuda` explícito → `{ ayuda, "solicitada" }`.
  *
  * LÍMITE CONOCIDO Y TESTEADO (R4, resuelto por ADR 34): una contraseña con
@@ -570,14 +547,6 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
     // eso ruteaba silenciosamente a logout. Ahora devuelve el tipo genérico
     // del descriptor, la misma fuente de verdad que ya usa `idOpcionalPayload`.
     return { tipo: descriptor.tipo };
-  }
-
-  if (descriptor.forma === "id_opcional") {
-    return idOpcionalPayload(descriptor.tipo, restoLinea, "ventaId");
-  }
-
-  if (descriptor.forma === "id_opcional_solicitud") {
-    return idOpcionalPayload(descriptor.tipo, restoLinea, "solicitudId");
   }
 
   if (descriptor.forma === "id_opcional_propuesta") {

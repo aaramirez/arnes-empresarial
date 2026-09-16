@@ -4,11 +4,18 @@ import {
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
+  OPERACION_RESOLVER_SOLICITUD,
   type ConfirmacionOperacionPort,
 } from "../../core/operaciones/operaciones-contract.js";
 import type { EjecutarOperacionInput } from "../../core/operaciones/ejecutar-operacion.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
-import { createOperacionesAdapter, type OperacionesAdapterDeps } from "./index.js";
+import {
+  createOperacionesAdapter,
+  OPERACIONES_TOOL_DESCRIPTION,
+  OPERACIONES_TOOL_ZOD_SCHEMA,
+  type OperacionesAdapterDeps,
+} from "./index.js";
 
 /**
  * Tests for `createOperacionesAdapter` (`operaciones-negocio-conversacionales`,
@@ -31,15 +38,26 @@ function fakeConfirmacion(): ConfirmacionOperacionPort {
   };
 }
 
-async function invokeOperacionesTool(
+/**
+ * Único punto de casteo/lookup de `_registeredTools` (undocumented internal del
+ * SDK instalado, ver comentario de archivo arriba). `invokeOperacionesTool` y el
+ * test de `OPERACIONES_TOOL_DESCRIPTION` reusan este helper en vez de duplicar el
+ * cast (aprobacion-conversacional-hitl, hallazgos-review-unit5).
+ */
+function getRegisteredOperacionesTool(
   adapter: ReturnType<typeof createOperacionesAdapter>,
-  args: Readonly<Record<string, unknown>>,
-): Promise<{ readonly content: readonly [{ readonly type: "text"; readonly text: string }] }> {
+): {
+  readonly handler: (args: unknown, extra: unknown) => Promise<unknown>;
+  readonly description?: string;
+} {
   const server = adapter.mcpServers[OPERACIONES_MCP_SERVER_NAME] as unknown as {
     readonly instance: {
       readonly _registeredTools: Record<
         string,
-        { readonly handler: (args: unknown, extra: unknown) => Promise<unknown> }
+        {
+          readonly handler: (args: unknown, extra: unknown) => Promise<unknown>;
+          readonly description?: string;
+        }
       >;
     };
   };
@@ -47,6 +65,14 @@ async function invokeOperacionesTool(
   if (registeredTool === undefined) {
     throw new Error(`test setup error: tool "${OPERACIONES_TOOL_NAME}" was not registered`);
   }
+  return registeredTool;
+}
+
+async function invokeOperacionesTool(
+  adapter: ReturnType<typeof createOperacionesAdapter>,
+  args: Readonly<Record<string, unknown>>,
+): Promise<{ readonly content: readonly [{ readonly type: "text"; readonly text: string }] }> {
+  const registeredTool = getRegisteredOperacionesTool(adapter);
   return (await registeredTool.handler(args, {})) as {
     readonly content: readonly [{ readonly type: "text"; readonly text: string }];
   };
@@ -191,6 +217,89 @@ describe("createOperacionesAdapter — delega en ejecutar y traduce el resultado
   });
 });
 
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — resolver_solicitud: forma zod (aprobacion-conversacional-hitl, tarea 8)", () => {
+  it("acepta { operacion, accion, solicitudId } con accion:'aprobar'", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+      solicitudId: "S1",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("acepta accion:'reabrir' a nivel de forma — el enum del zod plano ya incluye reabrir (tarea 12, ampliado para reembolso); validar-operacion.ts sigue rechazando reabrir para resolver_solicitud por significado (regresión ADR 217 pto 3)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "reabrir",
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — resolver_reembolso: forma zod (aprobacion-conversacional-hitl, tarea 12)", () => {
+  it("acepta { operacion, accion, ventaId } con accion:'aprobar'|'rechazar'|'reabrir'", () => {
+    for (const accion of ["aprobar", "rechazar", "reabrir"]) {
+      const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+        operacion: OPERACION_RESOLVER_REEMBOLSO,
+        accion,
+        ventaId: "V1",
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("acepta { operacion, accion } sin ventaId (modo listado)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("createOperacionesAdapter — resolver_reembolso: input válido delega en ejecutar (aprobacion-conversacional-hitl, tarea 12)", () => {
+  it("{ operacion: resolver_reembolso, accion: 'reabrir', ventaId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "reabrir",
+      ventaId: "V1",
+    });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolver_solicitud con accion:'reabrir' ⇒ pasa el zod ampliado pero validar-operacion.ts lo rechaza, ejecutar nunca se invoca (regresión ADR 217 pto 3)", async () => {
+    const ejecutar = vi.fn();
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    const result = await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "reabrir",
+    });
+
+    expect(ejecutar).not.toHaveBeenCalled();
+    expect(result.content[0].text.length).toBeGreaterThan(0);
+  });
+});
+
+describe("createOperacionesAdapter — resolver_solicitud: input válido delega en ejecutar (aprobacion-conversacional-hitl, tarea 8)", () => {
+  it("{ operacion: resolver_solicitud, accion: 'aprobar', solicitudId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+      solicitudId: "S1",
+    });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("createOperacionesAdapter — nunca lanza", () => {
   it("si ejecutar rechaza (throw/reject), el handler resuelve con un texto degradado en vez de propagar", async () => {
     const ejecutar = vi.fn().mockRejectedValue(new Error("boom"));
@@ -202,5 +311,33 @@ describe("createOperacionesAdapter — nunca lanza", () => {
 
     const result = await invokeOperacionesTool(adapter, { operacion: OPERACION_CANCELAR_SOLICITUD_INTERNA });
     expect(result.content[0].text.length).toBeGreaterThan(0);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — instrucción de accion inequívoca (aprobacion-conversacional-hitl, tarea 15, ADR 220 pto 2)", () => {
+  /** Texto literal de ADR 220 pto 2 — el mismo, duplicado a propósito, en las tres superficies de prompt. */
+  const TEXTO_ACCION_INEQUIVOCA =
+    "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un " +
+    "reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una " +
+    "frase inequívoca del empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', " +
+    "'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca " +
+    "elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que " +
+    "parezca más razonable.";
+
+  it("incluye el texto exacto de ADR 220 pto 2, con 'reabrir' scoped solo a reembolso", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(TEXTO_ACCION_INEQUIVOCA);
+  });
+
+  it("regresión: la frase de confirmación original NO cambió ni una letra", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
+      "Si la respuesta pide confirmación, comunicásela al empleado tal cual y esperá que te lo vuelva a pedir en un mensaje nuevo antes de invocar la misma operación otra vez.",
+    );
+  });
+
+  it("es la misma descripción registrada en la tool real del servidor MCP", () => {
+    const adapter = createOperacionesAdapter(makeDeps());
+    const registeredTool = getRegisteredOperacionesTool(adapter);
+
+    expect(registeredTool.description).toBe(OPERACIONES_TOOL_DESCRIPTION);
   });
 });
