@@ -222,7 +222,7 @@ Comandos TUI privilegiados (Hito 5.1) para revisar el diff que produjo el Develo
 
 ### Roles de empleado y autorización
 
-Desde v3.5.0 (`autorizacion-empleado`), `/login` sigue respondiendo *quién sos*; un rol de empleado, persistido aparte (`roles_empleado`), responde *qué podés*. Dos valores, sin matriz de permisos: `empleado` (base) y `administrador` (elevado, puede resolver una escalación de reembolso o una solicitud interna de **otro** empleado). Un `empleadoId` sin fila de rol queda en `empleado` por default — el sistema deniega salvo asignación explícita. Un `administrador` **no** puede aprobar ni rechazar su propia solicitud interna, con rol o sin él.
+Desde v3.5.0 (`autorizacion-empleado`), `/login` sigue respondiendo *quién sos*; un rol de empleado, persistido aparte (`roles_empleado`), responde *qué podés*. Dos valores, sin matriz de permisos: `empleado` (base) y `administrador` (elevado, puede resolver una escalación de reembolso o una solicitud interna de **otro** empleado). Un `empleadoId` sin fila de rol queda en `empleado` por default — el sistema deniega salvo asignación explícita. Un `administrador` **no** puede aprobar ni rechazar su propia solicitud interna, con rol o sin él. **Desde v3.10.0 (`aprobacion-conversacional-hitl`) tampoco puede aprobar, rechazar ni reabrir el reembolso escalado de su propia venta** — mismo criterio de separación de funciones, cerrando la asimetría que hasta entonces sólo cubría solicitudes (R7, ver [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md), Deuda 5).
 
 Asignar el rol elevado a un empleado que ya tiene credencial:
 
@@ -230,18 +230,11 @@ Asignar el rol elevado a un empleado que ya tiene credencial:
 npm run empleados:crear -- <empleadoId> --rol administrador
 ```
 
-### Comandos de solicitud interna
+### Resolución de solicitudes internas y escalaciones de reembolso (por conversación desde v3.10.0)
 
-Comandos TUI privilegiados para resolver una solicitud interna mientras está `pendiente_aprobacion_humana`:
+Hasta v3.9.0, `/aprobar-solicitud [solicitudId]` y `/rechazar-solicitud [solicitudId]` eran comandos TUI privilegiados para resolver una solicitud interna en estado `pendiente_aprobacion_humana`, y `/aprobar-reembolso`/`/rechazar-reembolso`/`/reabrir-reembolso` los equivalentes para una escalación de reembolso. **Desde v3.10.0 (`aprobacion-conversacional-hitl`, ADR 151 EJECUTADO) los cinco se dieron de baja de la TUI** y se resuelven ahora por conversación, vía las operaciones `resolver_solicitud` y `resolver_reembolso` de la herramienta `operaciones` — ver [Operaciones de negocio por conversación](#operaciones-de-negocio-por-conversación-v360-extendida-en-v3100) más abajo.
 
-| Comando | Uso | Descripción |
-| --- | --- | --- |
-| `/aprobar-solicitud` | `/aprobar-solicitud [solicitudId]` | Aprueba una solicitud interna pendiente (lista las pendientes si se omite el id). |
-| `/rechazar-solicitud` | `/rechazar-solicitud [solicitudId]` | Rechaza una solicitud interna pendiente (lista las pendientes si se omite el id). |
-
-`/aprobar-solicitud` y `/rechazar-solicitud` sobre la solicitud de **otro** empleado exigen rol `administrador` (v3.5.0, ver [Roles de empleado y autorización](#roles-de-empleado-y-autorización)) — un empleado con rol base recibe un rechazo distinguible ("no estás autorizado"). Sobre la **propia** solicitud, ambos comandos se rechazan siempre ("no podés aprobar/rechazar la tuya"), tenga o no rol elevado. Ambos sólo alcanzan una solicitud en estado `pendiente_aprobacion_humana`: una ya `aprobada`, `rechazada` o `cancelada` responde igual que un id inexistente. No existe `/reabrir-solicitud`: cancelar deja la solicitud en un estado terminal.
-
-> **v3.6.0**: crear una solicitud interna (antes `/solicitar`), cancelar la propia (antes `/cancelar-solicitud`) y procesar una devolución (antes `/devolucion`) ya **no** son comandos de la TUI — se dieron de baja (ADR 148 pto 2, `operaciones-negocio-conversacionales`) y se resuelven ahora por conversación, vía la herramienta `operaciones` del turno de empleado autenticado. Ver [Operaciones de negocio por conversación](#operaciones-de-negocio-por-conversación-v360-operaciones-negocio-conversacionales) más abajo. `/aprobar-solicitud`/`/rechazar-solicitud` de arriba **no** bajan — siguen siendo comandos de TUI, sin cambio.
+El comportamiento de autorización no cambió al migrar de canal: resolver lo de **otro** empleado sigue exigiendo rol `administrador` (v3.5.0, ver [Roles de empleado y autorización](#roles-de-empleado-y-autorización)) — un empleado con rol base recibe un rechazo distinguible ("no estás autorizado"). Sobre la **propia** solicitud o venta, la resolución se rechaza siempre, tenga o no rol elevado. Ambas operaciones sólo alcanzan un ítem en el estado correspondiente (`pendiente_aprobacion_humana` para solicitud, escalada para reembolso): uno ya resuelto responde igual que un id inexistente. No existe una acción de reapertura para solicitudes — cancelar deja la solicitud en un estado terminal; para reembolso sí existe `reabrir`.
 
 ### Reporte de comisiones: dos vías
 
@@ -268,9 +261,9 @@ El protocolo A2A v1.0.0 no transporta la identidad del agente externo que envió
 
 `/ver-solicitudes-a2a` es de **sólo lectura**: si una fila queda huérfana (por ejemplo, en `TASK_STATE_WORKING` porque el proceso que la atendía terminó sin actualizar su estado), este comando la hace visible pero no actúa sobre ella. Cancelarla o reconciliarla con un barrido de arranque queda fuera de su alcance.
 
-### Operaciones de negocio por conversación (v3.6.0, `operaciones-negocio-conversacionales`)
+### Operaciones de negocio por conversación (v3.6.0, extendida en v3.10.0)
 
-Segunda superficie conversacional, **HTTP**, dedicada al empleado autenticado — no reemplaza la TUI, la complementa. Expone seis operaciones sobre el camino del dinero, cada una delegando el 100% del cálculo a una función determinista ya existente, sin modificarla:
+Segunda superficie conversacional, **HTTP**, dedicada al empleado autenticado — no reemplaza la TUI, la complementa. Expone ocho operaciones sobre el camino del dinero, cada una delegando el 100% del cálculo a una función determinista ya existente, sin modificarla:
 
 | Operación | Función determinista |
 | --- | --- |
@@ -279,6 +272,8 @@ Segunda superficie conversacional, **HTTP**, dedicada al empleado autenticado �
 | `procesar_devolucion` | `procesarDevolucion` |
 | `crear_solicitud_interna` | `crearSolicitudInterna` |
 | `cancelar_solicitud_interna` | `resolverSolicitudInterna` (acción `cancelar` únicamente) |
+| `resolver_solicitud` | `resolverSolicitudInterna` (acción `aprobar`/`rechazar`, sobre la solicitud de **otro** empleado — v3.10.0) |
+| `resolver_reembolso` | `resolverEscalacionReembolso` (acción `aprobar`/`rechazar`/`reabrir` — v3.10.0) |
 | `consultar_reporte_comisiones` | `resolverPeriodoReporte`/`agruparReporteMensual`/`formatearReporteMensual` |
 
 **Dos rutas HTTP nuevas, autenticadas — NO vía TUI**:
@@ -288,9 +283,9 @@ Segunda superficie conversacional, **HTTP**, dedicada al empleado autenticado �
 
 `POST /soporte` (cliente, anónimo, sin sesión) **nunca** tiene esta herramienta — es el riesgo dominante del change (R1 de `proposal.md`), cerrado con un test de regresión que reconfirma la ausencia de `operaciones` en el `allowedTools` de ese turno.
 
-`cancelar_solicitud_interna` exige confirmación humana explícita en un turno conversacional **posterior y distinto** — no se puede autoconfirmar dentro del mismo turno.
+Las tres operaciones que exigen confirmación en dos pasos (`cancelar_solicitud_interna`, `resolver_solicitud`, `resolver_reembolso`) exigen confirmación humana explícita en un turno conversacional **posterior y distinto** — no se pueden autoconfirmar dentro del mismo turno, ni ejecutar con una `accion` distinta de la que generó el pedido de confirmación (ADR 213: un cambio de `accion` sobre el mismo ítem reemplaza la confirmación pendiente y exige un eco nuevo).
 
-Los tres comandos TUI de autoservicio (`/devolucion`, `/solicitar`, `/cancelar-solicitud`) se dieron de baja y se resuelven ahora por acá — ver la nota en [Comandos de solicitud interna](#comandos-de-solicitud-interna). Los cinco comandos administrativos/HITL (`/aprobar-*`, `/rechazar-*`, `/reabrir-*`) **no** se tocan: el ADR 151 los declaró candidatos a pasar a conversación, pero esa ejecución sigue **BLOQUEADA** por decisión del checkpoint (R10, cerrado en v3.5, ver [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md)).
+Los tres comandos TUI de autoservicio (`/devolucion`, `/solicitar`, `/cancelar-solicitud`) se dieron de baja en v3.6.0 y se resuelven por acá desde entonces. **Desde v3.10.0 (`aprobacion-conversacional-hitl`), el ADR 151 está EJECUTADO**: los cinco comandos administrativos/HITL (`/aprobar-solicitud`, `/rechazar-solicitud`, `/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`) también se dieron de baja de la TUI y se resuelven por `resolver_solicitud`/`resolver_reembolso` — ver [Resolución de solicitudes internas y escalaciones de reembolso](#resolución-de-solicitudes-internas-y-escalaciones-de-reembolso-por-conversación-desde-v3100). El gate de rol (`puedeResolverAjeno`) y la prohibición de autoaprobación se heredan por delegación en la función determinista, nunca se reimplementan en el dispatcher — detalle completo, incluido el cierre de R7, en [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md) (Concepto 10, Deuda 5).
 
 **R12, heredada y aceptada, no un bug pendiente**: `consultar_reporte_comisiones` no tiene gate de rol ni admite escopar por vendedor — mismo comportamiento que ya tenía `/reporte-comisiones` por TUI. El checkpoint aceptó esto explícitamente; detalle completo en el arc42 (Riesgo 4, R12, con addendum de v3.9 sobre el canal de chat).
 
@@ -308,7 +303,7 @@ La interfaz visual que faltaba: hasta v3.8.0, `POST /login`/`POST /operaciones` 
 
 ### Administración de empleados desde la TUI (comandos-administracion-empleados)
 
-Reparto de canales, completo desde v3.9.0: **chat = trabajo transaccional del empleado** (`operaciones-negocio-conversacionales` + su interfaz visual en `chat-web-empleado`), **TUI = administración**. Dar de alta un empleado y asignarle rol dejan de exigir salir del arnés (`npm run empleados:crear`) y pasan a ser comandos de la TUI, gateados por rol `administrador`.
+Reparto de canales: **chat = trabajo transaccional del empleado** (`operaciones-negocio-conversacionales` + su interfaz visual en `chat-web-empleado`), **TUI = administración**. Dar de alta un empleado y asignarle rol dejan de exigir salir del arnés (`npm run empleados:crear`) y pasan a ser comandos de la TUI, gateados por rol `administrador`. Este reparto sólo quedó **completo del todo** en v3.10.0 (`aprobacion-conversacional-hitl`), cuando los últimos cinco comandos transaccionales de la TUI (`/aprobar-*`, `/rechazar-*`, `/reabrir-*`) también bajaron — ver [Resolución de solicitudes internas y escalaciones de reembolso](#resolución-de-solicitudes-internas-y-escalaciones-de-reembolso-por-conversación-desde-v3100).
 
 | Comando | Uso | Descripción |
 | --- | --- | --- |
@@ -326,7 +321,7 @@ Reparto de canales, completo desde v3.9.0: **chat = trabajo transaccional del em
 - **ADR 178** — configurar `GITHUB_WEBHOOK_SECRET`/`GITHUB_TOKEN` desde la TUI sigue fuera de alcance: el listener de webhooks abre su puerto una única vez al arrancar el proceso, y ambos son secretos recuperables sin ningún precedente de persistencia en este repo. Condición de disparo: una decisión tomada sobre dónde viven los secretos de integración del arnés (`.env`, gestor externo, o bóveda propia con cifrado en reposo).
 - **ADR 179** — "configuración por usuario" no es una cuarta capacidad: no hay ningún settear por-empleado en las tablas del esquema ni en `src/core/config/env.ts`. Condición de disparo: que el stakeholder nombre al menos una cosa concreta que hoy sea global y deba ser por usuario.
 
-`DESCRIPTORES` queda en **dieciocho** entradas (los quince heredados + `/estado-bot-prs` + `/crear-empleado` + `/asignar-rol`), los tres nuevos insertados inmediatamente antes de `/ayuda`, que sigue último — ningún descriptor existente cambió de orden ni de forma.
+Con esta capacidad, `DESCRIPTORES` llegó a **dieciocho** entradas (los quince heredados + `/estado-bot-prs` + `/crear-empleado` + `/asignar-rol`), los tres nuevos insertados inmediatamente antes de `/ayuda`, que sigue último — ningún descriptor existente cambió de orden ni de forma. **Desde v3.10.0 (`aprobacion-conversacional-hitl`, ADR 151 EJECUTADO), tras dar de baja los cinco comandos administrativos/HITL de resolución (`/aprobar-solicitud`, `/rechazar-solicitud`, `/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`), `DESCRIPTORES` queda en **trece** entradas — ninguna transaccional, orden relativo de las que quedan sin cambio.
 
 ### Skills (`.claude/skills/`)
 
