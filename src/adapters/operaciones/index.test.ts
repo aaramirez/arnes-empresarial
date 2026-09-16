@@ -4,11 +4,12 @@ import {
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_SOLICITUD,
   type ConfirmacionOperacionPort,
 } from "../../core/operaciones/operaciones-contract.js";
 import type { EjecutarOperacionInput } from "../../core/operaciones/ejecutar-operacion.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
-import { createOperacionesAdapter, type OperacionesAdapterDeps } from "./index.js";
+import { createOperacionesAdapter, OPERACIONES_TOOL_ZOD_SCHEMA, type OperacionesAdapterDeps } from "./index.js";
 
 /**
  * Tests for `createOperacionesAdapter` (`operaciones-negocio-conversacionales`,
@@ -188,6 +189,40 @@ describe("createOperacionesAdapter — delega en ejecutar y traduce el resultado
     });
 
     expect(result.content[0].text).toBe("Venta registrada con éxito.");
+  });
+});
+
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — resolver_solicitud: forma zod (aprobacion-conversacional-hitl, tarea 8)", () => {
+  it("acepta { operacion, accion, solicitudId } con accion:'aprobar'", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+      solicitudId: "S1",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rechaza accion:'reabrir' a nivel de forma — el enum del zod plano sólo tiene aprobar/rechazar en este punto (se amplía en la tarea 12, para reembolso)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "reabrir",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("createOperacionesAdapter — resolver_solicitud: input válido delega en ejecutar (aprobacion-conversacional-hitl, tarea 8)", () => {
+  it("{ operacion: resolver_solicitud, accion: 'aprobar', solicitudId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "aprobar",
+      solicitudId: "S1",
+    });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
   });
 });
 
