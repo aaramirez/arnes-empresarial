@@ -44,6 +44,8 @@ export const OPERACION_CREAR_SOLICITUD_INTERNA = "crear_solicitud_interna";
 export const OPERACION_CANCELAR_SOLICITUD_INTERNA = "cancelar_solicitud_interna";
 export const OPERACION_REGISTRAR_VENTA = "registrar_venta";
 export const OPERACION_CONSULTAR_REPORTE_COMISIONES = "consultar_reporte_comisiones";
+/** `aprobacion-conversacional-hitl`, ADR 206 — dominio solicitud del canal conversacional. */
+export const OPERACION_RESOLVER_SOLICITUD = "resolver_solicitud";
 
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
@@ -52,6 +54,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_RESOLVER_SOLICITUD,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -106,13 +109,31 @@ export interface OperacionConsultarReporteComisiones {
   readonly periodo?: string;
 }
 
+/**
+ * `aprobacion-conversacional-hitl`, ADR 206. `accion` es la ELECCIÓN de
+ * operación que el modelo comunica — nunca un veredicto calculado ni un
+ * campo `confirmado` (§0.1, ese booleano es inexpresable por el modelo, lo
+ * decide el composition root contra `ConfirmacionOperacionPort`). **Nunca**
+ * incluye `"cancelar"` (ADR 217) — esa acción sigue siendo exclusiva de
+ * `cancelar_solicitud_interna`, un `switch` exhaustivo distinto.
+ */
+export type AccionSolicitudModelo = "aprobar" | "rechazar";
+
+/** `solicitudId` ausente ⇒ modo listado, sin tocar ninguna ranura de confirmación (mismo criterio que `cancelar_solicitud_interna`). */
+export interface OperacionResolverSolicitud {
+  readonly operacion: typeof OPERACION_RESOLVER_SOLICITUD;
+  readonly accion: AccionSolicitudModelo;
+  readonly solicitudId?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
   | OperacionCrearSolicitudInterna
   | OperacionCancelarSolicitudInterna
   | OperacionRegistrarVenta
-  | OperacionConsultarReporteComisiones;
+  | OperacionConsultarReporteComisiones
+  | OperacionResolverSolicitud;
 
 /**
  * Puerto de confirmación humana para las operaciones de dos pasos del canal
