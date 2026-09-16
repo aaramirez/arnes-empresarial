@@ -121,6 +121,7 @@ import { buildOnLoginHttp } from "./build-on-login-http.js";
 import { buildOnOperacionesEmpleado } from "./build-on-operaciones-empleado.js";
 import { crearSesionEmpleadoStore } from "./adapters/web/sesion-empleado-store.js";
 import { crearConfirmacionOperacionesStore } from "./adapters/web/confirmacion-operaciones-store.js";
+import { crearConversacionEmpleadoStore } from "./adapters/web/conversacion-empleado-store.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -475,11 +476,14 @@ const despacharDeps: DespacharDelegacionDeps = {
   logEvent: (casoIdEvento, event, fields) => logTurnEvent(casoIdEvento, event, fields),
 };
 
-// Dos stores en memoria nuevos (ADR 173 pto 4): sesión HTTP por token
-// opaco, y confirmación de `cancelar_solicitud_interna` por-empleado — cero
-// relación con la ranura única de la TUI.
+// Dos stores en memoria (ADR 173 pto 4): sesión HTTP por token opaco, y
+// confirmación de `cancelar_solicitud_interna` por-empleado — cero relación
+// con la ranura única de la TUI. Un tercero (`chat-web-empleado`, ADR 196
+// §2): memoria conversacional por-TOKEN de sesión HTTP (nunca por
+// `empleadoId` — ADR 196 §2.1).
 const sesionStore = crearSesionEmpleadoStore();
 const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+const conversacionStore = crearConversacionEmpleadoStore();
 
 // `POST /login` (ADR 173 pto 2) — reusa las MISMAS `deps` de política de
 // auth que ya usa la TUI.
@@ -516,6 +520,7 @@ try {
     onOperacionesEmpleado,
     sesionStore,
     confirmacionOperacionesStore,
+    conversacionStore,
     logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
   });
 } catch (error) {

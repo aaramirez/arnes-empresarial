@@ -31,8 +31,14 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
   onSoporte: () => Promise<never>;
   onLogin: () => Promise<never>;
   onOperacionesEmpleado: () => Promise<never>;
-  sesionStore: { crear: () => string; buscar: () => undefined };
+  sesionStore: {
+    crear: () => string;
+    buscar: () => undefined;
+    eliminar: () => void;
+    otraSesionVigente: () => boolean;
+  };
   confirmacionOperacionesStore: { paraEmpleado: () => never };
+  conversacionStore: { paraSesion: () => never; eliminar: () => void };
   logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
 } {
   return {
@@ -43,11 +49,22 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
     onSoporte: vi.fn().mockRejectedValue(new Error("not used")),
     onLogin: vi.fn().mockRejectedValue(new Error("not used")),
     onOperacionesEmpleado: vi.fn().mockRejectedValue(new Error("not used")),
-    sesionStore: { crear: vi.fn().mockReturnValue("token"), buscar: vi.fn().mockReturnValue(undefined) },
+    sesionStore: {
+      crear: vi.fn().mockReturnValue("token"),
+      buscar: vi.fn().mockReturnValue(undefined),
+      eliminar: vi.fn(),
+      otraSesionVigente: vi.fn().mockReturnValue(false),
+    },
     confirmacionOperacionesStore: {
       paraEmpleado: (): never => {
         throw new Error("not used");
       },
+    },
+    conversacionStore: {
+      paraSesion: (): never => {
+        throw new Error("not used");
+      },
+      eliminar: vi.fn(),
     },
     logEvent: vi.fn(),
     ...overrides,

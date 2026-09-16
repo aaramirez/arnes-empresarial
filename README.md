@@ -292,11 +292,23 @@ Segunda superficie conversacional, **HTTP**, dedicada al empleado autenticado �
 
 Los tres comandos TUI de autoservicio (`/devolucion`, `/solicitar`, `/cancelar-solicitud`) se dieron de baja y se resuelven ahora por acá — ver la nota en [Comandos de solicitud interna](#comandos-de-solicitud-interna). Los cinco comandos administrativos/HITL (`/aprobar-*`, `/rechazar-*`, `/reabrir-*`) **no** se tocan: el ADR 151 los declaró candidatos a pasar a conversación, pero esa ejecución sigue **BLOQUEADA** por decisión del checkpoint (R10, cerrado en v3.5, ver [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md)).
 
-**R12, heredada y aceptada, no un bug pendiente**: `consultar_reporte_comisiones` no tiene gate de rol ni admite escopar por vendedor — mismo comportamiento que ya tenía `/reporte-comisiones` por TUI. El checkpoint aceptó esto explícitamente; detalle completo en el arc42 (Riesgo 4, R12).
+**R12, heredada y aceptada, no un bug pendiente**: `consultar_reporte_comisiones` no tiene gate de rol ni admite escopar por vendedor — mismo comportamiento que ya tenía `/reporte-comisiones` por TUI. El checkpoint aceptó esto explícitamente; detalle completo en el arc42 (Riesgo 4, R12, con addendum de v3.9 sobre el canal de chat).
+
+### Chat web de empleado con memoria conversacional (v3.9.0, `chat-web-empleado`)
+
+La interfaz visual que faltaba: hasta v3.8.0, `POST /login`/`POST /operaciones` (arriba) sólo eran consumibles por `curl`. Desde v3.9.0 el arnés sirve una pantalla de chat real, en el mismo listener HTTP (`GET /chat`, `GET /chat/app.js`, `GET /chat/app.css`), con **JavaScript de cliente vanilla** — sin bundler ni dependencias nuevas (`react-dom` nunca estuvo instalado; "ya tenemos React" no aplica a web).
+
+- **Memoria conversacional real, sin tocar el núcleo**: cada mensaje sigue generando su propio `casoId` — un `ConversacionEmpleadoStore` nuevo resuelve el `casoId` del turno anterior de la misma conversación y lo usa para retomar la sesión del SDK (`options.resume`). `src/core/turn-selector/` y `src/core/operaciones/` quedan sin ninguna línea tocada.
+- **La confirmación de `cancelar_solicitud_interna` sigue exigiendo un turno posterior y distinto** — la memoria no relaja `origenCasoId !== casoIdActual`.
+- **El texto del modelo se inserta siempre como texto** (`textContent`), nunca como HTML; las páginas del chat llevan `Content-Security-Policy` sin `unsafe-inline`. El token de sesión vive en memoria de la pestaña, nunca en `localStorage`/`sessionStorage`/la URL.
+- **`POST /logout`** (ruta nueva, en la raíz) invalida la sesión en el servidor — limpia sesión, conversación y confirmación pendiente.
+- **`POST /operaciones` y `POST /login` no cambiaron de contrato.**
+
+**Enmienda de vocabulario**: desde esta versión, para el turno de empleado por HTTP, "conversación" y "caso" **dejan de ser sinónimos** — una conversación es una cadena de N `casos` ligados por `sesion_agente`. El resto del arnés (`/soporte`, TUI, A2A entrante) sigue con un caso por turno. Detalle completo, riesgos y deuda declarada (sin reintento automático ante pérdida de sesión del SDK, sesiones/conversaciones sin evicción periódica, y el ensanche del canal de R12): arc42, Concepto 9.
 
 ### Administración de empleados desde la TUI (comandos-administracion-empleados)
 
-Reparto de canales, ya completo: **chat = trabajo transaccional del empleado** (`operaciones-negocio-conversacionales`), **TUI = administración**. Dar de alta un empleado y asignarle rol dejan de exigir salir del arnés (`npm run empleados:crear`) y pasan a ser comandos de la TUI, gateados por rol `administrador`.
+Reparto de canales, completo desde v3.9.0: **chat = trabajo transaccional del empleado** (`operaciones-negocio-conversacionales` + su interfaz visual en `chat-web-empleado`), **TUI = administración**. Dar de alta un empleado y asignarle rol dejan de exigir salir del arnés (`npm run empleados:crear`) y pasan a ser comandos de la TUI, gateados por rol `administrador`.
 
 | Comando | Uso | Descripción |
 | --- | --- | --- |

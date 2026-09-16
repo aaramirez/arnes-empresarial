@@ -48,6 +48,7 @@ import { createCaso, buscarRolEmpleado, insertAccionEmpleado, listComisionesPorP
 import { createOperacionesAdapter } from "./adapters/operaciones/index.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps, type EjecutarOperacionInput } from "./core/operaciones/ejecutar-operacion.js";
 import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
+import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import type { SesionEmpleado } from "./core/auth/sesion.js";
 import type { RolEmpleado, RolEmpleadoPort } from "./core/auth/rol-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
@@ -121,6 +122,8 @@ export function buildOnOperacionesEmpleado(
   readonly consulta: string;
   readonly sesion: SesionEmpleado;
   readonly confirmacion: ConfirmacionOperacionPort;
+  /** `chat-web-empleado`, ADR 196 pto 5 — memoria conversacional, viaja como argumento de la función DEVUELTA, no del closure de construcción (mismo criterio que `sesion`/`confirmacion`). */
+  readonly conversacion: ConversacionEmpleadoPort;
 }) => Promise<OperacionesEmpleadoResult> {
   const { db, memory, hooks, ventasConfig, notifier, baseUrlPublica, despacharDeps, logDeps } = deps;
   const newId = deps.newId ?? randomUUID;
@@ -192,13 +195,38 @@ export function buildOnOperacionesEmpleado(
       ejecutar,
     });
 
+    /**
+     * Decorador per-turno del `MemoryPort` (ADR 196 pto 6, `chat-web-empleado`
+     * tarea 3). Campo por campo, SIN `...spread` — a propósito, para que sea
+     * auditable de una mirada que sólo `getLatestSesionAgente` se redirige.
+     * ÚNICO método redirigido: la sesión a retomar se resuelve contra el
+     * `casoId` del mensaje ANTERIOR de esta conversación
+     * (`input.conversacion.casoAnterior()`), no contra el de este mensaje
+     * (`casoIdDelTurno`) — que por construcción es nuevo y no tiene
+     * historial propio todavía.
+     */
+    const memoriaConversacional: MemoryPort = {
+      getCasoById: (id) => memory.getCasoById(id),
+      getLatestSesionAgente: (casoIdDelTurno, agentId) =>
+        memory.getLatestSesionAgente(input.conversacion.casoAnterior() ?? casoIdDelTurno, agentId),
+      updateCaso: (id, update) => memory.updateCaso(id, update),
+      createSesionAgente: (fila) => memory.createSesionAgente(fila),
+    };
+
     const result = await handleTurn(casoId, prompt, {
-      memory,
+      memory: memoriaConversacional,
       hooks,
       candidateAgents,
       ...(logDeps ? { logDeps } : {}),
       mcpServers: operacionesAdapter.mcpServers,
     });
+
+    // `registrarTurno` SÓLO tras `handleTurn` resuelto — NUNCA antes, NUNCA
+    // en un `catch` (ADR 196 pto 7): un turno fallido deja la memoria de la
+    // conversación exactamente donde estaba. Prohibido además cualquier
+    // reintento automático sin `resume` (ADR 196 pto 9) — no hay un segundo
+    // `await handleTurn(...)` en este `try`.
+    input.conversacion.registrarTurno(casoId);
 
     return { casoId, respuesta: result.responseText };
   };

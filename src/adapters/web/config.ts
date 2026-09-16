@@ -43,6 +43,36 @@ export const RUTA_OPERACIONES = "/operaciones";
 export const OPERACIONES_TIMEOUT_MS = 120_000;
 
 /**
+ * Techos de rotación perezosa de la conversación (`chat-web-empleado`, ADR
+ * 197). Evaluados en el ACCESO (`ConversacionEmpleadoStore.paraSesion`), no
+ * con un timer — mismo criterio que `SesionEmpleadoStore.buscar` con
+ * `sesionVigente`. Al superarlos la entrada ROTA (nunca rechaza).
+ */
+export const CONVERSACION_INACTIVIDAD_MS = 30 * 60_000;
+/** Ídem, por cantidad de turnos en vez de tiempo. */
+export const CONVERSACION_MAX_TURNOS = 40;
+
+/**
+ * Rutas nuevas de la interfaz de chat (`chat-web-empleado`, ADR 199, ADR
+ * 201). `RUTA_LOGOUT` en la raíz, no bajo `/chat/` -- es la inversa de
+ * `/login` (ADR 201 pto 3), no una función del chat.
+ */
+export const RUTA_CHAT = "/chat";
+export const RUTA_CHAT_SCRIPT = "/chat/app.js";
+export const RUTA_CHAT_ESTILOS = "/chat/app.css";
+export const RUTA_LOGOUT = "/logout";
+
+/**
+ * Content-Security-Policy exacta de las tres rutas del chat (`design.md`
+ * §5, ADR 199) -- literal, sin `unsafe-inline`. Comparar SIEMPRE con
+ * igualdad completa (`toEqual`), nunca `toContain` (molde ADR 96 pto 1).
+ * NO se aplica a `respondHtml` (`GET /confirmar/:token` sigue sin CSP,
+ * ADR 199 pto 2) -- ver `respondHtmlChat` en `server.ts`.
+ */
+export const CSP_CHAT =
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
  * raw value is missing, blank, not a number, or not strictly greater than
  * zero. Never throws. Mismo criterio que `resolvePositiveNumber` de

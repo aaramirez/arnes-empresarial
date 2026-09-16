@@ -23,6 +23,24 @@ export interface SesionEmpleadoStore {
   crear(sesion: SesionEmpleado): string;
   /** `undefined` si el token no existe O si la sesión asociada venció — mismo caso desde afuera. */
   buscar(token: string): SesionEmpleado | undefined;
+  /**
+   * Borra la entrada del `Map` esté vigente, vencida o no exista
+   * (`chat-web-empleado`, ADR 195 pto 1 / ADR 202 pto 1). Idempotente:
+   * nunca lanza, mismo criterio de indistinguibilidad que `buscar`. Método
+   * aditivo — `crear`/`buscar` no cambian de firma ni comportamiento.
+   */
+  eliminar(token: string): void;
+  /**
+   * `true` si existe OTRA entrada vigente en el store para `empleadoId`,
+   * distinta de `tokenExcluir` (`chat-web-empleado`, hallazgo Reviewer 2da
+   * ronda #1, CRÍTICO). Pensado para `POST /logout`: antes de invalidar la
+   * confirmación pendiente de un empleado (que está escopeada por
+   * `empleadoId`, no por token -- ver `confirmacion-operaciones-store.ts`),
+   * hay que saber si OTRA sesión del mismo empleado sigue viva, para no
+   * pisarle una confirmación en curso. Método aditivo — no cambia la firma
+   * ni el comportamiento de `crear`/`buscar`/`eliminar`.
+   */
+  otraSesionVigente(empleadoId: string, tokenExcluir: string): boolean;
 }
 
 export function crearSesionEmpleadoStore(): SesionEmpleadoStore {
@@ -37,6 +55,18 @@ export function crearSesionEmpleadoStore(): SesionEmpleadoStore {
     buscar(token) {
       const sesion = sesiones.get(token);
       return sesionVigente(sesion, new Date().toISOString()) ? sesion : undefined;
+    },
+    eliminar(token) {
+      sesiones.delete(token);
+    },
+    otraSesionVigente(empleadoId, tokenExcluir) {
+      const ahora = new Date().toISOString();
+      for (const [tok, sesion] of sesiones) {
+        if (tok !== tokenExcluir && sesion.empleadoId === empleadoId && sesionVigente(sesion, ahora)) {
+          return true;
+        }
+      }
+      return false;
     },
   };
 }

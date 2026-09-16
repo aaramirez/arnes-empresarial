@@ -25,10 +25,15 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import {
+  CSP_CHAT,
   OPERACIONES_TIMEOUT_MS,
+  RUTA_CHAT,
+  RUTA_CHAT_ESTILOS,
+  RUTA_CHAT_SCRIPT,
   RUTA_CONFIRMAR_PREFIJO,
   RUTA_DEVOLUCION,
   RUTA_LOGIN,
+  RUTA_LOGOUT,
   RUTA_OPERACIONES,
   RUTA_SOPORTE,
   RUTA_VENTAS,
@@ -49,6 +54,8 @@ import {
   parseSoportePayload,
 } from "./payloads.js";
 import { renderConfirmacionHtml, renderLinkInvalidoHtml, renderResultadoHtml } from "./render.js";
+import { CHAT_CLIENT_JS } from "./chat-client.js";
+import { CHAT_CSS, renderChatHtml } from "./chat-page.js";
 import type { RegistrarVentaInput, RegistrarVentaResult } from "../../core/ventas/registrar-venta.js";
 import type { DecisionCliente, DecisionVentaResult } from "../../core/ventas/confirmar-venta.js";
 import type { DevolucionResult } from "../../core/ventas/procesar-devolucion.js";
@@ -57,6 +64,8 @@ import type { SesionEmpleado } from "../../core/auth/sesion.js";
 import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
 import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
 import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import type { ConversacionEmpleadoStore } from "./conversacion-empleado-store.js";
+import type { ConversacionEmpleadoPort } from "../../core/conversacion/conversacion-contract.js";
 
 /**
  * DECISIÓN PARA EL REVIEWER: `SoporteResult` todavía no existe como módulo
@@ -111,11 +120,15 @@ export interface WebServerDeps {
     readonly consulta: string;
     readonly sesion: SesionEmpleado;
     readonly confirmacion: ConfirmacionOperacionPort;
+    /** `chat-web-empleado`, ADR 196 pto 3 — memoria conversacional, escopeada por el MISMO token que `sesion` (nunca por `empleadoId`). */
+    readonly conversacion: ConversacionEmpleadoPort;
   }) => Promise<SoporteResult>;
   /** ídem, ADR 173 pto 4: resuelve el `Bearer <token>` de `POST /operaciones` a una `SesionEmpleado`. */
   readonly sesionStore: SesionEmpleadoStore;
   /** ídem, ADR 173 pto 4: ranura de confirmación por-empleado de `cancelar_solicitud_interna`. */
   readonly confirmacionOperacionesStore: ConfirmacionOperacionesStore;
+  /** `chat-web-empleado`, ADR 196 §2: ranura de memoria conversacional por-TOKEN de sesión HTTP (nunca por `empleadoId`, ADR 196 §2.1). */
+  readonly conversacionStore: ConversacionEmpleadoStore;
   readonly logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
   /** `randomUUID` en producción; contador determinista en tests. Ver §9.1. */
   readonly newRequestId?: () => string;
@@ -194,22 +207,36 @@ function extraerBearerToken(req: WebRequest): string | undefined {
   return token === "" ? undefined : token;
 }
 
+/** Resultado de `resolverSesionDesdeRequest`: la sesión resuelta junto con el token crudo que la resolvió. */
+interface SesionResuelta {
+  readonly sesion: SesionEmpleado;
+  readonly token: string;
+}
+
 /**
  * Resuelve la `SesionEmpleado` de un `POST /operaciones` a partir de su
- * header `Authorization`. `undefined` en CUALQUIERA de: header ausente,
- * token sin coincidencia en `sesionStore`, o sesión vencida -- los tres
- * casos son indistinguibles desde acá (mismo criterio que
- * `SesionEmpleadoStore.buscar`, ADR 173 pto 4).
+ * header `Authorization`, junto con el `token` crudo ya extraído --
+ * corrección sobre el hallazgo Reviewer #5 (bajo): antes el caller
+ * (`handleOperaciones`) volvía a llamar `extraerBearerToken(req)` para
+ * resolver `conversacionStore.paraSesion`, duplicando el parseo del bearer
+ * token y forzando un `as string` porque esta función no exponía el token.
+ * `undefined` en CUALQUIERA de: header ausente, token sin coincidencia en
+ * `sesionStore`, o sesión vencida -- los tres casos son indistinguibles
+ * desde acá (mismo criterio que `SesionEmpleadoStore.buscar`, ADR 173 pto 4).
  */
 function resolverSesionDesdeRequest(
   req: WebRequest,
   sesionStore: SesionEmpleadoStore,
-): SesionEmpleado | undefined {
+): SesionResuelta | undefined {
   const token = extraerBearerToken(req);
   if (token === undefined) {
     return undefined;
   }
-  return sesionStore.buscar(token);
+  const sesion = sesionStore.buscar(token);
+  if (sesion === undefined) {
+    return undefined;
+  }
+  return { sesion, token };
 }
 
 /**
@@ -239,19 +266,72 @@ function respondJson(res: WebResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * `Cache-Control: no-store` + `X-Request-Id` -- compartido por `respondHtml`,
+ * `respondAsset` y `handleLogout` (`chat-web-empleado`, hallazgo Reviewer #1:
+ * extraído para no repetir el par en cada función que responde).
+ */
+function aplicarHeadersNoStore(res: WebResponse, requestId: string): void {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Request-Id", requestId);
+}
+
 /** Headers de toda respuesta HTML (ADR 20, punto 5): Content-Type, Cache-Control, Referrer-Policy, X-Request-Id. */
 function respondHtml(res: WebResponse, status: number, html: string, requestId: string): void {
   res.statusCode = status;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
+  aplicarHeadersNoStore(res, requestId);
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-Request-Id", requestId);
   res.end(html);
 }
 
 /** LA página genérica de indistinguibilidad (R6): un solo cuerpo, byte a byte idéntico, para las 4 filas en negrita de la tabla. */
 function respondLinkInvalido(res: WebResponse, requestId: string): void {
   respondHtml(res, 404, renderLinkInvalidoHtml(), requestId);
+}
+
+/**
+ * `Content-Security-Policy` + `X-Content-Type-Options: nosniff` --
+ * compartido por `respondHtmlChat` y `respondAsset` (`chat-web-empleado`,
+ * hallazgo Reviewer #1). Extraído para no repetir el par literal en las dos
+ * funciones que sirven contenido de `/chat/*`.
+ */
+function aplicarHeadersSeguridadChat(res: WebResponse): void {
+  res.setHeader("Content-Security-Policy", CSP_CHAT);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+}
+
+/**
+ * Helper HERMANO de `respondHtml` (`chat-web-empleado`, ADR 199 pto 2) --
+ * **delega en `respondHtml` SIN modificarlo** y suma `Content-Security-Policy`
+ * y `X-Content-Type-Options: nosniff`. Modificar `respondHtml` directamente
+ * le pondría CSP a `GET /confirmar/:token`, que tiene `<form>` y por lo
+ * tanto `form-action 'none'` lo rompería (ADR 192 pto 5 lo excluye
+ * explícitamente). Punto obligatorio 6.
+ *
+ * CORRECCIÓN (hallazgo Reviewer #1, CRÍTICO): los headers propios se setean
+ * ANTES de delegar en `respondHtml` -- que es quien llama `res.end()`.
+ * Setearlos DESPUÉS de `respondHtml(...)` (como estaba) es setear headers
+ * después de `end()`, que contra un `http.ServerResponse` real lanza
+ * `ERR_HTTP_HEADERS_SENT`.
+ */
+function respondHtmlChat(res: WebResponse, html: string, requestId: string): void {
+  aplicarHeadersSeguridadChat(res);
+  respondHtml(res, 200, html, requestId);
+}
+
+/**
+ * Sirve `CHAT_CLIENT_JS`/`CHAT_CSS` -- `string` en memoria, **cero `fs`** en
+ * el camino de request (ADR 200 pto 1). Mismos dos headers de seguridad que
+ * `respondHtmlChat`, más `Cache-Control: no-store` y `X-Request-Id` (ADR
+ * 201, tabla de rutas).
+ */
+function respondAsset(res: WebResponse, contenido: string, contentType: string, requestId: string): void {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", contentType);
+  aplicarHeadersSeguridadChat(res);
+  aplicarHeadersNoStore(res, requestId);
+  res.end(contenido);
 }
 
 type LecturaCuerpo =
@@ -603,7 +683,7 @@ async function handleOperaciones(
   requestId: string,
   deps: WebServerDeps,
 ): Promise<void> {
-  const { config, logEvent, sesionStore, confirmacionOperacionesStore } = deps;
+  const { config, logEvent, sesionStore, confirmacionOperacionesStore, conversacionStore } = deps;
 
   const lectura = await leerCuerpoConTope(req, res, config, requestId, RUTA_OPERACIONES, logEvent);
   if (!lectura.ok) {
@@ -614,12 +694,13 @@ async function handleOperaciones(
     return;
   }
 
-  const sesion = resolverSesionDesdeRequest(req, sesionStore);
-  if (sesion === undefined) {
+  const resuelto = resolverSesionDesdeRequest(req, sesionStore);
+  if (resuelto === undefined) {
     logEvent(requestId, "web-no-autorizado", {});
     respondJson(res, 401, { error: "no autorizado" });
     return;
   }
+  const { sesion, token } = resuelto;
 
   const jsonResult = parseJsonBody(lectura.body);
   if (!jsonResult.ok) {
@@ -639,8 +720,18 @@ async function handleOperaciones(
   // del slot único de la TUI, y siempre resuelta ANTES de invocar el turno
   // (reconciliación 2 de `tasks.md`).
   const confirmacion = confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId);
+  // `conversacion` sale de la ranura POR TOKEN (ADR 196 §2.1 -- NUNCA por
+  // `empleadoId` ni por ningún campo del body), simétrica a la resolución
+  // de `confirmacion` de arriba. `token` ya salió de `resolverSesionDesdeRequest`
+  // -- no se vuelve a parsear el bearer token (hallazgo Reviewer #5).
+  const conversacion = conversacionStore.paraSesion(token);
 
-  const turno = deps.onOperacionesEmpleado({ consulta: payloadResult.valor.consulta, sesion, confirmacion });
+  const turno = deps.onOperacionesEmpleado({
+    consulta: payloadResult.valor.consulta,
+    sesion,
+    confirmacion,
+    conversacion,
+  });
   // Misma carrera contra timeout que `handleSoporte`, con su propia
   // constante independiente (`OPERACIONES_TIMEOUT_MS`, ADR 173 pto 3).
   const resultado = await Promise.race<TurnoResultado>([
@@ -664,7 +755,72 @@ async function handleOperaciones(
     return;
   }
 
+  // ADR 197 pto 3 -- traza de rotación de la conversación, SIN el token
+  // (ADR 193 pto 3): un `conversacionId` distinto entre dos mensajes es la
+  // evidencia de que la conversación rotó. Nota de desviación: `design.md`
+  // §3 pto 3 menciona también un campo `turnos`, pero `ConversacionEmpleadoPort`
+  // (§13, tarea 1) no lo expone -- se omite acá en vez de inventar un valor
+  // que el puerto no puede dar.
+  logEvent(resultado.valor.casoId, "operaciones-conversacion", {
+    conversacionId: conversacion.conversacionId(),
+  });
   respondJson(res, 200, { casoId: resultado.valor.casoId, respuesta: resultado.valor.respuesta });
+}
+
+/**
+ * `POST /logout` (`chat-web-empleado`, ADR 201 pto 4-7, ADR 202). Inversa de
+ * `/login`, en la raíz, no bajo `/chat/`. SIEMPRE responde `204` sin body —
+ * token válido, vencido, inexistente o ausente son indistinguibles desde
+ * afuera (mismo criterio que `SesionEmpleadoStore.buscar`,
+ * `sesion-empleado-store.ts:13-16`). No lee el body (no hace falta
+ * `leerCuerpoConTope`) pero igual lo drena (`req.resume()`) antes de
+ * responder, para no dejar el socket a medio consumir.
+ *
+ * Orden de composición EXACTO, no se reordena (ADR 202 pto 2): el
+ * `empleadoId` sólo se puede leer mientras la sesión existe, por eso
+ * `confirmacionOperacionesStore` se consulta ANTES de `sesionStore.eliminar`
+ * -- `sesionStore.buscar` (sin borrar todavía) → `confirmacion.consumir()`
+ * (si había sesión Y ninguna OTRA sesión vigente del mismo empleado, ver
+ * abajo) → `conversacionStore.eliminar` → `sesionStore.eliminar`. El
+ * handler compone; ningún store llama a otro.
+ *
+ * Nota deliberada (hallazgo Reviewer 2da ronda #4): NO usa
+ * `resolverSesionDesdeRequest` -- a diferencia de `handleOperaciones`, este
+ * handler necesita el token CRUDO incluso cuando `sesionStore.buscar` no
+ * encuentra sesión (token vencido pero todavía presente en el `Map`), para
+ * poder limpiar `conversacionStore`/`sesionStore` de esa entrada
+ * (`conversacionStore.eliminar(token)`/`sesionStore.eliminar(token)` se
+ * llaman igual en ese caso -- test "token inexistente" de este describe).
+ * `resolverSesionDesdeRequest` devuelve `undefined` en ese mismo caso y
+ * descarta el token junto con la sesión, así que reusarlo acá perdería esa
+ * limpieza. Mantener la extracción manual es la única forma de no
+ * regresionar ese comportamiento ya cubierto por test.
+ *
+ * Hallazgo Reviewer 2da ronda #1 (CRÍTICO): `confirmacionOperacionesStore`
+ * está keyeada por `empleadoId`, no por sesión -- si el empleado tiene OTRA
+ * sesión vigente además de la que se está cerrando, NO se consume su
+ * confirmación (podría estar en curso desde esa otra sesión). Las dos
+ * últimas líneas (`conversacionStore.eliminar`/`sesionStore.eliminar`, que
+ * sí son por token) se ejecutan siempre igual.
+ */
+function handleLogout(req: WebRequest, res: WebResponse, requestId: string, deps: WebServerDeps): void {
+  const { sesionStore, confirmacionOperacionesStore, conversacionStore } = deps;
+
+  req.resume();
+
+  const token = extraerBearerToken(req);
+  if (token !== undefined) {
+    const sesion = sesionStore.buscar(token);
+    if (sesion !== undefined && !sesionStore.otraSesionVigente(sesion.empleadoId, token)) {
+      confirmacionOperacionesStore.paraEmpleado(sesion.empleadoId).consumir();
+    }
+    conversacionStore.eliminar(token);
+    sesionStore.eliminar(token);
+  }
+
+  res.statusCode = 204;
+  aplicarHeadersNoStore(res, requestId);
+  res.end();
 }
 
 /**
@@ -707,6 +863,26 @@ export function createRequestListener(deps: WebServerDeps): (req: WebRequest, re
     }
     if (method === "POST" && path === RUTA_OPERACIONES) {
       void handleOperaciones(req, res, requestId, deps);
+      return;
+    }
+    // `chat-web-empleado`, ADR 201 pto 3: en la raíz, no bajo `/chat/`.
+    if (method === "POST" && path === RUTA_LOGOUT) {
+      handleLogout(req, res, requestId, deps);
+      return;
+    }
+    // `chat-web-empleado`, tarea 10 (ADR 199, ADR 201): las tres rutas del
+    // chat son PÚBLICAS -- sin sesión, sin dato de negocio, idénticas para
+    // cualquier solicitante.
+    if (method === "GET" && path === RUTA_CHAT) {
+      respondHtmlChat(res, renderChatHtml(), requestId);
+      return;
+    }
+    if (method === "GET" && path === RUTA_CHAT_SCRIPT) {
+      respondAsset(res, CHAT_CLIENT_JS, "application/javascript; charset=utf-8", requestId);
+      return;
+    }
+    if (method === "GET" && path === RUTA_CHAT_ESTILOS) {
+      respondAsset(res, CHAT_CSS, "text/css; charset=utf-8", requestId);
       return;
     }
 

@@ -8,6 +8,7 @@ class FakeRequest implements WebRequest {
   url?: string | undefined;
   headers: Record<string, string | string[] | undefined>;
   destroy = vi.fn();
+  resume = vi.fn();
 
   private listeners: {
     data: Array<(chunk: Buffer) => void>;

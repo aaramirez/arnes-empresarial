@@ -579,6 +579,21 @@ El reparto de canales que `operaciones-negocio-conversacionales` empezó a ejecu
 - **Todo rechazo por rol insuficiente o por auto-degradación deja fila distinguible en `registro_acciones_empleado`**, con el `registrar()`/`RegistroAccionesEmpleadoPort` ya existentes (ADR 161) — ningún método de puerto nuevo.
 - **Dos capacidades pedidas por el stakeholder quedaron diferidas, con motivo verificado y nombre propio** — ver Deuda 7 (ADR 178) y Deuda 8 (ADR 179).
 
+## Concepto 9: Chat web de empleado con memoria conversacional real (v3.9, `chat-web-empleado`)
+
+El reparto de canales que `operaciones-negocio-conversacionales` (v3.6) inauguró —*"chat = trabajo transaccional del empleado, TUI = administración"*— y que `comandos-administracion-empleados` (v3.7) completó por el lado de administración, se cierra ahora por el lado de chat: la interfaz que v3.6 dejó sólo consumible por `curl` (`POST /login`, `POST /operaciones`) pasa a tener una pantalla real, con memoria conversacional real como requisito no negociable del stakeholder.
+
+- **Interfaz servida por el mismo listener HTTP, sin adaptador nuevo**: tres rutas públicas en la cadena de ruteo existente de `server.ts` (`GET /chat`, `GET /chat/app.js`, `GET /chat/app.css`), molde de `GET /confirmar/:token`. **Primer JavaScript de cliente del repo** (ADR 191): vanilla, sin bundler y sin ninguna dependencia nueva en `package.json` — verificado que `react-dom` nunca estuvo instalado, así que "ya tenemos React" no aplicaba a web.
+- **Memoria conversacional real, resuelta enteramente en el composition root, sin tocar el núcleo compartido por los cuatro turnos**: `build-on-operaciones-empleado.ts` sigue generando un `casoId` nuevo por mensaje (`newId()` intacto) — la memoria se logra con un decorador de `MemoryPort` que redirige `getLatestSesionAgente` hacia el `casoId` del turno anterior de la misma conversación, resuelto por un `ConversacionEmpleadoStore` nuevo (`Map` por token de sesión, rotación perezosa por inactividad o techo de turnos). `src/core/turn-selector/` y `src/core/operaciones/` quedan **sin ninguna línea modificada** — verificado por `git diff --stat` vacío contra ambos directorios.
+- **El invariante de confirmación humana de `cancelar_solicitud_interna` (Concepto Transversal 7, arc42 `:566` histórico) se conserva sin relajarse**: como el `casoId` sigue siendo nuevo por mensaje, el predicado `pendiente.origenCasoId !== casoIdActual` de `confirmacion-operaciones-store.ts` no necesitó tocarse. Queda cubierto con un test que falla si dos invocaciones del mismo mensaje llegan a autoconfirmarse — el riesgo estructural del change, cerrado sin atajos.
+- **Defensa de XSS como invariante de spec, no como cuidado de implementación**: el texto de `respuesta` —generado por el modelo— se inserta siempre por `textContent`/`createTextNode`, nunca por `innerHTML` ni equivalentes, verificado con un test mecánico sobre el string fuente del asset de cliente y un test en negativo con `<script>`/`<img onerror=...>`. Las respuestas HTML del chat llevan `Content-Security-Policy` sin `unsafe-inline`, servida por `respondHtmlChat` —helper hermano de `responderHtml` que no lo modifica— así que `GET /confirmar/:token` sigue sin CSP.
+- **El token de sesión vive en memoria de la pestaña**, nunca en `localStorage`/`sessionStorage`/la URL — se pierde al cerrar la pestaña, a propósito. `POST /logout` (ruta nueva, en la raíz) invalida la sesión **en el servidor**, no sólo en el cliente: limpia sesión, conversación y confirmación pendiente, en ese orden.
+- **`POST /operaciones` y `POST /login` no cambiaron de contrato**: `handleOperaciones` sólo ganó la resolución de la ranura de conversación (simétrica a la de confirmación) y una línea de log sin el token; `handleLogin` no tiene ninguna línea modificada.
+
+**Enmienda al Concepto Transversal 4 (modelo de datos del turno/mensaje)**: hasta esta versión, "una conversación" y "un caso" eran sinónimos en todo el arnés. A partir de acá, **sólo para el turno de empleado por HTTP**, una conversación es una **cadena de N `casos` ligados por `sesion_agente`**: el `casoId` sigue siendo nuevo por mensaje, pero `ConversacionEmpleadoStore` guarda el puntero al último `casoId` cerrado con éxito de cada sesión, y ese puntero es lo que redirige `getLatestSesionAgente` al armar el turno siguiente. `/soporte` (cliente), la TUI y el turno A2A entrante **siguen con un caso por turno**, sin cambio.
+
+**Deuda declarada por este change** — ver Riesgo 6 (R11), Riesgo 7 (R5), el addendum de v3.9 al Riesgo 4 (R12) y Deuda 9-11 (RD-91/92/94) más abajo.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
@@ -719,7 +734,25 @@ Cierre: con `autorizacion-empleado` (v3.5), el gate de autorización (`puedeReso
 
 Descripción: la sexta operación de la herramienta `operaciones` (Concepto Transversal 7) reusa verbatim el pipeline de `manejarReporteComisiones` (`resolverPeriodoReporte`/`agruparReporteMensual`/`formatearReporteMensual`) — sin gate de rol y sin ningún parámetro que permita escopar el resultado a un vendedor o empleado en particular. Cualquier empleado con sesión vigente que invoque `consultar_reporte_comisiones` (o el comando TUI `/reporte-comisiones`, que ya tenía el mismo comportamiento) ve el reporte completo de todos los vendedores del período.
 
-Mitigación/cierre: no aplica — es una **herencia deliberada**, no un hallazgo nuevo. `/reporte-comisiones` (TUI, desde v3.2.0) ya tenía exactamente este comportamiento; la Enmienda 5 del change `operaciones-negocio-conversacionales` lo hizo explícito para el segundo canal (HTTP) y el checkpoint lo aceptó sin pedir un gate de rol ni un filtro por vendedor. Queda documentada para que una futura revisión de "quién puede ver el reporte de quién" encuentre la decisión ya tomada, en vez de tratarla como un descuido de este change.
+Mitigación/cierre: no aplica — es una **herencia deliberada**, no un hallazgo nuevo. `/reporte-comisiones` (TUI, desde v3.2.0) ya tenía exactamente este comportamiento; la Enmienda 5 del change `operaciones-negocio-conversacionales` lo hizo explícito para el segundo canal (HTTP) y el checkpoint lo aceptó sin pedir un gate de rol ni un filtro por vendedor. Queda documentada para que una futura revisión de "quién puede ver el reporte de qué" encuentre la decisión ya tomada, en vez de tratarla como un descuido de este change.
+
+**Addendum v3.9 (`chat-web-empleado`)**: esta herencia **no se agrava**, pero el canal se ensancha — de "HTTP autenticado que hay que saber armar con `curl`" a "una caja de texto en una pantalla de chat". `consultar_reporte_comisiones` sigue sin gate de rol y sin escopar por vendedor, ahora detrás de la interfaz de menor fricción que el arnés tiene. El checkpoint reconfirmó explícitamente que sigue aceptando este riesgo en el canal de chat, con el mismo criterio con que lo aceptó al aprobar la Enmienda 5 de v3.6.
+
+**Riesgo 6 (R11): `options.resume` a una sesión del SDK que el SDK ya no tiene — DECLARADA, sin reintento automático a propósito (v3.9, `chat-web-empleado`)**
+
+Descripción: si el SDK pierde la sesión a la que apunta `options.resume` (poda de su store en disco, cambio de `cwd`), todos los mensajes siguientes de esa conversación fallan con `502`, sin recuperación automática.
+
+Por qué no se reintenta: prohibido a propósito (ADR 196 pto 9 de `chat-web-empleado/design.md`) — la falla puede ocurrir DESPUÉS de que la tool ya ejecutó una operación de negocio (`registrar_venta`, `procesar_devolucion`), y un reintento automático la duplicaría. Es la misma clase de decisión que ya rige el resto del arnés: nunca reintentar un turno cuya tool pudo haber tenido efecto.
+
+Salida actual, única: logout + login, que abre una conversación nueva. Es una limitación de cliente **declarada**, con copy explícito del `502` en la UI en vez de prometer una recuperación que no existe. Condición de disparo para revisitarla: que el hito quiera un botón explícito de "empezar conversación nueva" en vez de depender del logout completo (`design.md` §18 de `chat-web-empleado`).
+
+**Riesgo 7 (R5): Sesiones y conversaciones sin evicción periódica en `Map`s de proceso — DECLARADA, no resuelta (v3.9, `chat-web-empleado`)**
+
+Descripción: `SesionEmpleadoStore` (desde v3.6) y el `ConversacionEmpleadoStore` nuevo de v3.9 filtran entradas vencidas al leer (`buscar`/`paraSesion`), pero nunca las borran del `Map` si nadie vuelve a pedirlas — es la misma fuga de memoria lenta que la Aclaración 2 pto 6 de `chat-web-empleado/proposal.md` ya había nombrado para las sesiones antes de este change. `casos` y `sesiones_agente` también crecen una fila por mensaje, y el chat multiplica el volumen de mensajes frente a `curl`.
+
+Mitigación en este change: `POST /logout` (ADR 195/202) limpia sesión, conversación y confirmación pendiente cuando el empleado cierra sesión explícitamente — pero eso no ataca el caso de una sesión abandonada sin logout.
+
+Cierre: no aplica en este change — queda **declarada, no arrastrada en silencio**. Condición de disparo: un change propio que agregue evicción periódica (timer o barrido en el acceso) a los `Map`s de proceso del adaptador web, y una revisión del crecimiento sin límite de `casos`/`sesiones_agente`.
 
 **Riesgo 5 (R1): `/crear-empleado` deja la contraseña de OTRA persona visible en el transcripto de la TUI — ACEPTADA por checkpoint, con procedimiento de mitigación obligatorio (v3.7, `comandos-administracion-empleados`)**
 
@@ -786,6 +819,30 @@ Descripción: se buscó en los tres lugares donde podría existir una noción de
 Hipótesis con más respaldo, no confirmada: "configuración del arnés para un usuario, sin `.env`" se lee como el paraguas de los otros pedidos de esta propuesta (alta de empleado, rol, bot de PRs) y no como una cuarta capacidad propia — construir un framework genérico de settings con cero settings conocidos sería infraestructura sin consumidor (mismo anti-patrón ya rechazado por nombre en `hito-2.2/design.md §15`).
 
 Condición de disparo: que el stakeholder nombre al menos una cosa concreta que hoy sea global y deba pasar a ser por usuario (candidatas nombradas para ayudar a esa respuesta, no como alcance: `SESION_TTL_MINUTOS` por empleado, idioma/verbosidad de las respuestas de la TUI, o destinatario de notificaciones).
+
+**Deuda 9 (RD-91, ADR 205 cuando se dispare): Migración del token a cookie `HttpOnly` — DIFERIDA, con forma escrita (v3.9, `chat-web-empleado`)**
+
+Descripción: el token de sesión del chat vive en memoria de la pestaña (ADR 193) porque el adaptador web no parsea ni emite cookies en ninguna ruta hoy. La cookie `HttpOnly` + `Secure` + `SameSite=Strict` es la mitigación estructuralmente correcta del riesgo de XSS del Concepto 9 (ni un XSS exitoso puede leer una cookie `HttpOnly`), pero cambia el contrato de `POST /login` — fuera de alcance de v3.9.
+
+Forma exacta para el change futuro, ya escrita para que no arranque de cero (`chat-web-empleado/design.md` §11): (1) `POST /login` **suma** `Set-Cookie: sesion=<token>; HttpOnly; Secure; SameSite=Strict; Path=/` sin quitar `token` del body, como ventana de compatibilidad para los consumidores `curl`; (2) `handleOperaciones` acepta la cookie o el header, con precedencia de la cookie; (3) con cookie hace falta sumar defensa CSRF (`Origin`/`Sec-Fetch-Site` en `/operaciones` y `/logout`, porque `SameSite=Strict` solo no alcanza en navegadores viejos); (4) el cliente deja de guardar el token y el ADR 193 se cierra; (5) recién en un tercer paso se puede quitar el token del body.
+
+Condición de disparo: que el despliegue tenga TLS (sin `Secure` la cookie es peor que el estado actual) o que el adaptador gane parseo de cookies por otra necesidad.
+
+**Deuda 10 (RD-92): Streaming incremental de la respuesta del chat — DIFERIDA, change propio (v3.9, `chat-web-empleado`)**
+
+Descripción: `POST /operaciones` responde `{casoId, respuesta}` de una sola vez; el chat muestra la respuesta completa recién cuando el turno termina, sin token-por-token.
+
+Por qué es change propio y no de la UI: `invokeModel` ya itera los mensajes del SDK pero acumula y devuelve al final (`invoke-model.ts:454-473`). Habilitar streaming exige (1) un callback de chunk en `InvokeModelResult`/`HandleTurnDeps`, (2) que `handleTurn` lo propague, y (3) que `/operaciones` responda `text/event-stream` en vez de JSON — un cambio de contrato que arrastra a los cuatro turnos del arnés si se resuelve en `invokeModel`, no sólo al de empleado.
+
+Condición de disparo: que el costo de un cambio de contrato compartido por los cuatro turnos se justifique frente al beneficio de UX — evaluación que corresponde a un change propio, no a una extensión de v3.9.
+
+**Deuda 11 (RD-94): Colisión de numeración ADR 174-187 — DIFERIDA, recomendación de forma escrita (v3.9, `chat-web-empleado`)**
+
+Descripción: el rango ADR 174-187 quedó asignado **tres veces** a decisiones distintas y no relacionadas, porque `consultas-negocio-a2a-entrante`, `comandos-administracion-empleados` y `operaciones-negocio-conversacionales` se escribieron en paralelo y cada uno verificó el techo de numeración correctamente en su momento, sin reverificarlo al mergear. Hoy, *"ADR 180"* significa tres cosas distintas según el archivo que lo cite (`consultas-negocio-tool.ts:5`, `comandos-administracion-empleados/design.md`, `build-on-comando-empleado.ts:378`).
+
+Recomendación para el change futuro que la resuelva (`chat-web-empleado/design.md` §11): **no renumerar** — hay ADRs citados en doc-comments de código vivo (`ejecutar-operacion.ts:92,160,...`, `build-on-comando-empleado.ts:378`) y renumerar rompería esas citas verificables. En su lugar, **prefijar por change en las citas nuevas** (`ADR 180 (consultas-negocio-a2a-entrante)`) y agregar una tabla de equivalencias a este arc42 que liste los tres usos de cada número colisionado.
+
+Cierre: no aplica en v3.9 — este change **abrió su propia numeración en ADR 189**, por encima del máximo absoluto verificado, precisamente para no agregar una cuarta capa a la colisión. La colisión existente queda declarada, no resuelta.
 
 # Glosario
 

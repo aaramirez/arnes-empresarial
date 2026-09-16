@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CSP_CHAT,
   OPERACIONES_TIMEOUT_MS,
+  RUTA_CHAT,
+  RUTA_CHAT_ESTILOS,
+  RUTA_CHAT_SCRIPT,
   RUTA_CONFIRMAR_PREFIJO,
   RUTA_DEVOLUCION,
   RUTA_LOGIN,
@@ -12,6 +16,8 @@ import {
   WEB_LOG_CORRELATION_ID,
   type WebConfig,
 } from "./config.js";
+import { CHAT_CLIENT_JS } from "./chat-client.js";
+import { CHAT_CSS, renderChatHtml } from "./chat-page.js";
 import type { CreateWebServerFn, WebRequest, WebResponse } from "./http.js";
 import {
   createRequestListener,
@@ -25,8 +31,10 @@ import type { VentaPublica } from "../../core/ventas/ventas-contract.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
 import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
 import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../../core/operaciones/operaciones-contract.js";
-import type { SesionEmpleadoStore } from "./sesion-empleado-store.js";
-import type { ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import { crearSesionEmpleadoStore, type SesionEmpleadoStore } from "./sesion-empleado-store.js";
+import { crearConfirmacionOperacionesStore, type ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
+import type { ConversacionEmpleadoStore } from "./conversacion-empleado-store.js";
+import type { ConversacionEmpleadoPort } from "../../core/conversacion/conversacion-contract.js";
 import { CONVERSATIONAL_AGENT_ID, getAgentDefinition } from "../../core/agents/definitions.js";
 
 const CONFIG: WebConfig = {
@@ -44,6 +52,7 @@ class FakeRequest implements WebRequest {
   url?: string | undefined;
   headers: Record<string, string | string[] | undefined>;
   destroy = vi.fn();
+  resume = vi.fn();
 
   private listeners: {
     data: Array<(chunk: Buffer) => void>;
@@ -107,6 +116,32 @@ class FakeResponse implements WebResponse {
 }
 
 /**
+ * Doble ESTRICTO de `http.ServerResponse` -- a diferencia de `FakeResponse`
+ * de arriba, éste sí reproduce la semántica real de Node: `setHeader` tras
+ * `end()` lanza (mismo error que `ERR_HTTP_HEADERS_SENT`). Hallazgo del
+ * Reviewer sobre `respondHtmlChat` (chat-web-empleado): `FakeResponse` no
+ * detectaba el orden incorrecto porque no distinguía "ya terminé de
+ * responder" de "todavía puedo setear headers". Se usa en las rutas de chat
+ * para que este bug no pueda reaparecer sin que un test lo agarre.
+ */
+class StrictFakeResponse implements WebResponse {
+  statusCode = 200;
+  headers = new Map<string, string>();
+  private ended = false;
+  end = vi.fn((..._args: unknown[]) => {
+    this.ended = true;
+  });
+
+  setHeader(name: string, value: string): unknown {
+    if (this.ended) {
+      throw new Error(`ERR_HTTP_HEADERS_SENT: no se puede setear '${name}' después de end()`);
+    }
+    this.headers.set(name, value);
+    return this;
+  }
+}
+
+/**
  * Espera a que la respuesta se haya completado. NO se usa `res.statusCode`
  * como condición de espera: `FakeResponse.statusCode` arranca en `200`
  * (mismo default que `http.ServerResponse`), así que esperar
@@ -131,6 +166,8 @@ function fakeSesionStore(overrides: Partial<SesionEmpleadoStore> = {}): SesionEm
   return {
     crear: vi.fn().mockReturnValue("token-nuevo"),
     buscar: vi.fn().mockReturnValue(undefined),
+    eliminar: vi.fn(),
+    otraSesionVigente: vi.fn().mockReturnValue(false),
     ...overrides,
   };
 }
@@ -140,6 +177,25 @@ function fakeConfirmacionOperacionesStore(
 ): ConfirmacionOperacionesStore {
   return {
     paraEmpleado: vi.fn().mockReturnValue(fakeConfirmacion()),
+    ...overrides,
+  };
+}
+
+/** chat-web-empleado, tarea 4 — doble plano de `ConversacionEmpleadoPort` (ADR 196). */
+function fakeConversacion(overrides: Partial<ConversacionEmpleadoPort> = {}): ConversacionEmpleadoPort {
+  return {
+    casoAnterior: vi.fn().mockReturnValue(undefined),
+    registrarTurno: vi.fn(),
+    conversacionId: vi.fn().mockReturnValue("conv-1"),
+    ...overrides,
+  };
+}
+
+/** chat-web-empleado, tarea 4 — doble plano de `ConversacionEmpleadoStore` (ADR 196 §2). */
+function fakeConversacionStore(overrides: Partial<ConversacionEmpleadoStore> = {}): ConversacionEmpleadoStore {
+  return {
+    paraSesion: vi.fn().mockReturnValue(fakeConversacion()),
+    eliminar: vi.fn(),
     ...overrides,
   };
 }
@@ -156,6 +212,7 @@ function makeDeps(overrides: Partial<WebServerDeps> = {}): WebServerDeps {
     onOperacionesEmpleado: vi.fn(),
     sesionStore: fakeSesionStore(),
     confirmacionOperacionesStore: fakeConfirmacionOperacionesStore(),
+    conversacionStore: fakeConversacionStore(),
     logEvent: vi.fn(),
     newRequestId: () => REQUEST_ID,
     ...overrides,
@@ -1185,11 +1242,15 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
   it("with a valid token (emitted by /login), invokes the turn with the resolved session -- empleadoId ALWAYS comes from the session, never from the body", async () => {
     const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
     const confirmacionDelEmpleado = fakeConfirmacion();
+    const conversacionDelToken = fakeConversacion();
     const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
     const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
       paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
     });
-    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, confirmacionOperacionesStore });
+    const conversacionStore = fakeConversacionStore({
+      paraSesion: vi.fn().mockReturnValue(conversacionDelToken),
+    });
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, confirmacionOperacionesStore, conversacionStore });
     const listener = createRequestListener(deps);
     const req = new FakeRequest({
       method: "POST",
@@ -1205,10 +1266,13 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
 
     expect(sesionStore.buscar).toHaveBeenCalledWith("token-valido");
     expect(confirmacionOperacionesStore.paraEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
+    // `conversacionStore.paraSesion` se resuelve por el MISMO token que la sesión -- simétrico a `confirmacion` (ADR 196 §2.1).
+    expect(conversacionStore.paraSesion).toHaveBeenCalledWith("token-valido");
     expect(onOperacionesEmpleado).toHaveBeenCalledWith({
       consulta: "quiero registrar una venta",
       sesion: SESION_EMPLEADO,
       confirmacion: confirmacionDelEmpleado,
+      conversacion: conversacionDelToken,
     });
     expect(res.statusCode).toBe(200);
     expect(res.end).toHaveBeenCalledWith(JSON.stringify(OPERACIONES_RESULT));
@@ -1289,5 +1353,439 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
 
     expect(agenteConversacional).toBeDefined();
     expect(agenteConversacional?.allowedTools).not.toContain(OPERACIONES_TOOL_QUALIFIED_NAME);
+  });
+
+  /**
+   * chat-web-empleado, tarea 4 — punto obligatorio 2: el origen del "caso
+   * anterior" NUNCA viene del cliente (spec `memoria-conversacional-empleado`).
+   */
+  it("punto obligatorio 2: un campo 'conversacionId' inventado en el body NO cambia qué token resuelve conversacionStore.paraSesion", async () => {
+    const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    // Fuzz simple: un campo inventado en el body, del todo ajeno al payload esperado, no tiene efecto.
+    req.emitBody([
+      jsonBody({ consulta: "quiero registrar una venta", conversacionId: "conversacion-ajena-inventada" }),
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(conversacionStore.paraSesion).toHaveBeenCalledTimes(1);
+    expect(conversacionStore.paraSesion).toHaveBeenCalledWith("token-valido");
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("el evento logueado tras un turno exitoso incluye conversacionId pero NUNCA el token", async () => {
+    const onOperacionesEmpleado = vi.fn().mockResolvedValue(OPERACIONES_RESULT);
+    const conversacionDelToken = fakeConversacion({ conversacionId: vi.fn().mockReturnValue("conv-log-1") });
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const conversacionStore = fakeConversacionStore({
+      paraSesion: vi.fn().mockReturnValue(conversacionDelToken),
+    });
+    const logEvent = vi.fn();
+    const deps = makeDeps({ onOperacionesEmpleado, sesionStore, conversacionStore, logEvent });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-secreto-nunca-logueado" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    req.emitBody([jsonBody({ consulta: "quiero registrar una venta" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logEvent).toHaveBeenCalledWith(
+      OPERACIONES_RESULT.casoId,
+      "operaciones-conversacion",
+      expect.objectContaining({ conversacionId: "conv-log-1" }),
+    );
+    for (const llamada of logEvent.mock.calls) {
+      expect(JSON.stringify(llamada)).not.toContain("token-secreto-nunca-logueado");
+    }
+  });
+});
+
+/**
+ * `chat-web-empleado`, tarea 6 (ADR 201 pto 4-7, ADR 202) -- `POST /logout`.
+ * Orden exacto de composición: `sesionStore.buscar` (el `empleadoId` sólo se
+ * puede leer mientras la sesión existe) → `confirmacionOperacionesStore` →
+ * `conversacionStore.eliminar` → `sesionStore.eliminar` → `204` SIEMPRE.
+ */
+describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, ADR 201 pto 4-7, ADR 202)", () => {
+  it("token válido -- responde 204 y compone las tres piezas de estado en el orden exacto (confirmacion, conversacion, sesion)", async () => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
+    const confirmacionDelEmpleado = fakeConfirmacion();
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
+      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
+    });
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: "Bearer token-valido" } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(res.end).toHaveBeenCalledWith();
+    expect(req.resume).toHaveBeenCalled();
+    expect(sesionStore.buscar).toHaveBeenCalledWith("token-valido");
+    expect(confirmacionOperacionesStore.paraEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
+    expect(confirmacionDelEmpleado.consumir).toHaveBeenCalled();
+    expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-valido");
+    expect(sesionStore.eliminar).toHaveBeenCalledWith("token-valido");
+
+    // Orden: confirmacion se consume ANTES que conversacionStore.eliminar, que va ANTES que sesionStore.eliminar.
+    const ordenConsumir = (confirmacionDelEmpleado.consumir as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const ordenConversacion = (conversacionStore.eliminar as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const ordenSesion = (sesionStore.eliminar as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(ordenConsumir).toBeDefined();
+    expect(ordenConversacion).toBeDefined();
+    expect(ordenSesion).toBeDefined();
+    expect(ordenConsumir as number).toBeLessThan(ordenConversacion as number);
+    expect(ordenConversacion as number).toBeLessThan(ordenSesion as number);
+  });
+
+  /**
+   * Hallazgo Reviewer 2da ronda #1 (CRÍTICO): `confirmacionOperacionesStore`
+   * está keyeado por `empleadoId`, no por sesión -- dos sesiones concurrentes
+   * del mismo empleado no deben pisarse la confirmación pendiente al cerrar
+   * UNA de ellas.
+   */
+  it("empleado con OTRA sesión vigente -- logout de una NO consume la confirmación de la otra, pero sigue limpiando conversacion/sesion por token", async () => {
+    const sesionStore = fakeSesionStore({
+      buscar: vi.fn().mockReturnValue(SESION_EMPLEADO),
+      otraSesionVigente: vi.fn().mockReturnValue(true),
+    });
+    const confirmacionDelEmpleado = fakeConfirmacion();
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
+      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
+    });
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: "Bearer token-b" } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(sesionStore.otraSesionVigente).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId, "token-b");
+    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
+    expect(confirmacionDelEmpleado.consumir).not.toHaveBeenCalled();
+    expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-b");
+    expect(sesionStore.eliminar).toHaveBeenCalledWith("token-b");
+  });
+
+  it("dos sesiones reales del mismo empleado -- logout de la sesión B no invalida la confirmación pendiente de la sesión A", async () => {
+    const empleadoId = "emp-concurrente";
+    const sesionStore = crearSesionEmpleadoStore();
+    const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const tokenA = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+    const tokenB = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+
+    // Sesión A tiene una confirmación pendiente marcada (simula un turno previo).
+    confirmacionOperacionesStore.paraEmpleado(empleadoId).marcarPendiente({
+      solicitudId: "sol-1",
+      casoId: "caso-1",
+      empleadoId,
+      origenCasoId: "caso-0",
+    });
+
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: `Bearer ${tokenB}` } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    // B quedó deslogueado igual.
+    expect(sesionStore.buscar(tokenB)).toBeUndefined();
+    // La confirmación pendiente de A SIGUE viva -- un turno posterior en un
+    // caso nuevo la sigue viendo como confirmada (mismo criterio que
+    // `estaConfirmada`, ADR 166 pto 3).
+    expect(confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada("sol-1", empleadoId, "caso-nuevo")).toBe(
+      true,
+    );
+  });
+
+  it("empleado con UNA sola sesión (caso normal) -- logout consume la confirmación igual que antes, sin regresión", async () => {
+    const empleadoId = "emp-solo";
+    const sesionStore = crearSesionEmpleadoStore();
+    const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+
+    confirmacionOperacionesStore.paraEmpleado(empleadoId).marcarPendiente({
+      solicitudId: "sol-1",
+      casoId: "caso-1",
+      empleadoId,
+      origenCasoId: "caso-0",
+    });
+
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: `Bearer ${token}` } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada("sol-1", empleadoId, "caso-nuevo")).toBe(
+      false,
+    );
+  });
+
+  it("un token usado tras logout es indistinguible de uno vencido -- POST /operaciones posterior da 401", async () => {
+    vi.useFakeTimers();
+    const sesiones = new Map<string, SesionEmpleado>([["token-valido", SESION_EMPLEADO]]);
+    const sesionStore = fakeSesionStore({
+      buscar: vi.fn((token: string) => sesiones.get(token)),
+      eliminar: vi.fn((token: string) => {
+        sesiones.delete(token);
+      }),
+    });
+    const onOperacionesEmpleado = vi.fn();
+    const deps = makeDeps({ sesionStore, onOperacionesEmpleado });
+    const listener = createRequestListener(deps);
+
+    const logoutReq = new FakeRequest({
+      method: "POST",
+      url: "/logout",
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const logoutRes = new FakeResponse();
+    listener(logoutReq, logoutRes);
+    await esperarRespuesta(logoutRes);
+    expect(logoutRes.statusCode).toBe(204);
+
+    const operacionesReq = new FakeRequest({
+      method: "POST",
+      url: RUTA_OPERACIONES,
+      headers: { authorization: "Bearer token-valido" },
+    });
+    const operacionesRes = new FakeResponse();
+    listener(operacionesReq, operacionesRes);
+    operacionesReq.emitBody([jsonBody({ consulta: "hola" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(operacionesRes.statusCode).toBe(401);
+    expect(onOperacionesEmpleado).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["vencido/inexistente", "Bearer token-vencido-o-inexistente"],
+    ["ausente", undefined],
+  ])("token %s -- responde 204 igual (punto obligatorio 8)", async (_label, authHeaderValue) => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(undefined) });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: "/logout",
+      headers: authHeaderValue === undefined ? {} : { authorization: authHeaderValue },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(req.resume).toHaveBeenCalled();
+    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
+  });
+
+  it("token inexistente -- conversacionStore.eliminar y sesionStore.eliminar igual se invocan (idempotentes), sin consumir confirmacion", async () => {
+    const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(undefined) });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({
+      method: "POST",
+      url: "/logout",
+      headers: { authorization: "Bearer token-vencido-o-inexistente" },
+    });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-vencido-o-inexistente");
+    expect(sesionStore.eliminar).toHaveBeenCalledWith("token-vencido-o-inexistente");
+    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
+  });
+
+  it("no lee el body pero lo drena (req.resume) antes de responder", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(req.resume).toHaveBeenCalled();
+  });
+
+  it("método equivocado sobre /logout (GET) -- 404 vacío, sin caso especial", () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: "/logout", headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.end).toHaveBeenCalledWith();
+  });
+});
+
+/**
+ * `chat-web-empleado`, tarea 10 (ADR 199, ADR 201) -- `GET /chat`,
+ * `GET /chat/app.js`, `GET /chat/app.css`. Públicas (sin sesión), CSP vía
+ * `respondHtmlChat` (que delega en `respondHtml` SIN modificarlo -- ver el
+ * describe de `GET /confirmar/:token` más abajo para la verificación
+ * negativa) más `respondAsset` para los dos assets estáticos.
+ */
+describe("createRequestListener — GET /chat, GET /chat/app.js, GET /chat/app.css (chat-web-empleado, tarea 10)", () => {
+  it("GET /chat -- 200, text/html, CSP literal exacta y X-Content-Type-Options: nosniff, sin sesión", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: RUTA_CHAT, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.end).toHaveBeenCalledWith(renderChatHtml());
+  });
+
+  it("GET /chat/app.js -- 200, application/javascript, mismos headers de seguridad", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: RUTA_CHAT_SCRIPT, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/javascript; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(res.headers.get("X-Request-Id")).toBe(REQUEST_ID);
+    expect(res.end).toHaveBeenCalledWith(CHAT_CLIENT_JS);
+  });
+
+  it("GET /chat/app.css -- 200, text/css, mismos headers de seguridad", async () => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: RUTA_CHAT_ESTILOS, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/css; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.end).toHaveBeenCalledWith(CHAT_CSS);
+  });
+
+  it.each([RUTA_CHAT, RUTA_CHAT_SCRIPT, RUTA_CHAT_ESTILOS])(
+    "%s responde igual sin sesión -- público, sin datos de negocio (no consulta ningún store)",
+    async (ruta) => {
+      const sesionStore = fakeSesionStore();
+      const deps = makeDeps({ sesionStore });
+      const listener = createRequestListener(deps);
+      const req = new FakeRequest({ method: "GET", url: ruta, headers: {} });
+      const res = new FakeResponse();
+
+      listener(req, res);
+      await esperarRespuesta(res);
+
+      expect(res.statusCode).toBe(200);
+      expect(sesionStore.buscar).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["POST", RUTA_CHAT],
+    ["POST", RUTA_CHAT_SCRIPT],
+    ["POST", RUTA_CHAT_ESTILOS],
+  ])("método equivocado (%s %s) -- 404 vacío, sin caso especial", (metodo, ruta) => {
+    const deps = makeDeps();
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: metodo, url: ruta, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.end).toHaveBeenCalledWith();
+  });
+
+  it.each([
+    ["GET /chat", RUTA_CHAT],
+    ["GET /chat/app.js", RUTA_CHAT_SCRIPT],
+    ["GET /chat/app.css", RUTA_CHAT_ESTILOS],
+  ])(
+    "%s no setea headers después de end() -- doble estricto (hallazgo Reviewer, ERR_HTTP_HEADERS_SENT)",
+    async (_nombre, ruta) => {
+      const deps = makeDeps();
+      const listener = createRequestListener(deps);
+      const req = new FakeRequest({ method: "GET", url: ruta, headers: {} });
+      const res = new StrictFakeResponse();
+
+      expect(() => listener(req, res)).not.toThrow();
+      await esperarRespuesta(res as unknown as FakeResponse);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers.get("Content-Security-Policy")).toEqual(CSP_CHAT);
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    },
+  );
+
+  it("GET /confirmar/:token NO gana la cabecera CSP -- respondHtml sigue sin tocar (verificación negativa)", async () => {
+    const onConsultaVenta = vi.fn().mockResolvedValue(VENTA_PUBLICA);
+    const deps = makeDeps({ onConsultaVenta });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "GET", url: `${RUTA_CONFIRMAR_PREFIJO}token-1`, headers: {} });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.get("Content-Security-Policy")).toBeUndefined();
+    expect(res.headers.get("X-Content-Type-Options")).toBeUndefined();
   });
 });
