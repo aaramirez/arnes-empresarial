@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../memory/db.js";
-import { confirmarVentaConComision, escalarReembolso } from "../memory/repository.js";
 import { buildOnVenta, createVentaStore } from "../../build-on-venta.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "../../core/operaciones/ejecutar-operacion.js";
 import { OPERACION_REGISTRAR_VENTA, OPERACION_RESOLVER_REEMBOLSO } from "../../core/operaciones/operaciones-contract.js";
@@ -624,15 +623,19 @@ describe("createRequestListener + ejecutarOperacion — R7 en los DOS sentidos p
         | undefined;
       expect(ventaFila?.vendedorId).toBe("empleado-E");
 
-      // 2. Escalar a reembolso_pendiente (mismo molde que la integración TUI de comandos-administracion-empleados).
-      confirmarVentaConComision(db, {
+      // 2. Escalar a reembolso_pendiente — vía el `VentaStorePort` (`deps.store`)
+      //    que este propio test ya construye para `ejecutarOperacion`, NUNCA
+      //    llamando a `../memory/repository.js` directo (hallazgo Reviewer,
+      //    conventions: ningún adaptador se comunica con otro sin pasar por
+      //    el núcleo — ni siquiera en tests).
+      deps.store.confirmarVentaConComision({
         ventaId,
         comisionId: "comision-1",
         comisionMonto: 100,
         periodo: "2026-01",
         ahora: "2026-01-01T00:00:00.000Z",
       });
-      escalarReembolso(db, { ventaId, casoId, ahora: "2026-01-01T00:00:00.000Z" });
+      deps.store.escalarReembolso({ ventaId, casoId, ahora: "2026-01-01T00:00:00.000Z" });
 
       // 3. E (rol elevado) intenta aprobar SU PROPIO reembolso, en dos turnos (eco + confirmación).
       await ejecutarOperacion(
@@ -708,15 +711,18 @@ describe("createRequestListener + ejecutarOperacion — R7 en los DOS sentidos p
       };
       expect(ventaFila.vendedorId).toBe("vend-externo");
 
-      // 2. Escalar a reembolso_pendiente.
-      confirmarVentaConComision(db, {
+      // 2. Escalar a reembolso_pendiente — vía el MISMO `store`
+      //    (`VentaStorePort`) que este test ya construyó arriba para
+      //    `buildOnVenta`, nunca vía `../memory/repository.js` directo
+      //    (hallazgo Reviewer, conventions).
+      store.confirmarVentaConComision({
         ventaId,
         comisionId: "comision-2",
         comisionMonto: 100,
         periodo: "2026-01",
         ahora: "2026-01-01T00:00:00.000Z",
       });
-      escalarReembolso(db, { ventaId, casoId, ahora: "2026-01-01T00:00:00.000Z" });
+      store.escalarReembolso({ ventaId, casoId, ahora: "2026-01-01T00:00:00.000Z" });
 
       // 3. Un administrador (empleadoId distinto de "vend-externo", ni siquiera del mismo espacio de identidad) resuelve normalmente.
       const deps = ejecutarDepsR7(db);
