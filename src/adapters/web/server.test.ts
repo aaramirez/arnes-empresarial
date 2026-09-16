@@ -29,8 +29,12 @@ import {
 import type { RegistrarVentaResult } from "../../core/ventas/registrar-venta.js";
 import type { VentaPublica } from "../../core/ventas/ventas-contract.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
-import type { ConfirmacionOperacionPort } from "../../core/operaciones/operaciones-contract.js";
-import { OPERACIONES_TOOL_QUALIFIED_NAME } from "../../core/operaciones/operaciones-contract.js";
+import type { ConfirmacionOperacionPort, LlaveConfirmacion } from "../../core/operaciones/operaciones-contract.js";
+import {
+  DOMINIO_REEMBOLSO,
+  DOMINIO_SOLICITUD,
+  OPERACIONES_TOOL_QUALIFIED_NAME,
+} from "../../core/operaciones/operaciones-contract.js";
 import { crearSesionEmpleadoStore, type SesionEmpleadoStore } from "./sesion-empleado-store.js";
 import { crearConfirmacionOperacionesStore, type ConfirmacionOperacionesStore } from "./confirmacion-operaciones-store.js";
 import type { ConversacionEmpleadoStore } from "./conversacion-empleado-store.js";
@@ -177,6 +181,7 @@ function fakeConfirmacionOperacionesStore(
 ): ConfirmacionOperacionesStore {
   return {
     paraEmpleado: vi.fn().mockReturnValue(fakeConfirmacion()),
+    limpiarEmpleado: vi.fn(),
     ...overrides,
   };
 }
@@ -1425,10 +1430,7 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
 describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, ADR 201 pto 4-7, ADR 202)", () => {
   it("token válido -- responde 204 y compone las tres piezas de estado en el orden exacto (confirmacion, conversacion, sesion)", async () => {
     const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(SESION_EMPLEADO) });
-    const confirmacionDelEmpleado = fakeConfirmacion();
-    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
-      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
-    });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
     const listener = createRequestListener(deps);
@@ -1442,19 +1444,20 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
     expect(res.end).toHaveBeenCalledWith();
     expect(req.resume).toHaveBeenCalled();
     expect(sesionStore.buscar).toHaveBeenCalledWith("token-valido");
-    expect(confirmacionOperacionesStore.paraEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
-    expect(confirmacionDelEmpleado.consumir).toHaveBeenCalled();
+    // aprobacion-conversacional-hitl, tarea 4 (ADR 214 pto 4): limpiarEmpleado reemplaza paraEmpleado(...).consumir().
+    expect(confirmacionOperacionesStore.limpiarEmpleado).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId);
     expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-valido");
     expect(sesionStore.eliminar).toHaveBeenCalledWith("token-valido");
 
-    // Orden: confirmacion se consume ANTES que conversacionStore.eliminar, que va ANTES que sesionStore.eliminar.
-    const ordenConsumir = (confirmacionDelEmpleado.consumir as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    // Orden: se limpia la confirmación ANTES que conversacionStore.eliminar, que va ANTES que sesionStore.eliminar.
+    const ordenLimpiar = (confirmacionOperacionesStore.limpiarEmpleado as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
     const ordenConversacion = (conversacionStore.eliminar as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
     const ordenSesion = (sesionStore.eliminar as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-    expect(ordenConsumir).toBeDefined();
+    expect(ordenLimpiar).toBeDefined();
     expect(ordenConversacion).toBeDefined();
     expect(ordenSesion).toBeDefined();
-    expect(ordenConsumir as number).toBeLessThan(ordenConversacion as number);
+    expect(ordenLimpiar as number).toBeLessThan(ordenConversacion as number);
     expect(ordenConversacion as number).toBeLessThan(ordenSesion as number);
   });
 
@@ -1464,15 +1467,12 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
    * del mismo empleado no deben pisarse la confirmación pendiente al cerrar
    * UNA de ellas.
    */
-  it("empleado con OTRA sesión vigente -- logout de una NO consume la confirmación de la otra, pero sigue limpiando conversacion/sesion por token", async () => {
+  it("empleado con OTRA sesión vigente -- logout de una NO limpia las confirmaciones de la otra, pero sigue limpiando conversacion/sesion por token", async () => {
     const sesionStore = fakeSesionStore({
       buscar: vi.fn().mockReturnValue(SESION_EMPLEADO),
       otraSesionVigente: vi.fn().mockReturnValue(true),
     });
-    const confirmacionDelEmpleado = fakeConfirmacion();
-    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore({
-      paraEmpleado: vi.fn().mockReturnValue(confirmacionDelEmpleado),
-    });
+    const confirmacionOperacionesStore = fakeConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
     const listener = createRequestListener(deps);
@@ -1484,10 +1484,43 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
 
     expect(res.statusCode).toBe(204);
     expect(sesionStore.otraSesionVigente).toHaveBeenCalledWith(SESION_EMPLEADO.empleadoId, "token-b");
-    expect(confirmacionOperacionesStore.paraEmpleado).not.toHaveBeenCalled();
-    expect(confirmacionDelEmpleado.consumir).not.toHaveBeenCalled();
+    expect(confirmacionOperacionesStore.limpiarEmpleado).not.toHaveBeenCalled();
     expect(conversacionStore.eliminar).toHaveBeenCalledWith("token-b");
     expect(sesionStore.eliminar).toHaveBeenCalledWith("token-b");
+  });
+
+  /**
+   * aprobacion-conversacional-hitl, tarea 4 (spec `confirmacion-operaciones-
+   * multislot`, "El logout limpia todas las ranuras pendientes del
+   * empleado"). Con la ranura multi-slot, dos confirmaciones pendientes de
+   * DOMINIOS distintos (reembolso y solicitud) para el MISMO empleado deben
+   * quedar ambas limpias tras un único logout -- no sólo la última invocada.
+   */
+  it("dos confirmaciones pendientes de dominios distintos -- logout limpia AMBAS, no sólo una", async () => {
+    const empleadoId = "emp-multislot";
+    const sesionStore = crearSesionEmpleadoStore();
+    const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
+    const conversacionStore = fakeConversacionStore();
+    const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
+
+    const llaveReembolso: LlaveConfirmacion = { dominio: DOMINIO_REEMBOLSO, itemId: "V1", accion: "aprobar" };
+    const llaveSolicitud: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "sol-1", accion: "cancelar" };
+    const confirmacion = confirmacionOperacionesStore.paraEmpleado(empleadoId);
+    confirmacion.marcarPendiente({ ...llaveReembolso, casoId: "caso-reembolso", empleadoId, origenCasoId: "caso-0" });
+    confirmacion.marcarPendiente({ ...llaveSolicitud, casoId: "caso-solicitud", empleadoId, origenCasoId: "caso-0" });
+
+    const deps = makeDeps({ sesionStore, confirmacionOperacionesStore, conversacionStore });
+    const listener = createRequestListener(deps);
+    const req = new FakeRequest({ method: "POST", url: "/logout", headers: { authorization: `Bearer ${token}` } });
+    const res = new FakeResponse();
+
+    listener(req, res);
+    await esperarRespuesta(res);
+
+    expect(res.statusCode).toBe(204);
+    // Tras un login nuevo (mismo empleadoId), ninguna de las dos sigue pendiente.
+    expect(confirmacion.estaConfirmada(llaveReembolso, empleadoId, "caso-nuevo")).toBe(false);
+    expect(confirmacion.estaConfirmada(llaveSolicitud, empleadoId, "caso-nuevo")).toBe(false);
   });
 
   it("dos sesiones reales del mismo empleado -- logout de la sesión B no invalida la confirmación pendiente de la sesión A", async () => {
@@ -1499,8 +1532,9 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
     const tokenB = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
 
     // Sesión A tiene una confirmación pendiente marcada (simula un turno previo).
+    const llaveCancelarSol1: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "sol-1", accion: "cancelar" };
     confirmacionOperacionesStore.paraEmpleado(empleadoId).marcarPendiente({
-      solicitudId: "sol-1",
+      ...llaveCancelarSol1,
       casoId: "caso-1",
       empleadoId,
       origenCasoId: "caso-0",
@@ -1520,20 +1554,21 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
     // La confirmación pendiente de A SIGUE viva -- un turno posterior en un
     // caso nuevo la sigue viendo como confirmada (mismo criterio que
     // `estaConfirmada`, ADR 166 pto 3).
-    expect(confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada("sol-1", empleadoId, "caso-nuevo")).toBe(
-      true,
-    );
+    expect(
+      confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada(llaveCancelarSol1, empleadoId, "caso-nuevo"),
+    ).toBe(true);
   });
 
-  it("empleado con UNA sola sesión (caso normal) -- logout consume la confirmación igual que antes, sin regresión", async () => {
+  it("empleado con UNA sola sesión (caso normal) -- logout limpia la confirmación igual que antes, sin regresión", async () => {
     const empleadoId = "emp-solo";
     const sesionStore = crearSesionEmpleadoStore();
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
 
+    const llaveCancelarSol1: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "sol-1", accion: "cancelar" };
     confirmacionOperacionesStore.paraEmpleado(empleadoId).marcarPendiente({
-      solicitudId: "sol-1",
+      ...llaveCancelarSol1,
       casoId: "caso-1",
       empleadoId,
       origenCasoId: "caso-0",
@@ -1548,9 +1583,9 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
     await esperarRespuesta(res);
 
     expect(res.statusCode).toBe(204);
-    expect(confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada("sol-1", empleadoId, "caso-nuevo")).toBe(
-      false,
-    );
+    expect(
+      confirmacionOperacionesStore.paraEmpleado(empleadoId).estaConfirmada(llaveCancelarSol1, empleadoId, "caso-nuevo"),
+    ).toBe(false);
   });
 
   it("un token usado tras logout es indistinguible de uno vencido -- POST /operaciones posterior da 401", async () => {

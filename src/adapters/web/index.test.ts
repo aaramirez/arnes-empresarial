@@ -37,7 +37,7 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
     eliminar: () => void;
     otraSesionVigente: () => boolean;
   };
-  confirmacionOperacionesStore: { paraEmpleado: () => never };
+  confirmacionOperacionesStore: { paraEmpleado: () => never; limpiarEmpleado: () => void };
   conversacionStore: { paraSesion: () => never; eliminar: () => void };
   logEvent: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void;
 } {
@@ -59,6 +59,7 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
       paraEmpleado: (): never => {
         throw new Error("not used");
       },
+      limpiarEmpleado: vi.fn(),
     },
     conversacionStore: {
       paraSesion: (): never => {
