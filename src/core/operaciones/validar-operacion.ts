@@ -102,11 +102,23 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
  * ★ `"cancelar"` NUNCA entra acá tampoco — esa acción sigue siendo exclusiva
  * de `cancelar_solicitud_interna`, sin excepción por dominio.
  */
-const VALORES_PERMITIDOS_POR_OPERACION: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+export const VALORES_PERMITIDOS_POR_OPERACION: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   resolver_decision_venta: { decision: ["confirmar", "rechazar"] },
   resolver_solicitud: { accion: ["aprobar", "rechazar"] },
   resolver_reembolso: { accion: ["aprobar", "rechazar", "reabrir"] },
 };
+
+/**
+ * Exportado ÚNICAMENTE para el test estructural de regresión (hallazgo
+ * Reviewer, altura/robustez) que verifica que toda operación con un campo
+ * "acción"/enum-like tiene su fila en `VALORES_PERMITIDOS_POR_OPERACION` —
+ * NUNCA para uso en runtime fuera de este módulo (`validarOperacion` sigue
+ * siendo la única función que consume esta tabla en producción). Exportar la
+ * tabla no relaja el invariante "sin imports" (es sobre imports DENTRO de
+ * este archivo, no sobre qué puede importar de él) ni cambia una sola línea
+ * del hot path del dispatcher.
+ */
+export { CAMPOS_POR_OPERACION };
 
 /**
  * `raw` es el objeto zod plano ya parseado por el adaptador MCP (tarea 4):

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { validarOperacion } from "./validar-operacion.js";
+import { CAMPOS_POR_OPERACION, VALORES_PERMITIDOS_POR_OPERACION, validarOperacion } from "./validar-operacion.js";
 
 /**
  * operaciones-negocio-conversacionales, tarea 2. Whitelist ESTRICTA por
@@ -294,6 +294,49 @@ describe("validarOperacion — operación fuera del enum", () => {
   it("operacion ausente o no-string ⇒ rechazo", () => {
     expect(validarOperacion({})).toBeUndefined();
     expect(validarOperacion({ operacion: 123 })).toBeUndefined();
+  });
+});
+
+describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION: test estructural de regresión (hallazgo Reviewer, altura/robustez — ADR 217 pto 2-3)", () => {
+  /**
+   * Convención del módulo (única fuente de verdad, ver `VALORES_PERMITIDOS_
+   * POR_OPERACION`): un campo se considera "de tipo acción/enum-like" cuando
+   * su NOMBRE es literalmente `accion` o `decision` — las tres filas hoy
+   * vigentes (`resolver_solicitud.accion`, `resolver_reembolso.accion`,
+   * `resolver_decision_venta.decision`) siguen esa convención. Este test NO
+   * cambia `validarOperacion` en sí (permanece fail-open por diseño para
+   * campos sin fila — decisión de runtime fuera de alcance de este
+   * hallazgo): es una regresión que falla en TIEMPO DE TEST si una operación
+   * futura agrega un campo `accion`/`decision` y se olvida su fila en
+   * `VALORES_PERMITIDOS_POR_OPERACION`, sin agregar overhead al dispatcher.
+   */
+  const CAMPOS_ENUM_LIKE = ["accion", "decision"];
+
+  it("toda operación con un campo 'accion'/'decision' en CAMPOS_POR_OPERACION tiene su fila en VALORES_PERMITIDOS_POR_OPERACION para ESE campo", () => {
+    const operacionesConCampoEnumLike = Object.entries(CAMPOS_POR_OPERACION).flatMap(([operacion, campos]) =>
+      campos.filter((campo) => CAMPOS_ENUM_LIKE.includes(campo)).map((campo) => ({ operacion, campo })),
+    );
+
+    // Regresión sobre el regresor: si esto queda vacío, el test de abajo
+    // pasaría trivialmente sin cubrir nada — hoy tiene que haber exactamente
+    // 3 (resolver_solicitud.accion, resolver_reembolso.accion,
+    // resolver_decision_venta.decision).
+    expect(operacionesConCampoEnumLike.length).toBeGreaterThan(0);
+
+    for (const { operacion, campo } of operacionesConCampoEnumLike) {
+      const fila = VALORES_PERMITIDOS_POR_OPERACION[operacion];
+      expect(fila, `operación '${operacion}' tiene el campo '${campo}' pero NO fila en VALORES_PERMITIDOS_POR_OPERACION`).toBeDefined();
+      expect(
+        fila?.[campo],
+        `operación '${operacion}' tiene fila en VALORES_PERMITIDOS_POR_OPERACION pero sin whitelist para su campo '${campo}'`,
+      ).toBeDefined();
+    }
+  });
+
+  it("las tres filas conocidas hoy siguen presentes (resolver_solicitud.accion, resolver_reembolso.accion, resolver_decision_venta.decision)", () => {
+    expect(VALORES_PERMITIDOS_POR_OPERACION["resolver_solicitud"]?.["accion"]).toBeDefined();
+    expect(VALORES_PERMITIDOS_POR_OPERACION["resolver_reembolso"]?.["accion"]).toBeDefined();
+    expect(VALORES_PERMITIDOS_POR_OPERACION["resolver_decision_venta"]?.["decision"]).toBeDefined();
   });
 });
 
