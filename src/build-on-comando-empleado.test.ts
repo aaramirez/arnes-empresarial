@@ -22,8 +22,6 @@ import {
 import { COMANDOS } from "./core/commands/comando-empleado.js";
 import {
   VENTA_ESTADO_CONFIRMADA,
-  VENTA_ESTADO_REEMBOLSADA,
-  type EscalacionListada,
   type Venta,
   type VentaStorePort,
 } from "./core/ventas/ventas-contract.js";
@@ -141,19 +139,6 @@ function makeVenta(overrides: Partial<Venta> = {}): Venta {
     casoId: "caso-1",
     tokenConfirmacion: "tok-1",
     createdAt: TIMESTAMP,
-    ...overrides,
-  };
-}
-
-function makeEscalacion(overrides: Partial<EscalacionListada> = {}): EscalacionListada {
-  return {
-    ventaId: "v-1",
-    vendedorId: "vend-1",
-    vendedorNombre: "Ana Vendedora",
-    clienteId: "cliente-1",
-    monto: 100,
-    casoId: "caso-1",
-    reaperturasPrevias: 0,
     ...overrides,
   };
 }
@@ -507,14 +492,13 @@ describe("buildOnComandoEmpleado — sin sesión", () => {
     const deps = makeDeps(reloj, { store, writes });
     const handler = buildOnComandoEmpleado(deps);
 
-    for (const texto of ["/aprobar-reembolso", "/rechazar-reembolso v-1", "/reabrir-reembolso"]) {
+    for (const texto of ["/ver-propuesta", "/reporte-comisiones", "/estado-bot-prs"]) {
       const resultado = await handler(texto);
       expect(resultado.agentLabel).toBe("sistema");
       expect(resultado.responseText).toContain("/login");
     }
 
-    expect(store.listarReembolsosPendientes).not.toHaveBeenCalled();
-    expect(store.listarReembolsosRechazados).not.toHaveBeenCalled();
+    expect(store.crearVentaConCaso).not.toHaveBeenCalled();
     expect(JSON.stringify(writes)).toContain("comando-privilegiado-sin-sesion");
   });
 
@@ -603,194 +587,6 @@ describe("buildOnComandoEmpleado — con sesión", () => {
   });
 });
 
-describe("buildOnComandoEmpleado — resolución de escalaciones en dos pasos", () => {
-  function depsConEscalacionPendiente(reloj: Reloj, overrides: Partial<BuildOnComandoEmpleadoDeps> = {}) {
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-    const registro = makeRegistro();
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn(() => [venta]),
-      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
-    });
-    return { deps: makeDeps(reloj, { store, registro, verificarPassword: vi.fn(() => true), ...overrides }), store, registro };
-  }
-
-  it("primer /aprobar-reembolso v-1: eco con el monto y CERO escrituras; segundo: ejecuta UNA vez", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    const primero = await handler("/aprobar-reembolso v-1");
-    expect(primero.responseText).toContain("250.00");
-    expect(primero.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-
-    const segundo = await handler("/aprobar-reembolso v-1");
-    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
-    expect(segundo.responseText).toContain("v-1");
-
-    const tercero = await handler("/aprobar-reembolso v-1");
-    expect(tercero.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
-  });
-
-  it("la confirmación NO sobrevive a /logout", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    await handler("/logout");
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-
-  it("la confirmación NO sobrevive a un /login (mismo o distinto empleado)", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-
-  it("la confirmación NO sobrevive a un /login FALLIDO (cierra la sesión anterior)", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    vi.mocked(deps.verificarPassword).mockReturnValueOnce(false);
-    await handler(`/login ana ${PASSWORD}`);
-
-    // Sin sesión ahora (login falló): el privilegiado pide /login, no ejecuta.
-    const resultado = await handler("/aprobar-reembolso v-1");
-    expect(resultado.responseText).toContain("/login");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-
-  it("la confirmación NO sobrevive a la expiración de la SESIÓN (reloj avanzado)", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj, { authConfig: makeAuthConfig({ sesionTtlMinutos: 1 }) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    reloj.ahora = "2026-01-01T00:05:00.000Z"; // +5 min > TTL de sesión (1 min)
-    const resultado = await handler("/aprobar-reembolso v-1");
-
-    expect(resultado.responseText).toContain("/login");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-
-  it("la confirmación NO sobrevive a su propio vencimiento (2 min) con la sesión viva", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-
-    reloj.ahora = "2026-01-01T00:03:00.000Z"; // +3 min > TTL de confirmación (2 min), sesión (30 min) sigue viva
-    const resultado = await handler("/aprobar-reembolso v-1");
-
-    expect(resultado.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-
-  it("la confirmación NO sobrevive a su propia ejecución: un tercer comando idéntico vuelve a pedir confirmación", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, store } = depsConEscalacionPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    await handler("/aprobar-reembolso v-1");
-    await handler("/aprobar-reembolso v-1"); // ejecuta
-
-    const tercero = await handler("/aprobar-reembolso v-1");
-    expect(tercero.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
-  });
-
-  it("confirmación cruzada: preparo v-1, preparo v-2, confirmo v-1 -> eco de v-1 otra vez, sin ejecutar", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const ventaV1 = makeEscalacion({ ventaId: "v-1", monto: 100, casoId: "caso-1" });
-    const ventaV2 = makeEscalacion({ ventaId: "v-2", monto: 200, casoId: "caso-2" });
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn((filtro?: { readonly ventaId?: string }) =>
-        filtro?.ventaId === "v-2" ? [ventaV2] : [ventaV1],
-      ),
-    });
-    const deps = makeDeps(reloj, { store, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    await handler("/aprobar-reembolso v-1");
-    await handler("/aprobar-reembolso v-2");
-    const resultado = await handler("/aprobar-reembolso v-1");
-
-    expect(resultado.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-
-  it("acción cruzada: preparo aprobar v-1, escribo rechazar v-1 -> eco del rechazo, NO ejecuta la aprobación", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 100, casoId: "caso-1" });
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn(() => [venta]),
-    });
-    const deps = makeDeps(reloj, { store, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    await handler("/aprobar-reembolso v-1");
-    const resultado = await handler("/rechazar-reembolso v-1");
-
-    expect(resultado.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-    expect(store.rechazarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-});
-
-describe("buildOnComandoEmpleado — gate de rol en /aprobar-reembolso (autorizacion-empleado, tarea 4.2)", () => {
-  it("empleado con rol base confirma /aprobar-reembolso v-1: mensaje de no autorizado, no ejecuta y deja fila no_autorizado", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-    const registro = makeRegistro();
-    const store = makeStore({ listarReembolsosPendientes: vi.fn(() => [venta]) });
-    const deps = makeDeps(reloj, {
-      store,
-      registro,
-      verificarPassword: vi.fn(() => true),
-      rolPort: makeRolPort(ROL_EMPLEADO),
-    });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    await handler("/aprobar-reembolso v-1"); // eco — el gate de rol NO corre acá (RD-78)
-    const resultado = await handler("/aprobar-reembolso v-1"); // confirma
-
-    expect(resultado.responseText.toLowerCase()).toContain("no estás autorizado");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
-    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
-    expect(fila).toMatchObject({
-      comando: "/aprobar-reembolso",
-      resultado: RESULTADO_NO_AUTORIZADO,
-      casoId: "caso-9",
-      ventaId: "v-1",
-      empleadoId: "ana",
-    });
-  });
-});
-
 describe("buildOnComandoEmpleado — el guard de privilegio tiene UNA sola fuente de verdad", () => {
   /**
    * Reproduce el hallazgo: hoy el guard compara contra un `Set` hardcodeado
@@ -847,59 +643,26 @@ describe("buildOnComandoEmpleado — /solicitar (alta de solicitud interna, Hito
 
 });
 
-describe("buildOnComandoEmpleado — ADR 55 (ConfirmacionPendiente ensanchada por dominio, ranura única)", () => {
-  /**
-   * Nota de alcance declarada (tarea 22, mismo criterio que la tarea 12
-   * diferido a la tarea 14 y la tarea 20 diferido el error de typecheck):
-   * el texto de `tasks.md` tarea 22 pide "armar una confirmación de
-   * reembolso y después una de `/solicitar` pisa la ranura única (test
-   * explícito del ADR 55)". Verificado contra design.md §4.2: `/solicitar`
-   * es de UN SOLO PASO (sesión vigente exigida, sin eco/confirmación) y
-   * NUNCA construye ni compara `confirmacionPendiente` — a diferencia de
-   * `/devolucion`, que tampoco la toca. La rama `dominio: "solicitud"` de
-   * la unión (ADR 55) la escriben `/aprobar-solicitud`/`/rechazar-solicitud`
-   * (tarea 23, todavía sin implementar); no hay forma de construir un
-   * `confirmacionPendiente` real con `dominio: "solicitud"` sin ese caso de
-   * uso. Por eso este test verifica lo que el código REALMENTE hace hoy:
-   * una confirmación de reembolso pendiente SOBREVIVE intacta a un
-   * `/solicitar` de por medio (dominios distintos, `/solicitar` no toca la
-   * ranura) — y de paso confirma que el ensanchamiento del tipo no
-   * regresionó el camino `dominio: "reembolso"`. El test cruzado real
-   * ("armar un reembolso y después una SOLICITUD pisa la ranura") queda
-   * para la tarea 23, cuando `dominio: "solicitud"` tenga un escritor real.
-   */
-  it("una confirmación de reembolso pendiente sobrevive a un /solicitar exitoso de por medio", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn(() => [venta]),
-      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
-    });
-    const solicitudStore = makeSolicitudStore();
-    const despacharDeps = makeDespacharDeps();
-    const deps = makeDeps(reloj, { store, solicitudStore, despacharDeps, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    const eco = await handler("/aprobar-reembolso v-1");
-    expect(eco.responseText.toLowerCase()).toContain("confirm");
-
-    await handler('/solicitar vacaciones "una semana en marzo"');
-
-    const confirmacion = await handler("/aprobar-reembolso v-1");
-    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
-    expect(confirmacion.responseText).toContain("v-1");
-  });
-});
-
-describe("buildOnComandoEmpleado — /aprobar-solicitud y /rechazar-solicitud se dieron de baja (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10) — la resolución en dos pasos de Hito 5 tarea 23 y el gate de rol de autorizacion-empleado tarea 4.2 quedan como registro histórico, ya no aplican: se resuelven por conversación vía la herramienta `operaciones` (resolver_solicitud, ADR 206, ejecutar-operacion.test.ts)", () => {
-  it.each(["/aprobar-solicitud sol-1", "/aprobar-solicitud", "/rechazar-solicitud sol-1", "/rechazar-solicitud"])(
-    "%j cae en ayuda/desconocido, sin tocar solicitudStore",
+describe("buildOnComandoEmpleado — los CINCO comandos HITL se dieron de baja (aprobacion-conversacional-hitl, ADR 210 pto 1): /aprobar-solicitud y /rechazar-solicitud (tarea 10) + /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso (tarea 14) — la resolución en dos pasos de Hito 5 tarea 23/§6.4 y los gates de rol de autorizacion-empleado tarea 4.2 quedan como registro histórico, ya no aplican: se resuelven por conversación vía la herramienta `operaciones` (resolver_solicitud/resolver_reembolso, ADR 206, ejecutar-operacion.test.ts). También cierra la nota de alcance de la tarea 22/tarea 12 sobre `ConfirmacionPendiente` ensanchada por dominio (ADR 55): con los cinco comandos HITL bajados, `dominio: \"propuesta\"` es la ÚNICA rama viva — no hay más ranura multi-dominio que probar.", () => {
+  it.each([
+    "/aprobar-solicitud sol-1",
+    "/aprobar-solicitud",
+    "/rechazar-solicitud sol-1",
+    "/rechazar-solicitud",
+    "/aprobar-reembolso v-1",
+    "/aprobar-reembolso",
+    "/rechazar-reembolso v-1",
+    "/rechazar-reembolso",
+    "/reabrir-reembolso v-1",
+    "/reabrir-reembolso",
+  ])(
+    "%j cae en ayuda/desconocido, sin tocar solicitudStore ni el store de ventas",
     async (texto) => {
       const reloj: Reloj = { ahora: TIMESTAMP };
       const registro = makeRegistro();
       const solicitudStore = makeSolicitudStore();
-      const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+      const store = makeStore();
+      const deps = makeDeps(reloj, { solicitudStore, store, registro, verificarPassword: vi.fn(() => true) });
       const handler = buildOnComandoEmpleado(deps);
       await login(handler);
       vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
@@ -911,6 +674,11 @@ describe("buildOnComandoEmpleado — /aprobar-solicitud y /rechazar-solicitud se
       expect(solicitudStore.listarSolicitudesPendientes).not.toHaveBeenCalled();
       expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
       expect(solicitudStore.rechazarSolicitud).not.toHaveBeenCalled();
+      expect(store.listarReembolsosPendientes).not.toHaveBeenCalled();
+      expect(store.listarReembolsosRechazados).not.toHaveBeenCalled();
+      expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
+      expect(store.rechazarEscalacionReembolso).not.toHaveBeenCalled();
+      expect(store.reabrirEscalacionReembolso).not.toHaveBeenCalled();
       expect(registro.registrarAccion).not.toHaveBeenCalled();
     },
   );
@@ -1097,27 +865,6 @@ describe("buildOnComandoEmpleado — /ver-propuesta (Hito 5.1, tarea 31, ADR 60 
     expect(resultado.responseText).toContain(String(totalLineas));
   });
 
-  it("una confirmación de reembolso pendiente sobrevive a un /ver-propuesta de por medio (no toca la ranura)", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn(() => [venta]),
-      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
-    });
-    const propuestaStore = makePropuestaStore();
-    const deps = makeDeps(reloj, { store, propuestaStore, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    const eco = await handler("/aprobar-reembolso v-1");
-    expect(eco.responseText.toLowerCase()).toContain("confirm");
-
-    await handler("/ver-propuesta");
-
-    const confirmacion = await handler("/aprobar-reembolso v-1");
-    expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
-    expect(confirmacion.responseText).toContain("v-1");
-  });
 });
 
 describe("buildOnComandoEmpleado — resolución de propuestas en dos pasos (Hito 5.1, tarea 32, ADR 64, ADR 65)", () => {
@@ -1384,31 +1131,6 @@ describe("buildOnComandoEmpleado — resolución de propuestas en dos pasos (Hit
     expect(registro.registrarAccion).not.toHaveBeenCalled();
   });
 
-  it("una confirmación de reembolso pendiente es PISADA por una de /aplicar-propuesta de por medio, y viceversa (ADR 55, test cruzado real de la tarea 32)", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn(() => [venta]),
-      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
-    });
-    const propuesta = makePropuesta({ id: "prop-1", casoId: "caso-prop-9" });
-    const propuestaStore = makePropuestaStore({ listarPropuestasPendientes: vi.fn(() => [propuesta]) });
-    const deps = makeDeps(reloj, { store, propuestaStore, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    const ecoReembolso = await handler("/aprobar-reembolso v-1");
-    expect(ecoReembolso.responseText.toLowerCase()).toContain("confirm");
-
-    const ecoPropuesta = await handler("/aplicar-propuesta prop-1");
-    expect(ecoPropuesta.responseText.toLowerCase()).toContain("confirm");
-
-    // La ranura única quedó con dominio "propuesta": repetir el reembolso
-    // vuelve a pedir eco (no coincide), no ejecuta.
-    const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
-    expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
 });
 
 /**
@@ -2489,31 +2211,6 @@ describe("buildOnComandoEmpleado — /ver-solicitudes-a2a (comando-visibilidad-a
     }
   });
 
-  it("lo que NO hace (ADR 134): una confirmación de reembolso pendiente sobrevive a un /ver-solicitudes-a2a de por medio", async () => {
-    const db = openDatabase(":memory:");
-    try {
-      const reloj: Reloj = { ahora: TIMESTAMP };
-      const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-      const store = makeStore({
-        listarReembolsosPendientes: vi.fn(() => [venta]),
-        aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
-      });
-      const deps = makeKpiDeps(db, reloj, { store });
-      const handler = buildOnComandoEmpleado(deps);
-      await login(handler);
-
-      const eco = await handler("/aprobar-reembolso v-1");
-      expect(eco.responseText.toLowerCase()).toContain("confirm");
-
-      await handler("/ver-solicitudes-a2a");
-
-      const confirmacion = await handler("/aprobar-reembolso v-1");
-      expect(store.aprobarEscalacionReembolso).toHaveBeenCalledTimes(1);
-      expect(confirmacion.responseText).toContain("v-1");
-    } finally {
-      db.close();
-    }
-  });
 
   it("lo que NO hace (ADR 134): el handler no es `async` (inspección de firma, molde manejarVerPropuesta)", () => {
     const source = readFileSync(new URL("./build-on-comando-empleado.ts", import.meta.url), "utf8");

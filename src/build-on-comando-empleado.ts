@@ -65,6 +65,18 @@
  * `AplicarPatchPort` — no hay patch que aplicar al descartar. Con esto el
  * `switch (comando.tipo)` de más abajo vuelve a ser exhaustivo — cierra el
  * `TS2322` diferido desde la tarea 29.
+ *
+ * **`aprobacion-conversacional-hitl` (ADR 210 pto 1, tareas 10 y 14)**: los
+ * CINCO comandos HITL bloqueados por el ADR 151 se dieron de baja — ADR 151
+ * EJECUTADO. `manejarResolucionSolicitud` (rama `dominio: "solicitud"`,
+ * tarea 23 arriba) y `manejarEscalacion` (rama `dominio: "reembolso"`, nunca
+ * documentada con su propio párrafo acá porque precede a este dispatcher
+ * completo) se retiraron por completo — se resuelven ahora por conversación
+ * vía la herramienta `operaciones` (`resolver_solicitud`/`resolver_reembolso`,
+ * ADR 206). `ConfirmacionPendiente` (tipo más abajo) pierde AMBAS ramas:
+ * `dominio: "propuesta"` (tarea 31/32 arriba) es la ÚNICA rama viva — sigue
+ * habiendo UNA sola ranura, ahora de un solo dominio (R17, cero código
+ * muerto).
  */
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -80,7 +92,6 @@ import {
 } from "./core/commands/comando-empleado.js";
 import {
   COMANDO_APLICAR_PROPUESTA,
-  COMANDO_APROBAR_REEMBOLSO,
   COMANDO_ASIGNAR_ROL,
   COMANDO_CANCELAR_SOLICITUD,
   COMANDO_CONSULTAR_KPI,
@@ -88,8 +99,6 @@ import {
   COMANDO_DESCARTAR_PROPUESTA,
   COMANDO_DEVOLUCION,
   COMANDO_LOGIN,
-  COMANDO_REABRIR_REEMBOLSO,
-  COMANDO_RECHAZAR_REEMBOLSO,
   COMANDO_REPORTE_COMISIONES,
   COMANDO_SOLICITAR,
   COMANDO_SOPORTE,
@@ -118,30 +127,11 @@ import {
   type RolEmpleadoPort,
 } from "./core/auth/rol-contract.js";
 import { esAdministrador } from "./core/auth/autorizacion-resolucion.js";
-import {
-  ACCION_APROBAR,
-  ACCION_REABRIR,
-  ACCION_RECHAZAR,
-  resolverEscalacionReembolso,
-  type AccionEscalacion,
-} from "./core/ventas/resolver-escalacion-reembolso.js";
 import { procesarDevolucion, type DevolucionResult } from "./core/ventas/procesar-devolucion.js";
-import {
-  CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
-  CASO_ESTADO_RESUELTO,
-  VENTA_ESTADO_REEMBOLSO_PENDIENTE,
-  VENTA_ESTADO_REEMBOLSO_RECHAZADO,
-  type EscalacionListada,
-  type VentaStorePort,
-} from "./core/ventas/ventas-contract.js";
+import { type VentaStorePort } from "./core/ventas/ventas-contract.js";
 import { MOTIVO_CAS } from "./core/hitl/hitl-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
-import {
-  agruparReporteMensual,
-  formatMoney,
-  formatearReporteMensual,
-  resolverPeriodoReporte,
-} from "./core/ventas/reporte.js";
+import { agruparReporteMensual, formatearReporteMensual, resolverPeriodoReporte } from "./core/ventas/reporte.js";
 import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.js";
 import { crearSolicitudInterna } from "./core/solicitudes/crear-solicitud-interna.js";
@@ -156,7 +146,6 @@ import {
   type SolicitudStorePort,
   type SolicitudTipo,
 } from "./core/solicitudes/solicitudes-contract.js";
-import { type AccionSolicitud } from "./core/solicitudes/resolver-solicitud-interna.js";
 import {
   LINEAS_PAGINA_PATCH,
   PROPUESTA_ESTADO_APLICADA,
@@ -246,48 +235,30 @@ const CONFIRMACION_TTL_MINUTOS = 2;
 
 /**
  * Unión discriminada por `dominio` (Hito 5, tarea 22, ADR 55; ensanchada en
- * Hito 5.1, tarea 31, ADR 60 pto 1): sigue habiendo UNA sola ranura
- * (`confirmacionPendiente` más abajo), ensanchada de tipo, no duplicada.
- * `dominio: "solicitud"` la escriben `/aprobar-solicitud`/`/rechazar-solicitud`
- * (tarea 23) — `/solicitar` es de un solo paso (§4.2) y nunca construye ni
- * compara esta rama.
- *
- * `dominio: "propuesta"` es la tercera rama (tarea 31): existe para que el
- * tipo compile, MISMO precedente que `dominio: "solicitud"` en la tarea 22
- * — su escritor real (`manejarResolucionPropuesta`, para
- * `/aplicar-propuesta`/`/descartar-propuesta`) llega recién en la tarea 32.
- * `manejarVerPropuesta` (esta tarea) es de UN SOLO PASO, sin confirmación
- * (ADR 60 pto 1): NUNCA construye ni compara esta rama, igual que
- * `/solicitar` con `dominio: "solicitud"`.
+ * Hito 5.1, tarea 31, ADR 60 pto 1) — originalmente tres ramas (`"reembolso"`,
+ * `"solicitud"`, `"propuesta"`). `dominio: "reembolso"` (escritor
+ * `manejarEscalacion`) y `dominio: "solicitud"` (escritor
+ * `manejarResolucionSolicitud`, tarea 23) se RETIRARON en
+ * `aprobacion-conversacional-hitl` (ADR 210 pto 1, tareas 14 y 10
+ * respectivamente): los cinco comandos HITL que las escribían se dieron de
+ * baja, se resuelven ahora por conversación vía la herramienta `operaciones`
+ * (`resolver_solicitud`/`resolver_reembolso`, ADR 206). `dominio: "propuesta"`
+ * (tarea 31) es la ÚNICA rama viva — sigue habiendo UNA sola ranura, ahora de
+ * un solo dominio (R17, cero código muerto): su escritor real
+ * (`manejarResolucionPropuesta`, para `/aplicar-propuesta`/
+ * `/descartar-propuesta`) llega en la tarea 32; `manejarVerPropuesta` es de
+ * UN SOLO PASO, sin confirmación (ADR 60 pto 1) y NUNCA construye ni compara
+ * esta rama.
  */
-type ConfirmacionPendiente =
-  | {
-      readonly dominio: "reembolso";
-      readonly accion: AccionEscalacion;
-      readonly ventaId: string;
-      readonly casoId: string;
-      readonly monto: number;
-      /** ATADURA a la sesión que la creó (ADR 31 punto 5). */
-      readonly empleadoId: string;
-      readonly expiraEn: string;
-    }
-  | {
-      readonly dominio: "solicitud";
-      readonly accion: AccionSolicitud;
-      readonly solicitudId: string;
-      readonly casoId: string;
-      readonly empleadoId: string;
-      readonly expiraEn: string;
-    }
-  | {
-      readonly dominio: "propuesta";
-      readonly accion: AccionPropuesta;
-      readonly propuestaId: string;
-      readonly casoId: string;
-      readonly patchBytes: number;
-      readonly empleadoId: string;
-      readonly expiraEn: string;
-    };
+type ConfirmacionPendiente = {
+  readonly dominio: "propuesta";
+  readonly accion: AccionPropuesta;
+  readonly propuestaId: string;
+  readonly casoId: string;
+  readonly patchBytes: number;
+  readonly empleadoId: string;
+  readonly expiraEn: string;
+};
 
 export interface BuildOnComandoEmpleadoDeps {
   /** El `SubmitPromptHandler` que `buildOnSubmit` ya devuelve. Se ENVUELVE, no se toca. */
@@ -381,60 +352,6 @@ function toErrorMessage(error: unknown): string {
 function sistema(texto: string): TuiTurnResult {
   return { responseText: texto, agentLabel: "sistema" };
 }
-
-/** Una línea por venta — MISMO formato de línea que `reporte.ts` (§6.4-5/6/7). */
-function formatearLineaEscalacion(v: EscalacionListada): string {
-  const base = `- venta ${v.ventaId} | vendedor ${v.vendedorNombre} | cliente ${v.clienteId} | monto ${formatMoney(
-    v.monto,
-  )} | caso ${v.casoId}`;
-  return v.confirmedAt === undefined ? base : `${base} | confirmada ${v.confirmedAt}`;
-}
-
-function formatearListado(items: readonly EscalacionListada[]): string {
-  if (items.length === 0) {
-    return "No hay ventas para listar.";
-  }
-  return items.map(formatearLineaEscalacion).join("\n");
-}
-
-/** Eco de confirmación (§6.4-5/6/7c). `reabrir` agrega la salvedad del rechazo previo (ADR 29 punto 2). */
-function formatearEco(accion: AccionEscalacion, venta: EscalacionListada): string {
-  const base = `venta ${venta.ventaId} · cliente ${venta.clienteId} · monto ${formatMoney(venta.monto)} · caso ${venta.casoId} — repetí el comando para confirmar.`;
-  if (accion !== ACCION_REABRIR) {
-    return base;
-  }
-  const rechazadaPor = venta.rechazadaPor ?? "desconocido";
-  const rechazadaAt = venta.rechazadaAt ?? "fecha desconocida";
-  return `${base} rechazada por ${rechazadaPor} el ${rechazadaAt} · reaperturas previas: ${venta.reaperturasPrevias}.`;
-}
-
-/**
- * `aprobar` y `rechazar` comparten la MISMA transición de estado (venta
- * `reembolso_pendiente` → resuelta, caso → `resuelto`) — solo `reabrir`
- * difiere (mismo binario que `formatearEco` arriba, `accion !==
- * ACCION_REABRIR`). Factorizado en una constante en vez de repetido en las
- * dos entradas de `ACCION_ESCALACION_INFO` (Reviewer finding, hallazgo de
- * duplicación): así un cambio a esta transición se edita en un solo lugar
- * y no puede dejar una de las dos entradas desactualizada.
- */
-const ESTADOS_APROBAR_O_RECHAZAR = {
-  estadoOrigen: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
-  estadoCaso: CASO_ESTADO_RESUELTO,
-} as const;
-
-/** Los tres textos que varían por `AccionEscalacion` — unificados para no branchear tres veces sobre el mismo valor. */
-const ACCION_ESCALACION_INFO: Record<
-  AccionEscalacion,
-  { readonly estadoOrigen: string; readonly estadoCaso: string; readonly comando: string }
-> = {
-  [ACCION_APROBAR]: { ...ESTADOS_APROBAR_O_RECHAZAR, comando: COMANDO_APROBAR_REEMBOLSO },
-  [ACCION_RECHAZAR]: { ...ESTADOS_APROBAR_O_RECHAZAR, comando: COMANDO_RECHAZAR_REEMBOLSO },
-  [ACCION_REABRIR]: {
-    estadoOrigen: VENTA_ESTADO_REEMBOLSO_RECHAZADO,
-    estadoCaso: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
-    comando: COMANDO_REABRIR_REEMBOLSO,
-  },
-};
 
 function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
   if (resultado === "reembolsada") return RESULTADO_REEMBOLSADA;
@@ -1006,106 +923,13 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     return sistema("No se pudo procesar esa devolución.");
   }
 
-  function manejarEscalacion(accion: AccionEscalacion, ventaIdInput: string | undefined, ahora: string): TuiTurnResult {
-    // El preámbulo (guarda de privilegio) ya garantizó sesión vigente para
-    // llegar hasta acá — ADR 37: nunca un `empleadoId` tipeado.
-    const sesionActual = sesion as SesionEmpleado;
-
-    if (ventaIdInput === undefined) {
-      const resultado = resolverEscalacionReembolso(
-        { accion, confirmado: false, sesion: sesionActual },
-        { store, newId, now, logEvent, rolPort },
-      );
-      if (resultado.resultado !== "listado") {
-        return sistema("No se pudo listar los reembolsos.");
-      }
-      return sistema(formatearListado(resultado.items));
-    }
-
-    const coincide =
-      confirmacionPendiente !== undefined &&
-      confirmacionPendiente.dominio === "reembolso" &&
-      confirmacionPendiente.ventaId === ventaIdInput &&
-      confirmacionPendiente.accion === accion &&
-      confirmacionPendiente.empleadoId === sesionActual.empleadoId;
-
-    if (!coincide) {
-      const resultado = resolverEscalacionReembolso(
-        { accion, ventaId: ventaIdInput, confirmado: false, sesion: sesionActual },
-        { store, newId, now, logEvent, rolPort },
-      );
-
-      if (resultado.resultado === "no_aplicable") {
-        return sistema(`No hay ninguna venta ${ventaIdInput} en estado ${ACCION_ESCALACION_INFO[accion].estadoOrigen}.`);
-      }
-      if (resultado.resultado !== "requiere_confirmacion") {
-        return sistema("No se pudo procesar ese comando.");
-      }
-
-      confirmacionPendiente = {
-        dominio: "reembolso",
-        accion,
-        ventaId: ventaIdInput,
-        casoId: resultado.venta.casoId,
-        monto: resultado.venta.monto,
-        empleadoId: sesionActual.empleadoId,
-        expiraEn: new Date(Date.parse(ahora) + CONFIRMACION_TTL_MINUTOS * 60_000).toISOString(),
-      };
-      return sistema(formatearEco(accion, resultado.venta));
-    }
-
-    // Coincide: se CONSUME antes de ejecutar (ADR 36).
-    confirmacionPendiente = undefined;
-    const resultado = resolverEscalacionReembolso(
-      { accion, ventaId: ventaIdInput, confirmado: true, sesion: sesionActual },
-      { store, newId, now, logEvent, rolPort },
-    );
-
-    if (resultado.resultado === "aplicada") {
-      return sistema(
-        `Listo: la venta ${ventaIdInput} quedó en ${resultado.estadoFinal} y el caso ${resultado.venta.casoId} en ${ACCION_ESCALACION_INFO[accion].estadoCaso}.`,
-      );
-    }
-
-    if (resultado.resultado === "no_autorizado") {
-      registrar(
-        {
-          comando: ACCION_ESCALACION_INFO[accion].comando,
-          ventaId: ventaIdInput,
-          casoId: resultado.casoId,
-          resultado: RESULTADO_NO_AUTORIZADO,
-        },
-        ahora,
-      );
-      return sistema(`No estás autorizado para ${accion} esa escalación de reembolso: se requiere rol elevado.`);
-    }
-
-    if (resultado.resultado === "no_aplicable") {
-      if (resultado.motivo === "cas" && resultado.casoId !== undefined) {
-        // La fila ya se hubiese escrito DENTRO de la transacción si el CAS
-        // matcheaba (ADR 27); acá no hubo transacción, así que se escribe
-        // FUERA — único caso en que este comando privilegiado pasa por `registrar`.
-        registrar(
-          {
-            comando: ACCION_ESCALACION_INFO[accion].comando,
-            ventaId: ventaIdInput,
-            casoId: resultado.casoId,
-            resultado: RESULTADO_NO_APLICABLE,
-          },
-          ahora,
-        );
-      }
-      return sistema(`Esa venta ya no está en ${ACCION_ESCALACION_INFO[accion].estadoOrigen}: no se aplicó nada.`);
-    }
-
-    return sistema("No se pudo procesar ese comando.");
-  }
-
   /**
    * Alta de solicitud interna (Hito 5, tarea 22, §4.2, ADR 55). UN SOLO
    * PASO — sesión vigente ya la garantizó la guarda de privilegio (§6.3
-   * paso 6): a diferencia de `manejarEscalacion`, esta función NUNCA lee ni
-   * escribe `confirmacionPendiente`. Delega el flujo completo (transacción
+   * paso 6): a diferencia de la resolución en dos pasos (dada de baja,
+   * `aprobacion-conversacional-hitl`, ADR 210 pto 1, tareas 10 y 14 — los
+   * cinco comandos HITL se resuelven ahora por conversación), esta función
+   * NUNCA lee ni escribe `confirmacionPendiente`. Delega el flujo completo (transacción
    * `caso`+`solicitud`, delegación al validador, degradación de fallo ADR
    * 40) a `crearSolicitudInterna` (tarea 17, ya probado ahí) — acá solo se
    * cablea y se traduce el resultado a `TuiTurnResult`.
@@ -1726,12 +1550,6 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         return manejarSoporte(comando, ahora);
       case "devolucion":
         return manejarDevolucion(comando, ahora);
-      case "aprobar_reembolso":
-        return manejarEscalacion(ACCION_APROBAR, comando.ventaId, ahora);
-      case "rechazar_reembolso":
-        return manejarEscalacion(ACCION_RECHAZAR, comando.ventaId, ahora);
-      case "reabrir_reembolso":
-        return manejarEscalacion(ACCION_REABRIR, comando.ventaId, ahora);
       case "solicitar":
         return manejarSolicitud(comando, ahora);
       case "cancelar_solicitud":

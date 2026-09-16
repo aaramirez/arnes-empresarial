@@ -8,6 +8,11 @@ import {
   type BuildOnComandoEmpleadoDeps,
 } from "../../build-on-comando-empleado.js";
 import { createVentaStore } from "../../build-on-venta.js";
+import {
+  ACCION_APROBAR,
+  resolverEscalacionReembolso,
+  type ResolverEscalacionDeps,
+} from "../../core/ventas/resolver-escalacion-reembolso.js";
 import { altaCredencialEmpleado } from "../../empleados.js";
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
 import { type CredencialesEmpleadoPort } from "../../core/auth/credenciales-contract.js";
@@ -149,18 +154,39 @@ describe("comandos-administracion-empleados — flujo end-to-end contra código 
       escalarReembolso(db, { ventaId: "venta-1", casoId: "caso-v1", ahora: TIMESTAMP });
 
       // 6. 'ana' hace login (SU primer login — no es "re-login", es su único
-      //    login) y ejecuta /aprobar-reembolso SIN ningún paso adicional:
-      //    el rol que le asignó el administrador por TUI ya es efectivo.
+      //    login): el rol que le asignó el administrador por TUI ya es
+      //    efectivo. La resolución de reembolso YA NO es un comando de TUI
+      //    (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 14 —
+      //    /aprobar-reembolso se dio de baja, se resuelve por conversación
+      //    vía resolver_reembolso, ADR 206) — se ejercita acá directamente
+      //    contra `resolverEscalacionReembolso` (el núcleo real), con el
+      //    MISMO `store`/`rolPort` reales sobre `db` que usaría el
+      //    dispatcher: prueba que el rol asignado por TUI surte el MISMO
+      //    efecto también por ese camino, sin ningún paso adicional para 'ana'.
       const handlerAna = buildOnComandoEmpleado(realDeps(db));
       const loginAna = await login(handlerAna, "ana", "password-de-ana-123");
       expect(loginAna.responseText.toLowerCase()).toContain("sesión abierta");
 
-      const eco = await handlerAna("/aprobar-reembolso venta-1");
-      expect(eco.responseText.toLowerCase()).toContain("repetí el comando para confirmar");
+      const resolverDeps: ResolverEscalacionDeps = {
+        store: createVentaStore(db),
+        newId: () => "accion-1",
+        now: () => TIMESTAMP,
+        logEvent: () => undefined,
+        rolPort: realRolPort(db),
+      };
+      const sesionAna = { empleadoId: "ana", iniciadaEn: TIMESTAMP };
 
-      const confirmacion = await handlerAna("/aprobar-reembolso venta-1");
-      expect(confirmacion.responseText.toLowerCase()).not.toContain("no estás autorizado");
-      expect(confirmacion.responseText.toLowerCase()).not.toContain("administrador");
+      const eco = resolverEscalacionReembolso(
+        { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: false, sesion: sesionAna },
+        resolverDeps,
+      );
+      expect(eco.resultado).toBe("requiere_confirmacion");
+
+      const confirmacion = resolverEscalacionReembolso(
+        { accion: ACCION_APROBAR, ventaId: "venta-1", confirmado: true, sesion: sesionAna },
+        resolverDeps,
+      );
+      expect(confirmacion.resultado).toBe("aplicada");
 
       const venta = db.prepare("SELECT estado FROM ventas WHERE id = ?").get("venta-1") as { estado: string };
       expect(venta.estado).toBe(VENTA_ESTADO_REEMBOLSADA);
