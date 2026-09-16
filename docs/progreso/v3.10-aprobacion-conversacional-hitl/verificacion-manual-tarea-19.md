@@ -171,7 +171,7 @@ $ grep -rln 'from "../../adapters\|from "\.\./adapters\|from "\./adapters"' src/
 ```
 $ rm -rf dist && npm test
  Test Files  137 passed | 1 skipped (138)
-      Tests  2473 passed | 3 skipped (2476)
+      Tests  2475 passed | 3 skipped (2478)
 
 $ npm run typecheck
 tsc --noEmit
