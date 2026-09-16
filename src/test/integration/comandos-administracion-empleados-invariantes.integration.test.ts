@@ -64,8 +64,8 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
     expect(ROLES_EMPLEADO).toEqual(["empleado", "administrador"]);
   });
 
-  it("DESCRIPTORES queda en DIECIOCHO entradas — conteo final del change (banner de tasks.md)", () => {
-    expect(COMANDOS).toHaveLength(18);
+  it("DESCRIPTORES queda en DIECISÉIS entradas — 18 menos /aprobar-solicitud y /rechazar-solicitud, dadas de baja por aprobacion-conversacional-hitl (ADR 210 pto 1, tarea 10)", () => {
+    expect(COMANDOS).toHaveLength(16);
   });
 
   it("los tres descriptores nuevos del change (/estado-bot-prs, /asignar-rol, /crear-empleado) están todos ANTES de /ayuda, que sigue último", () => {
@@ -79,7 +79,7 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
     }
   });
 
-  it("ningún descriptor de los quince originales cambió de nombre/forma (regresión ya cubierta por comando-empleado.test.ts — repetida acá como cierre explícito del Success Criterion)", () => {
+  it("ningún descriptor de los trece originales sobrevivientes cambió de nombre/forma (regresión ya cubierta por comando-empleado.test.ts — repetida acá como cierre explícito del Success Criterion; /aprobar-solicitud y /rechazar-solicitud se dieron de baja, aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10)", () => {
     const originales = [
       ["/login", "id_mas_resto"],
       ["/logout", "sin_argumentos"],
@@ -87,8 +87,6 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
       ["/aprobar-reembolso", "id_opcional"],
       ["/rechazar-reembolso", "id_opcional"],
       ["/reabrir-reembolso", "id_opcional"],
-      ["/aprobar-solicitud", "id_opcional_solicitud"],
-      ["/rechazar-solicitud", "id_opcional_solicitud"],
       ["/ver-propuesta", "id_opcional_propuesta"],
       ["/aplicar-propuesta", "id_mas_resto"],
       ["/descartar-propuesta", "id_mas_resto"],
@@ -102,6 +100,12 @@ describe("comandos-administracion-empleados — Success Criteria de cierre, inva
       const encontrado = descriptores.find((d) => d.nombre === nombre);
       expect(encontrado).toMatchObject({ nombre, forma });
     }
+  });
+
+  it("/aprobar-solicitud y /rechazar-solicitud ya no ocupan ningún índice de COMANDOS (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10)", () => {
+    const nombres = COMANDOS.map((d) => d.nombre);
+    expect(nombres).not.toContain("/aprobar-solicitud");
+    expect(nombres).not.toContain("/rechazar-solicitud");
   });
 
   it("privilegiado NO fue resignificado: los comandos de solo lectura ya privilegiados siguen sin requerir administrador", () => {

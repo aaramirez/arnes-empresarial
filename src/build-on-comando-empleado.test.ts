@@ -37,7 +37,6 @@ import {
   COMANDO_REPORTE_COMISIONES,
   COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
-  RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_AUTODEGRADACION_PROHIBIDA,
   RESULTADO_EXITOSA,
   RESULTADO_FALLIDA,
@@ -49,7 +48,6 @@ import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado, type RolEmpleadoPort
 import { agruparReporteMensual, formatearReporteMensual } from "./core/ventas/reporte.js";
 import type { ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import {
-  SOLICITUD_ESTADO_APROBADA,
   SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_TIPO_VACACIONES,
@@ -894,219 +892,28 @@ describe("buildOnComandoEmpleado — ADR 55 (ConfirmacionPendiente ensanchada po
   });
 });
 
-describe("buildOnComandoEmpleado — resolución de solicitudes en dos pasos (Hito 5, tarea 23)", () => {
-  function depsConSolicitudPendiente(reloj: Reloj, overrides: Partial<BuildOnComandoEmpleadoDeps> = {}) {
-    // `solicitanteId` distinto de "ana" (quien hace login más abajo) — estos
-    // tests ejercitan el CAS, no la prohibición de autoaprobación
-    // (autorizacion-empleado, tarea 4.2); "ana" con rol elevado por default
-    // de `makeDeps` aprobando su PROPIA solicitud dispararía ese gate.
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "otro-empleado" });
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({
-      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
-      aprobarSolicitud: vi.fn(() => makeSolicitudCreada({ id: "sol-1", estado: SOLICITUD_ESTADO_APROBADA })),
-      rechazarSolicitud: vi.fn(() => makeSolicitudCreada({ id: "sol-1", estado: "rechazada" })),
-    });
-    return {
-      deps: makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true), ...overrides }),
-      solicitudStore,
-      registro,
-    };
-  }
+describe("buildOnComandoEmpleado — /aprobar-solicitud y /rechazar-solicitud se dieron de baja (aprobacion-conversacional-hitl, ADR 210 pto 1, tarea 10) — la resolución en dos pasos de Hito 5 tarea 23 y el gate de rol de autorizacion-empleado tarea 4.2 quedan como registro histórico, ya no aplican: se resuelven por conversación vía la herramienta `operaciones` (resolver_solicitud, ADR 206, ejecutar-operacion.test.ts)", () => {
+  it.each(["/aprobar-solicitud sol-1", "/aprobar-solicitud", "/rechazar-solicitud sol-1", "/rechazar-solicitud"])(
+    "%j cae en ayuda/desconocido, sin tocar solicitudStore",
+    async (texto) => {
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const registro = makeRegistro();
+      const solicitudStore = makeSolicitudStore();
+      const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+      vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
 
-  it("primer /aprobar-solicitud sol-1: eco y CERO escrituras; segundo: aplica el CAS sin registrar desde este archivo", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const { deps, solicitudStore, registro } = depsConSolicitudPendiente(reloj);
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    const primero = await handler("/aprobar-solicitud sol-1");
-    expect(primero.responseText.toLowerCase()).toContain("confirm");
-    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
-    expect(registro.registrarAccion).not.toHaveBeenCalled();
-
-    const segundo = await handler("/aprobar-solicitud sol-1");
-    expect(solicitudStore.aprobarSolicitud).toHaveBeenCalledTimes(1);
-    expect(segundo.responseText).toContain("sol-1");
-    expect(segundo.responseText).toContain("aprobada");
-    // La fila ya viajó DENTRO de la transacción del repository (tarea 19) —
-    // este archivo NO debe emitir una escritura extra.
-    expect(registro.registrarAccion).not.toHaveBeenCalled();
-
-    const tercero = await handler("/aprobar-solicitud sol-1");
-    expect(tercero.responseText.toLowerCase()).toContain("confirm");
-    expect(solicitudStore.aprobarSolicitud).toHaveBeenCalledTimes(1);
-  });
-
-  it("sin sesión vigente, /aprobar-solicitud y /rechazar-solicitud se rechazan sin tocar solicitudStore", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const solicitudStore = makeSolicitudStore();
-    const deps = makeDeps(reloj, { solicitudStore });
-    const handler = buildOnComandoEmpleado(deps);
-
-    for (const texto of ["/aprobar-solicitud", "/rechazar-solicitud sol-1"]) {
       const resultado = await handler(texto);
+
       expect(resultado.agentLabel).toBe("sistema");
-      expect(resultado.responseText).toContain("/login");
-    }
-
-    expect(solicitudStore.listarSolicitudesPendientes).not.toHaveBeenCalled();
-    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
-    expect(solicitudStore.rechazarSolicitud).not.toHaveBeenCalled();
-  });
-
-  it("CAS no matcheado (la solicitud ya no está pendiente): responde no_aplicable y registra la fila FUERA de la transacción", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    // `solicitanteId` distinto de "ana" — mismo motivo que `depsConSolicitudPendiente`.
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "otro-empleado" });
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({
-      listarSolicitudesPendientes: vi.fn(() => [solicitud]),
-      rechazarSolicitud: vi.fn(() => undefined), // el CAS no matcheó
-    });
-    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    await handler("/rechazar-solicitud sol-1"); // eco
-    const resultado = await handler("/rechazar-solicitud sol-1"); // confirma -> el CAS pierde
-
-    expect(resultado.responseText.toLowerCase()).toContain("no se aplicó");
-    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
-    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
-    expect(fila).toMatchObject({
-      comando: "/rechazar-solicitud",
-      resultado: "no_aplicable",
-      casoId: "caso-sol-9",
-      empleadoId: "ana",
-    });
-  });
-
-  it("/aprobar-solicitud sin id lista las pendientes, sin escrituras", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const solicitud = makeSolicitudCreada({ id: "sol-2", detalle: "gasto de viaje" });
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
-    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    const resultado = await handler("/aprobar-solicitud");
-
-    expect(resultado.responseText).toContain("sol-2");
-    expect(resultado.responseText).toContain("gasto de viaje");
-    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
-    expect(registro.registrarAccion).not.toHaveBeenCalled();
-  });
-
-  it("solicitudId inexistente responde que no hay ninguna solicitud, sin escrituras", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
-    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    const resultado = await handler("/aprobar-solicitud fantasma");
-
-    expect(resultado.responseText).toContain("fantasma");
-    expect(registro.registrarAccion).not.toHaveBeenCalled();
-  });
-
-  it("una confirmación de reembolso pendiente es PISADA por una de /aprobar-solicitud de por medio (ADR 55, deferred de la tarea 22)", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const venta = makeEscalacion({ ventaId: "v-1", monto: 250, casoId: "caso-9" });
-    const store = makeStore({
-      listarReembolsosPendientes: vi.fn(() => [venta]),
-      aprobarEscalacionReembolso: vi.fn(() => makeVenta({ id: "v-1", estado: VENTA_ESTADO_REEMBOLSADA })),
-    });
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
-    const deps = makeDeps(reloj, { store, solicitudStore, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-
-    const ecoReembolso = await handler("/aprobar-reembolso v-1");
-    expect(ecoReembolso.responseText.toLowerCase()).toContain("confirm");
-
-    const ecoSolicitud = await handler("/aprobar-solicitud sol-1");
-    expect(ecoSolicitud.responseText.toLowerCase()).toContain("confirm");
-
-    // La ranura única quedó con dominio "solicitud": repetir el reembolso
-    // vuelve a pedir eco (no coincide), no ejecuta.
-    const confirmacionReembolso = await handler("/aprobar-reembolso v-1");
-    expect(confirmacionReembolso.responseText.toLowerCase()).toContain("confirm");
-    expect(store.aprobarEscalacionReembolso).not.toHaveBeenCalled();
-  });
-});
-
-describe("buildOnComandoEmpleado — gate de rol y prohibición de autoaprobación en /aprobar-solicitud (autorizacion-empleado, tarea 4.2)", () => {
-  it("empleado con rol base confirma /aprobar-solicitud ajena: mensaje de no autorizado, no ejecuta y deja fila no_autorizado", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9", solicitanteId: "otro-empleado" });
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
-    const deps = makeDeps(reloj, {
-      solicitudStore,
-      registro,
-      verificarPassword: vi.fn(() => true),
-      rolPort: makeRolPort(ROL_EMPLEADO),
-    });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    await handler("/aprobar-solicitud sol-1"); // eco — el gate de rol NO corre acá (RD-78)
-    const resultado = await handler("/aprobar-solicitud sol-1"); // confirma
-
-    expect(resultado.responseText.toLowerCase()).toContain("no estás autorizado");
-    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
-    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
-    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
-    expect(fila).toMatchObject({
-      comando: "/aprobar-solicitud",
-      resultado: RESULTADO_NO_AUTORIZADO,
-      casoId: "caso-sol-9",
-      empleadoId: "ana",
-    });
-  });
-
-  it("empleado con rol elevado confirma /aprobar-solicitud sobre SU PROPIA solicitud: autoaprobación prohibida, no ejecuta y deja fila autoaprobacion_prohibida", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    // `solicitanteId` default de `makeSolicitudCreada` es "ana" — la misma
-    // que hace login más abajo: es la propia solicitud del actor.
-    const solicitud = makeSolicitudCreada({ id: "sol-1", casoId: "caso-sol-9" });
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => [solicitud]) });
-    const deps = makeDeps(reloj, {
-      solicitudStore,
-      registro,
-      verificarPassword: vi.fn(() => true),
-      rolPort: makeRolPort(ROL_ADMINISTRADOR),
-    });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    await handler("/aprobar-solicitud sol-1"); // eco
-    const resultado = await handler("/aprobar-solicitud sol-1"); // confirma
-
-    expect(resultado.responseText.toLowerCase()).toContain("no podés");
-    expect(resultado.responseText.toLowerCase()).toContain("propia");
-    expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
-    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
-    const fila = vi.mocked(registro.registrarAccion).mock.calls[0]?.[0];
-    expect(fila).toMatchObject({
-      comando: "/aprobar-solicitud",
-      resultado: RESULTADO_AUTOAPROBACION_PROHIBIDA,
-      casoId: "caso-sol-9",
-      empleadoId: "ana",
-    });
-  });
+      expect(resultado.responseText).toContain(texto.split(" ")[0]);
+      expect(solicitudStore.listarSolicitudesPendientes).not.toHaveBeenCalled();
+      expect(solicitudStore.aprobarSolicitud).not.toHaveBeenCalled();
+      expect(solicitudStore.rechazarSolicitud).not.toHaveBeenCalled();
+      expect(registro.registrarAccion).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("buildOnComandoEmpleado — invariante: comandos privilegiados de solo lectura no exigen rol elevado (autorizacion-empleado, tarea 4.2)", () => {
@@ -1146,38 +953,6 @@ describe("buildOnComandoEmpleado — invariante: comandos privilegiados de solo 
     } finally {
       db.close();
     }
-  });
-});
-
-describe("buildOnComandoEmpleado — /aprobar-solicitud y /rechazar-solicitud sin id con la base vacía", () => {
-  it("/aprobar-solicitud sin id con la base vacía conserva el mensaje actual byte por byte", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
-    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    const resultado = await handler("/aprobar-solicitud");
-
-    expect(resultado.responseText).toBe("No hay solicitudes para listar.");
-    expect(registro.registrarAccion).not.toHaveBeenCalled();
-  });
-
-  it("/rechazar-solicitud sin id con la base vacía conserva el mensaje actual byte por byte", async () => {
-    const reloj: Reloj = { ahora: TIMESTAMP };
-    const registro = makeRegistro();
-    const solicitudStore = makeSolicitudStore({ listarSolicitudesPendientes: vi.fn(() => []) });
-    const deps = makeDeps(reloj, { solicitudStore, registro, verificarPassword: vi.fn(() => true) });
-    const handler = buildOnComandoEmpleado(deps);
-    await login(handler);
-    vi.mocked(registro.registrarAccion).mockClear(); // limpia la fila de /login
-
-    const resultado = await handler("/rechazar-solicitud");
-
-    expect(resultado.responseText).toBe("No hay solicitudes para listar.");
-    expect(registro.registrarAccion).not.toHaveBeenCalled();
   });
 });
 
