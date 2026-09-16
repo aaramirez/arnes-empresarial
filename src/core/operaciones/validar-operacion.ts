@@ -35,6 +35,8 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   consultar_reporte_comisiones: ["operacion", "periodo"],
   // `aprobacion-conversacional-hitl`, ADR 206/217 — solicitudId ausente = modo listado.
   resolver_solicitud: ["operacion", "accion", "solicitudId"],
+  // `aprobacion-conversacional-hitl`, ADR 206/217 — ventaId ausente = modo listado.
+  resolver_reembolso: ["operacion", "accion", "ventaId"],
 };
 
 /** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
@@ -46,6 +48,7 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   registrar_venta: ["clienteId", "clienteEmail", "planNuevo", "monto", "vendedorNombre"],
   consultar_reporte_comisiones: [],
   resolver_solicitud: ["accion"],
+  resolver_reembolso: ["accion"],
 };
 
 /**
@@ -81,6 +84,7 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   registrar_venta: ["monto"],
   consultar_reporte_comisiones: [],
   resolver_solicitud: [],
+  resolver_reembolso: [],
 };
 
 /**
@@ -94,11 +98,14 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
  * (ADR 217); incluirla acá permitiría que `resolver_solicitud
  * {accion:"cancelar"}` pasara esta validación y llegara al dispatcher, que la
  * rechazaría recién en un `switch` interno — falla cerrado por accidente, no
- * por diseño.
+ * por diseño. Mismo criterio para `resolver_reembolso.accion` (tarea 12):
+ * ★ `"cancelar"` NUNCA entra acá tampoco — esa acción sigue siendo exclusiva
+ * de `cancelar_solicitud_interna`, sin excepción por dominio.
  */
 const VALORES_PERMITIDOS_POR_OPERACION: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   resolver_decision_venta: { decision: ["confirmar", "rechazar"] },
   resolver_solicitud: { accion: ["aprobar", "rechazar"] },
+  resolver_reembolso: { accion: ["aprobar", "rechazar", "reabrir"] },
 };
 
 /**

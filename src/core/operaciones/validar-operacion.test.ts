@@ -260,6 +260,32 @@ describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION: whitelist estri
   });
 });
 
+describe("validarOperacion — resolver_reembolso: forma mínima se acepta (aprobacion-conversacional-hitl, tarea 12)", () => {
+  it("{ operacion, accion } solo se acepta (modo listado)", () => {
+    const input = { operacion: "resolver_reembolso", accion: "aprobar" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("{ operacion, accion, ventaId } se acepta", () => {
+    const input = { operacion: "resolver_reembolso", accion: "reabrir", ventaId: "v1" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+});
+
+describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION.resolver_reembolso: whitelist estricta de accion (ADR 217, aprobacion-conversacional-hitl, tarea 12)", () => {
+  it("resolver_reembolso con accion:'cancelar' ⇒ rechazo ('cancelar' NUNCA es válido acá, ADR 217)", () => {
+    expect(validarOperacion({ operacion: "resolver_reembolso", accion: "cancelar" })).toBeUndefined();
+  });
+
+  it("resolver_reembolso sin accion ⇒ rechazo (campo requerido)", () => {
+    expect(validarOperacion({ operacion: "resolver_reembolso", ventaId: "v1" })).toBeUndefined();
+  });
+
+  it("resolver_solicitud con accion:'reabrir' sigue rechazada tras ampliarse el enum zod para reembolso (regresión tarea 7, ADR 217 pto 3 — 'acota forma' vs 'acota significado')", () => {
+    expect(validarOperacion({ operacion: "resolver_solicitud", accion: "reabrir" })).toBeUndefined();
+  });
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();

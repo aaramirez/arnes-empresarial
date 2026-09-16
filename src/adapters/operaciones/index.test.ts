@@ -4,6 +4,7 @@ import {
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_RESOLVER_DECISION_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   type ConfirmacionOperacionPort,
 } from "../../core/operaciones/operaciones-contract.js";
@@ -202,12 +203,61 @@ describe("OPERACIONES_TOOL_ZOD_SCHEMA — resolver_solicitud: forma zod (aprobac
     expect(result.success).toBe(true);
   });
 
-  it("rechaza accion:'reabrir' a nivel de forma — el enum del zod plano sólo tiene aprobar/rechazar en este punto (se amplía en la tarea 12, para reembolso)", () => {
+  it("acepta accion:'reabrir' a nivel de forma — el enum del zod plano ya incluye reabrir (tarea 12, ampliado para reembolso); validar-operacion.ts sigue rechazando reabrir para resolver_solicitud por significado (regresión ADR 217 pto 3)", () => {
     const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
       operacion: OPERACION_RESOLVER_SOLICITUD,
       accion: "reabrir",
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — resolver_reembolso: forma zod (aprobacion-conversacional-hitl, tarea 12)", () => {
+  it("acepta { operacion, accion, ventaId } con accion:'aprobar'|'rechazar'|'reabrir'", () => {
+    for (const accion of ["aprobar", "rechazar", "reabrir"]) {
+      const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+        operacion: OPERACION_RESOLVER_REEMBOLSO,
+        accion,
+        ventaId: "V1",
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it("acepta { operacion, accion } sin ventaId (modo listado)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "aprobar",
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("createOperacionesAdapter — resolver_reembolso: input válido delega en ejecutar (aprobacion-conversacional-hitl, tarea 12)", () => {
+  it("{ operacion: resolver_reembolso, accion: 'reabrir', ventaId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_RESOLVER_REEMBOLSO,
+      accion: "reabrir",
+      ventaId: "V1",
+    });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolver_solicitud con accion:'reabrir' ⇒ pasa el zod ampliado pero validar-operacion.ts lo rechaza, ejecutar nunca se invoca (regresión ADR 217 pto 3)", async () => {
+    const ejecutar = vi.fn();
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    const result = await invokeOperacionesTool(adapter, {
+      operacion: OPERACION_RESOLVER_SOLICITUD,
+      accion: "reabrir",
+    });
+
+    expect(ejecutar).not.toHaveBeenCalled();
+    expect(result.content[0].text.length).toBeGreaterThan(0);
   });
 });
 
