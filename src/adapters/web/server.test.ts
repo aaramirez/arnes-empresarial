@@ -8,6 +8,7 @@ import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../..
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
 import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
+import type { JustificacionDevolucionPort } from "../../core/ventas/justificacion-devolucion-contract.js";
 import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "../../core/agents/definitions.js";
 import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
@@ -540,6 +541,15 @@ function unusedConsultaVentaPropiaR7(): ConsultaVentaPropiaPort {
   return { buscarPorId: unused, listarDeVendedor: unused };
 }
 
+/** `devolucion-sin-token-dos-personas`, tarea 16 — mismo criterio "unused" que `unusedConsultaVentaPropiaR7`. */
+function unusedJustificacionR7(): JustificacionDevolucionPort {
+  return {
+    registrar: () => {
+      throw new Error("JustificacionDevolucionPort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+    },
+  };
+}
+
 function unusedDespacharDepsR7(): DespacharDelegacionDeps {
   const unused = (): never => {
     throw new Error("DespacharDelegacionDeps no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
@@ -581,6 +591,7 @@ function ejecutarDepsR7(db: Database.Database, overrides: Partial<EjecutarOperac
     baseUrlPublica: "http://localhost:8080",
     reporteStore: unusedReporteStoreR7(),
     consultaVentaPropia: unusedConsultaVentaPropiaR7(),
+    justificacion: unusedJustificacionR7(),
     despacharDeps: unusedDespacharDepsR7(),
     rolPort: realRolPortR7(),
     registro: makeRegistroR7(),

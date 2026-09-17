@@ -49,6 +49,7 @@ import {
   buscarVentaPropiaPorId,
   createCaso,
   insertAccionEmpleado,
+  insertJustificacionDevolucion,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
   listVentasPropiasDeVendedor,
@@ -68,6 +69,7 @@ import {
   type VentaNotifierPort,
 } from "./core/ventas/ventas-contract.js";
 import { type ConsultaVentaPropiaPort, type VentaPropia } from "./core/ventas/consulta-venta-contract.js";
+import { type JustificacionDevolucionPort } from "./core/ventas/justificacion-devolucion-contract.js";
 import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
@@ -189,6 +191,10 @@ export function buildOnOperacionesEmpleado(
     },
     listarDeVendedor: (filtro) => listVentasPropiasDeVendedor(db, filtro).map(toPortVentaPropia),
   };
+  /** `devolucion-sin-token-dos-personas`, ADR 228 pto 6 — mismo molde inline que `consultaVentaPropia`. */
+  const justificacion: JustificacionDevolucionPort = {
+    registrar: (input) => insertJustificacionDevolucion(db, input),
+  };
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
 
@@ -201,6 +207,7 @@ export function buildOnOperacionesEmpleado(
     ...(deps.riesgoCredito !== undefined ? { riesgoCredito: deps.riesgoCredito } : {}),
     reporteStore,
     consultaVentaPropia,
+    justificacion,
     registro,
     despacharDeps,
     rolPort,

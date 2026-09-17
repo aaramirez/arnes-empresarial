@@ -114,6 +114,9 @@ export const OPERACIONES_TOOL_DESCRIPTION =
   "con el cliente, resolver (aprobar/rechazar) una solicitud interna ajena escalada, " +
   "resolver (aprobar/rechazar/reabrir) una escalación de reembolso ajena, " +
   "consultar el reporte de comisiones de un período, " +
+  "iniciar una devolución sin token sobre una venta propia (solicitar_devolucion, con un " +
+  "motivo obligatorio no vacío) — queda pendiente de que un administrador distinto la " +
+  "apruebe, nunca la cerrás vos mismo — " +
   "o consultar el estado de una venta propia puntual (consultar_venta, incluida la decisión " +
   "del cliente) o el listado de tus ventas propias si no das un ventaId. Nunca calculás " +
   "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. " +
