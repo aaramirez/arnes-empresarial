@@ -13,6 +13,7 @@ import {
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
@@ -24,6 +25,7 @@ import {
   type LlaveConfirmacion,
   type OperacionCancelarSolicitudInterna,
   type OperacionConsultarReporteComisiones,
+  type OperacionConsultarVenta,
   type OperacionCrearSolicitudInterna,
   type OperacionNegocio,
   type OperacionProcesarDevolucion,
@@ -46,7 +48,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera las ocho operaciones del contrato, final (ADR 163/171/174/206)", () => {
+  it("OPERACIONES_NEGOCIO enumera NUEVE operaciones — intermedio (devolucion-sin-token-dos-personas, tarea 3): la décima, solicitar_devolucion, y el reordenamiento final llegan en la tarea 11", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -56,8 +58,22 @@ describe("operaciones-contract constants", () => {
       OPERACION_CONSULTAR_REPORTE_COMISIONES,
       OPERACION_RESOLVER_SOLICITUD,
       OPERACION_RESOLVER_REEMBOLSO,
+      OPERACION_CONSULTAR_VENTA,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(8);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(9);
+  });
+});
+
+describe("OperacionConsultarVenta (devolucion-sin-token-dos-personas, tarea 3, ADR 225/229 pto 5)", () => {
+  it("ventaId opcional (ausente ⇒ modo listado), SIN accion ni confirmado — es de sólo lectura", () => {
+    const listado: OperacionConsultarVenta = { operacion: OPERACION_CONSULTAR_VENTA };
+    const conId: OperacionConsultarVenta = { operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" };
+    const generico: OperacionNegocio = listado;
+
+    expect(generico.operacion).toBe("consultar_venta");
+    expect(conId.ventaId).toBe("venta-1");
+    expect("accion" in listado).toBe(false);
+    expect("confirmado" in listado).toBe(false);
   });
 });
 
@@ -274,6 +290,15 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     void op;
   }
 
+  function _chequeoDeTipos_consultarVentaNoAceptaMonto(): void {
+    const op: OperacionConsultarVenta = {
+      operacion: OPERACION_CONSULTAR_VENTA,
+      // @ts-expect-error — `monto` no es campo de `consultar_venta` (sólo lectura, ADR 225).
+      monto: 50,
+    };
+    void op;
+  }
+
   function _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado(): void {
     const op: OperacionResolverReembolso = {
       operacion: OPERACION_RESOLVER_REEMBOLSO,
@@ -300,6 +325,7 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     expect(typeof _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado).toBe("function");
     expect(typeof _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar).toBe("function");
     expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_consultarVentaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado).toBe("function");
     expect(typeof _chequeoDeTipos_accionReembolsoModeloNoAceptaCancelar).toBe("function");
   });

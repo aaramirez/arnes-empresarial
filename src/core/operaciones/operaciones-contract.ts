@@ -46,8 +46,17 @@ export const OPERACION_REGISTRAR_VENTA = "registrar_venta";
 export const OPERACION_CONSULTAR_REPORTE_COMISIONES = "consultar_reporte_comisiones";
 /** `aprobacion-conversacional-hitl`, ADR 206 — dominio solicitud del canal conversacional. */
 export const OPERACION_RESOLVER_SOLICITUD = "resolver_solicitud";
-/** `aprobacion-conversacional-hitl`, ADR 206 — dominio reembolso del canal conversacional; octava y última operación del contrato. */
+/** `aprobacion-conversacional-hitl`, ADR 206 — dominio reembolso del canal conversacional; octava operación del contrato. */
 export const OPERACION_RESOLVER_REEMBOLSO = "resolver_reembolso";
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 225/227 pto 1 — décima y última
+ * operación del contrato (Slice 1, tarea 3). Sólo lectura, escopada al
+ * vendedor propio: estado de una venta puntual (incluida la decisión del
+ * cliente) o, sin id, el listado de ventas propias. NOVENA acá — el orden
+ * final (`solicitar_devolucion` precede a `consultar_venta`) y la décima
+ * entrada llegan en la tarea 11.
+ */
+export const OPERACION_CONSULTAR_VENTA = "consultar_venta";
 
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
@@ -58,6 +67,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_RESOLVER_SOLICITUD,
   OPERACION_RESOLVER_REEMBOLSO,
+  OPERACION_CONSULTAR_VENTA,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -145,6 +155,19 @@ export interface OperacionResolverReembolso {
   readonly ventaId?: string;
 }
 
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 225/229 pto 5 — de sólo lectura:
+ * SIN `accion` (no es una elección de operación) y SIN `confirmado` (no
+ * consume ninguna ranura de confirmación, a diferencia de `resolver_reembolso`/
+ * `resolver_solicitud`/`cancelar_solicitud_interna`). `ventaId` ausente ⇒
+ * modo listado de TODAS las ventas propias, cualquier estado (mismo criterio
+ * de modo listado que `cancelar_solicitud_interna`/`resolver_reembolso`).
+ */
+export interface OperacionConsultarVenta {
+  readonly operacion: typeof OPERACION_CONSULTAR_VENTA;
+  readonly ventaId?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
@@ -153,7 +176,8 @@ export type OperacionNegocio =
   | OperacionRegistrarVenta
   | OperacionConsultarReporteComisiones
   | OperacionResolverSolicitud
-  | OperacionResolverReembolso;
+  | OperacionResolverReembolso
+  | OperacionConsultarVenta;
 
 /**
  * Puerto de confirmación humana para las operaciones de dos pasos del canal
