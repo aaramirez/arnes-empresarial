@@ -28,6 +28,15 @@ export const COMANDO_CREAR_EMPLEADO = "/crear-empleado"; // comandos-administrac
 // exclusivamente conversacional, sin inventar un comando de TUI fantasma.
 export const COMANDO_REGISTRAR_VENTA = "operacion:registrar_venta";
 export const COMANDO_RESOLVER_DECISION_VENTA = "operacion:resolver_decision_venta";
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 230 pto 1 — sin comando de TUI
+ * ancestro: esta operación nunca existió como comando, es nueva desde el
+ * canal conversacional. Distinto de `COMANDO_DEVOLUCION` (`"/devolucion"`,
+ * arriba): son DOS VÍAS con DOS PRECIOS (ADR 223 pto 6), y un auditor que
+ * filtre por `/devolucion` sigue viendo SÓLO el camino con la credencial
+ * del cliente.
+ */
+export const COMANDO_SOLICITAR_DEVOLUCION = "operacion:solicitar_devolucion";
 
 /* ── Vocabulario de `registro_acciones_empleado.resultado` (tabla del ADR 27) ── */
 export const RESULTADO_EXITOSA = "exitosa"; // /login

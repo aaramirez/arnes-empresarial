@@ -13,6 +13,7 @@ import {
   COMANDO_RECHAZAR_REEMBOLSO,
   COMANDO_RECHAZAR_SOLICITUD,
   COMANDO_SOLICITAR,
+  COMANDO_SOLICITAR_DEVOLUCION,
   COMANDO_SOPORTE,
   COMANDO_VER_PROPUESTA,
   RESULTADO_APLICADA,
@@ -52,6 +53,11 @@ describe("vocabulario de comando", () => {
 
   it("COMANDO_ASIGNAR_ROL es '/asignar-rol' (comandos-administracion-empleados, tarea 7, ADR 184)", () => {
     expect(COMANDO_ASIGNAR_ROL).toBe("/asignar-rol");
+  });
+
+  it("★ COMANDO_SOLICITAR_DEVOLUCION es 'operacion:solicitar_devolucion' y es DISTINTO de COMANDO_DEVOLUCION (devolucion-sin-token-dos-personas, ADR 230 pto 1) — dos vías, dos precios", () => {
+    expect(COMANDO_SOLICITAR_DEVOLUCION).toBe("operacion:solicitar_devolucion");
+    expect(COMANDO_SOLICITAR_DEVOLUCION).not.toBe(COMANDO_DEVOLUCION);
   });
 });
 
@@ -104,6 +110,23 @@ describe("AccionEmpleado", () => {
     expect(accion).not.toHaveProperty("token");
     expect(accion).not.toHaveProperty("tokenConfirmacion");
     expect(accion).not.toHaveProperty("consulta");
+    expect(accion).not.toHaveProperty("motivo");
+  });
+
+  it("★ NO ganó ningún campo con devolucion-sin-token-dos-personas — exactamente las mismas OCHO claves de antes (ADR 27, R13, tarea 15)", () => {
+    const accion: AccionEmpleado = {
+      id: "accion-1",
+      empleadoId: "ana",
+      comando: COMANDO_SOLICITAR_DEVOLUCION,
+      ventaId: "venta-1",
+      casoId: "caso-1",
+      resultado: RESULTADO_ESCALADA,
+      ocurridoAt: "2026-09-01T00:00:00.000Z",
+    };
+
+    expect(Object.keys(accion).sort()).toEqual(
+      ["id", "empleadoId", "comando", "ventaId", "casoId", "resultado", "ocurridoAt"].sort(),
+    );
     expect(accion).not.toHaveProperty("motivo");
   });
 
