@@ -940,6 +940,29 @@ export function listVentasPropiasDeVendedor(
 }
 
 /**
+ * `devolucion-sin-token-dos-personas`, tarea 10 (ADR 228 pto 6). Implementa
+ * `JustificacionDevolucionPort.registrar` sobre la tabla `0014` — APPEND-ONLY,
+ * el `motivo` se persiste TAL CUAL, sin ninguna transformación (ADR 228
+ * pto 7: ese texto no viaja a ningún otro lado).
+ */
+export function insertJustificacionDevolucion(
+  db: Database.Database,
+  input: {
+    readonly id: string;
+    readonly ventaId: string;
+    readonly casoId: string;
+    readonly solicitanteId: string;
+    readonly motivo: string;
+    readonly solicitadaAt: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO justificaciones_devolucion (id, venta_id, caso_id, solicitante_id, motivo, solicitada_at)
+     VALUES (@id, @ventaId, @casoId, @solicitanteId, @motivo, @solicitadaAt)`,
+  ).run(input);
+}
+
+/**
  * Public shape of a `comision`, camelCase — field-for-field the same as
  * `Comision` in `src/core/ventas/ventas-contract.ts`. Same reasoning as
  * `VentaRow`: this adapter never imports that contract, but the shapes must

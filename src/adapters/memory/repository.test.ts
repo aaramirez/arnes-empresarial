@@ -52,6 +52,7 @@ import {
   insertCredencialEmpleado,
   insertDelegacion,
   insertDelegacionA2A,
+  insertJustificacionDevolucion,
   insertPropuestaCambio,
   insertSolicitudA2AEntrante,
   listAccionesEmpleadoPorVenta,
@@ -1027,6 +1028,69 @@ describe("repository", () => {
       db = openDatabase(":memory:");
 
       expect(listVentasPropiasDeVendedor(db, { vendedorId: "no-existe" })).toEqual([]);
+    });
+  });
+
+  /**
+   * `devolucion-sin-token-dos-personas`, tarea 10 (ADR 228 pto 6). APPEND-ONLY:
+   * el `motivo` se persiste tal cual, sin transformación.
+   */
+  describe("insertJustificacionDevolucion (ADR 228 pto 6)", () => {
+    it("inserta una fila correlacionable por ventaId/casoId, el motivo se persiste tal cual", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      insertJustificacionDevolucion(db, {
+        id: "just-1",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        solicitanteId: "vendedor-1",
+        motivo: "el cliente se arrepintió, no era lo que buscaba",
+        solicitadaAt: "2026-09-17T00:00:00.000Z",
+      });
+
+      const row = db
+        .prepare("SELECT venta_id, caso_id, solicitante_id, motivo, solicitada_at FROM justificaciones_devolucion WHERE id = ?")
+        .get("just-1") as {
+        venta_id: string;
+        caso_id: string;
+        solicitante_id: string;
+        motivo: string;
+        solicitada_at: string;
+      };
+
+      expect(row.venta_id).toBe("venta-1");
+      expect(row.caso_id).toBe("caso-1");
+      expect(row.solicitante_id).toBe("vendedor-1");
+      expect(row.motivo).toBe("el cliente se arrepintió, no era lo que buscaba");
+      expect(row.solicitada_at).toBe("2026-09-17T00:00:00.000Z");
+    });
+
+    it("permite dos filas para la misma venta (un intento fallido y uno exitoso, sin UNIQUE)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      insertJustificacionDevolucion(db, {
+        id: "just-1",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        solicitanteId: "vendedor-1",
+        motivo: "primer intento",
+        solicitadaAt: "2026-09-17T00:00:00.000Z",
+      });
+      insertJustificacionDevolucion(db, {
+        id: "just-2",
+        ventaId: "venta-1",
+        casoId: "caso-1",
+        solicitanteId: "vendedor-1",
+        motivo: "segundo intento",
+        solicitadaAt: "2026-09-17T01:00:00.000Z",
+      });
+
+      const count = db
+        .prepare("SELECT count(*) as total FROM justificaciones_devolucion WHERE venta_id = ?")
+        .get("venta-1") as { total: number };
+      expect(count.total).toBe(2);
     });
   });
 
