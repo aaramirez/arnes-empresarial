@@ -402,8 +402,27 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
     // `OperacionRegistrarVenta` no tiene campo `vendedorId` (garantía estructural, ver operaciones-contract.test.ts).
   });
 
-  it("alta exitosa notifica y devuelve texto con el id de la venta y del caso", async () => {
-    const deps = makeDeps();
+  /** ergonomia-canal-empleado, tarea 1 (ADR 221 pto 1/2) — store con ids de venta y caso DISTINTOS y etiquetados, para que la posición en el texto no pueda mentir. */
+  function makeStoreConIdsDistinguibles(): VentaStorePort {
+    return makeVentaStore({
+      crearVentaConCaso: vi.fn((input: CrearVentaConCasoInput) => ({
+        id: "venta-echo-1",
+        vendedorId: input.vendedor.id,
+        clienteId: input.venta.clienteId,
+        ...(input.venta.planAnterior !== undefined ? { planAnterior: input.venta.planAnterior } : {}),
+        planNuevo: input.venta.planNuevo,
+        monto: input.venta.monto,
+        estado: input.venta.estado,
+        casoId: "caso-echo-2",
+        tokenConfirmacion: input.venta.tokenConfirmacion,
+        createdAt: input.timestamp,
+      })),
+    });
+  }
+
+  it("alta exitosa notifica y devuelve texto con vendedor, cliente e ids de venta y caso (ADR 221 pto 1/2)", async () => {
+    const store = makeStoreConIdsDistinguibles();
+    const deps = makeDeps({ store });
 
     const texto = await ejecutarOperacion(
       makeInput({
@@ -418,7 +437,81 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
     );
 
     expect(deps.notifier.notificarLinkConfirmacion).toHaveBeenCalledTimes(1);
-    expect(texto).toContain("registrada");
+    // Los seis datos del eco (ADR 221 pto 1/2/4): vendedor, cliente, los dos ids
+    // (distintos entre sí, para que la posición no pueda mentir), el estado de
+    // notificación y el link.
+    expect(texto).toContain("Juan Pérez");
+    expect(texto).toContain("cliente-1");
+    expect(texto).toContain("venta-echo-1");
+    expect(texto).toContain("caso-echo-2");
+    expect(texto).toContain("sí");
+    expect(texto).toContain("https://ventas.example.com/confirmar/");
+  });
+
+  it("★ el eco NUNCA contiene el email del cliente, ni siquiera el carácter arroba (ADR 221 pto 3, R1)", async () => {
+    const deps = makeDeps();
+
+    const texto = await ejecutarOperacion(
+      makeInput({
+        operacion: OPERACION_REGISTRAR_VENTA,
+        clienteId: "cliente-1",
+        clienteEmail: "cliente@example.com",
+        planNuevo: "premium",
+        monto: 100,
+        vendedorNombre: "Juan Pérez",
+      }),
+      deps,
+    );
+
+    expect(texto).not.toContain("cliente@example.com");
+    // La aserción de "@" sola es la que atrapa un formateo creativo
+    // (`c***@example.com`, `cliente [at] example.com`) que un `toContain`
+    // del email completo dejaría pasar.
+    expect(texto).not.toContain("@");
+  });
+
+  it("el eco no agrega monto ni ningún otro dato calculado — no-regresión de alcance (ADR 221 pto 4)", async () => {
+    const deps = makeDeps();
+
+    const texto = await ejecutarOperacion(
+      makeInput({
+        operacion: OPERACION_REGISTRAR_VENTA,
+        clienteId: "cliente-1",
+        clienteEmail: "cliente@example.com",
+        planNuevo: "premium",
+        monto: 1234,
+        vendedorNombre: "Juan Pérez",
+      }),
+      deps,
+    );
+
+    expect(texto).not.toContain("1234");
+  });
+
+  it("la auditoría no cambia: registro.registrarAccion sigue recibiendo {comando, ventaId, casoId, resultado: creada} intacto", async () => {
+    const registro = makeRegistro();
+    const store = makeStoreConIdsDistinguibles();
+    const deps = makeDeps({ store, registro });
+
+    await ejecutarOperacion(
+      makeInput({
+        operacion: OPERACION_REGISTRAR_VENTA,
+        clienteId: "cliente-1",
+        clienteEmail: "cliente@example.com",
+        planNuevo: "premium",
+        monto: 100,
+        vendedorNombre: "Juan Pérez",
+      }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
+      comando: COMANDO_REGISTRAR_VENTA,
+      ventaId: "venta-echo-1",
+      casoId: "caso-echo-2",
+      resultado: RESULTADO_CREADA,
+    });
   });
 });
 

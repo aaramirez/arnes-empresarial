@@ -649,6 +649,20 @@ async function ejecutarResolverReembolso(
  * `operacion.monto` a `registrarVenta` sin ninguna operación aritmética
  * intermedia — comparación `===` estricta, verificada por
  * `ejecutar-operacion.test.ts`.
+ *
+ * ADR 221 pto 1/2/3 (ergonomia-canal-empleado, tarea 1): el eco de esta
+ * función nombra a `operacion.vendedorNombre`. ★ Ese campo NO es identidad
+ * autenticada — es texto libre que el MODELO llenó a partir del mensaje del
+ * empleado (a diferencia de `vendedorId`, que sale de `sesion.empleadoId`
+ * por closure y es inexpresable por el modelo). Por eso el texto del eco
+ * dice `vendedor <nombre>` y NUNCA "registrado por" ni "el empleado que
+ * registró": esa frase afirmaría una garantía de autenticación que este
+ * dato no tiene. Quien manda para la auditoría sigue siendo `vendedorId`
+ * (`:684-689`). ★ `operacion.clienteEmail` está prohibido en el eco (ADR 221
+ * pto 3): es el único dato personal del flujo que el repo decidió no
+ * persistir en ninguna parte (`registrar-venta.ts`, ADR 18 pto 4), y el
+ * transcripto del chat SÍ se guarda — meterlo en el eco lo empujaría a un
+ * almacén donde esa decisión no lo quiere.
  */
 async function ejecutarRegistrarVenta(
   operacion: OperacionRegistrarVenta,
@@ -689,7 +703,7 @@ async function ejecutarRegistrarVenta(
   );
 
   const notificado = resultado.notificado ? "sí" : "no se pudo notificar automáticamente";
-  return `Venta ${resultado.ventaId} registrada (caso ${resultado.casoId}). Notificación al cliente: ${notificado}. Link de confirmación: ${resultado.linkConfirmacion}.`;
+  return `Venta registrada: vendedor ${operacion.vendedorNombre}, cliente ${operacion.clienteId} (venta ${resultado.ventaId}, caso ${resultado.casoId}). Notificación al cliente: ${notificado}. Link de confirmación: ${resultado.linkConfirmacion}.`;
 }
 
 /** ADR 174 pto 2/4: sin gate de rol, sin escopado por vendedor (R12) — `periodo` es el único dato de entrada. */

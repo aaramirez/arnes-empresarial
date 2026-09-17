@@ -611,7 +611,7 @@ describe("createRequestListener + ejecutarOperacion — R7 en los DOS sentidos p
         },
         deps,
       );
-      const ventaIdMatch = /Venta (\S+) registrada \(caso (\S+)\)/.exec(textoAlta);
+      const ventaIdMatch = /\(venta (\S+), caso (\S+)\)/.exec(textoAlta);
       if (ventaIdMatch === null) {
         throw new Error(`test setup error: no se pudo extraer ventaId/casoId de: ${textoAlta}`);
       }
