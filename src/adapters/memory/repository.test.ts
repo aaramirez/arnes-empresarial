@@ -26,6 +26,7 @@ import {
   aprobarSolicitudInterna,
   buscarCredencialEmpleado,
   buscarRolEmpleado,
+  buscarVentaPropiaPorId,
   cancelarSolicitudA2AEntrante,
   cancelarSolicitudInterna,
   completarDelegacion,
@@ -63,6 +64,7 @@ import {
   listSolicitudesA2AEntrantesPorEstado,
   listSolicitudesInternas,
   listVentasEnReembolsoPendiente,
+  listVentasPropiasDeVendedor,
   reabrirEscalacionReembolso,
   rechazarEscalacionReembolso,
   rechazarSolicitudInterna,
@@ -74,6 +76,7 @@ import {
   upsertResponsable,
   upsertRolEmpleado,
   upsertVendedor,
+  VENTA_PROPIA_SELECT_COLUMNS,
   type CreateActividadInput,
   type CreateCasoConActividadInput,
   type CreateCasoInput,
@@ -877,6 +880,153 @@ describe("repository", () => {
       db = openDatabase(":memory:");
 
       expect(getVentaById(db, "no-existe")).toBeUndefined();
+    });
+  });
+
+  /**
+   * `devolucion-sin-token-dos-personas`, tarea 2 (ADR 227 ptos 1-3). ★ Riesgo
+   * más alto del change (R1): la exclusión de `token_confirmacion` es de SQL,
+   * no de un `map` de JS — verificada acá con un token de fixture largo y
+   * reconocible.
+   */
+  describe("VENTA_PROPIA_SELECT_COLUMNS (ADR 227 pto 2)", () => {
+    it("★ no contiene la subcadena 'token'", () => {
+      expect(VENTA_PROPIA_SELECT_COLUMNS.toLowerCase()).not.toContain("token");
+    });
+  });
+
+  describe("buscarVentaPropiaPorId (ADR 227 pto 3)", () => {
+    it("returns undefined when the venta does not exist", () => {
+      db = openDatabase(":memory:");
+
+      expect(buscarVentaPropiaPorId(db, "no-existe")).toBeUndefined();
+    });
+
+    it("★ nunca incluye el token_confirmacion, aunque la fila del store lo tenga (fixture con token largo y reconocible)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({ venta: { ...buildVentaConCasoInput().venta, tokenConfirmacion: "TOKEN-SECRETO-RECONOCIBLE-XYZ" } }),
+      );
+
+      const venta = buscarVentaPropiaPorId(db, "venta-1");
+
+      expect(venta).not.toBeUndefined();
+      expect(Object.keys(venta ?? {}).some((clave) => clave.toLowerCase().includes("token"))).toBe(false);
+      expect(JSON.stringify(venta)).not.toContain("TOKEN-SECRETO-RECONOCIBLE-XYZ");
+    });
+
+    it("no filtra por vendedor: una venta ajena se devuelve igual (el gate de alcance vive en el núcleo, no acá)", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(db, buildVentaConCasoInput());
+
+      const venta = buscarVentaPropiaPorId(db, "venta-1");
+
+      expect(venta?.vendedorId).toBe("vendedor-1");
+    });
+
+    it("mapea los campos camelCase esperados, incluidos los opcionales presentes", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: {
+            id: "venta-1",
+            clienteId: "cliente-1",
+            planAnterior: "basico",
+            planNuevo: "premium",
+            monto: 100,
+            estado: "pendiente_confirmacion",
+            tokenConfirmacion: "token-1",
+            expiresAt: "2026-08-27T00:00:00.000Z",
+          },
+        }),
+      );
+
+      const venta = buscarVentaPropiaPorId(db, "venta-1");
+
+      expect(venta).toEqual({
+        ventaId: "venta-1",
+        vendedorId: "vendedor-1",
+        clienteId: "cliente-1",
+        planAnterior: "basico",
+        planNuevo: "premium",
+        monto: 100,
+        estado: "pendiente_confirmacion",
+        casoId: "caso-1",
+        createdAt: "2026-08-26T00:00:03.000Z",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      });
+    });
+  });
+
+  describe("listVentasPropiasDeVendedor (ADR 227 pto 7)", () => {
+    it("filtra por vendedorId, orden created_at DESC, y respeta el límite", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: { id: "venta-1", clienteId: "cliente-1", planNuevo: "premium", monto: 100, estado: "confirmada", tokenConfirmacion: "token-1" },
+          timestamp: "2026-08-26T00:00:01.000Z",
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "confirmada" }),
+          venta: { id: "venta-2", clienteId: "cliente-2", planNuevo: "premium", monto: 200, estado: "confirmada", tokenConfirmacion: "token-2" },
+          timestamp: "2026-08-26T00:00:02.000Z",
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          vendedor: { id: "vendedor-2", nombre: "Beto Vendedor" },
+          caso: buildCaso({ id: "caso-3", tipo: "venta", estado: "confirmada" }),
+          venta: { id: "venta-3", clienteId: "cliente-3", planNuevo: "premium", monto: 300, estado: "confirmada", tokenConfirmacion: "token-3" },
+          timestamp: "2026-08-26T00:00:03.000Z",
+        }),
+      );
+
+      const propias = listVentasPropiasDeVendedor(db, { vendedorId: "vendedor-1" });
+
+      expect(propias.map((v) => v.ventaId)).toEqual(["venta-2", "venta-1"]);
+      expect(propias.every((v) => !Object.keys(v).some((clave) => clave.toLowerCase().includes("token")))).toBe(true);
+
+      const limitada = listVentasPropiasDeVendedor(db, { vendedorId: "vendedor-1", limite: 1 });
+      expect(limitada.map((v) => v.ventaId)).toEqual(["venta-2"]);
+    });
+
+    it("estados ausente ⇒ todos; estados presente ⇒ filtra", () => {
+      db = openDatabase(":memory:");
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          venta: { id: "venta-1", clienteId: "cliente-1", planNuevo: "premium", monto: 100, estado: "confirmada", tokenConfirmacion: "token-1" },
+        }),
+      );
+      createVentaConCaso(
+        db,
+        buildVentaConCasoInput({
+          caso: buildCaso({ id: "caso-2", tipo: "venta", estado: "pendiente_confirmacion" }),
+          venta: { id: "venta-2", clienteId: "cliente-2", planNuevo: "premium", monto: 200, estado: "pendiente_confirmacion", tokenConfirmacion: "token-2" },
+          timestamp: "2026-08-26T00:00:04.000Z",
+        }),
+      );
+
+      expect(listVentasPropiasDeVendedor(db, { vendedorId: "vendedor-1" }).map((v) => v.ventaId).sort()).toEqual([
+        "venta-1",
+        "venta-2",
+      ]);
+      expect(
+        listVentasPropiasDeVendedor(db, { vendedorId: "vendedor-1", estados: ["confirmada"] }).map((v) => v.ventaId),
+      ).toEqual(["venta-1"]);
+    });
+
+    it("vendedor sin ventas ⇒ listado vacío", () => {
+      db = openDatabase(":memory:");
+
+      expect(listVentasPropiasDeVendedor(db, { vendedorId: "no-existe" })).toEqual([]);
     });
   });
 

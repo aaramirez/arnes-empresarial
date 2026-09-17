@@ -839,6 +839,106 @@ export function getVentaById(db: Database.Database, id: string): VentaRow | unde
   return row ? rowToVenta(row) : undefined;
 }
 
+/* ── `devolucion-sin-token-dos-personas`, tarea 2 (ADR 227): lectores de venta propia, SIN token_confirmacion ── */
+
+interface VentaPropiaSqlRow {
+  id: string;
+  vendedor_id: string;
+  cliente_id: string;
+  plan_anterior: string | null;
+  plan_nuevo: string;
+  monto: number;
+  estado: string;
+  caso_id: string;
+  created_at: string;
+  confirmed_at: string | null;
+  expires_at: string | null;
+}
+
+/**
+ * `VENTA_SELECT_COLUMNS` MENOS `token_confirmacion` (ADR 227 pto 2). La
+ * exclusión es de SQL: el token no sale de SQLite, no existe en memoria, no
+ * hay refactor que lo "vuelva a incluir sin querer". Exportada ÚNICAMENTE
+ * para el test mecánico de ausencia (mismo criterio que `CAMPOS_POR_OPERACION`
+ * de `validar-operacion.ts`) — nunca para uso en runtime fuera de este módulo.
+ */
+export const VENTA_PROPIA_SELECT_COLUMNS =
+  "id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, created_at, confirmed_at, expires_at";
+
+/** Proyección de una venta propia a nivel de adaptador — camelCase, SIN `tokenConfirmacion`. No confundir con `Venta`/`VentaPropia` del núcleo (ADR 227 pto 1). */
+export interface VentaPropiaRow {
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly clienteId: string;
+  readonly planAnterior?: string;
+  readonly planNuevo: string;
+  readonly monto: number;
+  readonly estado: string;
+  readonly casoId: string;
+  readonly createdAt: string;
+  readonly confirmedAt?: string;
+  readonly expiresAt?: string;
+}
+
+/** No reusa `rowToVenta` (ADR 227 pto 2): esa función escribe `tokenConfirmacion`. */
+function rowToVentaPropia(row: VentaPropiaSqlRow): VentaPropiaRow {
+  return {
+    ventaId: row.id,
+    vendedorId: row.vendedor_id,
+    clienteId: row.cliente_id,
+    ...(row.plan_anterior !== null ? { planAnterior: row.plan_anterior } : {}),
+    planNuevo: row.plan_nuevo,
+    monto: row.monto,
+    estado: row.estado,
+    casoId: row.caso_id,
+    createdAt: row.created_at,
+    ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
+    ...(row.expires_at !== null ? { expiresAt: row.expires_at } : {}),
+  };
+}
+
+/**
+ * Lectura por id, SIN filtro de vendedor y SIN token (ADR 227 pto 3): "ajena"
+ * tiene que ser distinguible de "no existe", y ese gate vive DENTRO del
+ * núcleo (`consultar-venta-propia.ts`), nunca acá. `getVentaById` (arriba)
+ * sigue sin ganar ningún llamador nuevo por esta tarea.
+ */
+export function buscarVentaPropiaPorId(db: Database.Database, ventaId: string): VentaPropiaRow | undefined {
+  const row = db.prepare(`SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE id = ?`).get(ventaId) as
+    | VentaPropiaSqlRow
+    | undefined;
+  return row ? rowToVentaPropia(row) : undefined;
+}
+
+/**
+ * `estados` ausente ⇒ todos los estados del vendedor. Orden `created_at`
+ * DESC (lo más reciente primero). Default de `limite`: 20 — mismo valor que
+ * `LIMITE_LISTADO_VENTAS_PROPIAS` del núcleo, duplicado literal a propósito
+ * (este adaptador no importa `src/core/*`, mismo criterio que el resto del
+ * archivo).
+ */
+export function listVentasPropiasDeVendedor(
+  db: Database.Database,
+  filtro: { readonly vendedorId: string; readonly estados?: readonly string[]; readonly limite?: number },
+): readonly VentaPropiaRow[] {
+  const limite = filtro.limite ?? 20;
+  if (filtro.estados === undefined || filtro.estados.length === 0) {
+    const rows = db
+      .prepare(`SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE vendedor_id = @vendedorId ORDER BY created_at DESC LIMIT @limite`)
+      .all({ vendedorId: filtro.vendedorId, limite }) as VentaPropiaSqlRow[];
+    return rows.map(rowToVentaPropia);
+  }
+
+  const placeholders = filtro.estados.map((_estado, i) => `@estado${i}`).join(", ");
+  const estadoParams = Object.fromEntries(filtro.estados.map((estado, i) => [`estado${i}`, estado]));
+  const rows = db
+    .prepare(
+      `SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE vendedor_id = @vendedorId AND estado IN (${placeholders}) ORDER BY created_at DESC LIMIT @limite`,
+    )
+    .all({ vendedorId: filtro.vendedorId, limite, ...estadoParams }) as VentaPropiaSqlRow[];
+  return rows.map(rowToVentaPropia);
+}
+
 /**
  * Public shape of a `comision`, camelCase — field-for-field the same as
  * `Comision` in `src/core/ventas/ventas-contract.ts`. Same reasoning as
