@@ -44,7 +44,16 @@ import { logTurnEvent, type LogTurnEventDeps } from "./core/logging/turn-logger.
 import type { bootstrapHarness } from "./core/startup/bootstrap.js";
 import { construirAgenteEmpleadoOperaciones } from "./core/agents/definitions.js";
 import { buildOperacionesEmpleadoPrompt } from "./core/ventas/soporte-prompt.js";
-import { createCaso, buscarRolEmpleado, insertAccionEmpleado, listComisionesPorPeriodo, listVentasEnReembolsoPendiente } from "./adapters/memory/repository.js";
+import {
+  buscarRolEmpleado,
+  buscarVentaPropiaPorId,
+  createCaso,
+  insertAccionEmpleado,
+  listComisionesPorPeriodo,
+  listVentasEnReembolsoPendiente,
+  listVentasPropiasDeVendedor,
+  type VentaPropiaRow,
+} from "./adapters/memory/repository.js";
 import { createOperacionesAdapter } from "./adapters/operaciones/index.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps, type EjecutarOperacionInput } from "./core/operaciones/ejecutar-operacion.js";
 import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
@@ -52,11 +61,17 @@ import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-
 import type { SesionEmpleado } from "./core/auth/sesion.js";
 import type { RolEmpleado, RolEmpleadoPort } from "./core/auth/rol-contract.js";
 import { type VentasConfig } from "./core/ventas/ventas-config.js";
-import { type ConsultaRiesgoCreditoPort, type VentaNotifierPort } from "./core/ventas/ventas-contract.js";
+import {
+  VENTA_ESTADOS,
+  type ConsultaRiesgoCreditoPort,
+  type VentaEstado,
+  type VentaNotifierPort,
+} from "./core/ventas/ventas-contract.js";
+import { type ConsultaVentaPropiaPort, type VentaPropia } from "./core/ventas/consulta-venta-contract.js";
 import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
-import { createVentaStore } from "./build-on-venta.js";
+import { createVentaStore, VentaEstadoInvalidoError } from "./build-on-venta.js";
 import { createSolicitudStore } from "./build-on-comando-empleado.js";
 
 /**
@@ -94,6 +109,24 @@ export interface BuildOnOperacionesEmpleadoDeps {
 export interface OperacionesEmpleadoResult {
   readonly casoId: string;
   readonly respuesta: string;
+}
+
+/**
+ * Traduce una fila `VentaPropiaRow` de `repository.ts` (`estado` como
+ * `string` suelto) a la `VentaPropia` del puerto (`estado: VentaEstado`,
+ * unión literal) — molde exacto de `toPortVenta` (`build-on-venta.ts`),
+ * reusando `VentaEstadoInvalidoError` de ese mismo módulo en vez de declarar
+ * una variante propia (`devolucion-sin-token-dos-personas`, ADR 227 pto 4).
+ */
+function toPortVentaPropia(row: VentaPropiaRow): VentaPropia {
+  const estadoValido = (VENTA_ESTADOS as readonly string[]).includes(row.estado);
+  if (!estadoValido) {
+    throw new VentaEstadoInvalidoError(row.ventaId, row.estado);
+  }
+  return {
+    ...row,
+    estado: row.estado as VentaEstado,
+  };
 }
 
 /**
@@ -148,6 +181,14 @@ export function buildOnOperacionesEmpleado(
   /** ADR 188 pto 2 — mismo molde inline que `build-on-comando-empleado.ts:868-869` cuando no se inyecta explícito. */
   const registro: RegistroAccionesEmpleadoPort =
     deps.registro ?? { registrarAccion: (accion) => insertAccionEmpleado(db, accion) };
+  /** `devolucion-sin-token-dos-personas`, ADR 225/227 — mismo molde inline que `reporteStore`. */
+  const consultaVentaPropia: ConsultaVentaPropiaPort = {
+    buscarPorId: (ventaId) => {
+      const row = buscarVentaPropiaPorId(db, ventaId);
+      return row ? toPortVentaPropia(row) : undefined;
+    },
+    listarDeVendedor: (filtro) => listVentasPropiasDeVendedor(db, filtro).map(toPortVentaPropia),
+  };
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
 
@@ -159,6 +200,7 @@ export function buildOnOperacionesEmpleado(
     baseUrlPublica,
     ...(deps.riesgoCredito !== undefined ? { riesgoCredito: deps.riesgoCredito } : {}),
     reporteStore,
+    consultaVentaPropia,
     registro,
     despacharDeps,
     rolPort,

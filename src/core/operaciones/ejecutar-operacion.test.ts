@@ -6,6 +6,7 @@ import {
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
@@ -16,6 +17,7 @@ import {
   type LlaveConfirmacion,
   type OperacionNegocio,
 } from "./operaciones-contract.js";
+import type { ConsultaVentaPropiaPort, VentaPropia } from "../ventas/consulta-venta-contract.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "./ejecutar-operacion.js";
 import {
   CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
@@ -209,6 +211,29 @@ function makeReporteStore(overrides: Partial<ReporteStorePort> = {}): ReporteSto
   };
 }
 
+function buildVentaPropia(overrides: Partial<VentaPropia> = {}): VentaPropia {
+  return {
+    ventaId: "venta-1",
+    vendedorId: "empleado-1",
+    clienteId: "cliente-1",
+    planNuevo: "plan-pro",
+    monto: 1000,
+    estado: VENTA_ESTADO_CONFIRMADA,
+    casoId: "caso-venta-1",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** `devolucion-sin-token-dos-personas`, tarea 7. */
+function makeConsultaVentaPropia(overrides: Partial<ConsultaVentaPropiaPort> = {}): ConsultaVentaPropiaPort {
+  return {
+    buscarPorId: vi.fn(() => undefined),
+    listarDeVendedor: vi.fn(() => []),
+    ...overrides,
+  };
+}
+
 function makeRolPort(rol: RolEmpleado | undefined = ROL_ADMINISTRADOR): RolEmpleadoPort {
   return { buscarRol: () => rol };
 }
@@ -240,6 +265,7 @@ function makeDeps(overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOpera
     notifier: makeNotifier(),
     baseUrlPublica: "https://ventas.example.com",
     reporteStore: makeReporteStore(),
+    consultaVentaPropia: makeConsultaVentaPropia(),
     despacharDeps: makeDespacharDeps(),
     rolPort: makeRolPort(),
     registro: makeRegistro(),
@@ -1115,6 +1141,97 @@ describe("ejecutarOperacion — consultar_reporte_comisiones (ADR 174 pto 2, R12
     expect(reporteStore.listComisionesPorPeriodo).toHaveBeenCalledWith("2026-08");
     expect(vi.mocked(reporteStore.listComisionesPorPeriodo).mock.calls[0]).not.toContain("empleado-espia");
     expect(reporteStore.listVentasEnReembolsoPendiente).toHaveBeenCalledWith();
+  });
+});
+
+/* ── Bloque 5 (devolucion-sin-token-dos-personas, ADR 224 pto 4, ADR 225, tarea 7): consultar_venta ── */
+
+describe("ejecutarOperacion — consultar_venta (devolucion-sin-token-dos-personas, ADR 224 pto 4, ADR 225, tarea 7)", () => {
+  it("sin ventaId ⇒ listado, delega en consultaVentaPropia.listarDeVendedor con el empleadoId de la sesión", async () => {
+    const items = [buildVentaPropia({ ventaId: "venta-1" })];
+    const listarDeVendedor = vi.fn(() => items);
+    const consultaVentaPropia = makeConsultaVentaPropia({ listarDeVendedor });
+    const deps = makeDeps({ consultaVentaPropia });
+
+    const texto = await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }), deps);
+
+    expect(listarDeVendedor).toHaveBeenCalledWith({ vendedorId: SESION.empleadoId });
+    expect(texto).toContain("venta-1");
+  });
+
+  it("con ventaId de una venta propia ⇒ detalle, incluye el estado (la decisión del cliente)", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId, estado: VENTA_ESTADO_REEMBOLSADA });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const deps = makeDeps({ consultaVentaPropia });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" }),
+      deps,
+    );
+
+    expect(texto).toContain("venta-1");
+    expect(texto).toContain(VENTA_ESTADO_REEMBOLSADA);
+  });
+
+  it("con ventaId de una venta ajena ⇒ rechazo distinguible de no_encontrada, CERO fila de auditoría", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: "otro-empleado" });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto.length).toBeGreaterThan(0);
+  });
+
+  it("con ventaId inexistente ⇒ rechazo, CERO fila de auditoría", async () => {
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => undefined) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "no-existe" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto.length).toBeGreaterThan(0);
+  });
+
+  it("★ CERO fila de auditoría en NINGUNA rama, con o sin ventaId (herramienta-operaciones-negocio: consultar_venta nunca escribe fila)", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }), deps);
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" }), deps);
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("★ CERO llamadas a la ranura de confirmación — consultar_venta no es confirmable (ADR 229 pto 5)", async () => {
+    const confirmacion = makeConfirmacion();
+    const consultaVentaPropia = makeConsultaVentaPropia();
+    const deps = makeDeps({ consultaVentaPropia });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }, { confirmacion }), deps);
+
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("★ test mecánico (ADR 224 pto 4): en la porción de consultar_venta, el dispatcher no compara vendedorId con empleadoId — el gate de alcance vive en consultarVentaPropia, no acá", () => {
+    const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/vendedorId\s*===\s*[\w.]*empleadoId/);
+    expect(source).not.toMatch(/empleadoId\s*===\s*[\w.]*vendedorId/);
   });
 });
 

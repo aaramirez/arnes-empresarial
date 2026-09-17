@@ -7,6 +7,7 @@ import { OPERACION_REGISTRAR_VENTA, OPERACION_RESOLVER_REEMBOLSO } from "../../c
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
+import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
 import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "../../core/agents/definitions.js";
 import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
@@ -531,6 +532,14 @@ function unusedReporteStoreR7(): ReporteStorePort {
   return { listComisionesPorPeriodo: unused, listVentasEnReembolsoPendiente: unused };
 }
 
+/** `devolucion-sin-token-dos-personas`, tarea 7 — mismo molde que `unusedReporteStoreR7`. */
+function unusedConsultaVentaPropiaR7(): ConsultaVentaPropiaPort {
+  const unused = (): never => {
+    throw new Error("ConsultaVentaPropiaPort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  return { buscarPorId: unused, listarDeVendedor: unused };
+}
+
 function unusedDespacharDepsR7(): DespacharDelegacionDeps {
   const unused = (): never => {
     throw new Error("DespacharDelegacionDeps no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
@@ -571,6 +580,7 @@ function ejecutarDepsR7(db: Database.Database, overrides: Partial<EjecutarOperac
     notifier: realNotifierR7(),
     baseUrlPublica: "http://localhost:8080",
     reporteStore: unusedReporteStoreR7(),
+    consultaVentaPropia: unusedConsultaVentaPropiaR7(),
     despacharDeps: unusedDespacharDepsR7(),
     rolPort: realRolPortR7(),
     registro: makeRegistroR7(),
