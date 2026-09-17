@@ -21,6 +21,9 @@ const IDENTIFICADORES_PROHIBIDOS = [
   "eval",
   "new Function",
   "srcdoc",
+  ".style",
+  "cssText",
+  "setAttribute",
 ];
 
 describe("CHAT_CLIENT_JS -- ausencia mecánica de sumideros de HTML (punto obligatorio 4, R2)", () => {
@@ -42,11 +45,12 @@ interface ElementoFake {
   value: string;
   disabled: boolean;
   hidden: boolean;
+  className: string;
   textContent: string;
-  children: Array<{ textContent: string }>;
+  children: ElementoFake[];
   addEventListener(tipo: string, manejador: (evento: unknown) => void): void;
   disparar(tipo: string, evento?: unknown): void;
-  appendChild(hijo: { textContent: string }): { textContent: string };
+  appendChild(hijo: ElementoFake): ElementoFake;
 }
 
 function crearElementoFake(inicial: Partial<ElementoFake> = {}): ElementoFake {
@@ -55,6 +59,7 @@ function crearElementoFake(inicial: Partial<ElementoFake> = {}): ElementoFake {
     value: "",
     disabled: false,
     hidden: false,
+    className: "",
     textContent: "",
     children: [],
     ...inicial,
@@ -129,20 +134,36 @@ function respuestaJsonMalformado(status: number): { ok: boolean; status: number;
   };
 }
 
-function montarCliente(fetchDouble: (...args: unknown[]) => unknown): {
+/**
+ * Doble determinista de `Date` (ADR 228 pto 2): un constructor que devuelve
+ * un objeto explícito sobreescribe el `this` de `new`, así que `new Date()`
+ * dentro del cliente entrega siempre esta hora fija -- cero reloj real en la
+ * suite.
+ */
+function crearDateFake(hora: number, minuto: number): unknown {
+  return function FakeDate(): { getHours(): number; getMinutes(): number } {
+    return { getHours: () => hora, getMinutes: () => minuto };
+  };
+}
+
+function montarCliente(
+  fetchDouble: (...args: unknown[]) => unknown,
+  dateDouble: unknown = crearDateFake(0, 0),
+): {
   elementos: Record<string, ElementoFake>;
   documento: ReturnType<typeof crearDocumentoFake>;
 } {
   const elementos = crearElementosPorId();
   const documento = crearDocumentoFake(elementos);
   // eslint-disable-next-line @typescript-eslint/no-implied-eval -- exactamente lo que ADR 200 pto 3 exige testear
-  const fn = new Function("document", "fetch", "setInterval", "clearInterval", CHAT_CLIENT_JS) as (
+  const fn = new Function("document", "fetch", "setInterval", "clearInterval", "Date", CHAT_CLIENT_JS) as (
     documento: unknown,
     fetch: unknown,
     setInterval: unknown,
     clearInterval: unknown,
+    DateDouble: unknown,
   ) => void;
-  fn(documento, fetchDouble, vi.fn(), vi.fn());
+  fn(documento, fetchDouble, vi.fn(), vi.fn(), dateDouble);
   return { elementos, documento };
 }
 
@@ -160,8 +181,84 @@ async function loguear(elementos: Record<string, ElementoFake>): Promise<void> {
   await tick();
 }
 
-describe("CHAT_CLIENT_JS -- XSS en negativo (punto obligatorio 5, R2)", () => {
-  it("una respuesta con <script> y <img onerror> renderiza un único nodo de texto, cero elementos ejecutables", async () => {
+describe("CHAT_CLIENT_JS -- estructura del turno: tres nodos, clave cerrada de autor, hora vía Date (ADR 227, ADR 228)", () => {
+  it("tras un envío exitoso, cada turno tiene 3 hijos con className turno-hora/turno-autor/turno-texto en ese orden", async () => {
+    const fetchDouble = vi
+      .fn()
+      .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+      .mockResolvedValueOnce(respuestaJson(200, { casoId: "c1", respuesta: "todo listo" }));
+    const { elementos } = montarCliente(fetchDouble);
+    await loguear(elementos);
+
+    elementos["mensaje-textarea"]!.value = "hola";
+    elementos["enviar-boton"]!.disparar("click");
+    await tick();
+
+    expect(elementos.mensajes!.children).toHaveLength(2);
+
+    const turnoEmpleado = elementos.mensajes!.children[0]!;
+    const turnoArnes = elementos.mensajes!.children[1]!;
+    expect(turnoEmpleado.className).toBe("turno turno-empleado");
+    expect(turnoArnes.className).toBe("turno turno-arnes");
+
+    for (const turno of [turnoEmpleado, turnoArnes]) {
+      expect(turno.children).toHaveLength(3);
+      expect(turno.children[0]!.className).toBe("turno-hora");
+      expect(turno.children[1]!.className).toBe("turno-autor");
+      expect(turno.children[2]!.className).toBe("turno-texto");
+    }
+  });
+
+  it("el autor está en TEXTO, no sólo en color (ADR 222 pto 5)", async () => {
+    const fetchDouble = vi
+      .fn()
+      .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+      .mockResolvedValueOnce(respuestaJson(200, { casoId: "c1", respuesta: "todo listo" }));
+    const { elementos } = montarCliente(fetchDouble);
+    await loguear(elementos);
+
+    elementos["mensaje-textarea"]!.value = "hola";
+    elementos["enviar-boton"]!.disparar("click");
+    await tick();
+
+    expect(elementos.mensajes!.children[0]!.children[1]!.textContent).toBe("Vos");
+    expect(elementos.mensajes!.children[1]!.children[1]!.textContent).toBe("Arnés");
+  });
+
+  it("la hora tiene el formato exacto HH:MM -- el caso de un dígito prueba dosDigitos", async () => {
+    const fetchDouble = vi
+      .fn()
+      .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+      .mockResolvedValueOnce(respuestaJson(200, { casoId: "c1", respuesta: "todo listo" }));
+    const { elementos } = montarCliente(fetchDouble, crearDateFake(9, 5));
+    await loguear(elementos);
+
+    elementos["mensaje-textarea"]!.value = "hola";
+    elementos["enviar-boton"]!.disparar("click");
+    await tick();
+
+    expect(elementos.mensajes!.children[0]!.children[0]!.textContent).toBe("09:05");
+  });
+
+  it("ningún string dinámico del mensaje llega a className (ADR 227 pto 1)", async () => {
+    const fetchDouble = vi
+      .fn()
+      .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+      .mockResolvedValueOnce(respuestaJson(200, { casoId: "c1", respuesta: "turno-empleado" }));
+    const { elementos } = montarCliente(fetchDouble);
+    await loguear(elementos);
+
+    elementos["mensaje-textarea"]!.value = "arnes";
+    elementos["enviar-boton"]!.disparar("click");
+    await tick();
+
+    expect(elementos.mensajes!.children[0]!.className).toBe("turno turno-empleado");
+    expect(elementos.mensajes!.children[1]!.className).toBe("turno turno-arnes");
+  });
+});
+
+describe("CHAT_CLIENT_JS -- XSS en negativo, reapuntado a la estructura de tres nodos (punto obligatorio 5, R2, R9)", () => {
+  it("una respuesta con <script> y <img onerror> cae en el tercer nodo (turno-texto) como texto verbatim, cero elementos ejecutables", async () => {
     const fetchDouble = vi
       .fn()
       .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
@@ -181,12 +278,30 @@ describe("CHAT_CLIENT_JS -- XSS en negativo (punto obligatorio 5, R2)", () => {
     expect(documento.elementosCreados).not.toContain("script");
     expect(documento.elementosCreados).not.toContain("img");
 
-    const ultimoTurno = elementos.mensajes!.children[elementos.mensajes!.children.length - 1] as unknown as {
-      children: Array<{ textContent: string }>;
-    };
-    expect(ultimoTurno.children).toHaveLength(1);
-    expect(ultimoTurno.children[0]!.textContent).toContain("<script>alert(1)</script>");
-    expect(ultimoTurno.children[0]!.textContent).toContain('<img onerror="alert(2)">');
+    const ultimoTurno = elementos.mensajes!.children[elementos.mensajes!.children.length - 1]!;
+    expect(ultimoTurno.children).toHaveLength(3);
+    expect(ultimoTurno.children[2]!.textContent).toContain("<script>alert(1)</script>");
+    expect(ultimoTurno.children[2]!.textContent).toContain('<img onerror="alert(2)">');
+  });
+
+  it("sólo se crean div y span -- ningún elemento HTML adicional (nuevo, en positivo)", async () => {
+    const fetchDouble = vi
+      .fn()
+      .mockResolvedValueOnce(respuestaJson(200, { token: "tok-1" }))
+      .mockResolvedValueOnce(
+        respuestaJson(200, {
+          casoId: "c1",
+          respuesta: '<script>alert(1)</script><img onerror="alert(2)">',
+        }),
+      );
+    const { elementos, documento } = montarCliente(fetchDouble);
+    await loguear(elementos);
+
+    elementos["mensaje-textarea"]!.value = "hola";
+    elementos["enviar-boton"]!.disparar("click");
+    await tick();
+
+    expect(new Set(documento.elementosCreados)).toEqual(new Set(["div", "span"]));
   });
 });
 

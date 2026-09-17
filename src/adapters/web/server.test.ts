@@ -611,17 +611,22 @@ describe("createRequestListener + ejecutarOperacion — R7 en los DOS sentidos p
         },
         deps,
       );
-      const ventaIdMatch = /Venta (\S+) registrada \(caso (\S+)\)/.exec(textoAlta);
-      if (ventaIdMatch === null) {
-        throw new Error(`test setup error: no se pudo extraer ventaId/casoId de: ${textoAlta}`);
-      }
-      const ventaId = ventaIdMatch[1] as string;
-      const casoId = ventaIdMatch[2] as string;
+      expect(textoAlta).toContain("Venta registrada");
 
-      const ventaFila = db.prepare("SELECT vendedor_id AS vendedorId FROM ventas WHERE id = ?").get(ventaId) as
-        | { vendedorId: string }
-        | undefined;
-      expect(ventaFila?.vendedorId).toBe("empleado-E");
+      // Se lee `ventaId`/`casoId` de la fila real recién creada (única venta
+      // de `cliente-1` en este `:memory:` fresco) en vez de parsear el texto
+      // del eco: el eco es texto libre para el empleado (`vendedorNombre`
+      // puede contener cualquier caracter, ADR 221 pto 1), no un formato
+      // contractual para extraer datos (hallazgo code-review, ergonomia-canal-empleado).
+      const ventaFila = db
+        .prepare("SELECT id AS ventaId, caso_id AS casoId, vendedor_id AS vendedorId FROM ventas WHERE cliente_id = ?")
+        .get("cliente-1") as { ventaId: string; casoId: string; vendedorId: string } | undefined;
+      if (ventaFila === undefined) {
+        throw new Error("test setup error: no se encontró la venta recién creada para cliente-1");
+      }
+      const ventaId = ventaFila.ventaId;
+      const casoId = ventaFila.casoId;
+      expect(ventaFila.vendedorId).toBe("empleado-E");
 
       // 2. Escalar a reembolso_pendiente — vía el `VentaStorePort` (`deps.store`)
       //    que este propio test ya construye para `ejecutarOperacion`, NUNCA
