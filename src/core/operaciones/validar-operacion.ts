@@ -37,6 +37,9 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   resolver_solicitud: ["operacion", "accion", "solicitudId"],
   // `aprobacion-conversacional-hitl`, ADR 206/217 — ventaId ausente = modo listado.
   resolver_reembolso: ["operacion", "accion", "ventaId"],
+  // `devolucion-sin-token-dos-personas`, ADR 223/228 — ventaId/motivo opcionales en el schema; la
+  // obligatoriedad de `motivo` cuando hay `ventaId` es del núcleo (ADR 228 pto 2, paso 2), no de acá.
+  solicitar_devolucion: ["operacion", "ventaId", "motivo"],
   // `devolucion-sin-token-dos-personas`, ADR 225/228 — sólo lectura, ventaId ausente = modo listado.
   consultar_venta: ["operacion", "ventaId"],
 };
@@ -51,6 +54,7 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   consultar_reporte_comisiones: [],
   resolver_solicitud: ["accion"],
   resolver_reembolso: ["accion"],
+  solicitar_devolucion: [],
   consultar_venta: [],
 };
 
@@ -88,6 +92,7 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   consultar_reporte_comisiones: [],
   resolver_solicitud: [],
   resolver_reembolso: [],
+  solicitar_devolucion: [],
   consultar_venta: [],
 };
 

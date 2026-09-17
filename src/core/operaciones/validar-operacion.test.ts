@@ -286,6 +286,33 @@ describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION.resolver_reembol
   });
 });
 
+describe("validarOperacion — solicitar_devolucion: forma mínima se acepta (devolucion-sin-token-dos-personas, tarea 13)", () => {
+  it("{ operacion } solo se acepta (modo listado)", () => {
+    const input = { operacion: "solicitar_devolucion" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("{ operacion, ventaId, motivo } se acepta", () => {
+    const input = { operacion: "solicitar_devolucion", ventaId: "venta-1", motivo: "el cliente se arrepintió" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("un campo ajeno (accion) como clave extra ⇒ rechazo — solicitar_devolucion NO tiene campo accion (ADR 229 pto 3)", () => {
+    expect(validarOperacion({ operacion: "solicitar_devolucion", ventaId: "v1", accion: "solicitar" })).toBeUndefined();
+  });
+
+  it("motivo de 257 caracteres ⇒ rechazo (capa 1 de dos, MAX_STRING_LENGTH del borde)", () => {
+    expect(
+      validarOperacion({ operacion: "solicitar_devolucion", ventaId: "venta-1", motivo: "x".repeat(257) }),
+    ).toBeUndefined();
+  });
+
+  it("motivo de exactamente 256 caracteres (el límite) se acepta", () => {
+    const input = { operacion: "solicitar_devolucion", ventaId: "venta-1", motivo: "x".repeat(256) };
+    expect(validarOperacion(input)).toBe(input);
+  });
+});
+
 describe("validarOperacion — consultar_venta: forma mínima se acepta (devolucion-sin-token-dos-personas, tarea 4)", () => {
   it("{ operacion } solo se acepta (modo listado)", () => {
     const input = { operacion: "consultar_venta" };
