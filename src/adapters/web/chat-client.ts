@@ -15,11 +15,11 @@
  *   - El token de sesión vive SÓLO en una variable de closure -- nunca
  *     `localStorage`/`sessionStorage`/URL/DOM/consola (ADR 193).
  *   - Sólo toca el entorno por los identificadores libres `document`,
- *     `fetch`, `setInterval`, `clearInterval` -- nada de `window.X` ni
- *     `globalThis` (ADR 200 pto 3): es lo que permite el test de XSS en
- *     negativo con `new Function(...)` contra un doble de DOM escrito a
- *     mano, sin instalar jsdom (ADR 191 pto 2 lo prohíbe incluso como
- *     `devDependency`).
+ *     `fetch`, `setInterval`, `clearInterval`, `Date` -- nada de `window.X`
+ *     ni `globalThis` (ADR 200 pto 3, ADR 228 pto 1): es lo que permite el
+ *     test de XSS en negativo con `new Function(...)` contra un doble de DOM
+ *     escrito a mano, sin instalar jsdom (ADR 191 pto 2 lo prohíbe incluso
+ *     como `devDependency`).
  *   - Nunca lee `body.error` del servidor: la tabla de errores de ADR 204
  *     es un literal del cliente, uno por código, no un pass-through.
  *
@@ -46,6 +46,12 @@ export const CHAT_CLIENT_JS = `
   };
   var MENSAJE_ERROR_RED = "No hubo respuesta del servidor.";
 
+  /** Tabla cerrada de autores (ADR 227 pto 2): dos claves, ningún escritor de "sistema". */
+  var AUTORES = {
+    empleado: { etiqueta: "Vos", clase: "turno turno-empleado" },
+    arnes: { etiqueta: "Arnés", clase: "turno turno-arnes" }
+  };
+
   var vistaLogin = document.getElementById("login-view");
   var vistaChat = document.getElementById("chat-view");
   var empleadoIdInput = document.getElementById("empleado-id-input");
@@ -63,9 +69,31 @@ export const CHAT_CLIENT_JS = `
     vistaChat.hidden = nombre !== "chat";
   }
 
-  function agregarTurno(autor, texto) {
+  function nodoSpan(clase, texto) {
+    var span = document.createElement("span");
+    span.className = clase;
+    span.textContent = texto;
+    return span;
+  }
+
+  function dosDigitos(n) {
+    return n < 10 ? "0" + n : "" + n;
+  }
+
+  /** Formato HH:MM, 24h, hora local -- ayuda de lectura, no auditoría (ADR 228 pto 4-5). */
+  function horaActual() {
+    var ahora = new Date();
+    return dosDigitos(ahora.getHours()) + ":" + dosDigitos(ahora.getMinutes());
+  }
+
+  /** Tres hijos, siempre, en ese orden: hora, autor, texto (ADR 227 pto 4). */
+  function agregarTurno(claveAutor, texto) {
+    var autor = AUTORES[claveAutor];
     var turno = document.createElement("div");
-    turno.appendChild(document.createTextNode(autor + ": " + texto));
+    turno.className = autor.clase;
+    turno.appendChild(nodoSpan("turno-hora", horaActual()));
+    turno.appendChild(nodoSpan("turno-autor", autor.etiqueta));
+    turno.appendChild(nodoSpan("turno-texto", texto));
     mensajes.appendChild(turno);
   }
 
@@ -179,8 +207,8 @@ export const CHAT_CLIENT_JS = `
             cambiarEstado("error", MENSAJE_ERROR_RED);
             return undefined;
           }
-          agregarTurno("Vos", texto);
-          agregarTurno("Arnés", cuerpo.respuesta);
+          agregarTurno("empleado", texto);
+          agregarTurno("arnes", cuerpo.respuesta);
           mensajeTextarea.value = "";
           enVuelo = false;
           cambiarEstado("respondido");
