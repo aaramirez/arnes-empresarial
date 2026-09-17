@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  DOMINIO_DEVOLUCION,
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   type LlaveConfirmacion,
@@ -28,6 +29,8 @@ import {
 const LLAVE_SOLICITUD_1: LlaveConfirmacion = { dominio: DOMINIO_SOLICITUD, itemId: "sol-1", accion: "cancelar" };
 const LLAVE_REEMBOLSO_V1_RECHAZAR: LlaveConfirmacion = { dominio: DOMINIO_REEMBOLSO, itemId: "V1", accion: "rechazar" };
 const LLAVE_REEMBOLSO_V1_APROBAR: LlaveConfirmacion = { dominio: DOMINIO_REEMBOLSO, itemId: "V1", accion: "aprobar" };
+/** `devolucion-sin-token-dos-personas`, tarea 12 (ADR 229 pto 4). */
+const LLAVE_DEVOLUCION_V1_SOLICITAR: LlaveConfirmacion = { dominio: DOMINIO_DEVOLUCION, itemId: "V1", accion: "solicitar" };
 
 describe("crearConfirmacionOperacionesStore", () => {
   it("aísla la confirmación pendiente por empleado -- dos empleados distintos no se pisan", () => {
@@ -278,6 +281,69 @@ describe("crearConfirmacionOperacionesStore", () => {
     expect(() => store.limpiarEmpleado("emp-nunca-existio")).not.toThrow();
     store.limpiarEmpleado("emp-nunca-existio");
     store.limpiarEmpleado("emp-nunca-existio");
+  });
+
+  /**
+   * `devolucion-sin-token-dos-personas`, tarea 12 (ADR 229 pto 4, RD-107). El
+   * escenario que de verdad importa: una iniciación pendiente (dominio
+   * "devolucion") y una aprobación pendiente (dominio "reembolso") sobre el
+   * MISMO ventaId no se pisan — un dominio compartido haría que
+   * `marcarPendiente` sobreescribiera una ranura con la otra.
+   */
+  it("★ una confirmación pendiente de dominio 'devolucion' y una de dominio 'reembolso' SOBRE EL MISMO ventaId conviven sin pisarse (RD-107)", () => {
+    const store = crearConfirmacionOperacionesStore();
+    const conf = store.paraEmpleado("emp-a");
+
+    conf.marcarPendiente({ ...LLAVE_DEVOLUCION_V1_SOLICITAR, casoId: "caso-devolucion", empleadoId: "emp-a", origenCasoId: "turno-1" });
+    conf.marcarPendiente({ ...LLAVE_REEMBOLSO_V1_APROBAR, casoId: "caso-reembolso", empleadoId: "emp-a", origenCasoId: "turno-2" });
+
+    // Ambas quedan pendientes, cada una exige su propia confirmación.
+    expect(conf.estaConfirmada(LLAVE_DEVOLUCION_V1_SOLICITAR, "emp-a", "turno-nuevo")).toBe(true);
+    expect(conf.estaConfirmada(LLAVE_REEMBOLSO_V1_APROBAR, "emp-a", "turno-nuevo")).toBe(true);
+
+    // Confirmar una no consume ni afecta la otra.
+    conf.consumir(LLAVE_DEVOLUCION_V1_SOLICITAR);
+    expect(conf.estaConfirmada(LLAVE_DEVOLUCION_V1_SOLICITAR, "emp-a", "turno-nuevo")).toBe(false);
+    expect(conf.estaConfirmada(LLAVE_REEMBOLSO_V1_APROBAR, "emp-a", "turno-nuevo")).toBe(true);
+  });
+
+  it("una confirmación pendiente de dominio 'devolucion' y otra de 'reembolso' sobre ventaId DISTINTOS también conviven", () => {
+    const store = crearConfirmacionOperacionesStore();
+    const conf = store.paraEmpleado("emp-a");
+
+    conf.marcarPendiente({ ...LLAVE_DEVOLUCION_V1_SOLICITAR, casoId: "caso-devolucion", empleadoId: "emp-a", origenCasoId: "turno-1" });
+    conf.marcarPendiente({
+      dominio: DOMINIO_REEMBOLSO,
+      itemId: "V2",
+      accion: "aprobar",
+      casoId: "caso-reembolso",
+      empleadoId: "emp-a",
+      origenCasoId: "turno-2",
+    });
+
+    expect(conf.estaConfirmada(LLAVE_DEVOLUCION_V1_SOLICITAR, "emp-a", "turno-nuevo")).toBe(true);
+    expect(conf.estaConfirmada({ dominio: DOMINIO_REEMBOLSO, itemId: "V2", accion: "aprobar" }, "emp-a", "turno-nuevo")).toBe(true);
+  });
+
+  it("demostración de no-ambigüedad del corte por ':' con TRES literales de dominio (regresión ADR 212 pto 3)", () => {
+    const store = crearConfirmacionOperacionesStore();
+    const conf = store.paraEmpleado("emp-a");
+
+    // itemId "devolucion:V1" bajo dominio "solicitud" NO debe coincidir con
+    // itemId "V1" bajo dominio "devolucion".
+    conf.marcarPendiente({
+      dominio: DOMINIO_SOLICITUD,
+      itemId: "devolucion:V1",
+      accion: "cancelar",
+      casoId: "caso-ambiguo",
+      empleadoId: "emp-a",
+      origenCasoId: "turno-1",
+    });
+
+    expect(conf.estaConfirmada(LLAVE_DEVOLUCION_V1_SOLICITAR, "emp-a", "turno-nuevo")).toBe(false);
+    expect(
+      conf.estaConfirmada({ dominio: DOMINIO_SOLICITUD, itemId: "devolucion:V1", accion: "cancelar" }, "emp-a", "turno-nuevo"),
+    ).toBe(true);
   });
 
   it("limpiarEmpleado de un empleado no afecta las ranuras de otro", () => {
