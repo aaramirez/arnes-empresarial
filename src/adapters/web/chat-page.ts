@@ -42,6 +42,27 @@ section[hidden] {
 textarea {
   width: 100%;
 }
+.turno {
+  border-left: 3px solid transparent;
+  margin-bottom: 8px;
+  padding-left: 8px;
+}
+.turno-hora {
+  color: #616161;
+  font-variant-numeric: tabular-nums;
+  margin-right: 8px;
+}
+.turno-autor {
+  font-weight: 600;
+  margin-right: 8px;
+}
+.turno-texto {
+  display: block;
+}
+.turno-empleado { border-left-color: #1b5e20; }
+.turno-empleado .turno-autor { color: #1b5e20; }
+.turno-arnes { border-left-color: #0d47a1; }
+.turno-arnes .turno-autor { color: #0d47a1; }
 `;
 
 /** `text/html`, sin un solo valor dinámico. Determinista: dos invocaciones dan el mismo string. */
