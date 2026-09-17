@@ -286,6 +286,26 @@ describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION.resolver_reembol
   });
 });
 
+describe("validarOperacion — consultar_venta: forma mínima se acepta (devolucion-sin-token-dos-personas, tarea 4)", () => {
+  it("{ operacion } solo se acepta (modo listado)", () => {
+    const input = { operacion: "consultar_venta" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("{ operacion, ventaId } se acepta", () => {
+    const input = { operacion: "consultar_venta", ventaId: "venta-1" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("un campo ajeno (monto) como clave extra ⇒ rechazo — consultar_venta es de sólo lectura, sin ninguna excepción de dinero", () => {
+    expect(validarOperacion({ operacion: "consultar_venta", monto: 100 })).toBeUndefined();
+  });
+
+  it("ventaId de más de 256 caracteres ⇒ rechazo (mismo tope que el resto del contrato)", () => {
+    expect(validarOperacion({ operacion: "consultar_venta", ventaId: "x".repeat(257) })).toBeUndefined();
+  });
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();
