@@ -402,6 +402,19 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
     // `OperacionRegistrarVenta` no tiene campo `vendedorId` (garantía estructural, ver operaciones-contract.test.ts).
   });
 
+  /** ergonomia-canal-empleado, tarea 1 (code-review) — fixture compartido de los 4 tests del eco, mismo patrón `{...defaults, ...overrides}` que `makeInput`/`buildVenta` en este archivo. */
+  function makeInputRegistrarVentaEco(overrides: Partial<{ monto: number; planNuevo: string }> = {}) {
+    return makeInput({
+      operacion: OPERACION_REGISTRAR_VENTA,
+      clienteId: "cliente-1",
+      clienteEmail: "cliente@example.com",
+      planNuevo: "premium",
+      monto: 100,
+      vendedorNombre: "Juan Pérez",
+      ...overrides,
+    });
+  }
+
   /** ergonomia-canal-empleado, tarea 1 (ADR 221 pto 1/2) — store con ids de venta y caso DISTINTOS y etiquetados, para que la posición en el texto no pueda mentir. */
   function makeStoreConIdsDistinguibles(): VentaStorePort {
     return makeVentaStore({
@@ -424,17 +437,7 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
     const store = makeStoreConIdsDistinguibles();
     const deps = makeDeps({ store });
 
-    const texto = await ejecutarOperacion(
-      makeInput({
-        operacion: OPERACION_REGISTRAR_VENTA,
-        clienteId: "cliente-1",
-        clienteEmail: "cliente@example.com",
-        planNuevo: "premium",
-        monto: 100,
-        vendedorNombre: "Juan Pérez",
-      }),
-      deps,
-    );
+    const texto = await ejecutarOperacion(makeInputRegistrarVentaEco(), deps);
 
     expect(deps.notifier.notificarLinkConfirmacion).toHaveBeenCalledTimes(1);
     // Los seis datos del eco (ADR 221 pto 1/2/4): vendedor, cliente, los dos ids
@@ -451,17 +454,7 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
   it("★ el eco NUNCA contiene el email del cliente, ni siquiera el carácter arroba (ADR 221 pto 3, R1)", async () => {
     const deps = makeDeps();
 
-    const texto = await ejecutarOperacion(
-      makeInput({
-        operacion: OPERACION_REGISTRAR_VENTA,
-        clienteId: "cliente-1",
-        clienteEmail: "cliente@example.com",
-        planNuevo: "premium",
-        monto: 100,
-        vendedorNombre: "Juan Pérez",
-      }),
-      deps,
-    );
+    const texto = await ejecutarOperacion(makeInputRegistrarVentaEco(), deps);
 
     expect(texto).not.toContain("cliente@example.com");
     // La aserción de "@" sola es la que atrapa un formateo creativo
@@ -473,17 +466,7 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
   it("el eco no agrega monto ni ningún otro dato calculado — no-regresión de alcance (ADR 221 pto 4)", async () => {
     const deps = makeDeps();
 
-    const texto = await ejecutarOperacion(
-      makeInput({
-        operacion: OPERACION_REGISTRAR_VENTA,
-        clienteId: "cliente-1",
-        clienteEmail: "cliente@example.com",
-        planNuevo: "premium",
-        monto: 1234,
-        vendedorNombre: "Juan Pérez",
-      }),
-      deps,
-    );
+    const texto = await ejecutarOperacion(makeInputRegistrarVentaEco({ monto: 1234 }), deps);
 
     expect(texto).not.toContain("1234");
   });
@@ -493,17 +476,7 @@ describe("ejecutarOperacion — registrar_venta (ADR 170 pto 5, ADR 171 pto 2)",
     const store = makeStoreConIdsDistinguibles();
     const deps = makeDeps({ store, registro });
 
-    await ejecutarOperacion(
-      makeInput({
-        operacion: OPERACION_REGISTRAR_VENTA,
-        clienteId: "cliente-1",
-        clienteEmail: "cliente@example.com",
-        planNuevo: "premium",
-        monto: 100,
-        vendedorNombre: "Juan Pérez",
-      }),
-      deps,
-    );
+    await ejecutarOperacion(makeInputRegistrarVentaEco(), deps);
 
     expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
     expect(vi.mocked(registro.registrarAccion).mock.calls[0]?.[0]).toMatchObject({
