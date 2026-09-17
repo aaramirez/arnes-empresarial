@@ -49,14 +49,24 @@ export const OPERACION_RESOLVER_SOLICITUD = "resolver_solicitud";
 /** `aprobacion-conversacional-hitl`, ADR 206 — dominio reembolso del canal conversacional; octava operación del contrato. */
 export const OPERACION_RESOLVER_REEMBOLSO = "resolver_reembolso";
 /**
- * `devolucion-sin-token-dos-personas`, ADR 225/227 pto 1 — décima y última
- * operación del contrato (Slice 1, tarea 3). Sólo lectura, escopada al
- * vendedor propio: estado de una venta puntual (incluida la decisión del
- * cliente) o, sin id, el listado de ventas propias. NOVENA acá — el orden
- * final (`solicitar_devolucion` precede a `consultar_venta`) y la décima
- * entrada llegan en la tarea 11.
+ * `devolucion-sin-token-dos-personas`, ADR 225/227 pto 1 — de sólo lectura,
+ * escopada al vendedor propio: estado de una venta puntual (incluida la
+ * decisión del cliente) o, sin id, el listado de ventas propias. DÉCIMA y
+ * última entrada del contrato (tarea 11): precedida por `solicitar_devolucion`
+ * en el orden final del array (`design.md` §0.2).
  */
 export const OPERACION_CONSULTAR_VENTA = "consultar_venta";
+
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 223/228 — NOVENA operación del
+ * contrato. Escala SIEMPRE (nunca mira el monto) e inicia sobre venta propia.
+ * `motivo` OBLIGATORIO cuando hay `ventaId` — la obligatoriedad es del
+ * NÚCLEO (ADR 228 pto 2 paso 2), por eso es `?` en el TIPO (el modo listado
+ * no lo lleva). ★ SIN campo `accion` (ADR 229 pto 3): el dispatcher construye
+ * la llave de confirmación con `accion: "solicitar"` LITERAL, desde el
+ * closure — nunca del modelo.
+ */
+export const OPERACION_SOLICITAR_DEVOLUCION = "solicitar_devolucion";
 
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
@@ -67,6 +77,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_RESOLVER_SOLICITUD,
   OPERACION_RESOLVER_REEMBOLSO,
+  OPERACION_SOLICITAR_DEVOLUCION,
   OPERACION_CONSULTAR_VENTA,
 ] as const;
 
@@ -168,6 +179,20 @@ export interface OperacionConsultarVenta {
   readonly ventaId?: string;
 }
 
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 223/228/229 pto 3. `ventaId`
+ * ausente ⇒ modo listado de ventas propias `confirmada` (mismo criterio de
+ * modo listado que `resolver_reembolso`/`resolver_solicitud`). SIN `accion`
+ * (no es una elección de operación) y SIN `confirmado` (lo decide el
+ * composition root contra `ConfirmacionOperacionPort`, mismo criterio que el
+ * resto de las operaciones de dos turnos).
+ */
+export interface OperacionSolicitarDevolucion {
+  readonly operacion: typeof OPERACION_SOLICITAR_DEVOLUCION;
+  readonly ventaId?: string;
+  readonly motivo?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
@@ -177,6 +202,7 @@ export type OperacionNegocio =
   | OperacionConsultarReporteComisiones
   | OperacionResolverSolicitud
   | OperacionResolverReembolso
+  | OperacionSolicitarDevolucion
   | OperacionConsultarVenta;
 
 /**
@@ -206,9 +232,25 @@ export type OperacionNegocio =
  */
 export const DOMINIO_REEMBOLSO = "reembolso";
 export const DOMINIO_SOLICITUD = "solicitud";
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 229 pto 1-2 — dominio PROPIO, no
+ * reuso de `DOMINIO_REEMBOLSO`: con dominio compartido, una iniciación
+ * pendiente y una aprobación pendiente sobre el MISMO `ventaId` compartirían
+ * llave y `marcarPendiente` sobreescribiría una con la otra — dos
+ * operaciones con controles distintos pisándose. `confirmacion-operaciones-
+ * store.ts` no cambia una sola línea de código por esto (es genérico sobre
+ * `DominioConfirmacion`, tarea 12).
+ */
+export const DOMINIO_DEVOLUCION = "devolucion";
 /** Vocabulario REUSADO de la ranura única de la TUI (`build-on-comando-empleado.ts:272-299`, ADR 55). */
-export type DominioConfirmacion = typeof DOMINIO_REEMBOLSO | typeof DOMINIO_SOLICITUD;
-export type AccionConfirmable = "aprobar" | "rechazar" | "reabrir" | "cancelar";
+export type DominioConfirmacion = typeof DOMINIO_REEMBOLSO | typeof DOMINIO_SOLICITUD | typeof DOMINIO_DEVOLUCION;
+/**
+ * `"solicitar"` — `devolucion-sin-token-dos-personas`, ADR 229 pto 3. NO es
+ * campo de ningún schema: `solicitar_devolucion` no tiene campo `accion`, y
+ * por eso no entra en `VALORES_PERMITIDOS_POR_OPERACION`. El dispatcher
+ * construye la llave con `accion: "solicitar"` LITERAL, desde el closure.
+ */
+export type AccionConfirmable = "aprobar" | "rechazar" | "reabrir" | "cancelar" | "solicitar";
 
 /** Identifica UNA ranura. `dominio` + `itemId` son la LLAVE (ADR 212); `accion` es PREDICADO (ADR 213). */
 export interface LlaveConfirmacion {
