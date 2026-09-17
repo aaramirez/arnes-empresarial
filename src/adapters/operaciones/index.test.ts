@@ -3,6 +3,7 @@ import {
   OPERACIONES_MCP_SERVER_NAME,
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
@@ -282,6 +283,47 @@ describe("createOperacionesAdapter — resolver_reembolso: input válido delega 
 
     expect(ejecutar).not.toHaveBeenCalled();
     expect(result.content[0].text.length).toBeGreaterThan(0);
+  });
+});
+
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultar_venta: forma zod (devolucion-sin-token-dos-personas, tarea 5)", () => {
+  it("acepta { operacion, ventaId }", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_CONSULTAR_VENTA,
+      ventaId: "V1",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("acepta { operacion } sin ventaId (modo listado)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({ operacion: OPERACION_CONSULTAR_VENTA });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("createOperacionesAdapter — consultar_venta: input válido delega en ejecutar (devolucion-sin-token-dos-personas, tarea 5)", () => {
+  it("{ operacion: consultar_venta, ventaId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_VENTA, ventaId: "V1" });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+
+  it("{ operacion: consultar_venta } sin ventaId ⇒ delega en ejecutar (modo listado)", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_VENTA });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — menciona consultar_venta (devolucion-sin-token-dos-personas, tarea 5)", () => {
+  it("incluye 'consultar_venta' en el texto de la descripción registrada", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("consultar_venta");
   });
 });
 

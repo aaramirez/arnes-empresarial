@@ -113,7 +113,9 @@ export const OPERACIONES_TOOL_DESCRIPTION =
   "crear o cancelar una solicitud interna propia, registrar una venta nueva ya pactada " +
   "con el cliente, resolver (aprobar/rechazar) una solicitud interna ajena escalada, " +
   "resolver (aprobar/rechazar/reabrir) una escalación de reembolso ajena, " +
-  "o consultar el reporte de comisiones de un período. Nunca calculás " +
+  "consultar el reporte de comisiones de un período, " +
+  "o consultar el estado de una venta propia puntual (consultar_venta, incluida la decisión " +
+  "del cliente) o el listado de tus ventas propias si no das un ventaId. Nunca calculás " +
   "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. " +
   "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un " +
   "reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una " +
