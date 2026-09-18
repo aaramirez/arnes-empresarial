@@ -46,6 +46,17 @@ export type ResolveAuthConfigResult =
   | { readonly ok: false; readonly errores: readonly string[] };
 
 /**
+ * Predicado y descripción compartidos por `sesionTtlMinutos` y
+ * `sesionInactividadMinutos` (fix de review, hallazgo de duplicación letra
+ * por letra entre las dos llamadas a `resolveNumeroValidado` de abajo): las
+ * dos variables usan EXACTAMENTE el mismo rango válido, `0` incluido en
+ * ambas con su propio significado (ADR 231 pto 6).
+ */
+const ES_MINUTOS_SESION_VALIDO = (parsed: number): boolean =>
+  Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_SESION_TTL_MINUTOS;
+const DESCRIPCION_MINUTOS_SESION_VALIDO = `un entero finito entre 0 y ${MAX_SESION_TTL_MINUTOS}`;
+
+/**
  * | Env var | Campo | Default | Validación | Inválido |
  * |---|---|---|---|---|
  * | `SESION_TTL_MINUTOS` | `sesionTtlMinutos` | `480` | entero finito, `>= 0`, `<= MAX_SESION_TTL_MINUTOS` | **ABORTA** |
@@ -70,8 +81,8 @@ export function resolveAuthConfig(
     "SESION_TTL_MINUTOS",
     env.SESION_TTL_MINUTOS,
     DEFAULT_SESION_TTL_MINUTOS,
-    (parsed) => Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_SESION_TTL_MINUTOS,
-    `un entero finito entre 0 y ${MAX_SESION_TTL_MINUTOS}`,
+    ES_MINUTOS_SESION_VALIDO,
+    DESCRIPCION_MINUTOS_SESION_VALIDO,
     errores,
   );
 
@@ -79,8 +90,8 @@ export function resolveAuthConfig(
     "SESION_INACTIVIDAD_MINUTOS",
     env.SESION_INACTIVIDAD_MINUTOS,
     DEFAULT_SESION_INACTIVIDAD_MINUTOS,
-    (parsed) => Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_SESION_TTL_MINUTOS,
-    `un entero finito entre 0 y ${MAX_SESION_TTL_MINUTOS}`,
+    ES_MINUTOS_SESION_VALIDO,
+    DESCRIPCION_MINUTOS_SESION_VALIDO,
     errores,
   );
 
