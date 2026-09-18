@@ -481,7 +481,7 @@ const despacharDeps: DespacharDelegacionDeps = {
 // con la ranura única de la TUI. Un tercero (`chat-web-empleado`, ADR 196
 // §2): memoria conversacional por-TOKEN de sesión HTTP (nunca por
 // `empleadoId` — ADR 196 §2.1).
-const sesionStore = crearSesionEmpleadoStore();
+const sesionStore = crearSesionEmpleadoStore(authConfig.sesionInactividadMinutos);
 const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
 const conversacionStore = crearConversacionEmpleadoStore();
 

@@ -57,6 +57,8 @@ export function buildOnLoginHttp(
       dummyPasswordHash,
       now,
       ttlMinutos: authConfig.sesionTtlMinutos,
+      // ★ NUEVO (ADR 231 pto 5, devolucion-sin-token-dos-personas tarea 22).
+      inactividadMinutos: authConfig.sesionInactividadMinutos,
       logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields, logDeps),
     });
 
