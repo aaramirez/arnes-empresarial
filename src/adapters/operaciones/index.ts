@@ -106,6 +106,10 @@ export const OPERACIONES_TOOL_ZOD_SCHEMA = z.object(OPERACIONES_TOOL_SCHEMA);
  * `aprobacion-conversacional-hitl`, tarea 15 (ADR 220 pto 1-3): suma la frase sobre
  * `accion` inequívoca, texto literal compartido con `INSTRUCCION_OPERACIONES_EMPLEADO`
  * (`definitions.ts`) y `buildOperacionesEmpleadoPrompt` (`soporte-prompt.ts`).
+ *
+ * `devolucion-sin-token-dos-personas`, tarea 24 (ADR 233 pto 1, porción `motivo`):
+ * la cláusula de `motivo` de `solicitar_devolucion` gana la instrucción de pedirlo
+ * al empleado sin sugerirlo ni deducirlo de la conversación (RD-109).
  */
 export const OPERACIONES_TOOL_DESCRIPTION =
   "Ejecutá una operación de negocio en nombre del empleado autenticado de este turno: " +
@@ -115,7 +119,8 @@ export const OPERACIONES_TOOL_DESCRIPTION =
   "resolver (aprobar/rechazar/reabrir) una escalación de reembolso ajena, " +
   "consultar el reporte de comisiones de un período, " +
   "iniciar una devolución sin token sobre una venta propia (solicitar_devolucion, con un " +
-  "motivo obligatorio no vacío) — queda pendiente de que un administrador distinto la " +
+  "motivo obligatorio no vacío que tenés que pedirle al empleado, nunca sugerido ni " +
+  "deducido por vos de la conversación) — queda pendiente de que un administrador distinto la " +
   "apruebe, nunca la cerrás vos mismo — " +
   "o consultar el estado de una venta propia puntual (consultar_venta, incluida la decisión " +
   "del cliente) o el listado de tus ventas propias si no das un ventaId. Nunca calculás " +

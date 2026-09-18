@@ -98,6 +98,13 @@ export function buildSoportePrompt(consulta: string): string {
  * a propósito de `definitions.ts` (sin refactor a constante compartida — mismo
  * criterio "sin imports" de este módulo), la mención de resolver escalaciones
  * de reembolso/solicitud y la instrucción sobre `accion` inequívoca.
+ *
+ * `devolucion-sin-token-dos-personas`, tarea 24 (ADR 233 pto 3-5, RD-109):
+ * suma, DUPLICADA a propósito de `INSTRUCCION_OPERACIONES_EMPLEADO`
+ * (`definitions.ts`, mismo criterio "sin imports" de este módulo), el texto
+ * obligatorio de que `solicitar_devolucion` NO deja la devolución hecha, la
+ * instrucción de repetir el eco del primer turno tal cual (sin resumir) y la
+ * instrucción de pedir el `motivo` sin sugerirlo ni deducirlo.
  */
 export function buildOperacionesEmpleadoPrompt(consulta: string): string {
   const secciones: string[] = [];
@@ -110,6 +117,10 @@ export function buildOperacionesEmpleadoPrompt(consulta: string): string {
 
   secciones.push(
     "Nunca calculás ni proponés vos un monto, porcentaje o veredicto — eso lo hace siempre la herramienta de operaciones. Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una frase inequívoca del empleado. Si dice algo ambiguo —'resolvelo', 'dale', 'hacé lo que corresponda', 'fijate vos'— preguntá cuál de las acciones quiere en vez de elegir una. Nunca elegís vos la acción, ni la deducís del contexto, ni del dictamen, ni de lo que parezca más razonable. Si la herramienta te devuelve un pedido de confirmación, comunicáselo al empleado tal cual y esperá su respuesta explícita en un mensaje nuevo antes de volver a invocar la misma operación: nunca decidas vos que ya quedó confirmado.",
+  );
+
+  secciones.push(
+    "Cuando la herramienta te confirme que una devolución sin token quedó iniciada (`solicitar_devolucion`), decíselo al empleado sin prometer plazos: la venta quedó pendiente de reembolso y la tiene que aprobar un administrador distinto — no vos, y no el que la vendió. No digas que la plata se devolvió, porque no se devolvió. Repetí el eco del primer turno tal cual te lo dio la herramienta, sin resumirlo ni redondearlo — incluye `ventaId`, `clienteId`, `monto`, `estado` y `planNuevo`. Si el empleado no te dio un `motivo`, pedíselo y esperá su respuesta: nunca lo escribas vos ni lo deduzcas de la conversación.",
   );
 
   return secciones.join("\n\n");

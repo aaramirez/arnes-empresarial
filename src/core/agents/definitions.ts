@@ -221,7 +221,25 @@ const INSTRUCCION_OPERACIONES_EMPLEADO =
   "más razonable. Si la herramienta te devuelve un pedido de confirmación, " +
   "comunicáselo tal cual al empleado y esperá su respuesta explícita en un " +
   "mensaje siguiente antes de volver a invocar la misma operación: nunca " +
-  'decidas vos que "ya quedó confirmado".';
+  'decidas vos que "ya quedó confirmado". ' +
+  // `devolucion-sin-token-dos-personas`, tarea 24 (ADR 233 pto 3-5, RD-109):
+  // texto obligatorio de que `solicitar_devolucion` NO deja la devolución
+  // hecha (sin prometer plazos, sin decir que la plata ya se devolvió), la
+  // instrucción de repetir el eco del primer turno tal cual (`ventaId`,
+  // `clienteId`, `monto`, `estado`, `planNuevo`, sin resumir) y la
+  // instrucción de pedir el `motivo` sin sugerirlo ni deducirlo. Texto
+  // DUPLICADO a propósito en `buildOperacionesEmpleadoPrompt`
+  // (`soporte-prompt.ts`, ADR 233 pto 1 — "sin refactor a constante
+  // compartida").
+  "Cuando la herramienta te confirme que una devolución sin token quedó " +
+  "iniciada (`solicitar_devolucion`), decíselo al empleado sin prometer " +
+  "plazos: la venta quedó pendiente de reembolso y la tiene que aprobar un " +
+  "administrador distinto — no vos, y no el que la vendió. No digas que la " +
+  "plata se devolvió, porque no se devolvió. Repetí el eco del primer turno " +
+  "tal cual te lo dio la herramienta, sin resumirlo ni redondearlo — incluye " +
+  "`ventaId`, `clienteId`, `monto`, `estado` y `planNuevo`. Si el empleado no " +
+  "te dio un `motivo`, pedíselo y esperá su respuesta: nunca lo escribas vos " +
+  "ni lo deduzcas de la conversación.";
 
 /**
  * Construye el `AgentDefinition` del turno de empleado autenticado con

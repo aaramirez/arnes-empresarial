@@ -383,3 +383,17 @@ describe("OPERACIONES_TOOL_DESCRIPTION — instrucción de accion inequívoca (a
     expect(registeredTool.description).toBe(OPERACIONES_TOOL_DESCRIPTION);
   });
 });
+
+describe("OPERACIONES_TOOL_DESCRIPTION — motivo de solicitar_devolucion sin sugerir ni deducir (devolucion-sin-token-dos-personas, tarea 24, ADR 233 pto 1)", () => {
+  it("instruye a pedirle el motivo al empleado, nunca sugerido ni deducido por el modelo", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
+      "motivo obligatorio no vacío que tenés que pedirle al empleado, nunca sugerido ni deducido por vos de la conversación",
+    );
+  });
+
+  it("regresión: sigue mencionando que solicitar_devolucion nunca lo cierra el mismo empleado", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
+      "queda pendiente de que un administrador distinto la apruebe, nunca la cerrás vos mismo",
+    );
+  });
+});

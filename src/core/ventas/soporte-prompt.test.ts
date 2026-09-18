@@ -194,6 +194,39 @@ describe("buildOperacionesEmpleadoPrompt — instrucción de accion inequívoca 
   });
 });
 
+describe("buildOperacionesEmpleadoPrompt — instrucción de solicitar_devolucion sin token (devolucion-sin-token-dos-personas, tarea 24, ADR 233 pto 3-5, RD-109)", () => {
+  /** Texto literal de ADR 233 pto 3-5 — mismo, duplicado a propósito, en `INSTRUCCION_OPERACIONES_EMPLEADO` (`definitions.ts`). */
+  const TEXTO_DEVOLUCION_SIN_TOKEN =
+    "Cuando la herramienta te confirme que una devolución sin token quedó iniciada (`solicitar_devolucion`), decíselo al empleado sin prometer plazos: la venta quedó pendiente de reembolso y la tiene que aprobar un administrador distinto — no vos, y no el que la vendió. No digas que la plata se devolvió, porque no se devolvió. Repetí el eco del primer turno tal cual te lo dio la herramienta, sin resumirlo ni redondearlo — incluye `ventaId`, `clienteId`, `monto`, `estado` y `planNuevo`. Si el empleado no te dio un `motivo`, pedíselo y esperá su respuesta: nunca lo escribas vos ni lo deduzcas de la conversación.";
+
+  it("incluye el texto exacto de que la devolución NO está hecha, sin prometer plazos", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Iniciá la devolución de la venta V1");
+
+    expect(prompt).toContain(TEXTO_DEVOLUCION_SIN_TOKEN);
+  });
+
+  it("nunca dice que la plata ya se devolvió al iniciar (solo escala/queda pendiente)", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Iniciá la devolución de la venta V1");
+
+    expect(prompt).toContain("No digas que la plata se devolvió, porque no se devolvió.");
+  });
+
+  it("instruye a repetir el eco del primer turno tal cual, sin resumir, con los cinco campos", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Iniciá la devolución de la venta V1");
+
+    expect(prompt).toContain("sin resumirlo ni redondearlo");
+    for (const campo of ["`ventaId`", "`clienteId`", "`monto`", "`estado`", "`planNuevo`"]) {
+      expect(prompt).toContain(campo);
+    }
+  });
+
+  it("instruye a pedir el motivo sin sugerirlo ni deducirlo de la conversación", () => {
+    const prompt = buildOperacionesEmpleadoPrompt("Iniciá la devolución de la venta V1");
+
+    expect(prompt).toContain("nunca lo escribas vos ni lo deduzcas de la conversación");
+  });
+});
+
 describe("buildSoportePrompt — byte-idéntica tras agregar buildOperacionesEmpleadoPrompt (ADR 168 pto 1, regresión)", () => {
   it("sigue incluyendo la limitación de cliente sin cambios", () => {
     const prompt = buildSoportePrompt("¿Me pueden cancelar la compra?");
