@@ -553,7 +553,16 @@ function formatearLineaListadoReembolso(item: EscalacionListada): string {
   const base = `- venta ${item.ventaId} | vendedor ${item.vendedorNombre} | cliente ${item.clienteId} | monto ${formatMoney(
     item.monto,
   )} | caso ${item.casoId}`;
-  return item.confirmedAt === undefined ? base : `${base} | confirmada ${item.confirmedAt}`;
+  return conSufijoConfirmada(base, item.confirmedAt);
+}
+
+/**
+ * Sufijo ` | confirmada <fecha>` cuando `confirmedAt` está presente — mismo
+ * criterio en `formatearLineaVentaPropia` y `formatearLineaListadoReembolso`
+ * (hallazgo code-review: duplicación letra por letra, extraído acá).
+ */
+function conSufijoConfirmada(base: string, confirmedAt?: string): string {
+  return confirmedAt === undefined ? base : `${base} | confirmada ${confirmedAt}`;
 }
 
 /**
@@ -744,7 +753,7 @@ function formatearLineaVentaPropia(venta: VentaPropia): string {
   const base = `- venta ${venta.ventaId} | cliente ${venta.clienteId} | plan ${venta.planNuevo} | monto ${formatMoney(
     venta.monto,
   )} | estado ${venta.estado} | caso ${venta.casoId}`;
-  return venta.confirmedAt === undefined ? base : `${base} | confirmada ${venta.confirmedAt}`;
+  return conSufijoConfirmada(base, venta.confirmedAt);
 }
 
 /** Construye el `SolicitarDevolucionDeps` del núcleo a partir del `EjecutarOperacionDeps` del dispatcher — molde `ConfirmarVentaDeps`/`ResolverEscalacionDeps` de arriba. */
