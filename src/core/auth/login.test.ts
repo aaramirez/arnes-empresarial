@@ -35,6 +35,7 @@ function makeDeps(overrides: Partial<LoginDeps> = {}): LoginDeps {
     verificarPassword: vi.fn(() => true),
     now: vi.fn(() => AHORA),
     ttlMinutos: 30,
+    inactividadMinutos: 30,
     logEvent: vi.fn(),
     dummyPasswordHash: DUMMY_PASSWORD_HASH_TEST,
     ...overrides,
@@ -119,25 +120,46 @@ describe("resolverLogin", () => {
     });
   });
 
-  it("verificarPassword true → exitosa con sesión y expiraEn derivado de now/ttlMinutos", () => {
-    const deps = makeDeps({ verificarPassword: vi.fn(() => true), ttlMinutos: 30, now: vi.fn(() => AHORA) });
+  it("verificarPassword true → exitosa con sesión, sella expiraEn Y inactivaEn (ADR 231 pto 5)", () => {
+    const deps = makeDeps({
+      verificarPassword: vi.fn(() => true),
+      ttlMinutos: 30,
+      inactividadMinutos: 15,
+      now: vi.fn(() => AHORA),
+    });
+
+    const resultado = resolverLogin({ empleadoId: "ana", password: "correcta" }, deps);
+
+    expect(resultado).toEqual({
+      resultado: "exitosa",
+      sesion: {
+        empleadoId: "ana",
+        iniciadaEn: AHORA,
+        expiraEn: "2026-09-01T10:30:00.000Z",
+        inactivaEn: "2026-09-01T10:15:00.000Z",
+      },
+    });
+  });
+
+  it("ttlMinutos: 0 → sesión exitosa SIN expiraEn (regresión, sigue sin cambio de significado), pero CON inactivaEn", () => {
+    const deps = makeDeps({ verificarPassword: vi.fn(() => true), ttlMinutos: 0, inactividadMinutos: 30 });
+
+    const resultado = resolverLogin({ empleadoId: "ana", password: "correcta" }, deps);
+
+    expect(resultado).toEqual({
+      resultado: "exitosa",
+      sesion: { empleadoId: "ana", iniciadaEn: AHORA, inactivaEn: "2026-09-01T10:30:00.000Z" },
+    });
+  });
+
+  it("inactividadMinutos: 0 → sesión exitosa SIN inactivaEn, pero CON expiraEn", () => {
+    const deps = makeDeps({ verificarPassword: vi.fn(() => true), ttlMinutos: 30, inactividadMinutos: 0 });
 
     const resultado = resolverLogin({ empleadoId: "ana", password: "correcta" }, deps);
 
     expect(resultado).toEqual({
       resultado: "exitosa",
       sesion: { empleadoId: "ana", iniciadaEn: AHORA, expiraEn: "2026-09-01T10:30:00.000Z" },
-    });
-  });
-
-  it("ttlMinutos: 0 → sesión exitosa SIN expiraEn", () => {
-    const deps = makeDeps({ verificarPassword: vi.fn(() => true), ttlMinutos: 0 });
-
-    const resultado = resolverLogin({ empleadoId: "ana", password: "correcta" }, deps);
-
-    expect(resultado).toEqual({
-      resultado: "exitosa",
-      sesion: { empleadoId: "ana", iniciadaEn: AHORA },
     });
   });
 
