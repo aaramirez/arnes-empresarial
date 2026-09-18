@@ -197,7 +197,7 @@ function makeConfig(overrides: Partial<VentasConfig> = {}): VentasConfig {
 }
 
 function makeAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig {
-  return { sesionTtlMinutos: 30, ...overrides };
+  return { sesionTtlMinutos: 30, sesionInactividadMinutos: 30, ...overrides };
 }
 
 function makeSolicitudCreada(overrides: Partial<SolicitudInterna> = {}): SolicitudInterna {
@@ -584,6 +584,61 @@ describe("buildOnComandoEmpleado — con sesión", () => {
 
     const filas = vi.mocked(registro.registrarAccion).mock.calls.map((c) => c[0]);
     expect(filas.some((f) => f.comando === "/soporte" && f.empleadoId === "ana")).toBe(true);
+  });
+
+  /**
+   * `devolucion-sin-token-dos-personas`, tarea 22 (ADR 231 pto 4/§0.4 — ★
+   * SEGUNDO escritor obligatorio, TUI). Sin este escritor, R16 queda
+   * abierta: la ranura de la TUI seguiría venciendo por el TTL absoluto
+   * viejo aunque `sesionInactividadMinutos` esté configurado.
+   */
+  it("★ sesión de TUI en uso continuo NO expira por inactividad (ADR 231, segundo escritor obligatorio)", async () => {
+    const reloj: Reloj = { ahora: "2026-09-01T10:00:00.000Z" };
+    const registro = makeRegistro();
+    const deps = makeDeps(reloj, {
+      registro,
+      verificarPassword: vi.fn(() => true),
+      // Tope absoluto DESACTIVADO a propósito, para aislar el efecto de la
+      // inactividad: si este test fallara por el tope, no probaría nada.
+      authConfig: makeAuthConfig({ sesionTtlMinutos: 0, sesionInactividadMinutos: 5 }),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+
+    await login(handler); // T+0: inactivaEn sellado en T+5min
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    reloj.ahora = "2026-09-01T10:04:00.000Z"; // T+4min, dentro de la ventana ⇒ renueva a T+9min
+    await handler("/soporte necesito ayuda");
+
+    // T+8min desde el login: sin renovación, la ventana original (T+5min) ya
+    // habría vencido. CON renovación (T+9min tras el uso anterior), sigue vigente.
+    reloj.ahora = "2026-09-01T10:08:00.000Z";
+    await handler("/soporte necesito ayuda de nuevo");
+
+    const filas = vi.mocked(registro.registrarAccion).mock.calls.map((c) => c[0]);
+    expect(filas.filter((f) => f.comando === "/soporte" && f.empleadoId === "ana")).toHaveLength(2);
+  });
+
+  it("sesión de TUI ociosa vence igual que hoy si no hay uso intermedio dentro de la ventana de inactividad", async () => {
+    const reloj: Reloj = { ahora: "2026-09-01T10:00:00.000Z" };
+    const registro = makeRegistro();
+    const writes: string[] = [];
+    const deps = makeDeps(reloj, {
+      registro,
+      writes,
+      verificarPassword: vi.fn(() => true),
+      authConfig: makeAuthConfig({ sesionTtlMinutos: 0, sesionInactividadMinutos: 5 }),
+    });
+    const handler = buildOnComandoEmpleado(deps);
+
+    await login(handler); // T+0: inactivaEn sellado en T+5min
+    vi.mocked(registro.registrarAccion).mockClear();
+
+    reloj.ahora = "2026-09-01T10:06:00.000Z"; // T+6min, sin uso intermedio ⇒ vencida
+    await handler("/soporte necesito ayuda");
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(JSON.stringify(writes)).toContain("sesion-expirada");
   });
 });
 

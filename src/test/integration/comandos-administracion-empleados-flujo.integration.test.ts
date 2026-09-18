@@ -95,7 +95,7 @@ function realDeps(db: Database.Database): BuildOnComandoEmpleadoDeps {
       tokenTtlHoras: 72,
       ventaGrandeUmbral: 5000,
     } satisfies VentasConfig,
-    authConfig: { sesionTtlMinutos: 0 } satisfies AuthConfig,
+    authConfig: { sesionTtlMinutos: 0, sesionInactividadMinutos: 0 } satisfies AuthConfig,
     verificarPassword,
     dummyPasswordHash: hashPassword("dummy-password-para-timing"),
     hooks: createHookEngine(),
