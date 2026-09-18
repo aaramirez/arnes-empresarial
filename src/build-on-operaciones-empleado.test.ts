@@ -32,10 +32,11 @@ import type {
 import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import type { SesionEmpleado } from "./core/auth/sesion.js";
 import { createSolicitudStore } from "./build-on-comando-empleado.js";
+import { createVentaStore } from "./build-on-venta.js";
 import { SOLICITUD_TIPO_GASTO } from "./core/solicitudes/solicitudes-contract.js";
 import { CASO_ESTADO_PENDIENTE_APROBACION_HUMANA } from "./core/hitl/hitl-contract.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
-import type { VentaNotifierPort } from "./core/ventas/ventas-contract.js";
+import { VENTA_ESTADO_CONFIRMADA, type VentaNotifierPort } from "./core/ventas/ventas-contract.js";
 import type { VentasConfig } from "./core/ventas/ventas-config.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 
@@ -420,6 +421,156 @@ describe("buildOnOperacionesEmpleado", () => {
 
       expect(capturedText).toBe("No tenés solicitudes pendientes para cancelar.");
       expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * Hallazgo code-review post `devolucion-sin-token-dos-personas`: el
+   * wiring de `consultaVentaPropia` (`toPortVentaPropia` +
+   * `buscarVentaPropiaPorId`/`listVentasPropiasDeVendedor` reales, armado en
+   * `buildOnOperacionesEmpleado`) no tenía ningún test que lo ejercitara —
+   * molde EXACTO del test "wiring de extremo a extremo" de arriba, pero para
+   * `consultar_venta` en vez de `cancelar_solicitud_interna`, con una venta
+   * sembrada de verdad en SQLite vía `createVentaStore` (mismo store real
+   * que usa el módulo bajo prueba internamente).
+   */
+  it("wiring de extremo a extremo: consultar_venta delega en consultaVentaPropia.buscarPorId/listarDeVendedor sobre datos reales", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const ventaStore = createVentaStore(db);
+      ventaStore.crearVentaConCaso({
+        vendedor: { id: "empleado-1", nombre: "Empleado Uno" },
+        caso: { id: "caso-venta-previo", tipo: "venta", estado: CASO_ESTADO_ACTIVO },
+        venta: {
+          id: "venta-propia-1",
+          clienteId: "cliente-77",
+          planNuevo: "plan-premium",
+          monto: 1234,
+          estado: VENTA_ESTADO_CONFIRMADA,
+          tokenConfirmacion: "token-propia-1",
+        },
+        timestamp: TIMESTAMP,
+      });
+
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      let textoDetalle = "";
+      let textoListado = "";
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
+          readonly instance: {
+            readonly _registeredTools: Record<
+              string,
+              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+            >;
+          };
+        };
+        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+
+        const detalle = await registeredTool?.handler(
+          { operacion: "consultar_venta", ventaId: "venta-propia-1" },
+          {},
+        );
+        textoDetalle = detalle?.content[0]?.text ?? "";
+
+        const listado = await registeredTool?.handler({ operacion: "consultar_venta" }, {});
+        textoListado = listado?.content[0]?.text ?? "";
+
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "¿Cómo está la venta venta-propia-1?",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+
+      expect(textoDetalle).toContain("venta-propia-1");
+      expect(textoDetalle).toContain("cliente-77");
+      expect(textoDetalle).toContain("plan-premium");
+      expect(textoDetalle).toContain(VENTA_ESTADO_CONFIRMADA);
+
+      expect(textoListado).toContain("venta-propia-1");
+      expect(textoListado).toContain("cliente-77");
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * Hallazgo code-review: `toPortVentaPropia` (armado en este módulo) lanza
+   * `VentaEstadoInvalidoError` cuando `ventas.estado` no pertenece a
+   * `VENTA_ESTADOS` — sin test hasta ahora. `ejecutarOperacion` atrapa
+   * CUALQUIER error y lo traduce a texto degradado (molde documentado en su
+   * propio archivo), así que el throw se verifica indirectamente: la
+   * operación degrada Y el evento `operacion-fallida` logueado trae el
+   * mensaje EXACTO de `VentaEstadoInvalidoError` (mismo criterio que el test
+   * gemelo `VentaEstadoInvalidoError` de `build-on-venta.test.ts`: corrupción
+   * real vía `UPDATE ventas SET estado = ...`, única forma de producir un
+   * valor inválido sin pasar por ninguna validación de escritura).
+   */
+  it("toPortVentaPropia: fila con estado fuera de VENTA_ESTADOS degrada la operación y loguea VentaEstadoInvalidoError", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const ventaStore = createVentaStore(db);
+      ventaStore.crearVentaConCaso({
+        vendedor: { id: "empleado-1", nombre: "Empleado Uno" },
+        caso: { id: "caso-venta-corrupta", tipo: "venta", estado: CASO_ESTADO_ACTIVO },
+        venta: {
+          id: "venta-corrupta-1",
+          clienteId: "cliente-99",
+          planNuevo: "plan-x",
+          monto: 500,
+          estado: VENTA_ESTADO_CONFIRMADA,
+          tokenConfirmacion: "token-corrupta-1",
+        },
+        timestamp: TIMESTAMP,
+      });
+      // Simula corrupción real (molde `build-on-venta.test.ts`): `ventas.estado`
+      // es TEXT sin CHECK, así que escribir directo por SQL es la única forma
+      // de producir un valor fuera de `VENTA_ESTADOS`.
+      db.prepare("UPDATE ventas SET estado = ? WHERE id = ?").run("estado_invalido", "venta-corrupta-1");
+
+      const logDeps = fakeLogDeps();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, logDeps }),
+      );
+
+      let texto = "";
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
+          readonly instance: {
+            readonly _registeredTools: Record<
+              string,
+              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+            >;
+          };
+        };
+        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+        const resultado = await registeredTool?.handler(
+          { operacion: "consultar_venta", ventaId: "venta-corrupta-1" },
+          {},
+        );
+        texto = resultado?.content[0]?.text ?? "";
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "¿Cómo está la venta venta-corrupta-1?",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+
+      expect(texto).toBe("No se pudo completar la operación por un error interno. Contá con que no se aplicó nada e intentá de nuevo.");
+      const logged = parseLastLine(logDeps.lines);
+      expect(logged.event).toBe("operacion-fallida");
+      expect(String(logged.message)).toContain("venta-corrupta-1 tiene estado inválido en la base: estado_invalido");
     } finally {
       db.close();
     }
