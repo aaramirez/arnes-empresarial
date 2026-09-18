@@ -922,18 +922,17 @@ export function listVentasPropiasDeVendedor(
   filtro: { readonly vendedorId: string; readonly estados?: readonly string[]; readonly limite?: number },
 ): readonly VentaPropiaRow[] {
   const limite = filtro.limite ?? 20;
-  if (filtro.estados === undefined || filtro.estados.length === 0) {
-    const rows = db
-      .prepare(`SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE vendedor_id = @vendedorId ORDER BY created_at DESC LIMIT @limite`)
-      .all({ vendedorId: filtro.vendedorId, limite }) as VentaPropiaSqlRow[];
-    return rows.map(rowToVentaPropia);
-  }
+  const tieneEstados = filtro.estados !== undefined && filtro.estados.length > 0;
+  const clausulaEstados = tieneEstados
+    ? ` AND estado IN (${(filtro.estados as readonly string[]).map((_estado, i) => `@estado${i}`).join(", ")})`
+    : "";
+  const estadoParams = tieneEstados
+    ? Object.fromEntries((filtro.estados as readonly string[]).map((estado, i) => [`estado${i}`, estado]))
+    : {};
 
-  const placeholders = filtro.estados.map((_estado, i) => `@estado${i}`).join(", ");
-  const estadoParams = Object.fromEntries(filtro.estados.map((estado, i) => [`estado${i}`, estado]));
   const rows = db
     .prepare(
-      `SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE vendedor_id = @vendedorId AND estado IN (${placeholders}) ORDER BY created_at DESC LIMIT @limite`,
+      `SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE vendedor_id = @vendedorId${clausulaEstados} ORDER BY created_at DESC LIMIT @limite`,
     )
     .all({ vendedorId: filtro.vendedorId, limite, ...estadoParams }) as VentaPropiaSqlRow[];
   return rows.map(rowToVentaPropia);
