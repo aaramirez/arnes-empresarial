@@ -323,6 +323,27 @@ Reparto de canales: **chat = trabajo transaccional del empleado** (`operaciones-
 
 Con esta capacidad, `DESCRIPTORES` llegó a **dieciocho** entradas (los quince heredados + `/estado-bot-prs` + `/crear-empleado` + `/asignar-rol`), los tres nuevos insertados inmediatamente antes de `/ayuda`, que sigue último — ningún descriptor existente cambió de orden ni de forma. **Desde v3.10.0 (`aprobacion-conversacional-hitl`, ADR 151 EJECUTADO), tras dar de baja los cinco comandos administrativos/HITL de resolución (`/aprobar-solicitud`, `/rechazar-solicitud`, `/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`), `DESCRIPTORES` queda en **trece** entradas — ninguna transaccional, orden relativo de las que quedan sin cambio.
 
+### Devolución sin token y sin que el cliente vuelva a intervenir — dos personas (v3.12.0, `devolucion-sin-token-dos-personas`)
+
+Hasta v3.11.0, la única credencial que autorizaba una devolución era el `token_confirmacion` de la venta (ADR 22 del arc42): sin el token, no había camino de negocio para devolver. Desde v3.12.0 la herramienta `operaciones` llega a **diez** operaciones, con dos nuevas:
+
+| Operación | Función determinista | Efecto |
+| --- | --- | --- |
+| `consultar_venta` | `consultarVentaPropia` | Sólo lectura, escopada a venta propia — la proyección EXCLUYE `token_confirmacion` siempre, incluso en el texto de salida al modelo. |
+| `solicitar_devolucion` | `solicitarDevolucion` | Escala SIEMPRE a `store.escalarReembolso`, sin mirar el monto y sin importar ni mencionar `evaluarReembolso`/`aprobarReembolso` en ninguna rama (test mecánico de ausencia). Exige dos turnos y `motivo` no vacío, persistido en tabla propia (`justificaciones_devolucion`), nunca en `registro_acciones_empleado`. |
+
+★ **El ADR 22 queda ENMENDADO** (detalle completo: arc42, Concepto 11) — se abre un camino de iniciación por `ventaId`, reemplazado por escalación forzada + un `administrador` **distinto del vendedor** que cierra con `resolver_reembolso` (v3.10.0, **sin una línea de diff**) + confirmación en dos turnos + `motivo` obligatorio. El dueño de la prueba pasa de "el cliente autorizó" a "dos empleados distintos, uno administrador, quedaron registrados".
+
+★ **Invariante correlacionado**: los tres controles de v3.10.0 (`puedeResolverAjeno`, la prohibición de autoaprobación, y la confirmación en dos turnos) son ahora la mitad del control de esta devolución sin token — relajar cualquiera de los tres en un refactor futuro deroga este change en silencio, sin que ningún test propio de `devolucion-sin-token-dos-personas` lo detecte.
+
+★ **Precondición operativa (R5b)**: la vía nueva necesita al menos **dos empleados**, uno con rol `administrador` que **no** sea el vendedor. Con un solo usuario, o si el único administrador es también el vendedor, esa venta puntual no se puede devolver por esta vía — falla cerrada, la misma restricción que ya regía para todo reembolso escalado sobre el umbral desde v3.10.0.
+
+**R12 reconfirmada sin cambio**: `consultar_reporte_comisiones` sigue sin gate de rol ni escopado por vendedor (ver más arriba). `consultar_venta` nace escopada a venta propia sin que eso reabra ni resuelva R12 — son lecturas de naturaleza distinta.
+
+**Cambio de postura del TTL de sesión — decisión documentada, no un ajuste de paso**: `SESION_TTL_MINUTOS` pasa de 30 a **480** como default, sin cambiar de significado (sigue siendo el tope absoluto, no renovable). Se agrega `SESION_INACTIVIDAD_MINUTOS` (default 30 — la sesión ociosa sigue muriendo exactamente cuando moría antes), renovada en cada request/turno de una sesión en uso, tanto en el store HTTP como en la TUI. Antes de este change, una conversación de más de 30 minutos perdía la sesión aunque se la estuviera usando activamente; ahora sólo la pierde por inactividad real o por el tope absoluto de 480 minutos.
+
+Detalle completo (ADRs 223-233, riesgos R5b/R13/R18/R19, escenarios de separación de funciones con dos sesiones): [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md), Concepto 11.
+
 ### Skills (`.claude/skills/`)
 
 El arnés descubre skills en `.claude/skills/<nombre>/SKILL.md` — no en `src/core/skills/` (ese directorio es el cargador en TypeScript; el contenido de cada skill vive en el árbol versionado del repo, fuera de `src/`). Una skill empaqueta un procedimiento opcional que el modelo puede elegir invocar durante el turno; a diferencia de `allowedTools`, habilitarla no concede ninguna herramienta nueva.

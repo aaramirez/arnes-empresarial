@@ -606,6 +606,21 @@ El ADR 151 (`operaciones-negocio-conversacionales`, v3.6) decidió mover los cin
 
 **Deuda declarada por este change**: ninguna nueva más allá del residual de R11 — ver Riesgo 8 (R11) más abajo.
 
+## Concepto 11: Devolución sin token y sin que el cliente vuelva a intervenir — dos personas (v3.12, `devolucion-sin-token-dos-personas`)
+
+Hasta v3.11 la única credencial que autorizaba una devolución era el `token_confirmacion` de la venta (ADR 22) — si el empleado lo perdía, o el cliente ya no estaba disponible para repetirlo, no había camino de negocio para devolver. `devolucion-sin-token-dos-personas` abre un segundo camino, por `ventaId`, sin depender del cliente: dos operaciones nuevas en la herramienta `operaciones` (diez en total), `consultar_venta { ventaId? }` (sólo lectura, escopada a venta propia, proyección que EXCLUYE `token_confirmacion` siempre) y `solicitar_devolucion { ventaId?, motivo? }` (escala SIEMPRE a `store.escalarReembolso`, sin mirar el monto, sin importar ni mencionar `evaluarReembolso`/`aprobarReembolso` en ninguna rama — test mecánico de ausencia). El cierre lo sigue haciendo `resolver_reembolso` de v3.10, **sin una línea de diff**.
+
+- ★ **El ADR 22 queda ENMENDADO** — no derogado en la práctica, con estas tres líneas:
+  - **Qué se abre**: un camino de iniciación por `ventaId` (`solicitar_devolucion`), que el ADR 22 original prohibía sin matiz ("sólo el token" autoriza una devolución).
+  - **Qué lo reemplaza**: escalación forzada (nunca auto-aprueba, sea cual sea el monto) + un `administrador` **distinto del vendedor** que cierra + confirmación en **dos turnos** + `motivo` obligatorio no vacío, persistido en tabla propia (`justificaciones_devolucion`).
+  - **Quién es ahora el dueño de la prueba**: antes, "el cliente autorizó" (poseer el token era la prueba). Ahora, "dos empleados distintos, uno administrador, quedaron registrados" — el vendedor que pide y el administrador que aprueba, cada uno con su fila de auditoría.
+- ★ **Invariante correlacionado — advertencia para cualquier refactor futuro**: los tres controles que v3.10 (`aprobacion-conversacional-hitl`) ya dejó probados — el predicado `puedeResolverAjeno` (Concepto Transversal 6), la prohibición de autoaprobación del ADR 211 (`venta.vendedorId === sesion.empleadoId` ⇒ `autoaprobacion_prohibida`), y la confirmación en dos turnos (`LlaveConfirmacion`) — **son ahora la MITAD del control de la devolución sin token**, no un detalle heredado de paso. `solicitar_devolucion` no reimplementa ninguno de los tres: los compone, apoyándose en que `resolver_reembolso` los sigue aplicando sin cambio. **Si un refactor futuro relaja cualquiera de los tres, deroga este change en silencio** — sin que ningún test de `devolucion-sin-token-dos-personas` lo detecte, porque ese change nunca los reescribió.
+- ★ **Precondición OPERATIVA, no de software (R5b)**: la vía nueva **necesita al menos dos empleados, uno de ellos con rol `administrador` que no sea el vendedor**. Con un solo usuario, o si el único `administrador` es también el vendedor, el mecanismo no se puede ejercer — falla **cerrada**, misma restricción que ya regía para todo reembolso sobre el umbral desde v3.10 (no es deuda nueva), pero este change la vuelve más frecuente porque ahora también aplica a montos chicos.
+- **R12 reconfirmada sin cambio** (Riesgo 4, más abajo): `consultar_reporte_comisiones` sigue sin gate de rol ni escopado por vendedor. `devolucion-sin-token-dos-personas` no la agrava ni la resuelve — `consultar_venta`, la operación de lectura nueva de este change, **sí** nace escopada a venta propia, y eso no contradice R12: son dos lecturas distintas (un reporte agregado ya confirmado vs. una venta individual que alimenta un camino de dinero), y heredar la laxitud de una no obligaba a fabricarla en la otra.
+- ★ **Cambio de postura del TTL de sesión — DECISIÓN, no un ajuste de paso**: `SESION_TTL_MINUTOS` pasa de 30 a **480** como default, sin cambiar de significado (sigue siendo el tope absoluto, no renovable). Lo que hace ese default subible es una variable nueva, `SESION_INACTIVIDAD_MINUTOS` (default 30 — la sesión ociosa sigue muriendo exactamente cuando moría antes de este change), y un campo nuevo de sesión (`inactivaEn`), renovado en los dos escritores de la sesión (HTTP, dentro de `buscar()`; TUI, dentro del paso de purga del turno). Antes de este change, una conversación larga de más de 30 minutos perdía la sesión aunque se la estuviera usando activamente — ahora sólo la pierde por inactividad real o por el tope absoluto de 480 minutos.
+
+**Deuda declarada por este change**: ninguna nueva — ver Riesgo 9 (R5b) más abajo, aceptado y falla cerrado, no una deuda pendiente de resolver.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
@@ -750,6 +765,8 @@ Mitigación/cierre: no aplica — es una **herencia deliberada**, no un hallazgo
 
 **Addendum v3.9 (`chat-web-empleado`)**: esta herencia **no se agrava**, pero el canal se ensancha — de "HTTP autenticado que hay que saber armar con `curl`" a "una caja de texto en una pantalla de chat". `consultar_reporte_comisiones` sigue sin gate de rol y sin escopar por vendedor, ahora detrás de la interfaz de menor fricción que el arnés tiene. El checkpoint reconfirmó explícitamente que sigue aceptando este riesgo en el canal de chat, con el mismo criterio con que lo aceptó al aprobar la Enmienda 5 de v3.6.
 
+**Addendum v3.12 (`devolucion-sin-token-dos-personas`)**: **reconfirmada sin cambio.** `consultar_venta`, la operación de lectura nueva de este change, nace escopada a venta propia — pero eso no reabre ni resuelve R12: son lecturas de naturaleza distinta (un reporte agregado de comisiones ya confirmadas vs. una venta individual puntual que alimenta un camino de dinero, ADR 223). `consultar_reporte_comisiones` sigue exactamente como en el addendum de v3.9, sin gate de rol y sin escopado por vendedor.
+
 **Riesgo 6 (R11): `options.resume` a una sesión del SDK que el SDK ya no tiene — DECLARADA, sin reintento automático a propósito (v3.9, `chat-web-empleado`)**
 
 Descripción: si el SDK pierde la sesión a la que apunta `options.resume` (poda de su store en disco, cambio de `cwd`), todos los mensajes siguientes de esa conversación fallan con `502`, sin recuperación automática.
@@ -783,6 +800,14 @@ Descripción: el mecanismo que cierra R7 (Deuda 5) compara `venta.vendedorId ===
 Por qué se acepta: es improbable (exige una colisión exacta de strings entre dos padrones administrados aparte, sin normalización de mayúsculas ni espacios en ningún punto del viaje del dato), **no es un hueco de seguridad** — falla cerrado, deniega de más, nunca permite una autoaprobación real — y el operador tiene salida por el canal de siempre (otro administrador resuelve la venta, o se usa `POST /ventas`/soporte para el caso puntual). Prohibido "arreglarlo" relajando el predicado: reduciría la garantía real (que sí puede dispararse en el camino de producción que este change construye) a cambio de eliminar un falso positivo de probabilidad despreciable.
 
 Cierre: no aplica — queda **declarada, no arrastrada en silencio**, mismo tratamiento que el resto de los residuales de esta serie (Riesgo 5/R1, Riesgo 6/R11 de `chat-web-empleado`). Condición de disparo: si algún día se liga `vendedores` con `credenciales_empleado`/`roles_empleado` por otra razón (ver Deuda 5, ya cerrada, para el motivo por el que esa ligadura no hacía falta para R7), este residual desaparece como efecto colateral.
+
+**Riesgo 9 (R5b): La devolución sin token exige al menos dos empleados, uno administrador que no sea el vendedor — precondición OPERATIVA, ACEPTADA, falla cerrado (v3.12, `devolucion-sin-token-dos-personas`)**
+
+Descripción: `solicitar_devolucion` siempre escala, sin excepción, y sólo `resolver_reembolso` — con el predicado de separación de funciones intacto (Riesgo 3/R10, Concepto Transversal 6) — puede cerrarla. Si la organización tiene un solo `administrador` y ese mismo `administrador` es el vendedor de la venta, o si no tiene ningún `administrador`, esa venta puntual **no se puede devolver por la vía nueva**: el vendedor que la inició siempre choca contra `autoaprobacion_prohibida` al intentar cerrarla, sin excepción posible.
+
+Por qué se acepta: no es deuda nueva — es exactamente la misma restricción que ya rige, desde v3.10, para todo reembolso escalado sobre el umbral (`aprobacion-conversacional-hitl`). Este change la hace **operativamente más frecuente**, porque ahora también aplica a montos chicos que antes se auto-aprobaban sin pasar por un administrador. Falla **cerrada**: nunca se resuelve relajando el gate de separación de funciones — la salida es organizacional (dar de alta un segundo `administrador` con `/asignar-rol`, Concepto 8), no de software.
+
+Cierre: no aplica — es una **precondición operativa declarada**, no un bug pendiente. Queda anotada acá y en la evidencia manual de este change (`docs/progreso/v3.12-devolucion-sin-token-dos-personas/`) para que un despliegue con un solo empleado no la descubra en producción como una sorpresa.
 
 **Deudas Técnicas**
 
