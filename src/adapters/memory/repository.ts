@@ -911,6 +911,24 @@ export function buscarVentaPropiaPorId(db: Database.Database, ventaId: string): 
 }
 
 /**
+ * Placeholders `@estadoN` + bind object para una cláusula `estado IN (...)`
+ * parametrizada. Recibe `estados` ya angosto a no-vacío para que el llamador
+ * decida qué hacer con el caso vacío (una cláusula `IN ()` es error de
+ * sintaxis en SQLite, no "sin resultados"). Compartida por
+ * `listVentasPropiasDeVendedor` y `listSolicitudesA2AEntrantesPorEstado`
+ * (hallazgo code-review: mismo armado de placeholders duplicado letra por
+ * letra en las dos funciones).
+ */
+function construirPlaceholdersEstadosIn(
+  estados: readonly string[],
+): { readonly placeholders: string; readonly binds: Record<string, string> } {
+  return {
+    placeholders: estados.map((_estado, i) => `@estado${i}`).join(", "),
+    binds: Object.fromEntries(estados.map((estado, i) => [`estado${i}`, estado])),
+  };
+}
+
+/**
  * `estados` ausente ⇒ todos los estados del vendedor. Orden `created_at`
  * DESC (lo más reciente primero). Default de `limite`: 20 — mismo valor que
  * `LIMITE_LISTADO_VENTAS_PROPIAS` del núcleo, duplicado literal a propósito
@@ -922,13 +940,15 @@ export function listVentasPropiasDeVendedor(
   filtro: { readonly vendedorId: string; readonly estados?: readonly string[]; readonly limite?: number },
 ): readonly VentaPropiaRow[] {
   const limite = filtro.limite ?? 20;
-  const tieneEstados = filtro.estados !== undefined && filtro.estados.length > 0;
-  const clausulaEstados = tieneEstados
-    ? ` AND estado IN (${(filtro.estados as readonly string[]).map((_estado, i) => `@estado${i}`).join(", ")})`
-    : "";
-  const estadoParams = tieneEstados
-    ? Object.fromEntries((filtro.estados as readonly string[]).map((estado, i) => [`estado${i}`, estado]))
-    : {};
+  const estados = filtro.estados;
+
+  let clausulaEstados = "";
+  let estadoParams: Record<string, string> = {};
+  if (estados !== undefined && estados.length > 0) {
+    const { placeholders, binds } = construirPlaceholdersEstadosIn(estados);
+    clausulaEstados = ` AND estado IN (${placeholders})`;
+    estadoParams = binds;
+  }
 
   const rows = db
     .prepare(
@@ -2950,8 +2970,7 @@ export function listSolicitudesA2AEntrantesPorEstado(
     return { items: [], hayMas: false };
   }
 
-  const placeholders = filtro.estados.map((_, i) => `@estado${i}`).join(", ");
-  const bindsEstados = Object.fromEntries(filtro.estados.map((estado, i) => [`estado${i}`, estado]));
+  const { placeholders, binds: bindsEstados } = construirPlaceholdersEstadosIn(filtro.estados);
 
   const rows = db
     .prepare(
