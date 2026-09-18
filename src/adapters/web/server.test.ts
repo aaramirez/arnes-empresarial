@@ -1806,7 +1806,7 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
    */
   it("dos confirmaciones pendientes de dominios distintos -- logout limpia AMBAS, no sólo una", async () => {
     const empleadoId = "emp-multislot";
-    const sesionStore = crearSesionEmpleadoStore();
+    const sesionStore = crearSesionEmpleadoStore(0);
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
@@ -1833,7 +1833,7 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
 
   it("dos sesiones reales del mismo empleado -- logout de la sesión B no invalida la confirmación pendiente de la sesión A", async () => {
     const empleadoId = "emp-concurrente";
-    const sesionStore = crearSesionEmpleadoStore();
+    const sesionStore = crearSesionEmpleadoStore(0);
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const tokenA = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
@@ -1869,7 +1869,7 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
 
   it("empleado con UNA sola sesión (caso normal) -- logout limpia la confirmación igual que antes, sin regresión", async () => {
     const empleadoId = "emp-solo";
-    const sesionStore = crearSesionEmpleadoStore();
+    const sesionStore = crearSesionEmpleadoStore(0);
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
