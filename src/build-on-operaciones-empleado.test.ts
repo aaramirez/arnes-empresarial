@@ -7,8 +7,10 @@
  * propio de este módulo: `candidateAgents: [construirAgenteEmpleadoOperaciones()]`
  * (lista de UN elemento, nunca `AGENT_REGISTRY`), el prompt vía
  * `buildOperacionesEmpleadoPrompt` (PURA), y que el `mcpServers` que llega a
- * `handleTurn` es el de la tool `operaciones` (nunca la de conocimiento —
- * `BuildOnOperacionesEmpleadoDeps` no recibe `createKnowledge`).
+ * `handleTurn` es la UNIÓN EXACTA de la tool `operaciones` y la de
+ * conocimiento (`conocimiento-chat-empleado`, ADR 234 — `BuildOnOperacionesEmpleadoDeps`
+ * SÍ recibe `createKnowledge`, requerido, sin default), nunca la de
+ * `consultas`, y que `handleTurn` NUNCA recibe `knowledgeFeedback` (ADR 235).
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
@@ -29,6 +31,12 @@ import type {
   ConfirmacionOperacionPort,
   DominioConfirmacion,
 } from "./core/operaciones/operaciones-contract.js";
+import {
+  KNOWLEDGE_MCP_SERVER_NAME,
+  KNOWLEDGE_TOOL_QUALIFIED_NAME,
+} from "./core/knowledge/knowledge-contract.js";
+import { CONSULTAS_MCP_SERVER_NAME } from "./core/agents/consultas-negocio-tool.js";
+import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import type { SesionEmpleado } from "./core/auth/sesion.js";
 import { createSolicitudStore } from "./build-on-comando-empleado.js";
@@ -175,12 +183,29 @@ function makeCounterNewId(prefix = "id"): () => string {
   return () => `${prefix}-${++contador}`;
 }
 
+/**
+ * Doble de `KnowledgeAdapter` copiado VERBATIM de
+ * `build-on-a2a-entrante.test.ts:470-473` (RD-112, `design.md` §0.2/§6 pto 3)
+ * — NUNCA invoca `createKnowledgeAdapter`, así que ningún test de este
+ * archivo toca el binario `graphify` real. `feedback` completo con
+ * `saveTurnResult`/`discardPendingCitations` como `vi.fn()` aunque este
+ * módulo no los consuma (ADR 235): el doble implementa el contrato entero
+ * del puerto, no una versión recortada a lo que hoy se usa.
+ */
+function fakeKnowledge(): KnowledgeAdapter {
+  return {
+    mcpServers: { [KNOWLEDGE_MCP_SERVER_NAME]: {} as never },
+    feedback: { saveTurnResult: vi.fn(), discardPendingCitations: vi.fn() },
+  };
+}
+
 interface BaseDepsOverrides {
   readonly newId?: () => string;
   readonly newToken?: () => string;
   readonly now?: () => string;
   readonly logDeps?: LogTurnEventDeps;
   readonly memory?: MemoryPort;
+  readonly createKnowledge?: (casoId: string) => KnowledgeAdapter;
 }
 
 function makeBaseDeps(db: Database.Database, overrides: BaseDepsOverrides = {}): BuildOnOperacionesEmpleadoDeps {
@@ -192,6 +217,7 @@ function makeBaseDeps(db: Database.Database, overrides: BaseDepsOverrides = {}):
     notifier: fakeNotifier(),
     baseUrlPublica: "https://arnes.example.test",
     despacharDeps: fakeDespacharDeps(),
+    createKnowledge: overrides.createKnowledge ?? (() => fakeKnowledge()),
     ...(overrides.newId ? { newId: overrides.newId } : {}),
     ...(overrides.newToken ? { newToken: overrides.newToken } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
@@ -262,7 +288,7 @@ describe("buildOnOperacionesEmpleado", () => {
     }
   });
 
-  it("pasa mcpServers con la tool de operaciones registrada (nunca la de conocimiento)", async () => {
+  it("pasa mcpServers como la UNIÓN EXACTA de conocimiento + operaciones — nunca consultas (conocimiento-chat-empleado, ADR 234)", async () => {
     const db = openDatabase(":memory:");
     try {
       const handler = buildOnOperacionesEmpleado(
@@ -273,7 +299,172 @@ describe("buildOnOperacionesEmpleado", () => {
 
       const deps = mockedHandleTurn.mock.calls[0]?.[2];
       expect(deps).toBeDefined();
-      expect(Object.keys(deps?.mcpServers ?? {})).toEqual([OPERACIONES_MCP_SERVER_NAME]);
+      // Igualdad de CONJUNTO, nunca `toContain` — molde `build-on-a2a-entrante.test.ts:498-502`.
+      expect(Object.keys(deps?.mcpServers ?? {}).sort()).toEqual(
+        [KNOWLEDGE_MCP_SERVER_NAME, OPERACIONES_MCP_SERVER_NAME].sort(),
+      );
+      expect(deps?.mcpServers).not.toHaveProperty(CONSULTAS_MCP_SERVER_NAME);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("la tool de conocimiento es alcanzable: el segmento de servidor derivado de KNOWLEDGE_TOOL_QUALIFIED_NAME es clave de mcpServers", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
+
+      const deps = mockedHandleTurn.mock.calls[0]?.[2];
+      expect(deps).toBeDefined();
+      // `mcp__<server>__<tool>` — el segmento del medio es el nombre del servidor.
+      const [, servidor] = KNOWLEDGE_TOOL_QUALIFIED_NAME.split("__");
+      expect(servidor).toBeDefined();
+      expect(Object.keys(deps?.mcpServers ?? {})).toContain(servidor);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("createKnowledge se invoca UNA vez por turno, con el casoId de ESE turno y un solo argumento (ADR 234 pto 4)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const createKnowledge = vi.fn((_casoId: string) => fakeKnowledge());
+      const newId = makeCounterNewId("caso");
+      const handler = buildOnOperacionesEmpleado(makeBaseDeps(db, { newId, now: () => TIMESTAMP, createKnowledge }));
+
+      await handler({ consulta: "primera consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
+
+      expect(createKnowledge).toHaveBeenCalledTimes(1);
+      expect(createKnowledge.mock.calls[0]).toHaveLength(1);
+      expect(createKnowledge).toHaveBeenCalledWith("caso-1");
+
+      await handler({ consulta: "segunda consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
+
+      expect(createKnowledge).toHaveBeenCalledTimes(2);
+      expect(createKnowledge.mock.calls[1]).toHaveLength(1);
+      expect(createKnowledge.mock.calls[0]?.[0]).not.toBe(createKnowledge.mock.calls[1]?.[0]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("mismo conjunto de mcpServers para dos empleadoId distintos — sin filtrado por rol (ADR 236)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion({ empleadoId: "empleado-A" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+      const depsA = mockedHandleTurn.mock.calls[0]?.[2];
+
+      await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion({ empleadoId: "empleado-sin-rol-registrado" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+      const depsB = mockedHandleTurn.mock.calls[1]?.[2];
+
+      expect(depsA).toBeDefined();
+      expect(depsB).toBeDefined();
+      const conjuntoEsperado = [KNOWLEDGE_MCP_SERVER_NAME, OPERACIONES_MCP_SERVER_NAME].sort();
+      // Ambos empleados ven el MISMO conjunto esperado — no sólo entre sí
+      // (esa igualdad ya se cumpliría hoy, sin conocimiento cableado, y no
+      // demostraría nada): contra el conjunto real, para que quede rojo
+      // hasta que el servidor de conocimiento esté registrado.
+      expect(Object.keys(depsA?.mcpServers ?? {}).sort()).toEqual(conjuntoEsperado);
+      expect(Object.keys(depsB?.mcpServers ?? {}).sort()).toEqual(conjuntoEsperado);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("createKnowledge lanza ⇒ el handler rechaza con ESE MISMO error, sin invocar handleTurn ni registrarTurno", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const error = new Error("createKnowledge explotó");
+      const createKnowledge = vi.fn(() => {
+        throw error;
+      });
+      const registrarTurno = vi.fn();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, createKnowledge }),
+      );
+
+      await expect(
+        handler({
+          consulta: "consulta cualquiera",
+          sesion: fakeSesion(),
+          confirmacion: fakeConfirmacion(),
+          conversacion: fakeConversacion({ registrarTurno }),
+        }),
+      ).rejects.toBe(error);
+
+      expect(mockedHandleTurn).not.toHaveBeenCalled();
+      expect(registrarTurno).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * Invariante negativo del ADR 235 (§10.2 #3 de `design.md`) — NACE VERDE,
+   * no es parte del rojo declarado de esta tarea: hoy `handleTurn` ya no
+   * recibe `knowledgeFeedback` porque nadie se lo pasa. Su valor es fallar en
+   * el futuro si alguien "completa" el wiring por simetría (R4). Verificado
+   * por mutación manual en la tarea 6 — no repetir ese ciclo acá.
+   */
+  it("NO pasa knowledgeFeedback a handleTurn (ADR 235 pto 4 — invariante negativo, nace verde)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
+
+      const deps = mockedHandleTurn.mock.calls[0]?.[2];
+      expect(deps).toBeDefined();
+      expect(deps).not.toHaveProperty("knowledgeFeedback");
+    } finally {
+      db.close();
+    }
+  });
+
+  /** Mismo criterio que el test anterior — nace verde, invariante de regresión del ADR 235. */
+  it("el handler nunca toca el puerto de feedback del doble de conocimiento — ni en turno exitoso ni en turno fallido", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const knowledgeDouble = fakeKnowledge();
+      const createKnowledge = vi.fn(() => knowledgeDouble);
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, createKnowledge }),
+      );
+
+      await handler({ consulta: "consulta cualquiera", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() });
+
+      expect(knowledgeDouble.feedback.saveTurnResult).not.toHaveBeenCalled();
+      expect(knowledgeDouble.feedback.discardPendingCitations).not.toHaveBeenCalled();
+
+      const errorTurnoFallido = new TurnFailedError("model", new Error("el modelo falló"));
+      mockedHandleTurn.mockRejectedValueOnce(errorTurnoFallido);
+
+      await expect(
+        handler({ consulta: "otra consulta", sesion: fakeSesion(), confirmacion: fakeConfirmacion(), conversacion: fakeConversacion() }),
+      ).rejects.toBe(errorTurnoFallido);
+
+      expect(knowledgeDouble.feedback.saveTurnResult).not.toHaveBeenCalled();
+      expect(knowledgeDouble.feedback.discardPendingCitations).not.toHaveBeenCalled();
     } finally {
       db.close();
     }
