@@ -75,6 +75,7 @@ import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acci
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { createVentaStore, VentaEstadoInvalidoError } from "./build-on-venta.js";
 import { createSolicitudStore } from "./build-on-comando-empleado.js";
+import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 
 /**
  * Valor propio de `casos.tipo` para este turno — DUPLICADO a propósito,
@@ -90,6 +91,13 @@ export interface BuildOnOperacionesEmpleadoDeps {
   readonly db: Database.Database;
   readonly memory: MemoryPort;
   readonly hooks: ReturnType<typeof bootstrapHarness>["hooks"];
+  /**
+   * La MISMA fábrica por `casoId` que `main.ts` ya reparte a la TUI, a
+   * `/soporte`, a los webhooks y al turno A2A entrante — un `KnowledgeAdapter`
+   * por turno (ADR 234 pto 3), nunca uno por proceso. De lo que devuelve, este
+   * módulo consume SÓLO `mcpServers`: `feedback` NO se cablea (ADR 235).
+   */
+  readonly createKnowledge: (casoId: string) => KnowledgeAdapter;
   readonly ventasConfig: VentasConfig;
   /** Exigido por tipo por `registrarVenta` (ADR 171 pto 5) — reusa la MISMA instancia que `main.ts` construye para `buildOnVenta`. */
   readonly notifier: VentaNotifierPort;
@@ -160,7 +168,7 @@ export function buildOnOperacionesEmpleado(
   /** `chat-web-empleado`, ADR 196 pto 5 — memoria conversacional, viaja como argumento de la función DEVUELTA, no del closure de construcción (mismo criterio que `sesion`/`confirmacion`). */
   readonly conversacion: ConversacionEmpleadoPort;
 }) => Promise<OperacionesEmpleadoResult> {
-  const { db, memory, hooks, ventasConfig, notifier, baseUrlPublica, despacharDeps, logDeps } = deps;
+  const { db, memory, hooks, createKnowledge, ventasConfig, notifier, baseUrlPublica, despacharDeps, logDeps } = deps;
   const newId = deps.newId ?? randomUUID;
   const newToken = deps.newToken ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
@@ -236,6 +244,7 @@ export function buildOnOperacionesEmpleado(
 
     const prompt = buildOperacionesEmpleadoPrompt(input.consulta);
     const candidateAgents = [construirAgenteEmpleadoOperaciones()];
+    const knowledge = createKnowledge(casoId);
 
     const operacionesAdapter = createOperacionesAdapter({
       casoId,
@@ -267,7 +276,7 @@ export function buildOnOperacionesEmpleado(
       hooks,
       candidateAgents,
       ...(logDeps ? { logDeps } : {}),
-      mcpServers: operacionesAdapter.mcpServers,
+      mcpServers: { ...knowledge.mcpServers, ...operacionesAdapter.mcpServers },
     });
 
     // `registrarTurno` SÓLO tras `handleTurn` resuelto — NUNCA antes, NUNCA
