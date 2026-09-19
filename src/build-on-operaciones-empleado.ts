@@ -22,16 +22,26 @@
  * lista de UN elemento, nunca leída de `AGENT_REGISTRY` — mismo mecanismo
  * que `buildOnSoporte` ya usa pasando `agents` explícito a `handleTurn`.
  *
- * `mcpServers` es el de la tool `operaciones` (`adapters/operaciones/index.ts`,
- * tarea 4), construida por turno vía `createOperacionesAdapter` — a
- * diferencia de `buildOnSoporte`, este módulo NO recibe `createKnowledge`:
- * `BuildOnOperacionesEmpleadoDeps` no lo incluye (ADR 167 §6, verificado
- * campo por campo) — la tool de conocimiento queda listada en
- * `allowedTools` (heredada del spread de `CONVERSATIONAL_AGENT`) pero sin
- * `mcpServer` registrado para este turno, así que sería inalcanzable en
- * runtime (mismo patrón "R3" que design.md §8 pto 2 ya documenta para las
- * skills de este mismo change) — gap conocido, fuera del alcance explícito
- * de esta tarea.
+ * `mcpServers` es la UNIÓN EXACTA de dos servidores construidos POR TURNO: el
+ * de la tool `operaciones` (`adapters/operaciones/index.ts`, vía
+ * `createOperacionesAdapter`) y el de conocimiento (`adapters/knowledge/index.ts`,
+ * vía `createKnowledge(casoId)` — `conocimiento-chat-empleado`, ADR 234). El
+ * "gap conocido R3" que este doc-comment declaraba —la tool de conocimiento
+ * listada en `allowedTools` por el spread de `CONVERSATIONAL_AGENT` pero sin
+ * servidor registrado para este turno, o sea inalcanzable en runtime— queda
+ * CERRADO. La frontera de autorización sigue siendo `mcpServers` por turno,
+ * nunca `allowedTools` (ADR 176): `mcp__consultas__consultar_negocio` sigue
+ * listada y sigue SIN servidor, deliberadamente.
+ *
+ * `knowledgeFeedback` NO se pasa, a diferencia de `buildOnSoporte` y
+ * `buildOnA2AEntrante` (ADR 235): `feedback.saveTurnResult` escribe
+ * `graphify-out/memory/*.md`, que `POST /soporte` sirve SIN autenticación y que
+ * el turno A2A entrante sirve a terceros — cablearlo convertiría este canal
+ * autenticado, cuyo `answer` puede traer `clienteId`, montos y `ventaId`, en
+ * escritor de un almacén público. Hay un test que FALLA si alguien lo "completa"
+ * por simetría. El `CitedNodesRecorder` es por instancia de `KnowledgeAdapter`
+ * (`adapters/knowledge/index.ts:81`) y acá hay una por turno: no drenarlo no
+ * filtra nada entre turnos.
  *
  * PROPAGA `TurnFailedError` — igual que `buildOnSoporte`: hay un caller
  * esperando (HTTP, `POST /operaciones`, tarea 9) y este módulo no decide
@@ -155,9 +165,13 @@ function toPortVentaPropia(row: VentaPropiaRow): VentaPropia {
  *     `ejecutar = (input) => ejecutarOperacion(input, ejecutarDeps)`.
  *  5. `operacionesAdapter = createOperacionesAdapter({ casoId, sesion:
  *     input.sesion, confirmacion: input.confirmacion, ejecutar })`.
- *  6. `handleTurn(casoId, prompt, { memory, hooks, candidateAgents,
- *     ...(logDeps ? {logDeps} : {}), mcpServers: operacionesAdapter.mcpServers })`.
- *  7. Devuelve `{ casoId, respuesta: result.responseText }`.
+ *  6. `knowledge = createKnowledge(casoId)` (`conocimiento-chat-empleado`,
+ *     ADR 234 — un `KnowledgeAdapter` por turno, nunca por proceso).
+ *  7. `handleTurn(casoId, prompt, { memory, hooks, candidateAgents,
+ *     ...(logDeps ? {logDeps} : {}), mcpServers: { ...knowledge.mcpServers,
+ *     ...operacionesAdapter.mcpServers } })` — `knowledgeFeedback` NO se pasa
+ *     (ADR 235, ver doc-comment de módulo más arriba).
+ *  8. Devuelve `{ casoId, respuesta: result.responseText }`.
  */
 export function buildOnOperacionesEmpleado(
   deps: BuildOnOperacionesEmpleadoDeps,
