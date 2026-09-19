@@ -16,7 +16,7 @@
  * propios tokens.
  */
 import { randomUUID } from "node:crypto";
-import { sesionVigente, type SesionEmpleado } from "../../core/auth/sesion.js";
+import { renovarSesion, sesionVigente, type SesionEmpleado } from "../../core/auth/sesion.js";
 
 export interface SesionEmpleadoStore {
   /** Genera un token opaco de alta entropía (`randomUUID`), lo asocia a `sesion`, y lo devuelve. */
@@ -43,7 +43,12 @@ export interface SesionEmpleadoStore {
   otraSesionVigente(empleadoId: string, tokenExcluir: string): boolean;
 }
 
-export function crearSesionEmpleadoStore(): SesionEmpleadoStore {
+/**
+ * @param inactividadMinutos De `AuthConfig.sesionInactividadMinutos` (ADR 231
+ *   pto 4 — primer escritor obligatorio, HTTP). `0` = sin renovación por
+ *   inactividad (mismo opt-out que el resto de las variables de sesión).
+ */
+export function crearSesionEmpleadoStore(inactividadMinutos: number): SesionEmpleadoStore {
   const sesiones = new Map<string, SesionEmpleado>();
 
   return {
@@ -52,9 +57,23 @@ export function crearSesionEmpleadoStore(): SesionEmpleadoStore {
       sesiones.set(token, sesion);
       return token;
     },
+    /**
+     * ★ La renovación va ADENTRO de `buscar()`, el único punto de paso de
+     * toda request autenticada (ADR 231 pto 4) — la alternativa (un
+     * `renovar(token)` explícito que el handler llame) deja que un endpoint
+     * futuro se lo olvide y vuelva silenciosamente al TTL absoluto para esa
+     * ruta. Sólo se renueva si la sesión sigue vigente; `expiraEn` (tope
+     * absoluto) NUNCA se toca acá.
+     */
     buscar(token) {
       const sesion = sesiones.get(token);
-      return sesionVigente(sesion, new Date().toISOString()) ? sesion : undefined;
+      const ahora = new Date().toISOString();
+      if (sesion === undefined || !sesionVigente(sesion, ahora)) {
+        return undefined;
+      }
+      const renovada = renovarSesion(sesion, ahora, inactividadMinutos);
+      sesiones.set(token, renovada);
+      return renovada;
     },
     eliminar(token) {
       sesiones.delete(token);

@@ -420,6 +420,118 @@ describe("runMigrations", () => {
     expect(row.rol).toBe("administrador");
   });
 
+  it("creates justificaciones_devolucion and idx_justificaciones_devolucion_venta on a fresh database (devolucion-sin-token-dos-personas, tarea 9)", () => {
+    const db = new Database(":memory:");
+
+    runMigrations(db);
+
+    const names = tableNames(db);
+    expect(names).toContain("justificaciones_devolucion");
+    expect(indexNames(db)).toContain("idx_justificaciones_devolucion_venta");
+  });
+
+  it("allows inserting and reading a justificaciones_devolucion row correlated by venta_id/caso_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO vendedores (id, nombre, created_at) VALUES (?, ?, ?)",
+    ).run("vendedor-1", "Ana Vendedora", "2026-09-17T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "activo", "2026-09-17T00:00:00.000Z", "2026-09-17T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      "venta-1",
+      "vendedor-1",
+      "cliente-1",
+      null,
+      "plan-pro",
+      100,
+      "confirmada",
+      "caso-1",
+      "token-1",
+      "2026-09-17T00:00:00.000Z",
+      "2026-09-17T00:00:01.000Z",
+      null,
+    );
+
+    db.prepare(
+      "INSERT INTO justificaciones_devolucion (id, venta_id, caso_id, solicitante_id, motivo, solicitada_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("just-1", "venta-1", "caso-1", "vendedor-1", "el cliente se arrepintió", "2026-09-17T01:00:00.000Z");
+
+    const row = db
+      .prepare("SELECT venta_id, caso_id, solicitante_id, motivo FROM justificaciones_devolucion WHERE id = ?")
+      .get("just-1") as { venta_id: string; caso_id: string; solicitante_id: string; motivo: string };
+    expect(row.venta_id).toBe("venta-1");
+    expect(row.caso_id).toBe("caso-1");
+    expect(row.solicitante_id).toBe("vendedor-1");
+    expect(row.motivo).toBe("el cliente se arrepintió");
+  });
+
+  it("the venta_id index on justificaciones_devolucion is NOT unique — a venta can have a failed attempt and a successful one", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO vendedores (id, nombre, created_at) VALUES (?, ?, ?)",
+    ).run("vendedor-1", "Ana Vendedora", "2026-09-17T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "activo", "2026-09-17T00:00:00.000Z", "2026-09-17T00:00:00.000Z");
+    db.prepare(
+      "INSERT INTO ventas (id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, token_confirmacion, created_at, confirmed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      "venta-1",
+      "vendedor-1",
+      "cliente-1",
+      null,
+      "plan-pro",
+      100,
+      "reembolso_pendiente",
+      "caso-1",
+      "token-1",
+      "2026-09-17T00:00:00.000Z",
+      "2026-09-17T00:00:01.000Z",
+      null,
+    );
+
+    db.prepare(
+      "INSERT INTO justificaciones_devolucion (id, venta_id, caso_id, solicitante_id, motivo, solicitada_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("just-1", "venta-1", "caso-1", "vendedor-1", "primer intento", "2026-09-17T01:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO justificaciones_devolucion (id, venta_id, caso_id, solicitante_id, motivo, solicitada_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run("just-2", "venta-1", "caso-1", "vendedor-1", "segundo intento", "2026-09-17T02:00:00.000Z"),
+    ).not.toThrow();
+
+    const { count } = db
+      .prepare("SELECT COUNT(*) as count FROM justificaciones_devolucion WHERE venta_id = ?")
+      .get("venta-1") as CountRow;
+    expect(count).toBe(2);
+  });
+
+  it("rejects inserting a justificaciones_devolucion row with a non-existent venta_id", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    db.prepare(
+      "INSERT INTO casos (id, tipo, estado, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("caso-1", "venta", "activo", "2026-09-17T00:00:00.000Z", "2026-09-17T00:00:00.000Z");
+
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO justificaciones_devolucion (id, venta_id, caso_id, solicitante_id, motivo, solicitada_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run("just-1", "venta-inexistente", "caso-1", "vendedor-1", "motivo", "2026-09-17T00:00:00.000Z"),
+    ).toThrow(/FOREIGN KEY/);
+  });
+
   it("leaves roles_empleado with zero rows after migrating a database with pre-existing credenciales_empleado rows (default-deny sin backfill, ADR 156/157)", () => {
     const db = new Database(":memory:");
 

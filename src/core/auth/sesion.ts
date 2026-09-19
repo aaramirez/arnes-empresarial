@@ -12,30 +12,57 @@ export interface SesionEmpleado {
   readonly empleadoId: string;
   /** ISO-8601 UTC. */
   readonly iniciadaEn: string;
-  /** ISO-8601 UTC, o AUSENTE = sin expiración (`SESION_TTL_MINUTOS=0`, ADR 31 punto 2). */
+  /** Tope ABSOLUTO desde el login. NO se renueva NUNCA. Ausente = sin tope. (ADR 31 punto 2, significado INTACTO). */
   readonly expiraEn?: string;
+  /** ★ NUEVO (ADR 231): vencimiento por INACTIVIDAD. Se RENUEVA en cada uso. Ausente = sin vencimiento por inactividad. */
+  readonly inactivaEn?: string;
 }
 
 /**
- * TTL ABSOLUTO desde el login, no deslizante (ADR 31 punto 2).
- *  · `sesion === undefined`        → `false`
- *  · `sesion.expiraEn === undefined` → `true` (opt-out explícito)
- *  · si no → `ahora < sesion.expiraEn`
+ * Vigente sólo si las DOS condiciones se cumplen: `ahora < expiraEn` (tope
+ * ABSOLUTO desde el login, no deslizante, ADR 31 punto 2) Y `ahora <
+ * inactivaEn` (vencimiento por INACTIVIDAD, se renueva en cada uso vía
+ * `renovarSesion`, ADR 231). Cada condición se saltea si su campo está
+ * ausente — retrocompatibilidad con sesiones sin `inactivaEn`.
+ *  · `sesion === undefined` → `false`
  *
  * Comparación LEXICOGRÁFICA de strings, correcta SOLO porque todo timestamp
  * del repo es `new Date().toISOString()` — ISO-8601 UTC de ancho fijo (ADR
- * 16 de Hito 4, regla 3). El borde exacto (`ahora === expiraEn`) es
- * `false`: vencida, mismo criterio que `expires_at > @ahora` del CAS de
- * confirmación.
+ * 16 de Hito 4, regla 3). El borde exacto (`ahora === expiraEn` o `ahora
+ * === inactivaEn`) es `false`: vencida, mismo criterio que `expires_at >
+ * @ahora` del CAS de confirmación.
  */
 export function sesionVigente(sesion: SesionEmpleado | undefined, ahora: string): boolean {
   if (sesion === undefined) {
     return false;
   }
-  if (sesion.expiraEn === undefined) {
-    return true;
+  if (sesion.expiraEn !== undefined && ahora >= sesion.expiraEn) {
+    return false;
   }
-  return ahora < sesion.expiraEn;
+  if (sesion.inactivaEn !== undefined && ahora >= sesion.inactivaEn) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Renueva la ventana de inactividad de una sesión vigente. PURA — no muta
+ * `sesion`, devuelve un objeto nuevo. `expiraEn` (tope absoluto) NUNCA se
+ * toca acá — sólo `inactivaEn` cambia (ADR 231 pto 3). Reusa
+ * `calcularExpiraEn`, del mismo archivo, para no cargar ninguna dependencia
+ * nueva.
+ */
+export function renovarSesion(
+  sesion: SesionEmpleado,
+  ahora: string,
+  inactividadMinutos: number,
+): SesionEmpleado {
+  const inactivaEn = calcularExpiraEn(ahora, inactividadMinutos);
+  if (inactivaEn === undefined) {
+    const { inactivaEn: _omitida, ...resto } = sesion;
+    return resto;
+  }
+  return { ...sesion, inactivaEn };
 }
 
 /**

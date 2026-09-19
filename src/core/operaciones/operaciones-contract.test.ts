@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  DOMINIO_DEVOLUCION,
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACIONES_MCP_SERVER_NAME,
@@ -13,9 +14,11 @@ import {
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
+  OPERACION_SOLICITAR_DEVOLUCION,
   type AccionConfirmable,
   type AccionReembolsoModelo,
   type AccionSolicitudModelo,
@@ -24,6 +27,7 @@ import {
   type LlaveConfirmacion,
   type OperacionCancelarSolicitudInterna,
   type OperacionConsultarReporteComisiones,
+  type OperacionConsultarVenta,
   type OperacionCrearSolicitudInterna,
   type OperacionNegocio,
   type OperacionProcesarDevolucion,
@@ -31,6 +35,7 @@ import {
   type OperacionResolverDecisionVenta,
   type OperacionResolverReembolso,
   type OperacionResolverSolicitud,
+  type OperacionSolicitarDevolucion,
 } from "./operaciones-contract.js";
 
 /**
@@ -46,7 +51,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera las ocho operaciones del contrato, final (ADR 163/171/174/206)", () => {
+  it("OPERACIONES_NEGOCIO enumera DIEZ operaciones — forma FINAL (devolucion-sin-token-dos-personas, tarea 11): solicitar_devolucion precede a consultar_venta", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -56,8 +61,41 @@ describe("operaciones-contract constants", () => {
       OPERACION_CONSULTAR_REPORTE_COMISIONES,
       OPERACION_RESOLVER_SOLICITUD,
       OPERACION_RESOLVER_REEMBOLSO,
+      OPERACION_SOLICITAR_DEVOLUCION,
+      OPERACION_CONSULTAR_VENTA,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(8);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(10);
+  });
+});
+
+describe("OperacionSolicitarDevolucion (devolucion-sin-token-dos-personas, tarea 11, ADR 223/228/229 pto 3)", () => {
+  it("ventaId y motivo opcionales en el TIPO (ausente ventaId ⇒ modo listado), SIN accion ni confirmado", () => {
+    const listado: OperacionSolicitarDevolucion = { operacion: OPERACION_SOLICITAR_DEVOLUCION };
+    const conDatos: OperacionSolicitarDevolucion = {
+      operacion: OPERACION_SOLICITAR_DEVOLUCION,
+      ventaId: "venta-1",
+      motivo: "el cliente se arrepintió",
+    };
+    const generico: OperacionNegocio = listado;
+
+    expect(generico.operacion).toBe("solicitar_devolucion");
+    expect(conDatos.ventaId).toBe("venta-1");
+    expect(conDatos.motivo).toBe("el cliente se arrepintió");
+    expect("accion" in listado).toBe(false);
+    expect("confirmado" in listado).toBe(false);
+  });
+});
+
+describe("OperacionConsultarVenta (devolucion-sin-token-dos-personas, tarea 3, ADR 225/229 pto 5)", () => {
+  it("ventaId opcional (ausente ⇒ modo listado), SIN accion ni confirmado — es de sólo lectura", () => {
+    const listado: OperacionConsultarVenta = { operacion: OPERACION_CONSULTAR_VENTA };
+    const conId: OperacionConsultarVenta = { operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" };
+    const generico: OperacionNegocio = listado;
+
+    expect(generico.operacion).toBe("consultar_venta");
+    expect(conId.ventaId).toBe("venta-1");
+    expect("accion" in listado).toBe(false);
+    expect("confirmado" in listado).toBe(false);
   });
 });
 
@@ -274,6 +312,35 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     void op;
   }
 
+  function _chequeoDeTipos_consultarVentaNoAceptaMonto(): void {
+    const op: OperacionConsultarVenta = {
+      operacion: OPERACION_CONSULTAR_VENTA,
+      // @ts-expect-error — `monto` no es campo de `consultar_venta` (sólo lectura, ADR 225).
+      monto: 50,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_solicitarDevolucionNoAceptaAccion(): void {
+    const op: OperacionSolicitarDevolucion = {
+      operacion: OPERACION_SOLICITAR_DEVOLUCION,
+      ventaId: "v1",
+      motivo: "m",
+      // @ts-expect-error — `accion` NUNCA es campo de `solicitar_devolucion` (ADR 229 pto 3) — la pone el dispatcher, literal.
+      accion: "aprobar",
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_solicitarDevolucionNoAceptaConfirmado(): void {
+    const op: OperacionSolicitarDevolucion = {
+      operacion: OPERACION_SOLICITAR_DEVOLUCION,
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1) — lo decide el composition root.
+      confirmado: true,
+    };
+    void op;
+  }
+
   function _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado(): void {
     const op: OperacionResolverReembolso = {
       operacion: OPERACION_RESOLVER_REEMBOLSO,
@@ -300,8 +367,11 @@ describe("OperacionNegocio — invariante: campo de dinero/período sólo en su 
     expect(typeof _chequeoDeTipos_resolverSolicitudNoAceptaConfirmado).toBe("function");
     expect(typeof _chequeoDeTipos_accionSolicitudModeloNoAceptaCancelar).toBe("function");
     expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaMonto).toBe("function");
+    expect(typeof _chequeoDeTipos_consultarVentaNoAceptaMonto).toBe("function");
     expect(typeof _chequeoDeTipos_resolverReembolsoNoAceptaConfirmado).toBe("function");
     expect(typeof _chequeoDeTipos_accionReembolsoModeloNoAceptaCancelar).toBe("function");
+    expect(typeof _chequeoDeTipos_solicitarDevolucionNoAceptaAccion).toBe("function");
+    expect(typeof _chequeoDeTipos_solicitarDevolucionNoAceptaConfirmado).toBe("function");
   });
 });
 
@@ -348,11 +418,13 @@ describe("ConfirmacionOperacionPort — LlaveConfirmacion (ADR 209/212/213)", ()
     expect(port.estaConfirmada(llave, "e1", "caso-turno-2")).toBe(false);
   });
 
-  it("DominioConfirmacion es una unión cerrada de DOS literales, sin 'propuesta' (ADR 212 pto 4)", () => {
+  it("DominioConfirmacion es una unión cerrada de TRES literales (devolucion-sin-token-dos-personas, tarea 11), sin 'propuesta' (ADR 212 pto 4)", () => {
     const reembolso: DominioConfirmacion = DOMINIO_REEMBOLSO;
     const solicitud: DominioConfirmacion = DOMINIO_SOLICITUD;
+    const devolucion: DominioConfirmacion = DOMINIO_DEVOLUCION;
     expect(reembolso).toBe("reembolso");
     expect(solicitud).toBe("solicitud");
+    expect(devolucion).toBe("devolucion");
 
     function _chequeoDeTipos_dominioConfirmacionNoAceptaPropuesta(): void {
       // @ts-expect-error — "propuesta" nunca es un DominioConfirmacion; esa ranura es de la TUI, no de esta capability (ADR 212 pto 4).
@@ -360,6 +432,14 @@ describe("ConfirmacionOperacionPort — LlaveConfirmacion (ADR 209/212/213)", ()
       void dominioInvalido;
     }
     expect(typeof _chequeoDeTipos_dominioConfirmacionNoAceptaPropuesta).toBe("function");
+  });
+
+  it("★ AccionConfirmable gana 'solicitar' (devolucion-sin-token-dos-personas, ADR 229 pto 3) — no es campo de ningún schema, el dispatcher la pone literal", () => {
+    const solicitar: AccionConfirmable = "solicitar";
+    expect(solicitar).toBe("solicitar");
+
+    const llave: LlaveConfirmacion = { dominio: DOMINIO_DEVOLUCION, itemId: "venta-1", accion: "solicitar" };
+    expect(llave.accion).toBe("solicitar");
   });
 });
 

@@ -11,7 +11,7 @@ import type { AuthConfig } from "./core/auth/auth-config.js";
 import type { CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import type { SesionEmpleadoStore } from "./adapters/web/sesion-empleado-store.js";
 
-const AUTH_CONFIG: AuthConfig = { sesionTtlMinutos: 30 };
+const AUTH_CONFIG: AuthConfig = { sesionTtlMinutos: 30, sesionInactividadMinutos: 30 };
 const TIMESTAMP = "2026-01-01T00:00:00.000Z";
 
 function fakeSesionStore(): SesionEmpleadoStore {

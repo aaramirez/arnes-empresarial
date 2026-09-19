@@ -1,8 +1,11 @@
 /**
- * Store en memoria de confirmaciones pendientes de las TRES operaciones del
- * canal conversacional que usan confirmación en dos pasos —
- * `cancelar_solicitud_interna`, `resolver_reembolso` y `resolver_solicitud`
- * (`aprobacion-conversacional-hitl`, ADR 212/213/214, tarea 2). Implementa
+ * Store en memoria de confirmaciones pendientes de las CUATRO operaciones
+ * del canal conversacional que usan confirmación en dos pasos —
+ * `cancelar_solicitud_interna`, `resolver_reembolso`, `resolver_solicitud` y
+ * `solicitar_devolucion` (`aprobacion-conversacional-hitl`, ADR 212/213/214,
+ * tarea 2; `devolucion-sin-token-dos-personas`, ADR 229 pto 4, tarea 12 —
+ * CERO cambio de código: este módulo ya era genérico sobre
+ * `DominioConfirmacion`, sólo cambian dos doc-comments). Implementa
  * `ConfirmacionOperacionPort` (`core/operaciones/operaciones-contract.ts`,
  * tarea 1) — la interfaz vive en el núcleo por convención hexagonal, esta
  * implementación concreta vive acá porque es estado de proceso ligado a la
@@ -51,7 +54,7 @@ interface ConfirmacionPendiente {
   readonly origenCasoId: string;
 }
 
-/** `${dominio}:${itemId}` — el `itemId` NUNCA contiene el separador de forma ambigua (ADR 212 pto 3): el prefijo `dominio:` es fijo y cerrado (dos valores), así que un `itemId` con ':' adentro no puede confundirse con otro par dominio/itemId. */
+/** `${dominio}:${itemId}` — el `itemId` NUNCA contiene el separador de forma ambigua (ADR 212 pto 3): el prefijo `dominio:` es fijo y cerrado (TRES valores, `devolucion-sin-token-dos-personas` ADR 229 pto 4), así que un `itemId` con ':' adentro no puede confundirse con otro par dominio/itemId. */
 function llaveInterna(dominio: DominioConfirmacion, itemId: string): string {
   return `${dominio}:${itemId}`;
 }

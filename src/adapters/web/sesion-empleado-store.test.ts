@@ -4,13 +4,18 @@
  * "sesión vencida" — ambos devuelven `undefined` (mismo criterio que
  * `token-confirmacion.ts`/`sesionVigente`).
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { crearSesionEmpleadoStore } from "./sesion-empleado-store.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
 
+/** Store construido sin argumento de inactividad — molde de los tests preexistentes de vigencia por `expiraEn`, sin renovación (`0` = opt-out). */
+function crearStoreSinInactividad() {
+  return crearSesionEmpleadoStore(0);
+}
+
 describe("crearSesionEmpleadoStore", () => {
   it("crear devuelve un token no vacío", () => {
-    const store = crearSesionEmpleadoStore();
+    const store = crearStoreSinInactividad();
     const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
 
     const token = store.crear(sesion);
@@ -20,7 +25,7 @@ describe("crearSesionEmpleadoStore", () => {
   });
 
   it("crear con la misma sesión dos veces devuelve tokens distintos", () => {
-    const store = crearSesionEmpleadoStore();
+    const store = crearStoreSinInactividad();
     const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
 
     const tokenA = store.crear(sesion);
@@ -30,7 +35,7 @@ describe("crearSesionEmpleadoStore", () => {
   });
 
   it("buscar devuelve la sesión mientras está vigente", () => {
-    const store = crearSesionEmpleadoStore();
+    const store = crearStoreSinInactividad();
     const sesion: SesionEmpleado = {
       empleadoId: "emp-1",
       iniciadaEn: new Date().toISOString(),
@@ -43,7 +48,7 @@ describe("crearSesionEmpleadoStore", () => {
   });
 
   it("buscar devuelve la sesión sin expiración (expiraEn ausente = opt-out)", () => {
-    const store = crearSesionEmpleadoStore();
+    const store = crearStoreSinInactividad();
     const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
 
     const token = store.crear(sesion);
@@ -52,13 +57,13 @@ describe("crearSesionEmpleadoStore", () => {
   });
 
   it("buscar devuelve undefined si el token no existe", () => {
-    const store = crearSesionEmpleadoStore();
+    const store = crearStoreSinInactividad();
 
     expect(store.buscar("token-inexistente")).toBeUndefined();
   });
 
   it("buscar devuelve undefined si la sesión venció -- indistinguible de un token inexistente", () => {
-    const store = crearSesionEmpleadoStore();
+    const store = crearStoreSinInactividad();
     const sesion: SesionEmpleado = {
       empleadoId: "emp-1",
       iniciadaEn: new Date(Date.now() - 120_000).toISOString(),
@@ -72,13 +77,82 @@ describe("crearSesionEmpleadoStore", () => {
   });
 
   /**
+   * `devolucion-sin-token-dos-personas`, tarea 21 (ADR 231 pto 4 — primer
+   * escritor obligatorio, HTTP). La renovación vive DENTRO de `buscar()`,
+   * único punto de paso de toda request autenticada.
+   */
+  describe("renovación por inactividad (ADR 231)", () => {
+    const INICIO = new Date("2026-09-01T10:00:00.000Z");
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("sesión en uso: requests sucesivos antes de vencer la ventana de inactividad siguen vigentes en cada uno", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(INICIO);
+
+      const store = crearSesionEmpleadoStore(5);
+      const sesion: SesionEmpleado = {
+        empleadoId: "emp-1",
+        iniciadaEn: INICIO.toISOString(),
+        inactivaEn: new Date(INICIO.getTime() + 5 * 60_000).toISOString(),
+      };
+      const token = store.crear(sesion);
+
+      vi.setSystemTime(new Date(INICIO.getTime() + 4 * 60_000));
+      expect(store.buscar(token)).toBeDefined();
+
+      // 4 min más desde el ÚLTIMO uso (renovado), no desde el inicio (8 min desde el inicio)
+      vi.setSystemTime(new Date(INICIO.getTime() + 8 * 60_000));
+      expect(store.buscar(token)).toBeDefined();
+    });
+
+    it("sesión ociosa vence igual que hoy: sin requests intermedios, la ventana de inactividad expira", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(INICIO);
+
+      const store = crearSesionEmpleadoStore(5);
+      const sesion: SesionEmpleado = {
+        empleadoId: "emp-1",
+        iniciadaEn: INICIO.toISOString(),
+        inactivaEn: new Date(INICIO.getTime() + 5 * 60_000).toISOString(),
+      };
+      const token = store.crear(sesion);
+
+      vi.setSystemTime(new Date(INICIO.getTime() + 6 * 60_000));
+      expect(store.buscar(token)).toBeUndefined();
+    });
+
+    it("el tope absoluto vence la sesión aunque se la use dentro de la ventana de inactividad", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(INICIO);
+
+      const store = crearSesionEmpleadoStore(100);
+      const sesion: SesionEmpleado = {
+        empleadoId: "emp-1",
+        iniciadaEn: INICIO.toISOString(),
+        expiraEn: new Date(INICIO.getTime() + 10 * 60_000).toISOString(),
+        inactivaEn: new Date(INICIO.getTime() + 5 * 60_000).toISOString(),
+      };
+      const token = store.crear(sesion);
+
+      vi.setSystemTime(new Date(INICIO.getTime() + 3 * 60_000));
+      expect(store.buscar(token)).toBeDefined();
+
+      vi.setSystemTime(new Date(INICIO.getTime() + 11 * 60_000));
+      expect(store.buscar(token)).toBeUndefined();
+    });
+  });
+
+  /**
    * `chat-web-empleado`, tarea 5 (ADR 195 pto 1, ADR 202 pto 1) -- tercer
    * método, aditivo. `crear`/`buscar` no cambian de firma ni de
    * comportamiento (cubierto por los tests de arriba, sin tocarlos).
    */
   describe("eliminar", () => {
     it("token existente y vigente -- tras eliminar, buscar devuelve undefined", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
       const token = store.crear(sesion);
 
@@ -88,7 +162,7 @@ describe("crearSesionEmpleadoStore", () => {
     });
 
     it("token vencido -- eliminar no lanza (idempotente, mismo criterio que buscar)", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesion: SesionEmpleado = {
         empleadoId: "emp-1",
         iniciadaEn: new Date(Date.now() - 120_000).toISOString(),
@@ -100,13 +174,13 @@ describe("crearSesionEmpleadoStore", () => {
     });
 
     it("token inexistente -- eliminar no lanza", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
 
       expect(() => store.eliminar("token-inexistente")).not.toThrow();
     });
 
     it("token ya eliminado -- eliminar de nuevo no lanza", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
       const token = store.crear(sesion);
 
@@ -125,7 +199,7 @@ describe("crearSesionEmpleadoStore", () => {
    */
   describe("otraSesionVigente", () => {
     it("false si el empleado sólo tiene la sesión que se está por cerrar", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
       const token = store.crear(sesion);
 
@@ -133,7 +207,7 @@ describe("crearSesionEmpleadoStore", () => {
     });
 
     it("true si el mismo empleado tiene OTRA sesión vigente además de la que se excluye", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesion: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
       const tokenA = store.crear(sesion);
       const tokenB = store.crear(sesion);
@@ -143,7 +217,7 @@ describe("crearSesionEmpleadoStore", () => {
     });
 
     it("false si la OTRA sesión del mismo empleado ya venció", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesionVigente: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
       const sesionVencida: SesionEmpleado = {
         empleadoId: "emp-1",
@@ -157,7 +231,7 @@ describe("crearSesionEmpleadoStore", () => {
     });
 
     it("false si la otra sesión vigente pertenece a OTRO empleado", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
       const sesionA: SesionEmpleado = { empleadoId: "emp-1", iniciadaEn: new Date().toISOString() };
       const sesionB: SesionEmpleado = { empleadoId: "emp-2", iniciadaEn: new Date().toISOString() };
       const tokenA = store.crear(sesionA);
@@ -167,7 +241,7 @@ describe("crearSesionEmpleadoStore", () => {
     });
 
     it("false si el empleadoId no tiene ninguna sesión en el store", () => {
-      const store = crearSesionEmpleadoStore();
+      const store = crearStoreSinInactividad();
 
       expect(store.otraSesionVigente("emp-inexistente", "token-cualquiera")).toBe(false);
     });

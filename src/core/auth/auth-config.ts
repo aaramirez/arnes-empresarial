@@ -8,11 +8,26 @@
 import { resolveNumeroValidado } from "../ventas/ventas-config.js";
 
 export interface AuthConfig {
-  /** Minutos. `0` = SIN expiración — mismo interruptor que `VENTA_TOKEN_TTL_HORAS=0`. Default 30. */
+  /**
+   * Minutos. Tope ABSOLUTO desde el login, NO se renueva nunca (ADR 31 punto 2,
+   * significado INTACTO). `0` = SIN expiración — mismo interruptor que
+   * `VENTA_TOKEN_TTL_HORAS=0`. Default 480 (8 h, ADR 231 pto 6).
+   */
   readonly sesionTtlMinutos: number;
+  /**
+   * ★ NUEVO (ADR 231). Minutos. Vencimiento por INACTIVIDAD, se RENUEVA con
+   * cada uso (ver `renovarSesion` en `sesion.ts`). `0` = SIN expiración por
+   * inactividad, independiente de `sesionTtlMinutos`. Default 30 — la sesión
+   * ociosa muere exactamente cuando muere hoy (R8 sin empeorar).
+   */
+  readonly sesionInactividadMinutos: number;
 }
 
-export const DEFAULT_SESION_TTL_MINUTOS = 30;
+/** ★ ADR 231 pto 6: pasa de 30 a 480 — significado INTACTO, sólo cambia el default (tope absoluto). */
+export const DEFAULT_SESION_TTL_MINUTOS = 480;
+
+/** ★ NUEVO (ADR 231 pto 6): la sesión ociosa muere exactamente cuando muere hoy (R8 sin empeorar). */
+export const DEFAULT_SESION_INACTIVIDAD_MINUTOS = 30;
 
 /**
  * Tope superior de `SESION_TTL_MINUTOS` (fix de review, hallazgo fuera de
@@ -31,16 +46,31 @@ export type ResolveAuthConfigResult =
   | { readonly ok: false; readonly errores: readonly string[] };
 
 /**
+ * Predicado y descripción compartidos por `sesionTtlMinutos` y
+ * `sesionInactividadMinutos` (fix de review, hallazgo de duplicación letra
+ * por letra entre las dos llamadas a `resolveNumeroValidado` de abajo): las
+ * dos variables usan EXACTAMENTE el mismo rango válido, `0` incluido en
+ * ambas con su propio significado (ADR 231 pto 6).
+ */
+const ES_MINUTOS_SESION_VALIDO = (parsed: number): boolean =>
+  Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_SESION_TTL_MINUTOS;
+const DESCRIPCION_MINUTOS_SESION_VALIDO = `un entero finito entre 0 y ${MAX_SESION_TTL_MINUTOS}`;
+
+/**
  * | Env var | Campo | Default | Validación | Inválido |
  * |---|---|---|---|---|
- * | `SESION_TTL_MINUTOS` | `sesionTtlMinutos` | `30` | entero finito, `>= 0`, `<= MAX_SESION_TTL_MINUTOS` | **ABORTA** |
+ * | `SESION_TTL_MINUTOS` | `sesionTtlMinutos` | `480` | entero finito, `>= 0`, `<= MAX_SESION_TTL_MINUTOS` | **ABORTA** |
+ * | `SESION_INACTIVIDAD_MINUTOS` | `sesionInactividadMinutos` | `30` | entero finito, `>= 0`, `<= MAX_SESION_TTL_MINUTOS` | **ABORTA** |
  *
  * Ausente o vacía → default. Presente pero inválida → error con el nombre
- * de la variable y el valor recibido. Clase "aborta" (ADR 17 de Hito 4): un
- * TTL de sesión mal escrito que caiga en silencio a 30 min es una sesión
- * que dura otra cosa que la que el operador cree — y un TTL desmesurado
- * (fuera del rango válido de `Date`) es peor: tumba `/login` en tiempo de
- * request en vez de fallar acá, en el arranque.
+ * de la variable y el valor recibido, ACUMULADO junto con el de la otra
+ * variable si las dos son inválidas a la vez. Clase "aborta" (ADR 17 de
+ * Hito 4): un TTL de sesión mal escrito que caiga en silencio a su default
+ * es una sesión que dura otra cosa que la que el operador cree — y un TTL
+ * desmesurado (fuera del rango válido de `Date`) es peor: tumba `/login` en
+ * tiempo de request en vez de fallar acá, en el arranque. Las dos variables
+ * son independientes: `0` en una no afecta el significado de la otra (ADR
+ * 231 pto 6).
  */
 export function resolveAuthConfig(
   env: Readonly<Record<string, string | undefined>>,
@@ -51,8 +81,17 @@ export function resolveAuthConfig(
     "SESION_TTL_MINUTOS",
     env.SESION_TTL_MINUTOS,
     DEFAULT_SESION_TTL_MINUTOS,
-    (parsed) => Number.isInteger(parsed) && parsed >= 0 && parsed <= MAX_SESION_TTL_MINUTOS,
-    `un entero finito entre 0 y ${MAX_SESION_TTL_MINUTOS}`,
+    ES_MINUTOS_SESION_VALIDO,
+    DESCRIPCION_MINUTOS_SESION_VALIDO,
+    errores,
+  );
+
+  const sesionInactividadMinutos = resolveNumeroValidado(
+    "SESION_INACTIVIDAD_MINUTOS",
+    env.SESION_INACTIVIDAD_MINUTOS,
+    DEFAULT_SESION_INACTIVIDAD_MINUTOS,
+    ES_MINUTOS_SESION_VALIDO,
+    DESCRIPCION_MINUTOS_SESION_VALIDO,
     errores,
   );
 
@@ -60,5 +99,5 @@ export function resolveAuthConfig(
     return { ok: false, errores };
   }
 
-  return { ok: true, config: { sesionTtlMinutos } };
+  return { ok: true, config: { sesionTtlMinutos, sesionInactividadMinutos } };
 }

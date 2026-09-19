@@ -1,6 +1,6 @@
 ---
 name: devolucion-conversacional
-description: Cuando el empleado te pida procesar la devolución de una venta y tengas o puedas pedir el token de confirmación.
+description: Cuando el empleado te pida procesar la devolución de una venta y TIENE (o puede conseguir) el token de confirmación de esa venta. Si el empleado NO tiene el token pero la venta la vendió él, usá la skill `solicitar-devolucion` en su lugar.
 ---
 
 # Devolución de una venta, por conversación

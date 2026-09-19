@@ -118,7 +118,7 @@ import {
 import { type AuthConfig } from "./core/auth/auth-config.js";
 import { type CredencialesEmpleadoPort } from "./core/auth/credenciales-contract.js";
 import { resolverLogin } from "./core/auth/login.js";
-import { sesionVigente, type SesionEmpleado } from "./core/auth/sesion.js";
+import { renovarSesion, sesionVigente, type SesionEmpleado } from "./core/auth/sesion.js";
 import {
   ROLES_EMPLEADO,
   ROL_ADMINISTRADOR,
@@ -844,6 +844,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         dummyPasswordHash,
         now,
         ttlMinutos: authConfig.sesionTtlMinutos,
+        // ★ NUEVO (ADR 231 pto 5, devolucion-sin-token-dos-personas tarea 22).
+        inactividadMinutos: authConfig.sesionInactividadMinutos,
         logEvent,
       },
     );
@@ -1492,11 +1494,19 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     const ahora = now();
 
     // 1. Purga de sesión vencida — ANTES del parseo: es un hecho del reloj.
-    if (sesion !== undefined && !sesionVigente(sesion, ahora)) {
-      const empleadoId = sesion.empleadoId;
-      sesion = undefined;
-      confirmacionPendiente = undefined;
-      logEvent(COMANDO_LOG_CORRELATION_ID, "sesion-expirada", { empleadoId });
+    // ★ SEGUNDO escritor obligatorio de la renovación por inactividad (ADR
+    // 231 pto 4, §0.4, devolucion-sin-token-dos-personas tarea 22): si la
+    // sesión sigue vigente, se renueva acá — sin este `else`, la ranura de
+    // la TUI queda con el comportamiento viejo (R16).
+    if (sesion !== undefined) {
+      if (!sesionVigente(sesion, ahora)) {
+        const empleadoId = sesion.empleadoId;
+        sesion = undefined;
+        confirmacionPendiente = undefined;
+        logEvent(COMANDO_LOG_CORRELATION_ID, "sesion-expirada", { empleadoId });
+      } else {
+        sesion = renovarSesion(sesion, ahora, authConfig.sesionInactividadMinutos);
+      }
     }
 
     // 2. Purga silenciosa de la confirmación pendiente vencida.

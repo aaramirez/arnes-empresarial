@@ -61,6 +61,8 @@ export interface LoginDeps {
   readonly now: () => string;
   /** De `AuthConfig.sesionTtlMinutos`. `0` = sin expiración. */
   readonly ttlMinutos: number;
+  /** ★ NUEVO (ADR 231 pto 5). De `AuthConfig.sesionInactividadMinutos`. `0` = sin expiración por inactividad. */
+  readonly inactividadMinutos: number;
   readonly logEvent: (
     casoId: string,
     event: string,
@@ -82,7 +84,9 @@ export type LoginResult =
  *     motivo: "inexistente" }` → `{ resultado: "invalida" }`.
  *  3. `verificarPassword(password, credencial.passwordHash) === false`
  *     → `login-fallido` con `{ empleadoId, motivo: "password" }` → `invalida`.
- *  4. `iniciadaEn = now()`; `expiraEn = calcularExpiraEn(iniciadaEn, ttlMinutos)`
+ *  4. `iniciadaEn = now()`; `expiraEn = calcularExpiraEn(iniciadaEn, ttlMinutos)` (tope ABSOLUTO,
+ *     significado INTACTO — ADR 31 pto 2); `inactivaEn = calcularExpiraEn(iniciadaEn,
+ *     inactividadMinutos)` (★ NUEVO, ADR 231 pto 5, se renueva luego con `renovarSesion`)
  *     → `login-exitoso` con `{ empleadoId, expiraEn }` → `{ exitosa, sesion }`.
  *
  * ★ `password` aparece como argumento de `verificarPassword` en los DOS
@@ -99,7 +103,7 @@ export function resolverLogin(
   input: { readonly empleadoId: string; readonly password: string },
   deps: LoginDeps,
 ): LoginResult {
-  const { store, verificarPassword, dummyPasswordHash, now, ttlMinutos, logEvent } = deps;
+  const { store, verificarPassword, dummyPasswordHash, now, ttlMinutos, inactividadMinutos, logEvent } = deps;
   const { empleadoId, password } = input;
 
   const credencial = store.buscarCredencial(empleadoId);
@@ -121,11 +125,16 @@ export function resolverLogin(
 
   const iniciadaEn = now();
   const expiraEn = calcularExpiraEn(iniciadaEn, ttlMinutos);
+  const inactivaEn = calcularExpiraEn(iniciadaEn, inactividadMinutos);
 
   logEvent(AUTH_LOG_CORRELATION_ID, "login-exitoso", { empleadoId, expiraEn });
 
-  const sesion: SesionEmpleado =
-    expiraEn === undefined ? { empleadoId, iniciadaEn } : { empleadoId, iniciadaEn, expiraEn };
+  const sesion: SesionEmpleado = {
+    empleadoId,
+    iniciadaEn,
+    ...(expiraEn === undefined ? {} : { expiraEn }),
+    ...(inactivaEn === undefined ? {} : { inactivaEn }),
+  };
 
   return { resultado: "exitosa", sesion };
 }

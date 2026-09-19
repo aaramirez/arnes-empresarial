@@ -7,6 +7,8 @@ import { OPERACION_REGISTRAR_VENTA, OPERACION_RESOLVER_REEMBOLSO } from "../../c
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
+import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
+import type { JustificacionDevolucionPort } from "../../core/ventas/justificacion-devolucion-contract.js";
 import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "../../core/agents/definitions.js";
 import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
@@ -531,6 +533,23 @@ function unusedReporteStoreR7(): ReporteStorePort {
   return { listComisionesPorPeriodo: unused, listVentasEnReembolsoPendiente: unused };
 }
 
+/** `devolucion-sin-token-dos-personas`, tarea 7 — mismo molde que `unusedReporteStoreR7`. */
+function unusedConsultaVentaPropiaR7(): ConsultaVentaPropiaPort {
+  const unused = (): never => {
+    throw new Error("ConsultaVentaPropiaPort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  return { buscarPorId: unused, listarDeVendedor: unused };
+}
+
+/** `devolucion-sin-token-dos-personas`, tarea 16 — mismo criterio "unused" que `unusedConsultaVentaPropiaR7`. */
+function unusedJustificacionR7(): JustificacionDevolucionPort {
+  return {
+    registrar: () => {
+      throw new Error("JustificacionDevolucionPort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+    },
+  };
+}
+
 function unusedDespacharDepsR7(): DespacharDelegacionDeps {
   const unused = (): never => {
     throw new Error("DespacharDelegacionDeps no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
@@ -571,6 +590,8 @@ function ejecutarDepsR7(db: Database.Database, overrides: Partial<EjecutarOperac
     notifier: realNotifierR7(),
     baseUrlPublica: "http://localhost:8080",
     reporteStore: unusedReporteStoreR7(),
+    consultaVentaPropia: unusedConsultaVentaPropiaR7(),
+    justificacion: unusedJustificacionR7(),
     despacharDeps: unusedDespacharDepsR7(),
     rolPort: realRolPortR7(),
     registro: makeRegistroR7(),
@@ -1785,7 +1806,7 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
    */
   it("dos confirmaciones pendientes de dominios distintos -- logout limpia AMBAS, no sólo una", async () => {
     const empleadoId = "emp-multislot";
-    const sesionStore = crearSesionEmpleadoStore();
+    const sesionStore = crearSesionEmpleadoStore(0);
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
@@ -1812,7 +1833,7 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
 
   it("dos sesiones reales del mismo empleado -- logout de la sesión B no invalida la confirmación pendiente de la sesión A", async () => {
     const empleadoId = "emp-concurrente";
-    const sesionStore = crearSesionEmpleadoStore();
+    const sesionStore = crearSesionEmpleadoStore(0);
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const tokenA = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });
@@ -1848,7 +1869,7 @@ describe("createRequestListener — POST /logout (chat-web-empleado, tarea 6, AD
 
   it("empleado con UNA sola sesión (caso normal) -- logout limpia la confirmación igual que antes, sin regresión", async () => {
     const empleadoId = "emp-solo";
-    const sesionStore = crearSesionEmpleadoStore();
+    const sesionStore = crearSesionEmpleadoStore(0);
     const confirmacionOperacionesStore = crearConfirmacionOperacionesStore();
     const conversacionStore = fakeConversacionStore();
     const token = sesionStore.crear({ empleadoId, iniciadaEn: new Date().toISOString() });

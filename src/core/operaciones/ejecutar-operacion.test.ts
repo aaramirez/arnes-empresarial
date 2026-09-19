@@ -2,20 +2,25 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
+  DOMINIO_DEVOLUCION,
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
+  OPERACION_SOLICITAR_DEVOLUCION,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
   type OperacionNegocio,
 } from "./operaciones-contract.js";
+import type { ConsultaVentaPropiaPort, VentaPropia } from "../ventas/consulta-venta-contract.js";
+import type { JustificacionDevolucionPort } from "../ventas/justificacion-devolucion-contract.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "./ejecutar-operacion.js";
 import {
   CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
@@ -56,6 +61,7 @@ import {
   COMANDO_REPORTE_COMISIONES,
   COMANDO_RESOLVER_DECISION_VENTA,
   COMANDO_SOLICITAR,
+  COMANDO_SOLICITAR_DEVOLUCION,
   RESULTADO_ATENDIDA,
   RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_CONFIRMADA,
@@ -209,6 +215,37 @@ function makeReporteStore(overrides: Partial<ReporteStorePort> = {}): ReporteSto
   };
 }
 
+function buildVentaPropia(overrides: Partial<VentaPropia> = {}): VentaPropia {
+  return {
+    ventaId: "venta-1",
+    vendedorId: "empleado-1",
+    clienteId: "cliente-1",
+    planNuevo: "plan-pro",
+    monto: 1000,
+    estado: VENTA_ESTADO_CONFIRMADA,
+    casoId: "caso-venta-1",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** `devolucion-sin-token-dos-personas`, tarea 7. */
+function makeConsultaVentaPropia(overrides: Partial<ConsultaVentaPropiaPort> = {}): ConsultaVentaPropiaPort {
+  return {
+    buscarPorId: vi.fn(() => undefined),
+    listarDeVendedor: vi.fn(() => []),
+    ...overrides,
+  };
+}
+
+/** `devolucion-sin-token-dos-personas`, tarea 16. */
+function makeJustificacion(overrides: Partial<JustificacionDevolucionPort> = {}): JustificacionDevolucionPort {
+  return {
+    registrar: vi.fn(),
+    ...overrides,
+  };
+}
+
 function makeRolPort(rol: RolEmpleado | undefined = ROL_ADMINISTRADOR): RolEmpleadoPort {
   return { buscarRol: () => rol };
 }
@@ -240,6 +277,8 @@ function makeDeps(overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOpera
     notifier: makeNotifier(),
     baseUrlPublica: "https://ventas.example.com",
     reporteStore: makeReporteStore(),
+    consultaVentaPropia: makeConsultaVentaPropia(),
+    justificacion: makeJustificacion(),
     despacharDeps: makeDespacharDeps(),
     rolPort: makeRolPort(),
     registro: makeRegistro(),
@@ -1115,6 +1154,244 @@ describe("ejecutarOperacion — consultar_reporte_comisiones (ADR 174 pto 2, R12
     expect(reporteStore.listComisionesPorPeriodo).toHaveBeenCalledWith("2026-08");
     expect(vi.mocked(reporteStore.listComisionesPorPeriodo).mock.calls[0]).not.toContain("empleado-espia");
     expect(reporteStore.listVentasEnReembolsoPendiente).toHaveBeenCalledWith();
+  });
+});
+
+/* ── Bloque 4-bis (devolucion-sin-token-dos-personas, ADR 223/224/230, tarea 16): solicitar_devolucion ── */
+
+describe("ejecutarOperacion — solicitar_devolucion (devolucion-sin-token-dos-personas, tarea 16)", () => {
+  it("sin ventaId ⇒ listado, delega en consultaVentaPropia.listarDeVendedor con SÓLO ventas confirmada, CERO uso de la ranura", async () => {
+    const items = [buildVentaPropia({ ventaId: "venta-1" })];
+    const listarDeVendedor = vi.fn(() => items);
+    const consultaVentaPropia = makeConsultaVentaPropia({ listarDeVendedor });
+    const confirmacion = makeConfirmacion();
+    const deps = makeDeps({ consultaVentaPropia });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_SOLICITAR_DEVOLUCION }, { confirmacion }),
+      deps,
+    );
+
+    expect(listarDeVendedor).toHaveBeenCalledWith({ vendedorId: SESION.empleadoId, estados: [VENTA_ESTADO_CONFIRMADA] });
+    expect(texto).toContain("venta-1");
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+  });
+
+  it("motivo ausente ⇒ mensaje de motivo inválido, CERO uso de la ranura de confirmación, CERO fila de auditoría", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const confirmacion = makeConfirmacion();
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_SOLICITAR_DEVOLUCION, ventaId: "venta-1" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toContain("motivo");
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("venta ajena ⇒ no_autorizada, texto distinguible, CERO uso de la ranura, ★ fila con RESULTADO_NO_AUTORIZADO (la más valiosa del change)", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: "otro-vendedor" });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const confirmacion = makeConfirmacion();
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput(
+        { operacion: OPERACION_SOLICITAR_DEVOLUCION, ventaId: "venta-1", motivo: "el cliente se arrepintió" },
+        { confirmacion },
+      ),
+      deps,
+    );
+
+    expect(texto).toContain("no es tuya");
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledWith(
+      expect.objectContaining({ comando: COMANDO_SOLICITAR_DEVOLUCION, resultado: RESULTADO_NO_AUTORIZADO, ventaId: "venta-1" }),
+    );
+  });
+
+  it("venta ajena rechaza en el PRIMER turno también (ANTES del eco) — la fila se escribe aunque no haya confirmación previa", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: "otro-vendedor" });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_SOLICITAR_DEVOLUCION, ventaId: "venta-1", motivo: "motivo válido" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+  });
+
+  it("primer turno (sin confirmar) ⇒ eco con datos de la venta, marca pendiente con dominio 'devolucion' y acción 'solicitar', CERO escrituras de negocio", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId, monto: 1234 });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const confirmacion = makeConfirmacion();
+    const justificacion = makeJustificacion();
+    const store = makeVentaStore();
+    const deps = makeDeps({ consultaVentaPropia, justificacion, store });
+
+    const texto = await ejecutarOperacion(
+      makeInput(
+        { operacion: OPERACION_SOLICITAR_DEVOLUCION, ventaId: "venta-1", motivo: "el cliente se arrepintió" },
+        { confirmacion },
+      ),
+      deps,
+    );
+
+    expect(texto).toContain("venta-1");
+    expect(confirmacion.marcarPendiente).toHaveBeenCalledWith(
+      expect.objectContaining({ dominio: DOMINIO_DEVOLUCION, itemId: "venta-1", accion: "solicitar" }),
+    );
+    expect(justificacion.registrar).not.toHaveBeenCalled();
+    expect(store.escalarReembolso).not.toHaveBeenCalled();
+  });
+
+  it("★ segundo turno confirmado ⇒ delega en solicitarDevolucion, fila con RESULTADO_ESCALADA, texto de éxito", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const escalarReembolso = vi.fn(() => buildVenta({ id: "venta-1", estado: VENTA_ESTADO_PENDIENTE_CONFIRMACION }));
+    const store = makeVentaStore({ escalarReembolso });
+    const justificacion = makeJustificacion();
+    const registro = makeRegistro();
+    const confirmacion = makeConfirmacion({ estaConfirmada: vi.fn(() => true) });
+    const deps = makeDeps({ consultaVentaPropia, store, justificacion, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput(
+        { operacion: OPERACION_SOLICITAR_DEVOLUCION, ventaId: "venta-1", motivo: "el cliente se arrepintió" },
+        { confirmacion },
+      ),
+      deps,
+    );
+
+    expect(confirmacion.consumir).toHaveBeenCalledWith(
+      expect.objectContaining({ dominio: DOMINIO_DEVOLUCION, itemId: "venta-1", accion: "solicitar" }),
+    );
+    expect(justificacion.registrar).toHaveBeenCalledTimes(1);
+    expect(escalarReembolso).toHaveBeenCalledWith({ ventaId: "venta-1", casoId: venta.casoId, ahora: AHORA });
+    expect(registro.registrarAccion).toHaveBeenCalledWith(
+      expect.objectContaining({ comando: COMANDO_SOLICITAR_DEVOLUCION, resultado: RESULTADO_ESCALADA, ventaId: "venta-1" }),
+    );
+    expect(texto.length).toBeGreaterThan(0);
+  });
+
+  it("★ CERO fila de auditoría en motivo_invalido/no_encontrada/requiere_confirmacion/listado", async () => {
+    const registro = makeRegistro();
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => undefined), listarDeVendedor: vi.fn(() => []) });
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_SOLICITAR_DEVOLUCION }), deps);
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_SOLICITAR_DEVOLUCION, ventaId: "no-existe" }), deps);
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("★ test mecánico ampliado (ADR 224 pto 4): en la porción de solicitar_devolucion, el dispatcher no compara vendedorId con empleadoId", () => {
+    const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/vendedorId\s*===\s*[\w.]*empleadoId/);
+    expect(source).not.toMatch(/empleadoId\s*===\s*[\w.]*vendedorId/);
+  });
+});
+
+/* ── Bloque 5 (devolucion-sin-token-dos-personas, ADR 224 pto 4, ADR 225, tarea 7): consultar_venta ── */
+
+describe("ejecutarOperacion — consultar_venta (devolucion-sin-token-dos-personas, ADR 224 pto 4, ADR 225, tarea 7)", () => {
+  it("sin ventaId ⇒ listado, delega en consultaVentaPropia.listarDeVendedor con el empleadoId de la sesión", async () => {
+    const items = [buildVentaPropia({ ventaId: "venta-1" })];
+    const listarDeVendedor = vi.fn(() => items);
+    const consultaVentaPropia = makeConsultaVentaPropia({ listarDeVendedor });
+    const deps = makeDeps({ consultaVentaPropia });
+
+    const texto = await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }), deps);
+
+    expect(listarDeVendedor).toHaveBeenCalledWith({ vendedorId: SESION.empleadoId });
+    expect(texto).toContain("venta-1");
+  });
+
+  it("con ventaId de una venta propia ⇒ detalle, incluye el estado (la decisión del cliente)", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId, estado: VENTA_ESTADO_REEMBOLSADA });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const deps = makeDeps({ consultaVentaPropia });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" }),
+      deps,
+    );
+
+    expect(texto).toContain("venta-1");
+    expect(texto).toContain(VENTA_ESTADO_REEMBOLSADA);
+  });
+
+  it("con ventaId de una venta ajena ⇒ rechazo distinguible de no_encontrada, CERO fila de auditoría", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: "otro-empleado" });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto.length).toBeGreaterThan(0);
+  });
+
+  it("con ventaId inexistente ⇒ rechazo, CERO fila de auditoría", async () => {
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => undefined) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "no-existe" }),
+      deps,
+    );
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(texto.length).toBeGreaterThan(0);
+  });
+
+  it("★ CERO fila de auditoría en NINGUNA rama, con o sin ventaId (herramienta-operaciones-negocio: consultar_venta nunca escribe fila)", async () => {
+    const venta = buildVentaPropia({ ventaId: "venta-1", vendedorId: SESION.empleadoId });
+    const consultaVentaPropia = makeConsultaVentaPropia({ buscarPorId: vi.fn(() => venta) });
+    const registro = makeRegistro();
+    const deps = makeDeps({ consultaVentaPropia, registro });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }), deps);
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA, ventaId: "venta-1" }), deps);
+
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+  });
+
+  it("★ CERO llamadas a la ranura de confirmación — consultar_venta no es confirmable (ADR 229 pto 5)", async () => {
+    const confirmacion = makeConfirmacion();
+    const consultaVentaPropia = makeConsultaVentaPropia();
+    const deps = makeDeps({ consultaVentaPropia });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }, { confirmacion }), deps);
+
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("★ test mecánico (ADR 224 pto 4): en la porción de consultar_venta, el dispatcher no compara vendedorId con empleadoId — el gate de alcance vive en consultarVentaPropia, no acá", () => {
+    const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/vendedorId\s*===\s*[\w.]*empleadoId/);
+    expect(source).not.toMatch(/empleadoId\s*===\s*[\w.]*vendedorId/);
   });
 });
 

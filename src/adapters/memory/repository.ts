@@ -839,6 +839,148 @@ export function getVentaById(db: Database.Database, id: string): VentaRow | unde
   return row ? rowToVenta(row) : undefined;
 }
 
+/* ── `devolucion-sin-token-dos-personas`, tarea 2 (ADR 227): lectores de venta propia, SIN token_confirmacion ── */
+
+interface VentaPropiaSqlRow {
+  id: string;
+  vendedor_id: string;
+  cliente_id: string;
+  plan_anterior: string | null;
+  plan_nuevo: string;
+  monto: number;
+  estado: string;
+  caso_id: string;
+  created_at: string;
+  confirmed_at: string | null;
+  expires_at: string | null;
+}
+
+/**
+ * `VENTA_SELECT_COLUMNS` MENOS `token_confirmacion` (ADR 227 pto 2). La
+ * exclusión es de SQL: el token no sale de SQLite, no existe en memoria, no
+ * hay refactor que lo "vuelva a incluir sin querer". Exportada ÚNICAMENTE
+ * para el test mecánico de ausencia (mismo criterio que `CAMPOS_POR_OPERACION`
+ * de `validar-operacion.ts`) — nunca para uso en runtime fuera de este módulo.
+ */
+export const VENTA_PROPIA_SELECT_COLUMNS =
+  "id, vendedor_id, cliente_id, plan_anterior, plan_nuevo, monto, estado, caso_id, created_at, confirmed_at, expires_at";
+
+/** Proyección de una venta propia a nivel de adaptador — camelCase, SIN `tokenConfirmacion`. No confundir con `Venta`/`VentaPropia` del núcleo (ADR 227 pto 1). */
+export interface VentaPropiaRow {
+  readonly ventaId: string;
+  readonly vendedorId: string;
+  readonly clienteId: string;
+  readonly planAnterior?: string;
+  readonly planNuevo: string;
+  readonly monto: number;
+  readonly estado: string;
+  readonly casoId: string;
+  readonly createdAt: string;
+  readonly confirmedAt?: string;
+  readonly expiresAt?: string;
+}
+
+/** No reusa `rowToVenta` (ADR 227 pto 2): esa función escribe `tokenConfirmacion`. */
+function rowToVentaPropia(row: VentaPropiaSqlRow): VentaPropiaRow {
+  return {
+    ventaId: row.id,
+    vendedorId: row.vendedor_id,
+    clienteId: row.cliente_id,
+    ...(row.plan_anterior !== null ? { planAnterior: row.plan_anterior } : {}),
+    planNuevo: row.plan_nuevo,
+    monto: row.monto,
+    estado: row.estado,
+    casoId: row.caso_id,
+    createdAt: row.created_at,
+    ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
+    ...(row.expires_at !== null ? { expiresAt: row.expires_at } : {}),
+  };
+}
+
+/**
+ * Lectura por id, SIN filtro de vendedor y SIN token (ADR 227 pto 3): "ajena"
+ * tiene que ser distinguible de "no existe", y ese gate vive DENTRO del
+ * núcleo (`consultar-venta-propia.ts`), nunca acá. `getVentaById` (arriba)
+ * sigue sin ganar ningún llamador nuevo por esta tarea.
+ */
+export function buscarVentaPropiaPorId(db: Database.Database, ventaId: string): VentaPropiaRow | undefined {
+  const row = db.prepare(`SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE id = ?`).get(ventaId) as
+    | VentaPropiaSqlRow
+    | undefined;
+  return row ? rowToVentaPropia(row) : undefined;
+}
+
+/**
+ * Placeholders `@estadoN` + bind object para una cláusula `estado IN (...)`
+ * parametrizada. Recibe `estados` ya angosto a no-vacío para que el llamador
+ * decida qué hacer con el caso vacío (una cláusula `IN ()` es error de
+ * sintaxis en SQLite, no "sin resultados"). Compartida por
+ * `listVentasPropiasDeVendedor` y `listSolicitudesA2AEntrantesPorEstado`
+ * (hallazgo code-review: mismo armado de placeholders duplicado letra por
+ * letra en las dos funciones).
+ */
+function construirPlaceholdersEstadosIn(
+  estados: readonly string[],
+): { readonly placeholders: string; readonly binds: Record<string, string> } {
+  return {
+    placeholders: estados.map((_estado, i) => `@estado${i}`).join(", "),
+    binds: Object.fromEntries(estados.map((estado, i) => [`estado${i}`, estado])),
+  };
+}
+
+/**
+ * `estados` ausente ⇒ todos los estados del vendedor. Orden `created_at`
+ * DESC (lo más reciente primero). Default de `limite`: 20 — mismo valor que
+ * `LIMITE_LISTADO_VENTAS_PROPIAS` del núcleo, duplicado literal a propósito
+ * (este adaptador no importa `src/core/*`, mismo criterio que el resto del
+ * archivo).
+ */
+export function listVentasPropiasDeVendedor(
+  db: Database.Database,
+  filtro: { readonly vendedorId: string; readonly estados?: readonly string[]; readonly limite?: number },
+): readonly VentaPropiaRow[] {
+  const limite = filtro.limite ?? 20;
+  const estados = filtro.estados;
+
+  let clausulaEstados = "";
+  let estadoParams: Record<string, string> = {};
+  if (estados !== undefined && estados.length > 0) {
+    const { placeholders, binds } = construirPlaceholdersEstadosIn(estados);
+    clausulaEstados = ` AND estado IN (${placeholders})`;
+    estadoParams = binds;
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT ${VENTA_PROPIA_SELECT_COLUMNS} FROM ventas WHERE vendedor_id = @vendedorId${clausulaEstados} ORDER BY created_at DESC LIMIT @limite`,
+    )
+    .all({ vendedorId: filtro.vendedorId, limite, ...estadoParams }) as VentaPropiaSqlRow[];
+  return rows.map(rowToVentaPropia);
+}
+
+/**
+ * `devolucion-sin-token-dos-personas`, tarea 10 (ADR 228 pto 6). Implementa
+ * `JustificacionDevolucionPort.registrar` sobre la tabla `0014` — APPEND-ONLY,
+ * el `motivo` se persiste TAL CUAL, sin ninguna transformación (ADR 228
+ * pto 7: ese texto no viaja a ningún otro lado).
+ */
+export function insertJustificacionDevolucion(
+  db: Database.Database,
+  input: {
+    readonly id: string;
+    readonly ventaId: string;
+    readonly casoId: string;
+    readonly solicitanteId: string;
+    readonly motivo: string;
+    readonly solicitadaAt: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO justificaciones_devolucion (id, venta_id, caso_id, solicitante_id, motivo, solicitada_at)
+     VALUES (@id, @ventaId, @casoId, @solicitanteId, @motivo, @solicitadaAt)`,
+  ).run(input);
+}
+
 /**
  * Public shape of a `comision`, camelCase — field-for-field the same as
  * `Comision` in `src/core/ventas/ventas-contract.ts`. Same reasoning as
@@ -2828,8 +2970,7 @@ export function listSolicitudesA2AEntrantesPorEstado(
     return { items: [], hayMas: false };
   }
 
-  const placeholders = filtro.estados.map((_, i) => `@estado${i}`).join(", ");
-  const bindsEstados = Object.fromEntries(filtro.estados.map((estado, i) => [`estado${i}`, estado]));
+  const { placeholders, binds: bindsEstados } = construirPlaceholdersEstadosIn(filtro.estados);
 
   const rows = db
     .prepare(

@@ -16,23 +16,32 @@
  * (regla no negociable de `AGENTS.md`).
  */
 import {
+  DOMINIO_DEVOLUCION,
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
+  OPERACION_SOLICITAR_DEVOLUCION,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
+  type OperacionConsultarVenta,
   type OperacionNegocio,
   type OperacionRegistrarVenta,
   type OperacionResolverReembolso,
   type OperacionResolverSolicitud,
+  type OperacionSolicitarDevolucion,
 } from "./operaciones-contract.js";
+import { consultarVentaPropia } from "../ventas/consultar-venta-propia.js";
+import { type ConsultaVentaPropiaPort, type VentaPropia } from "../ventas/consulta-venta-contract.js";
+import { solicitarDevolucion, type SolicitarDevolucionDeps, type SolicitarDevolucionResult } from "../ventas/solicitar-devolucion.js";
+import { type JustificacionDevolucionPort } from "../ventas/justificacion-devolucion-contract.js";
 import { resolverDecisionVenta, type ConfirmarVentaDeps, type DecisionVentaResult } from "../ventas/confirmar-venta.js";
 import { procesarDevolucion, type DevolucionResult, type ProcesarDevolucionDeps } from "../ventas/procesar-devolucion.js";
 import { registrarVenta, type RegistrarVentaDeps } from "../ventas/registrar-venta.js";
@@ -77,6 +86,7 @@ import {
   COMANDO_REPORTE_COMISIONES,
   COMANDO_RESOLVER_DECISION_VENTA,
   COMANDO_SOLICITAR,
+  COMANDO_SOLICITAR_DEVOLUCION,
   RESULTADO_ATENDIDA,
   RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_CONFIRMADA,
@@ -104,6 +114,10 @@ export interface EjecutarOperacionDeps {
    * concreta antes de despachar (ADR 174 pto 6).
    */
   readonly reporteStore: ReporteStorePort;
+  /** `devolucion-sin-token-dos-personas`, ADR 225 pto 4, ADR 227 pto 4 — mismo criterio "requerido acá" que `reporteStore`. */
+  readonly consultaVentaPropia: ConsultaVentaPropiaPort;
+  /** `devolucion-sin-token-dos-personas`, ADR 228 pto 6, tarea 16 — mismo criterio "requerido acá" que `consultaVentaPropia`. */
+  readonly justificacion: JustificacionDevolucionPort;
   readonly despacharDeps: DespacharDelegacionDeps;
   /**
    * Requerido (`autorizacion-empleado`, ADR 157/159/162, ya mergeado a esta
@@ -539,7 +553,16 @@ function formatearLineaListadoReembolso(item: EscalacionListada): string {
   const base = `- venta ${item.ventaId} | vendedor ${item.vendedorNombre} | cliente ${item.clienteId} | monto ${formatMoney(
     item.monto,
   )} | caso ${item.casoId}`;
-  return item.confirmedAt === undefined ? base : `${base} | confirmada ${item.confirmedAt}`;
+  return conSufijoConfirmada(base, item.confirmedAt);
+}
+
+/**
+ * Sufijo ` | confirmada <fecha>` cuando `confirmedAt` está presente — mismo
+ * criterio en `formatearLineaVentaPropia` y `formatearLineaListadoReembolso`
+ * (hallazgo code-review: duplicación letra por letra, extraído acá).
+ */
+function conSufijoConfirmada(base: string, confirmedAt?: string): string {
+  return confirmedAt === undefined ? base : `${base} | confirmada ${confirmedAt}`;
 }
 
 /**
@@ -725,6 +748,149 @@ async function ejecutarConsultarReporte(
   return formatearReporteMensual(reporte);
 }
 
+/** Una línea por venta propia — molde `formatearLineaListadoReembolso`. */
+function formatearLineaVentaPropia(venta: VentaPropia): string {
+  const base = `- venta ${venta.ventaId} | cliente ${venta.clienteId} | plan ${venta.planNuevo} | monto ${formatMoney(
+    venta.monto,
+  )} | estado ${venta.estado} | caso ${venta.casoId}`;
+  return conSufijoConfirmada(base, venta.confirmedAt);
+}
+
+/** Construye el `SolicitarDevolucionDeps` del núcleo a partir del `EjecutarOperacionDeps` del dispatcher — molde `ConfirmarVentaDeps`/`ResolverEscalacionDeps` de arriba. */
+function solicitarDevolucionDeps(deps: EjecutarOperacionDeps): SolicitarDevolucionDeps {
+  return {
+    consulta: deps.consultaVentaPropia,
+    justificacion: deps.justificacion,
+    store: deps.store,
+    newId: deps.newId,
+    now: deps.now,
+    logEvent: deps.logEvent,
+  };
+}
+
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 223, ADR 224 pto 4, ADR 230 pto
+ * 3, tarea 16. Molde `ejecutarCancelarSolicitud`: rama listado sin tocar la
+ * ranura; `estaConfirmada({dominio: DOMINIO_DEVOLUCION, itemId: ventaId,
+ * accion: "solicitar"})`; delega ÍNTEGRO en `solicitarDevolucion` (tarea
+ * 14) — nunca reimplementa el gate de alcance ni el orden de evaluación,
+ * SÓLO traduce el `Result` a texto y a fila de auditoría. ★ **Cero lógica
+ * de alcance acá**: el dispatcher no compara `vendedorId` con `empleadoId`
+ * (test mecánico, ampliado de la tarea 7).
+ *
+ * Auditoría por rama (design.md §6 pto 3): `escalada` ⇒ fila
+ * `RESULTADO_ESCALADA`; `no_autorizada` ⇒ fila `RESULTADO_NO_AUTORIZADO`
+ * (★ la fila más valiosa del change: un empleado intentó iniciar sobre una
+ * venta que no es suya); `no_aplicable` ⇒ fila `RESULTADO_NO_APLICABLE`;
+ * `motivo_invalido`/`no_encontrada`/`requiere_confirmacion`/`listado` ⇒
+ * CERO filas — ninguna de esas cuatro tuvo un efecto que correlacionar.
+ */
+async function ejecutarSolicitarDevolucion(
+  operacion: OperacionSolicitarDevolucion,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  const { ventaId, motivo } = operacion;
+
+  if (ventaId === undefined) {
+    const resultado = solicitarDevolucion({ confirmado: false, sesion: input.sesion }, solicitarDevolucionDeps(deps));
+    if (resultado.resultado !== "listado") {
+      return "No se pudo listar tus ventas propias.";
+    }
+    if (resultado.items.length === 0) {
+      return "No tenés ventas confirmadas para iniciar una devolución.";
+    }
+    return resultado.items.map(formatearLineaVentaPropia).join("\n");
+  }
+
+  const llave: LlaveConfirmacion = { dominio: DOMINIO_DEVOLUCION, itemId: ventaId, accion: "solicitar" };
+
+  return ejecutarConDobleConfirmacion<SolicitarDevolucionResult>(
+    llave,
+    input,
+    (confirmado) =>
+      solicitarDevolucion(
+        { ventaId, confirmado, sesion: input.sesion, ...(motivo !== undefined ? { motivo } : {}) },
+        solicitarDevolucionDeps(deps),
+      ),
+    {
+      primeraEjecucion: (resultado) => {
+        if (resultado.resultado === "motivo_invalido") {
+          return {
+            kind: "texto",
+            texto: "Necesito un motivo (no vacío, hasta 256 caracteres) para iniciar la devolución.",
+          };
+        }
+        if (resultado.resultado === "no_encontrada") {
+          return { kind: "texto", texto: `No encontré ninguna venta ${ventaId}.` };
+        }
+        if (resultado.resultado === "no_autorizada") {
+          registrarResultadoAccion(COMANDO_SOLICITAR_DEVOLUCION, RESULTADO_NO_AUTORIZADO, resultado.casoId, { ventaId }, input, deps);
+          return { kind: "texto", texto: `La venta ${ventaId} no es tuya: no puedo iniciar una devolución sobre ella.` };
+        }
+        if (resultado.resultado !== "requiere_confirmacion") {
+          return { kind: "texto", texto: "No se pudo procesar esa solicitud." };
+        }
+        const { venta } = resultado;
+        return {
+          kind: "confirmar",
+          casoId: venta.casoId,
+          eco: `Vas a iniciar una devolución para la venta ${ventaId} (cliente ${venta.clienteId}, plan ${venta.planNuevo}, monto ${formatMoney(venta.monto)}, estado ${venta.estado}). Esto queda pendiente de aprobación de un administrador distinto — no se devuelve la plata todavía. Confirmá pidiéndomelo de nuevo, en un mensaje aparte, para completar la iniciación.`,
+        };
+      },
+      segundaEjecucion: (resultado) => {
+        if (resultado.resultado === "escalada") {
+          registrarResultadoAccion(COMANDO_SOLICITAR_DEVOLUCION, RESULTADO_ESCALADA, resultado.casoId, { ventaId }, input, deps);
+          return `Listo: la devolución de la venta ${ventaId} quedó escalada, pendiente de que un administrador distinto la apruebe.`;
+        }
+        if (resultado.resultado === "no_autorizada") {
+          registrarResultadoAccion(COMANDO_SOLICITAR_DEVOLUCION, RESULTADO_NO_AUTORIZADO, resultado.casoId, { ventaId }, input, deps);
+          return `La venta ${ventaId} no es tuya: no puedo iniciar una devolución sobre ella.`;
+        }
+        if (resultado.resultado === "no_aplicable") {
+          registrarResultadoAccion(COMANDO_SOLICITAR_DEVOLUCION, RESULTADO_NO_APLICABLE, resultado.casoId, { ventaId }, input, deps);
+          return "No se pudo completar la iniciación: puede que la venta ya no esté en un estado válido para eso.";
+        }
+        return "No se pudo procesar esa solicitud.";
+      },
+    },
+  );
+}
+
+/**
+ * `devolucion-sin-token-dos-personas`, ADR 224 pto 4, ADR 225, ADR 229 pto 5,
+ * ADR 230 pto 4, tarea 7. De sólo lectura, sin ranura de confirmación (no es
+ * confirmable) y sin fila de auditoría en NINGUNA rama — `consultar_venta`
+ * "no muta nada, y lo que divulga son datos propios del actor"
+ * (`herramienta-operaciones-negocio`). **Cero lógica de alcance acá**: el
+ * dispatcher delega ÍNTEGRO en `consultarVentaPropia` (tarea 6) — nunca
+ * compara `vendedorId` con `empleadoId` (test mecánico).
+ */
+async function ejecutarConsultarVenta(
+  operacion: OperacionConsultarVenta,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  const resultado = consultarVentaPropia(
+    { ...(operacion.ventaId !== undefined ? { ventaId: operacion.ventaId } : {}), empleadoId: input.sesion.empleadoId },
+    { consulta: deps.consultaVentaPropia },
+  );
+
+  switch (resultado.resultado) {
+    case "listado":
+      if (resultado.items.length === 0) {
+        return "No tenés ventas registradas.";
+      }
+      return resultado.items.map(formatearLineaVentaPropia).join("\n");
+    case "no_encontrada":
+      return `No encontré ninguna venta ${resultado.ventaId}.`;
+    case "no_autorizada":
+      return `La venta ${resultado.ventaId} no es tuya: no puedo mostrarte su estado.`;
+    case "detalle":
+      return formatearLineaVentaPropia(resultado.venta);
+  }
+}
+
 /**
  * NUNCA lanza — cualquier error sincrónico o rechazo de una dependencia
  * inyectada (p. ej. `store.crearVentaConCaso` fallando ruidosamente) se
@@ -818,6 +984,12 @@ export async function ejecutarOperacion(
 
       case OPERACION_RESOLVER_REEMBOLSO:
         return await ejecutarResolverReembolso(operacion, input, deps);
+
+      case OPERACION_SOLICITAR_DEVOLUCION:
+        return await ejecutarSolicitarDevolucion(operacion, input, deps);
+
+      case OPERACION_CONSULTAR_VENTA:
+        return await ejecutarConsultarVenta(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;

@@ -3,6 +3,7 @@ import {
   OPERACIONES_MCP_SERVER_NAME,
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
@@ -285,6 +286,47 @@ describe("createOperacionesAdapter — resolver_reembolso: input válido delega 
   });
 });
 
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultar_venta: forma zod (devolucion-sin-token-dos-personas, tarea 5)", () => {
+  it("acepta { operacion, ventaId }", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_CONSULTAR_VENTA,
+      ventaId: "V1",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("acepta { operacion } sin ventaId (modo listado)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({ operacion: OPERACION_CONSULTAR_VENTA });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("createOperacionesAdapter — consultar_venta: input válido delega en ejecutar (devolucion-sin-token-dos-personas, tarea 5)", () => {
+  it("{ operacion: consultar_venta, ventaId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_VENTA, ventaId: "V1" });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+
+  it("{ operacion: consultar_venta } sin ventaId ⇒ delega en ejecutar (modo listado)", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_VENTA });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — menciona consultar_venta (devolucion-sin-token-dos-personas, tarea 5)", () => {
+  it("incluye 'consultar_venta' en el texto de la descripción registrada", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("consultar_venta");
+  });
+});
+
 describe("createOperacionesAdapter — resolver_solicitud: input válido delega en ejecutar (aprobacion-conversacional-hitl, tarea 8)", () => {
   it("{ operacion: resolver_solicitud, accion: 'aprobar', solicitudId } ⇒ delega en ejecutar", async () => {
     const ejecutar = vi.fn().mockResolvedValue("ok");
@@ -339,5 +381,19 @@ describe("OPERACIONES_TOOL_DESCRIPTION — instrucción de accion inequívoca (a
     const registeredTool = getRegisteredOperacionesTool(adapter);
 
     expect(registeredTool.description).toBe(OPERACIONES_TOOL_DESCRIPTION);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — motivo de solicitar_devolucion sin sugerir ni deducir (devolucion-sin-token-dos-personas, tarea 24, ADR 233 pto 1)", () => {
+  it("instruye a pedirle el motivo al empleado, nunca sugerido ni deducido por el modelo", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
+      "motivo obligatorio no vacío que tenés que pedirle al empleado, nunca sugerido ni deducido por vos de la conversación",
+    );
+  });
+
+  it("regresión: sigue mencionando que solicitar_devolucion nunca lo cierra el mismo empleado", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
+      "queda pendiente de que un administrador distinto la apruebe, nunca la cerrás vos mismo",
+    );
   });
 });

@@ -37,6 +37,8 @@ import { getSubagentDefinition } from "../../core/agents/definitions.js";
 import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
+import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
+import type { JustificacionDevolucionPort } from "../../core/ventas/justificacion-devolucion-contract.js";
 import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
 
 /**
@@ -93,7 +95,7 @@ function realDeps(db: Database.Database): BuildOnComandoEmpleadoDeps {
       tokenTtlHoras: 72,
       ventaGrandeUmbral: 5000,
     } satisfies VentasConfig,
-    authConfig: { sesionTtlMinutos: 0 } satisfies AuthConfig,
+    authConfig: { sesionTtlMinutos: 0, sesionInactividadMinutos: 0 } satisfies AuthConfig,
     verificarPassword,
     dummyPasswordHash: hashPassword("dummy-password-para-timing"),
     hooks: createHookEngine(),
@@ -140,6 +142,13 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     listComisionesPorPeriodo: noUsado("listComisionesPorPeriodo"),
     listVentasEnReembolsoPendiente: noUsado("listVentasEnReembolsoPendiente"),
   };
+  const consultaVentaPropia: ConsultaVentaPropiaPort = {
+    buscarPorId: noUsado("buscarPorId"),
+    listarDeVendedor: noUsado("listarDeVendedor"),
+  };
+  const justificacion: JustificacionDevolucionPort = {
+    registrar: noUsado("registrar"),
+  };
   const delegacionStore: DelegacionStorePort = {
     crearDelegacion: noUsado("crearDelegacion"),
     completarDelegacion: noUsado("completarDelegacion"),
@@ -162,6 +171,8 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     notifier,
     baseUrlPublica: "https://ventas.example.com",
     reporteStore,
+    consultaVentaPropia,
+    justificacion,
     despacharDeps,
     rolPort: realRolPort(db),
     registro,
