@@ -860,7 +860,12 @@ describe("App", () => {
     for (let i = 1; i <= turnCount; i += 1) {
       stdin.write(`prompt ${i}`);
       stdin.write(ENTER);
-      await waitFor(() => (lastFrame() ?? "").includes(`respuesta ${i}`));
+      // 30 sequential waits in one test is the heaviest user of the default
+      // 2000ms budget in this file — under full-suite CPU contention one
+      // iteration can miss it by a hair (observed: 2041ms). A larger timeout
+      // here only affects this test; every other `waitFor` call keeps the
+      // default.
+      await waitFor(() => (lastFrame() ?? "").includes(`respuesta ${i}`), 5000);
     }
 
     const frame = lastFrame() ?? "";
