@@ -144,6 +144,16 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
     expect(comandoMock.mock.calls[0]?.[0].credenciales).toBeDefined();
   });
 
+  it("pasa createKnowledge a buildOnOperacionesEmpleado (conocimiento-chat-empleado, ADR 234)", async () => {
+    await import("./main.js");
+
+    const { buildOnOperacionesEmpleado } = await import("./build-on-operaciones-empleado.js");
+    const operacionesMock = vi.mocked(buildOnOperacionesEmpleado);
+
+    expect(operacionesMock).toHaveBeenCalledTimes(1);
+    expect(operacionesMock.mock.calls[0]?.[0].createKnowledge).toBeDefined();
+  });
+
   it("pasa la MISMA instancia de registro a buildOnOperacionesEmpleado y a buildOnComandoEmpleado (ADR 188/RD-87, tarea 16)", async () => {
     await import("./main.js");
 

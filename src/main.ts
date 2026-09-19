@@ -502,6 +502,10 @@ const onOperacionesEmpleado = buildOnOperacionesEmpleado({
   db,
   memory,
   hooks,
+  // `conocimiento-chat-empleado`, ADR 234 — MISMA fábrica que `onSoporte`
+  // (:406) y que el turno A2A entrante (:683). Sólo se consume `mcpServers`:
+  // el feedback NO se cablea en este canal (ADR 235).
+  createKnowledge,
   ventasConfig,
   notifier,
   baseUrlPublica: webConfig.publicUrl,
