@@ -163,10 +163,10 @@ function toPortVentaPropia(row: VentaPropiaRow): VentaPropia {
  *     compartidas para `notifier`/`baseUrlPublica`/`riesgoCredito`/
  *     `reporteStore`/`despacharDeps` que recibe por parámetro) y
  *     `ejecutar = (input) => ejecutarOperacion(input, ejecutarDeps)`.
- *  5. `operacionesAdapter = createOperacionesAdapter({ casoId, sesion:
- *     input.sesion, confirmacion: input.confirmacion, ejecutar })`.
- *  6. `knowledge = createKnowledge(casoId)` (`conocimiento-chat-empleado`,
+ *  5. `knowledge = createKnowledge(casoId)` (`conocimiento-chat-empleado`,
  *     ADR 234 — un `KnowledgeAdapter` por turno, nunca por proceso).
+ *  6. `operacionesAdapter = createOperacionesAdapter({ casoId, sesion:
+ *     input.sesion, confirmacion: input.confirmacion, ejecutar })`.
  *  7. `handleTurn(casoId, prompt, { memory, hooks, candidateAgents,
  *     ...(logDeps ? {logDeps} : {}), mcpServers: { ...knowledge.mcpServers,
  *     ...operacionesAdapter.mcpServers } })` — `knowledgeFeedback` NO se pasa
