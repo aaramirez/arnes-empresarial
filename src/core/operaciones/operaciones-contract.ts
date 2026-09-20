@@ -78,6 +78,16 @@ export const OPERACION_SOLICITAR_DEVOLUCION = "solicitar_devolucion";
  */
 export const OPERACION_CONSULTAR_SOLICITUD = "consultar_solicitud";
 
+/**
+ * `visibilidad-a2a-entrante-chat`, ADR 240-242 — de sólo lectura, alcance
+ * ORGANIZACIONAL (no escopada a un empleado ni a un vendedor, ADR 242 pto 1):
+ * lo que un agente externo le preguntó al arnés vía A2A entrante. SÍ audita
+ * (a diferencia de `consultar_venta`/`consultar_solicitud`, ADR 240 pto 5).
+ * DUODÉCIMA entrada del contrato. SIN `accion` y SIN `confirmado` — mismo
+ * criterio que el resto de las operaciones de sólo lectura.
+ */
+export const OPERACION_VER_SOLICITUDES_A2A = "ver_solicitudes_a2a";
+
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_PROCESAR_DEVOLUCION,
@@ -90,6 +100,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_SOLICITAR_DEVOLUCION,
   OPERACION_CONSULTAR_VENTA,
   OPERACION_CONSULTAR_SOLICITUD,
+  OPERACION_VER_SOLICITUDES_A2A,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -216,6 +227,16 @@ export interface OperacionConsultarSolicitud {
   readonly solicitudId?: string;
 }
 
+/**
+ * `visibilidad-a2a-entrante-chat`, ADR 240-242 — de sólo lectura, alcance
+ * organizacional. `a2aTaskId` ausente ⇒ modo listado de las solicitudes A2A
+ * entrantes en curso; con id, el detalle de una puntual.
+ */
+export interface OperacionVerSolicitudesA2A {
+  readonly operacion: typeof OPERACION_VER_SOLICITUDES_A2A;
+  readonly a2aTaskId?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
@@ -227,7 +248,8 @@ export type OperacionNegocio =
   | OperacionResolverReembolso
   | OperacionSolicitarDevolucion
   | OperacionConsultarVenta
-  | OperacionConsultarSolicitud;
+  | OperacionConsultarSolicitud
+  | OperacionVerSolicitudesA2A;
 
 /**
  * Puerto de confirmación humana para las operaciones de dos pasos del canal
