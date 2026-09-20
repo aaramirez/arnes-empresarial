@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "./db.js";
 import { runMigrations } from "./migrate.js";
@@ -26,6 +26,7 @@ import {
   aprobarSolicitudInterna,
   buscarCredencialEmpleado,
   buscarRolEmpleado,
+  buscarSolicitudPropiaPorId,
   buscarVentaPropiaPorId,
   cancelarSolicitudA2AEntrante,
   cancelarSolicitudInterna,
@@ -64,6 +65,7 @@ import {
   listSolicitudesA2AEntrantesPorCaso,
   listSolicitudesA2AEntrantesPorEstado,
   listSolicitudesInternas,
+  listSolicitudesPropiasDeSolicitante,
   listVentasEnReembolsoPendiente,
   listVentasPropiasDeVendedor,
   reabrirEscalacionReembolso,
@@ -77,6 +79,7 @@ import {
   upsertResponsable,
   upsertRolEmpleado,
   upsertVendedor,
+  SOLICITUD_PROPIA_SELECT_COLUMNS,
   VENTA_PROPIA_SELECT_COLUMNS,
   type CreateActividadInput,
   type CreateCasoConActividadInput,
@@ -4100,6 +4103,292 @@ describe("repository", () => {
           casos: db!.prepare("SELECT * FROM casos").all(),
           acciones: db!.prepare("SELECT * FROM registro_acciones_empleado").all(),
         }).toEqual(snapshotAntes);
+      });
+    });
+
+    describe("SOLICITUD_PROPIA_SELECT_COLUMNS / buscarSolicitudPropiaPorId / listSolicitudesPropiasDeSolicitante (consulta-solicitud-propia, tarea 3.1, ADR 239)", () => {
+      describe("SOLICITUD_PROPIA_SELECT_COLUMNS", () => {
+        it("★★ no contiene 'updated_at', no contiene '*' y es exactamente el conjunto de las once columnas esperadas", () => {
+          expect(SOLICITUD_PROPIA_SELECT_COLUMNS).not.toContain("updated_at");
+          expect(SOLICITUD_PROPIA_SELECT_COLUMNS).not.toContain("*");
+          expect(SOLICITUD_PROPIA_SELECT_COLUMNS.split(", ")).toEqual([
+            "id",
+            "caso_id",
+            "solicitante_id",
+            "tipo",
+            "detalle",
+            "estado",
+            "dictamen",
+            "dictaminada_at",
+            "resuelta_por",
+            "resuelta_at",
+            "created_at",
+          ]);
+        });
+      });
+
+      it("las sentencias de buscarSolicitudPropiaPorId y listSolicitudesPropiasDeSolicitante no usan SELECT *", () => {
+        db = openDatabase(":memory:");
+        crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+        const prepareSpy = vi.spyOn(db, "prepare");
+
+        buscarSolicitudPropiaPorId(db, "solicitud-1");
+        listSolicitudesPropiasDeSolicitante(db, { solicitanteId: "empleado-1" });
+
+        const sqlCapturado = prepareSpy.mock.calls.map((llamada) => String(llamada[0]));
+        expect(sqlCapturado).toHaveLength(2);
+        for (const sql of sqlCapturado) {
+          expect(sql).not.toMatch(/SELECT\s+\*/i);
+        }
+      });
+
+      describe("buscarSolicitudPropiaPorId en los cuatro estados", () => {
+        it("lee una solicitud pendiente sin dictamen/resueltaPor/resueltaAt y sin updatedAt en la fila", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+          const propia = buscarSolicitudPropiaPorId(db, "solicitud-1");
+
+          expect(propia).toEqual({
+            solicitudId: "solicitud-1",
+            solicitanteId: "empleado-1",
+            casoId: "caso-1",
+            tipo: "vacaciones",
+            detalle: "una semana en marzo",
+            estado: "pendiente_aprobacion_humana",
+            createdAt: "2026-09-07T00:00:00.000Z",
+          });
+          expect(Object.keys(propia ?? {})).not.toContain("updatedAt");
+        });
+
+        it("lee una solicitud aprobada con dictamen, resueltaPor y resueltaAt mapeados y sin updatedAt", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(
+            db,
+            buildSolicitudConCasoInput({
+              caso: { id: "caso-aprobada", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: "solicitud-aprobada",
+                solicitanteId: "empleado-1",
+                tipo: "vacaciones",
+                detalle: "una semana en marzo",
+                estado: "pendiente_aprobacion_humana",
+              },
+            }),
+          );
+          adjuntarDictamenSolicitud(db, {
+            solicitudId: "solicitud-aprobada",
+            dictamen: "Cumple la politica de vacaciones vigente",
+            ahora: "2026-09-07T00:30:00.000Z",
+          });
+          aprobarSolicitudInterna(db, {
+            solicitudId: "solicitud-aprobada",
+            casoId: "caso-aprobada",
+            empleadoId: "ana",
+            accionId: "accion-aprobar",
+            ahora: "2026-09-07T01:00:00.000Z",
+          });
+
+          const propia = buscarSolicitudPropiaPorId(db, "solicitud-aprobada");
+
+          expect(propia?.estado).toBe("aprobada");
+          expect(propia?.dictamen).toBe("Cumple la politica de vacaciones vigente");
+          expect(propia?.dictaminadaAt).toBe("2026-09-07T00:30:00.000Z");
+          expect(propia?.resueltaPor).toBe("ana");
+          expect(propia?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+          expect(Object.keys(propia ?? {})).not.toContain("updatedAt");
+        });
+
+        it("lee una solicitud rechazada con dictamen, resueltaPor y resueltaAt mapeados y sin updatedAt", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(
+            db,
+            buildSolicitudConCasoInput({
+              caso: { id: "caso-rechazada", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: "solicitud-rechazada",
+                solicitanteId: "empleado-1",
+                tipo: "vacaciones",
+                detalle: "una semana en marzo",
+                estado: "pendiente_aprobacion_humana",
+              },
+            }),
+          );
+          adjuntarDictamenSolicitud(db, {
+            solicitudId: "solicitud-rechazada",
+            dictamen: "No cumple el preaviso minimo",
+            ahora: "2026-09-07T00:30:00.000Z",
+          });
+          rechazarSolicitudInterna(db, {
+            solicitudId: "solicitud-rechazada",
+            casoId: "caso-rechazada",
+            empleadoId: "ana",
+            accionId: "accion-rechazar",
+            ahora: "2026-09-07T01:00:00.000Z",
+          });
+
+          const propia = buscarSolicitudPropiaPorId(db, "solicitud-rechazada");
+
+          expect(propia?.estado).toBe("rechazada");
+          expect(propia?.dictamen).toBe("No cumple el preaviso minimo");
+          expect(propia?.resueltaPor).toBe("ana");
+          expect(propia?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+          expect(Object.keys(propia ?? {})).not.toContain("updatedAt");
+        });
+
+        it("lee una solicitud cancelada con resueltaPor (el propio autor) y resueltaAt, sin dictamen y sin updatedAt", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(
+            db,
+            buildSolicitudConCasoInput({
+              caso: { id: "caso-cancelada", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: "solicitud-cancelada",
+                solicitanteId: "empleado-1",
+                tipo: "vacaciones",
+                detalle: "una semana en marzo",
+                estado: "pendiente_aprobacion_humana",
+              },
+            }),
+          );
+          cancelarSolicitudInterna(db, {
+            solicitudId: "solicitud-cancelada",
+            casoId: "caso-cancelada",
+            empleadoId: "empleado-1",
+            accionId: "accion-cancelar",
+            ahora: "2026-09-07T01:00:00.000Z",
+          });
+
+          const propia = buscarSolicitudPropiaPorId(db, "solicitud-cancelada");
+
+          expect(propia?.estado).toBe("cancelada");
+          expect(propia?.resueltaPor).toBe("empleado-1");
+          expect(propia?.resueltaAt).toBe("2026-09-07T01:00:00.000Z");
+          expect(propia?.dictamen).toBeUndefined();
+          expect(Object.keys(propia ?? {})).not.toContain("updatedAt");
+        });
+      });
+
+      describe("buscarSolicitudPropiaPorId no filtra por dueño", () => {
+        it("encuentra una solicitud ajena (no filtra por solicitante)", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+          const propia = buscarSolicitudPropiaPorId(db, "solicitud-1");
+
+          expect(propia?.solicitanteId).toBe("empleado-1");
+        });
+
+        it("devuelve undefined si no existe", () => {
+          db = openDatabase(":memory:");
+
+          expect(buscarSolicitudPropiaPorId(db, "no-existe")).toBeUndefined();
+        });
+      });
+
+      describe("listSolicitudesPropiasDeSolicitante", () => {
+        it("orden created_at DESC y tope 20 aplicado tras el filtro por solicitante: 25 propias + 30 ajenas mas recientes ⇒ exactamente 20 resultados, todas propias", () => {
+          db = openDatabase(":memory:");
+          for (let i = 0; i < 25; i += 1) {
+            crearSolicitudConCaso(
+              db!,
+              buildSolicitudConCasoInput({
+                caso: { id: `caso-propia-${i}`, tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+                solicitud: {
+                  id: `solicitud-propia-${i}`,
+                  solicitanteId: "empleado-e",
+                  tipo: "vacaciones",
+                  detalle: `propia ${i}`,
+                  estado: "pendiente_aprobacion_humana",
+                },
+                timestamp: `2026-09-07T00:00:${String(i).padStart(2, "0")}.000Z`,
+              }),
+            );
+          }
+          for (let i = 0; i < 30; i += 1) {
+            crearSolicitudConCaso(
+              db!,
+              buildSolicitudConCasoInput({
+                caso: { id: `caso-ajena-${i}`, tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+                solicitud: {
+                  id: `solicitud-ajena-${i}`,
+                  solicitanteId: "empleado-ajeno",
+                  tipo: "gasto",
+                  detalle: `ajena ${i}`,
+                  estado: "pendiente_aprobacion_humana",
+                },
+                // Mas recientes que las 25 propias, a proposito: si el filtro por
+                // solicitante_id no estuviera en el WHERE, estas 30 ajenas mas
+                // nuevas se comerian el tope de 20 (mismo bug que listSolicitudesInternas
+                // ya pago sin el filtro, ver "bug del LIMIT" arriba).
+                timestamp: `2026-09-07T01:00:${String(i).padStart(2, "0")}.000Z`,
+              }),
+            );
+          }
+
+          const propias = listSolicitudesPropiasDeSolicitante(db, { solicitanteId: "empleado-e" });
+
+          expect(propias).toHaveLength(20);
+          expect(propias.every((p) => p.solicitanteId === "empleado-e")).toBe(true);
+          // DESC: las 20 mas recientes de las 25 propias, de la mas nueva a la mas vieja.
+          expect(propias.map((p) => p.solicitudId)).toEqual(
+            Array.from({ length: 20 }, (_, i) => `solicitud-propia-${24 - i}`),
+          );
+        });
+
+        it("vacio cuando el solicitante no tiene solicitudes", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(db, buildSolicitudConCasoInput());
+
+          expect(listSolicitudesPropiasDeSolicitante(db, { solicitanteId: "empleado-sin-solicitudes" })).toEqual([]);
+        });
+      });
+
+      describe("las dos vistas coexisten (listSolicitudesInternas sigue siendo la cola de trabajo)", () => {
+        it("con una pendiente y una aprobada del mismo solicitante, listSolicitudesInternas devuelve solo la pendiente y listSolicitudesPropiasDeSolicitante devuelve ambas", () => {
+          db = openDatabase(":memory:");
+          crearSolicitudConCaso(
+            db,
+            buildSolicitudConCasoInput({
+              caso: { id: "caso-pendiente-e", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: "solicitud-pendiente-e",
+                solicitanteId: "empleado-e",
+                tipo: "vacaciones",
+                detalle: "pendiente",
+                estado: "pendiente_aprobacion_humana",
+              },
+              timestamp: "2026-09-07T00:00:00.000Z",
+            }),
+          );
+          crearSolicitudConCaso(
+            db,
+            buildSolicitudConCasoInput({
+              caso: { id: "caso-aprobada-e", tipo: "solicitud_interna", estado: "pendiente_aprobacion_humana" },
+              solicitud: {
+                id: "solicitud-aprobada-e",
+                solicitanteId: "empleado-e",
+                tipo: "gasto",
+                detalle: "aprobada",
+                estado: "pendiente_aprobacion_humana",
+              },
+              timestamp: "2026-09-07T00:01:00.000Z",
+            }),
+          );
+          aprobarSolicitudInterna(db, {
+            solicitudId: "solicitud-aprobada-e",
+            casoId: "caso-aprobada-e",
+            empleadoId: "ana",
+            accionId: "accion-aprobar-e",
+            ahora: "2026-09-07T00:30:00.000Z",
+          });
+
+          const cola = listSolicitudesInternas(db, { solicitanteId: "empleado-e" });
+          const historial = listSolicitudesPropiasDeSolicitante(db, { solicitanteId: "empleado-e" });
+
+          expect(cola.map((s) => s.id)).toEqual(["solicitud-pendiente-e"]);
+          expect(historial.map((p) => p.solicitudId).sort()).toEqual(["solicitud-aprobada-e", "solicitud-pendiente-e"]);
+        });
       });
     });
   });
