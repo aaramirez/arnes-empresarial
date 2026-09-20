@@ -20,6 +20,7 @@ import {
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_KPI,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
@@ -33,6 +34,7 @@ import {
   OPERACION_VER_SOLICITUDES_A2A,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
+  type OperacionConsultarKpi,
   type OperacionConsultarSolicitud,
   type OperacionConsultarVenta,
   type OperacionNegocio,
@@ -83,11 +85,14 @@ import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
 import type { ClienteA2APort } from "../agents/a2a-contract.js";
 import type { DelegacionA2AStorePort } from "../turn-selector/dispatch-delegation-a2a.js";
+import { esConsultaKpiConocida } from "../agents/consultas-kpi-catalogo.js";
+import { esAdministrador } from "../auth/autorizacion-resolucion.js";
 import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
 import {
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
+  COMANDO_CONSULTAR_KPI,
   COMANDO_DEVOLUCION,
   COMANDO_REABRIR_REEMBOLSO,
   COMANDO_RECHAZAR_REEMBOLSO,
@@ -1031,6 +1036,46 @@ function ejecutarVerSolicitudesA2A(
 }
 
 /**
+ * `consulta-kpi-a2a-chat`, ADR 243/244, tarea 7.2. Ciclo A: SOLO los tres
+ * controles, en este orden — (a) apagado (sin auditar, antes que todo), (b) rol
+ * administrador, (c) clave contra el catalogo cerrado. SIN caso de uso de nucleo
+ * nuevo. El modelo aporta unicamente `consultaId`; ninguna clave recibida se
+ * repite en un texto. El camino feliz es un STUB explicito que la tarea 9.2
+ * reemplaza por el despacho real: no despacha, no escribe, no sale nada.
+ */
+async function ejecutarConsultarKpi(
+  operacion: OperacionConsultarKpi,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  if (deps.clienteA2A === undefined) {
+    return "La consulta a agentes externos de KPIs/incidentes está desactivada.";
+  }
+
+  if (!esAdministrador(deps.rolPort, input.sesion.empleadoId)) {
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_NO_AUTORIZADO, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return "No estás autorizado para consultar KPIs al agente externo: se requiere rol elevado.";
+  }
+
+  if (!esConsultaKpiConocida(operacion.consultaId)) {
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_NO_APLICABLE, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return "No conozco esa consulta.";
+  }
+
+  return "La consulta a agentes externos de KPIs/incidentes todavía no está disponible en este canal.";
+}
+
+/**
  * NUNCA lanza — cualquier error sincrónico o rechazo de una dependencia
  * inyectada (p. ej. `store.crearVentaConCaso` fallando ruidosamente) se
  * traduce a texto degradado, mismo contrato que `handleKnowledgeQuery`
@@ -1135,6 +1180,9 @@ export async function ejecutarOperacion(
 
       case OPERACION_VER_SOLICITUDES_A2A:
         return ejecutarVerSolicitudesA2A(operacion, input, deps);
+
+      case OPERACION_CONSULTAR_KPI:
+        return await ejecutarConsultarKpi(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;
