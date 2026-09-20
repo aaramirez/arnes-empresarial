@@ -31,7 +31,8 @@ import {
   type SolicitudA2AEntranteStorePort,
   type SolicitudA2AEntranteVistaEmpleado,
 } from "../agents/a2a-entrante-contract.js";
-import { TASK_STATE_WORKING } from "../agents/a2a-contract.js";
+import { TASK_STATE_WORKING, type ClienteA2APort } from "../agents/a2a-contract.js";
+import type { DelegacionA2AStorePort } from "../turn-selector/dispatch-delegation-a2a.js";
 import { formatearListadoSolicitudesA2A, formatearDetalleSolicitudA2AParaModelo } from "../agents/a2a-entrante-textos.js";
 import { MARCA_EXTERNO_INICIO } from "../agents/texto-externo.js";
 import {
@@ -295,6 +296,15 @@ function makeSolicitudA2AEntrante(overrides: Partial<SolicitudA2AEntranteStorePo
   };
 }
 
+/** `consulta-kpi-a2a-chat`, tarea 3.1. Doble de `DelegacionA2AStorePort`: dos `vi.fn()` sin comportamiento. */
+function makeDelegacionA2AStore(overrides: Partial<DelegacionA2AStorePort> = {}): DelegacionA2AStorePort {
+  return {
+    crearDelegacionA2A: vi.fn(),
+    actualizarDelegacionA2A: vi.fn(),
+    ...overrides,
+  };
+}
+
 function makeConfirmacion(overrides: Partial<ConfirmacionOperacionPort> = {}): ConfirmacionOperacionPort {
   return {
     estaConfirmada: vi.fn(() => false),
@@ -326,6 +336,7 @@ function makeDeps(overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOpera
     consultaSolicitudPropia: makeConsultaSolicitudPropia(),
     solicitudA2AEntrante: makeSolicitudA2AEntrante(),
     justificacion: makeJustificacion(),
+    delegacionA2AStore: makeDelegacionA2AStore(),
     despacharDeps: makeDespacharDeps(),
     rolPort: makeRolPort(),
     registro: makeRegistro(),
@@ -2362,5 +2373,27 @@ describe("ejecutarOperacion — ver_solicitudes_a2a (visibilidad-a2a-entrante-ch
 
     expect(cuerpo).not.toMatch(/\.resultado\b/);
     expect(cuerpo).not.toMatch(/\.mensajeRecibido\b/);
+  });
+});
+
+describe("ejecutarOperacion — deps A2A sin comportamiento nuevo (consulta-kpi-a2a-chat, tarea 3.1)", () => {
+  it("con clienteA2A inyectado, las operaciones vigentes NO invocan delegar, baseUrlDe ni crearDelegacionA2A", async () => {
+    const delegar = vi.fn();
+    const baseUrlDe = vi.fn();
+    const clienteA2A: ClienteA2APort = { baseUrlDe, delegar };
+    const delegacionA2AStore = makeDelegacionA2AStore();
+    const registro = makeRegistro();
+    const deps = makeDeps({ clienteA2A, delegacionA2AStore, registro });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_VENTA }), deps);
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_REPORTE_COMISIONES }), deps);
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_VER_SOLICITUDES_A2A }), deps);
+
+    // Guarda de que la operacion que audita (ver_solicitudes_a2a) efectivamente corrio.
+    expect(registro.registrarAccion).toHaveBeenCalled();
+    expect(delegar).not.toHaveBeenCalled();
+    expect(baseUrlDe).not.toHaveBeenCalled();
+    expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
+    expect(delegacionA2AStore.actualizarDelegacionA2A).not.toHaveBeenCalled();
   });
 });

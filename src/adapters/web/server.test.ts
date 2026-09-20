@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../memory/db.js";
 import { buildOnVenta, createVentaStore } from "../../build-on-venta.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "../../core/operaciones/ejecutar-operacion.js";
+import type { DelegacionA2AStorePort } from "../../core/turn-selector/dispatch-delegation-a2a.js";
 import { OPERACION_REGISTRAR_VENTA, OPERACION_RESOLVER_REEMBOLSO } from "../../core/operaciones/operaciones-contract.js";
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
@@ -568,6 +569,14 @@ function unusedJustificacionR7(): JustificacionDevolucionPort {
   };
 }
 
+/** `consulta-kpi-a2a-chat`, tarea 3.1 — mismo molde "unused": campo requerido de `EjecutarOperacionDeps`, no ejercitado por resolver_reembolso/registrar_venta. */
+function unusedDelegacionA2AStoreR7(): DelegacionA2AStorePort {
+  const unused = (): never => {
+    throw new Error("DelegacionA2AStorePort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  return { crearDelegacionA2A: unused, actualizarDelegacionA2A: unused };
+}
+
 function unusedDespacharDepsR7(): DespacharDelegacionDeps {
   const unused = (): never => {
     throw new Error("DespacharDelegacionDeps no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
@@ -612,6 +621,7 @@ function ejecutarDepsR7(db: Database.Database, overrides: Partial<EjecutarOperac
     consultaSolicitudPropia: unusedConsultaSolicitudPropiaR7(),
     solicitudA2AEntrante: unusedSolicitudA2AEntranteR7(),
     justificacion: unusedJustificacionR7(),
+    delegacionA2AStore: unusedDelegacionA2AStoreR7(),
     despacharDeps: unusedDespacharDepsR7(),
     rolPort: realRolPortR7(),
     registro: makeRegistroR7(),
