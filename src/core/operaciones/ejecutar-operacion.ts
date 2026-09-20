@@ -21,6 +21,7 @@ import {
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
@@ -31,6 +32,7 @@ import {
   OPERACION_SOLICITAR_DEVOLUCION,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
+  type OperacionConsultarSolicitud,
   type OperacionConsultarVenta,
   type OperacionNegocio,
   type OperacionRegistrarVenta,
@@ -40,6 +42,8 @@ import {
 } from "./operaciones-contract.js";
 import { consultarVentaPropia } from "../ventas/consultar-venta-propia.js";
 import { type ConsultaVentaPropiaPort, type VentaPropia } from "../ventas/consulta-venta-contract.js";
+import { consultarSolicitudPropia } from "../solicitudes/consultar-solicitud-propia.js";
+import { type ConsultaSolicitudPropiaPort, type SolicitudPropia } from "../solicitudes/consulta-solicitud-propia-contract.js";
 import { solicitarDevolucion, type SolicitarDevolucionDeps, type SolicitarDevolucionResult } from "../ventas/solicitar-devolucion.js";
 import { type JustificacionDevolucionPort } from "../ventas/justificacion-devolucion-contract.js";
 import { resolverDecisionVenta, type ConfirmarVentaDeps, type DecisionVentaResult } from "../ventas/confirmar-venta.js";
@@ -116,6 +120,8 @@ export interface EjecutarOperacionDeps {
   readonly reporteStore: ReporteStorePort;
   /** `devolucion-sin-token-dos-personas`, ADR 225 pto 4, ADR 227 pto 4 — mismo criterio "requerido acá" que `reporteStore`. */
   readonly consultaVentaPropia: ConsultaVentaPropiaPort;
+  /** `consulta-solicitud-propia`, RD-115 pto 4 — mismo criterio "requerido acá" que `consultaVentaPropia`: la opcionalidad, si hiciera falta, vive en `BuildOnOperacionesEmpleadoDeps`, resuelta antes de despachar. */
+  readonly consultaSolicitudPropia: ConsultaSolicitudPropiaPort;
   /** `devolucion-sin-token-dos-personas`, ADR 228 pto 6, tarea 16 — mismo criterio "requerido acá" que `consultaVentaPropia`. */
   readonly justificacion: JustificacionDevolucionPort;
   readonly despacharDeps: DespacharDelegacionDeps;
@@ -891,6 +897,65 @@ async function ejecutarConsultarVenta(
   }
 }
 
+/** Una línea por solicitud propia — listado. ★ SIN `dictamen` ni `detalle`: los dos son texto
+ *  libre sin tope y un listado de hasta 20 los multiplicaría (RD-115 pto 1). NO comparte
+ *  formateador con `formatearDetalleSolicitudPropia` — a propósito, `design.md` §7 pto 1. */
+function formatearLineaSolicitudPropia(s: SolicitudPropia): string {
+  return `- solicitud ${s.solicitudId} (${s.tipo}) | estado ${s.estado} | creada ${s.createdAt} | caso ${s.casoId}`;
+}
+
+/** Multilínea: cabecera + `detalle`, + `dictamen` si existe (SIN resumir, R8), + quién/cuándo la
+ *  resolvió si existe. La línea `Dictamen:` se OMITE cuando no hay — no se escribe "sin
+ *  dictamen" (`design.md` §7 pto 1). */
+function formatearDetalleSolicitudPropia(s: SolicitudPropia): string {
+  const lineas = [
+    `solicitud ${s.solicitudId} (${s.tipo}) | estado ${s.estado} | creada ${s.createdAt} | caso ${s.casoId}`,
+    `Detalle: ${s.detalle}`,
+  ];
+  if (s.dictamen !== undefined) {
+    lineas.push(`Dictamen: ${s.dictamen}`);
+  }
+  if (s.resueltaPor !== undefined && s.resueltaAt !== undefined) {
+    lineas.push(`Resuelta por ${s.resueltaPor} el ${s.resueltaAt}.`);
+  }
+  return lineas.join("\n");
+}
+
+/**
+ * `consulta-solicitud-propia`, ADR 238, RD-115. De sólo lectura, sin ranura de confirmación (no
+ * es confirmable) y sin fila de auditoría en NINGUNA rama: son datos que el propio empleado
+ * escribió, leídos por él mismo. **Cero lógica de alcance acá**: el dispatcher delega ÍNTEGRO en
+ * `consultarSolicitudPropia` (núcleo) — nunca compara la identidad de quien pidió la solicitud
+ * con la del empleado de la sesión (test mecánico, tarea 5.1/5.7).
+ */
+function ejecutarConsultarSolicitud(
+  operacion: OperacionConsultarSolicitud,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): string {
+  const resultado = consultarSolicitudPropia(
+    {
+      ...(operacion.solicitudId !== undefined ? { solicitudId: operacion.solicitudId } : {}),
+      empleadoId: input.sesion.empleadoId,
+    },
+    { consulta: deps.consultaSolicitudPropia },
+  );
+
+  switch (resultado.resultado) {
+    case "listado":
+      if (resultado.items.length === 0) {
+        return "No tenés solicitudes internas registradas.";
+      }
+      return resultado.items.map(formatearLineaSolicitudPropia).join("\n");
+    case "no_encontrada":
+      return `No encontré ninguna solicitud ${resultado.solicitudId}.`;
+    case "no_autorizada":
+      return `La solicitud ${resultado.solicitudId} no es tuya: no puedo mostrarte su estado.`;
+    case "detalle":
+      return formatearDetalleSolicitudPropia(resultado.solicitud);
+  }
+}
+
 /**
  * NUNCA lanza — cualquier error sincrónico o rechazo de una dependencia
  * inyectada (p. ej. `store.crearVentaConCaso` fallando ruidosamente) se
@@ -990,6 +1055,9 @@ export async function ejecutarOperacion(
 
       case OPERACION_CONSULTAR_VENTA:
         return await ejecutarConsultarVenta(operacion, input, deps);
+
+      case OPERACION_CONSULTAR_SOLICITUD:
+        return ejecutarConsultarSolicitud(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;
