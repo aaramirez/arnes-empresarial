@@ -71,6 +71,7 @@ import {
 import { createOperacionesAdapter } from "./adapters/operaciones/index.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps, type EjecutarOperacionInput } from "./core/operaciones/ejecutar-operacion.js";
 import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
+import type { ClienteA2APort } from "./core/agents/a2a-contract.js";
 import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import type { SesionEmpleado } from "./core/auth/sesion.js";
 import type { RolEmpleado, RolEmpleadoPort } from "./core/auth/rol-contract.js";
@@ -86,7 +87,7 @@ import { type JustificacionDevolucionPort } from "./core/ventas/justificacion-de
 import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
-import { createVentaStore, VentaEstadoInvalidoError } from "./build-on-venta.js";
+import { createDelegacionA2AStore, createVentaStore, VentaEstadoInvalidoError } from "./build-on-venta.js";
 import { createSolicitudA2AEntranteStore, createSolicitudStore, SolicitudTipoEstadoInvalidoError } from "./build-on-comando-empleado.js";
 import { SOLICITUD_ESTADOS, SOLICITUD_TIPOS } from "./core/solicitudes/solicitudes-contract.js";
 import { type ConsultaSolicitudPropiaPort, type SolicitudPropia } from "./core/solicitudes/consulta-solicitud-propia-contract.js";
@@ -120,6 +121,8 @@ export interface BuildOnOperacionesEmpleadoDeps {
   readonly baseUrlPublica: string;
   /** Ídem, opcional — ausente ⇒ `registrarVenta` se comporta como si A2A saliente estuviera apagado. */
   readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
+  /** `consulta-kpi-a2a-chat`, ADR 245 pto 4 — ausente ⇒ A2A saliente apagado (el tipo es el interruptor). */
+  readonly clienteA2A?: ClienteA2APort;
   /** ADR 174 — ausente ⇒ default inline IDÉNTICO al de `build-on-comando-empleado.ts` (closures sobre `db`). */
   readonly reporteStore?: ReporteStorePort;
   /** ADR 188 pto 2 (Enmienda 1) — ausente ⇒ default inline byte-idéntico al de `build-on-comando-empleado.ts:868-869` (closure sobre `db`). */
@@ -217,6 +220,8 @@ export function buildOnOperacionesEmpleado(
   const solicitudStore = createSolicitudStore(db);
   /** `visibilidad-a2a-entrante-chat`, ADR 240-242 — mismo molde que `solicitudStore`. */
   const solicitudA2AEntrante = createSolicitudA2AEntranteStore(db);
+  /** `consulta-kpi-a2a-chat`, design §7 pto 6 — closures sobre `db`, siempre construible (mismo store que `build-on-comando-empleado.ts`). */
+  const delegacionA2AStore = createDelegacionA2AStore(db);
   /** Mismo molde inline que `build-on-comando-empleado.ts` — `cancelar_solicitud_interna` nunca evalúa el gate de rol (bypass estructural, `esAccionAutoservicio`), pero `ResolverSolicitudDeps.rolPort` es un campo requerido del tipo. */
   const rolPort: RolEmpleadoPort = {
     buscarRol: (empleadoId) => {
@@ -263,11 +268,13 @@ export function buildOnOperacionesEmpleado(
     notifier,
     baseUrlPublica,
     ...(deps.riesgoCredito !== undefined ? { riesgoCredito: deps.riesgoCredito } : {}),
+    ...(deps.clienteA2A !== undefined ? { clienteA2A: deps.clienteA2A } : {}),
     reporteStore,
     consultaVentaPropia,
     consultaSolicitudPropia,
     solicitudA2AEntrante,
     justificacion,
+    delegacionA2AStore,
     registro,
     despacharDeps,
     rolPort,

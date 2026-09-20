@@ -81,6 +81,8 @@ import type { SesionEmpleado } from "../auth/sesion.js";
 import { agruparReporteMensual, formatearReporteMensual, formatMoney, resolverPeriodoReporte } from "../ventas/reporte.js";
 import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
+import type { ClienteA2APort } from "../agents/a2a-contract.js";
+import type { DelegacionA2AStorePort } from "../turn-selector/dispatch-delegation-a2a.js";
 import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
 import {
   COMANDO_APROBAR_REEMBOLSO,
@@ -118,6 +120,12 @@ export interface EjecutarOperacionDeps {
   readonly baseUrlPublica: string;
   readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
   /**
+   * `consulta-kpi-a2a-chat`, ADR 245 pto 4 — OPCIONAL a propósito: el tipo ES el
+   * interruptor. `undefined` es el estado sin `HARNESS_A2A_SALIENTE=on` (mismo
+   * molde que `riesgoCredito?`), no un descuido.
+   */
+  readonly clienteA2A?: ClienteA2APort;
+  /**
    * Requerida acá (nunca `undefined`) — la opcionalidad vive únicamente en
    * `BuildOnOperacionesEmpleadoDeps` (tarea 5), resuelta a una instancia
    * concreta antes de despachar (ADR 174 pto 6).
@@ -131,6 +139,11 @@ export interface EjecutarOperacionDeps {
   readonly solicitudA2AEntrante: SolicitudA2AEntranteStorePort;
   /** `devolucion-sin-token-dos-personas`, ADR 228 pto 6, tarea 16 — mismo criterio "requerido acá" que `consultaVentaPropia`. */
   readonly justificacion: JustificacionDevolucionPort;
+  /**
+   * `consulta-kpi-a2a-chat`, design §7 pto 6 — REQUERIDO a propósito (closures
+   * sobre `db`, siempre construibles): olvidar el wiring no compila.
+   */
+  readonly delegacionA2AStore: DelegacionA2AStorePort;
   readonly despacharDeps: DespacharDelegacionDeps;
   /**
    * Requerido (`autorizacion-empleado`, ADR 157/159/162, ya mergeado a esta
