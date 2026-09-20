@@ -42,6 +42,8 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   solicitar_devolucion: ["operacion", "ventaId", "motivo"],
   // `devolucion-sin-token-dos-personas`, ADR 225/228 — sólo lectura, ventaId ausente = modo listado.
   consultar_venta: ["operacion", "ventaId"],
+  // `consulta-solicitud-propia`, ADR 237/238/239 — sólo lectura, solicitudId ausente = modo listado.
+  consultar_solicitud: ["operacion", "solicitudId"],
 };
 
 /** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
@@ -56,6 +58,7 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   resolver_reembolso: ["accion"],
   solicitar_devolucion: [],
   consultar_venta: [],
+  consultar_solicitud: [],
 };
 
 /**
@@ -94,6 +97,7 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   resolver_reembolso: [],
   solicitar_devolucion: [],
   consultar_venta: [],
+  consultar_solicitud: [],
 };
 
 /**
