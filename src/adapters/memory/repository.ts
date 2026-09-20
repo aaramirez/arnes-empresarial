@@ -2410,6 +2410,87 @@ export function cancelarSolicitudInterna(
 }
 
 /**
+ * `SOLICITUD_SELECT_COLUMNS` MENOS `updated_at` (ADR 239): la proyección de lectura propia no
+ * incluye metadatos de fila. Exportada ÚNICAMENTE para el test mecánico de lista blanca —
+ * nunca para uso en runtime fuera de este módulo.
+ */
+export const SOLICITUD_PROPIA_SELECT_COLUMNS =
+  "id, caso_id, solicitante_id, tipo, detalle, estado, dictamen, dictaminada_at, resuelta_por, resuelta_at, created_at";
+
+type SolicitudPropiaSqlRow = Omit<SolicitudInternaSqlRow, "updated_at">;
+
+/** Proyección de una solicitud interna PROPIA a nivel de adaptador — camelCase, SIN `updatedAt`. No confundir con `SolicitudRow`, el tipo de los caminos de escritura (ADR 239). */
+export interface SolicitudPropiaRow {
+  readonly solicitudId: string;
+  readonly solicitanteId: string;
+  readonly casoId: string;
+  readonly tipo: string;
+  readonly detalle: string;
+  readonly estado: string;
+  readonly dictamen?: string;
+  readonly dictaminadaAt?: string;
+  readonly resueltaPor?: string;
+  readonly resueltaAt?: string;
+  readonly createdAt: string;
+}
+
+/** No reusa `rowToSolicitud` (ADR 239): esa función escribe `updatedAt`, y reusarla obligaría a borrar el campo después de construirlo. */
+function rowToSolicitudPropia(row: SolicitudPropiaSqlRow): SolicitudPropiaRow {
+  return {
+    solicitudId: row.id,
+    solicitanteId: row.solicitante_id,
+    casoId: row.caso_id,
+    tipo: row.tipo,
+    detalle: row.detalle,
+    estado: row.estado,
+    ...(row.dictamen !== null ? { dictamen: row.dictamen } : {}),
+    ...(row.dictaminada_at !== null ? { dictaminadaAt: row.dictaminada_at } : {}),
+    ...(row.resuelta_por !== null ? { resueltaPor: row.resuelta_por } : {}),
+    ...(row.resuelta_at !== null ? { resueltaAt: row.resuelta_at } : {}),
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Lectura por id, SIN filtro de solicitante (ADR 239, mismo criterio que
+ * `buscarVentaPropiaPorId`): "ajena" tiene que ser distinguible de "no
+ * existe", y ese gate vive DENTRO del núcleo (`consultar-solicitud-propia.ts`),
+ * nunca acá.
+ */
+export function buscarSolicitudPropiaPorId(db: Database.Database, solicitudId: string): SolicitudPropiaRow | undefined {
+  const row = db
+    .prepare(`SELECT ${SOLICITUD_PROPIA_SELECT_COLUMNS} FROM solicitudes_internas WHERE id = ?`)
+    .get(solicitudId) as SolicitudPropiaSqlRow | undefined;
+  return row ? rowToSolicitudPropia(row) : undefined;
+}
+
+/**
+ * `estados` NO es un parámetro (RD-114 pto 4): un solo consumidor, que los
+ * quiere todos — agregar un filtro dinámico son ~14 líneas de SQL que nadie
+ * ejercería (mismo cálculo que `listVentasPropiasDeVendedor`); si hiciera
+ * falta después, se agrega sin romper a nadie. Orden `created_at` DESC: lo
+ * último que el empleado pidió es lo primero que quiere ver — ★ es el orden
+ * OPUESTO al de `listSolicitudesInternas` (`ORDER BY created_at` ascendente)
+ * A PROPÓSITO: aquella es una cola de trabajo (lo más viejo primero, para que
+ * no se pudra), ésta es un historial personal (lo más reciente primero).
+ * Default de `limite`: 20 — mismo valor que `LIMITE_LISTADO_SOLICITUDES_PROPIAS`
+ * del núcleo, duplicado literal a propósito (este adaptador no importa
+ * `src/core/*`; lo que los mantiene sincronizados es el test de esa
+ * constante, no el wiring, RD-114 pto 3).
+ */
+export function listSolicitudesPropiasDeSolicitante(
+  db: Database.Database,
+  filtro: { readonly solicitanteId: string; readonly limite?: number },
+): readonly SolicitudPropiaRow[] {
+  const rows = db
+    .prepare(
+      `SELECT ${SOLICITUD_PROPIA_SELECT_COLUMNS} FROM solicitudes_internas WHERE solicitante_id = @solicitanteId ORDER BY created_at DESC LIMIT @limite`,
+    )
+    .all({ solicitanteId: filtro.solicitanteId, limite: filtro.limite ?? 20 }) as SolicitudPropiaSqlRow[];
+  return rows.map(rowToSolicitudPropia);
+}
+
+/**
  * Public shape of `propuestas_cambio`, camelCase — field-for-field the same
  * as `PropuestaCambio` in `src/core/propuestas/propuestas-contract.ts`
  * (Hito 5.1, tarea 17, todavía no existe). Este adaptador nunca importa esa
