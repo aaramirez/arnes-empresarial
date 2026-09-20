@@ -64,6 +64,8 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   consultar_venta: [],
   consultar_solicitud: [],
   ver_solicitudes_a2a: [],
+  // ★ D1: la obligatoriedad de `consultaId` vive ACÁ (el zod plano del borde es opcional) — no hay modo listado.
+  consultar_kpi: ["consultaId"],
 };
 
 /**
@@ -104,6 +106,7 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   consultar_venta: [],
   consultar_solicitud: [],
   ver_solicitudes_a2a: [],
+  consultar_kpi: [],
 };
 
 /**
@@ -125,6 +128,10 @@ export const VALORES_PERMITIDOS_POR_OPERACION: Readonly<Record<string, Readonly<
   resolver_decision_venta: { decision: ["confirmar", "rechazar"] },
   resolver_solicitud: { accion: ["aprobar", "rechazar"] },
   resolver_reembolso: { accion: ["aprobar", "rechazar", "reabrir"] },
+  // `consulta-kpi-a2a-chat`, ADR 243 — el control estructural: la clave del catálogo cerrado, coincidencia
+  // EXACTA. Literales DUPLICADOS a propósito (cero imports, ver arriba) de `CONSULTAS_KPI` en
+  // `core/agents/consultas-kpi-catalogo.ts`; los tests 4 y 7b las mantienen coherentes.
+  consultar_kpi: { consultaId: ["kpis_del_mes", "incidentes_abiertos", "incidentes_criticos", "estado_general"] },
 };
 
 /**
