@@ -6,6 +6,7 @@ import {
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_KPI,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
@@ -34,7 +35,7 @@ import {
 import { TASK_STATE_WORKING, type ClienteA2APort } from "../agents/a2a-contract.js";
 import type { DelegacionA2AStorePort } from "../turn-selector/dispatch-delegation-a2a.js";
 import { formatearListadoSolicitudesA2A, formatearDetalleSolicitudA2AParaModelo } from "../agents/a2a-entrante-textos.js";
-import { MARCA_EXTERNO_INICIO } from "../agents/texto-externo.js";
+import { MARCA_EXTERNO_FIN, MARCA_EXTERNO_INICIO, ROTULO_EXTERNO_NO_CONFIABLE } from "../agents/texto-externo.js";
 import {
   CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
   CASO_ESTADO_RESUELTO,
@@ -67,6 +68,7 @@ import {
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
+  COMANDO_CONSULTAR_KPI,
   COMANDO_DEVOLUCION,
   COMANDO_RECHAZAR_REEMBOLSO,
   COMANDO_RECHAZAR_SOLICITUD,
@@ -802,11 +804,15 @@ describe("ejecutarOperacion — resolver_solicitud (ADR 206-207, aprobacion-conv
     expect(texto).toContain("sol-1");
   });
 
-  it("★ test mecánico: el archivo fuente no contiene 'autorizacion-resolucion' ni menciona 'puedeResolverAjeno' (ADR 207 pto 2, R2)", () => {
+  it("★ test mecánico: el archivo fuente solo importa 'esAdministrador' de 'autorizacion-resolucion' y no menciona 'puedeResolverAjeno' (ADR 207 pto 2, R2)", () => {
     const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
     const source = readFileSync(sourcePath, "utf-8");
 
-    expect(source).not.toMatch(/autorizacion-resolucion/);
+    // consulta-kpi-a2a-chat (ADR 244, design §7 pto 3): unica mencion permitida es el import de
+    // `esAdministrador` (autorizacion de consultar_kpi). La intencion original (R2) se conserva:
+    // el dispatcher no reimplementa el predicado de autoaprobacion ni importa `puedeResolverAjeno`.
+    const menciones = source.split(/\r?\n/).filter((linea) => /autorizacion-resolucion/.test(linea));
+    expect(menciones).toEqual(['import { esAdministrador } from "../auth/autorizacion-resolucion.js";']);
     expect(source).not.toMatch(/puedeResolverAjeno/);
   });
 });
@@ -1135,11 +1141,15 @@ describe("ejecutarOperacion — resolver_reembolso (ADR 206-207, ADR 211, ADR 21
     expect(texto).toContain(`caso caso-venta-1 en ${CASO_ESTADO_PENDIENTE_APROBACION_HUMANA}`);
   });
 
-  it("★ test mecánico ampliado (ADR 207 pto 2, ADR 211, R2): el archivo fuente no compara vendedorId con empleadoId (el dispatcher NUNCA reimplementa el predicado de autoaprobación), no importa 'autorizacion-resolucion', no menciona 'puedeResolverAjeno'", () => {
+  it("★ test mecánico ampliado (ADR 207 pto 2, ADR 211, R2): el archivo fuente no compara vendedorId con empleadoId (el dispatcher NUNCA reimplementa el predicado de autoaprobación), solo importa 'esAdministrador' de 'autorizacion-resolucion', no menciona 'puedeResolverAjeno'", () => {
     const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
     const source = readFileSync(sourcePath, "utf-8");
 
-    expect(source).not.toMatch(/autorizacion-resolucion/);
+    // consulta-kpi-a2a-chat (ADR 244, design §7 pto 3): unica mencion permitida es el import de
+    // `esAdministrador` (autorizacion de consultar_kpi). La intencion original (R2) se conserva:
+    // el dispatcher no reimplementa el predicado de autoaprobacion ni importa `puedeResolverAjeno`.
+    const menciones = source.split(/\r?\n/).filter((linea) => /autorizacion-resolucion/.test(linea));
+    expect(menciones).toEqual(['import { esAdministrador } from "../auth/autorizacion-resolucion.js";']);
     expect(source).not.toMatch(/puedeResolverAjeno/);
     expect(source).not.toMatch(/vendedorId\s*===\s*[\w.]*empleadoId/);
     expect(source).not.toMatch(/empleadoId\s*===\s*[\w.]*vendedorId/);
@@ -2396,4 +2406,178 @@ describe("ejecutarOperacion — deps A2A sin comportamiento nuevo (consulta-kpi-
     expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
     expect(delegacionA2AStore.actualizarDelegacionA2A).not.toHaveBeenCalled();
   });
+});
+
+describe("ejecutarOperacion — consultar_kpi, ciclo A: los controles apagado, rol, clave (consulta-kpi-a2a-chat, tarea 7.1)", () => {
+  const TEXTO_DESACTIVADA = "La consulta a agentes externos de KPIs/incidentes está desactivada.";
+  const CLAVE_VALIDA = "kpis_del_mes";
+
+  function makeClienteA2A() {
+    const delegar = vi.fn();
+    const baseUrlDe = vi.fn();
+    const clienteA2A: ClienteA2APort = { baseUrlDe, delegar };
+    return { clienteA2A, delegar, baseUrlDe };
+  }
+
+  function leerFuente(): string {
+    return readFileSync(fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url)), "utf-8");
+  }
+
+  it("(i) test 8 — sin clienteA2A: texto exacto, cero fila de delegacion, cero auditoria y buscarRol NO llamado", async () => {
+    const buscarRol = vi.fn((_empleadoId: string): RolEmpleado | undefined => ROL_ADMINISTRADOR);
+    const delegacionA2AStore = makeDelegacionA2AStore();
+    const registro = makeRegistro();
+    const deps = makeDeps({ rolPort: { buscarRol }, delegacionA2AStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_KPI, consultaId: CLAVE_VALIDA }),
+      deps,
+    );
+
+    expect(texto).toBe(TEXTO_DESACTIVADA);
+    expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(buscarRol).not.toHaveBeenCalled();
+  });
+
+  it("(i) test 8 — desactivada gana sobre el rol: sesion sin rol administrador recibe el mismo texto y no deja fila", async () => {
+    const delegacionA2AStore = makeDelegacionA2AStore();
+    const registro = makeRegistro();
+    const deps = makeDeps({ rolPort: makeRolPort(ROL_EMPLEADO), delegacionA2AStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_KPI, consultaId: CLAVE_VALIDA }),
+      deps,
+    );
+
+    expect(texto).toBe(TEXTO_DESACTIVADA);
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
+  });
+
+  it("(i) test 8 — el literal de 'desactivada' esta caracter por caracter en el fuente de la TUI", () => {
+    const fuenteTui = readFileSync(fileURLToPath(new URL("../../build-on-comando-empleado.ts", import.meta.url)), "utf-8");
+
+    expect(fuenteTui).toContain(TEXTO_DESACTIVADA);
+  });
+
+  it.each([
+    ["sin rol (undefined)", { buscarRol: () => undefined }],
+    ["rol empleado", makeRolPort(ROL_EMPLEADO)],
+  ] as const)("(ii) test 9 — %s: rechaza sin despachar, sin la clave, con UNA fila no_autorizado", async (_nombre, rolPort) => {
+    // makeRolPort(undefined) caeria en su default (administrador): el doble sin rol se escribe a mano.
+    const { clienteA2A, delegar } = makeClienteA2A();
+    const delegacionA2AStore = makeDelegacionA2AStore();
+    const registro = makeRegistro();
+    const deps = makeDeps({ clienteA2A, rolPort, delegacionA2AStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_KPI, consultaId: CLAVE_VALIDA }),
+      deps,
+    );
+
+    expect(texto).toContain("No estás autorizado");
+    expect(texto).toContain("se requiere rol elevado");
+    expect(texto).not.toContain(CLAVE_VALIDA);
+    expect(delegar).not.toHaveBeenCalled();
+    expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(registro.registrarAccion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comando: COMANDO_CONSULTAR_KPI,
+        resultado: RESULTADO_NO_AUTORIZADO,
+        casoId: CASO_ACTUAL,
+        empleadoId: SESION.empleadoId,
+      }),
+    );
+  });
+
+  it("(iii) test 10 — clave desconocida (sin pasar por validarOperacion): texto exacto sin la clave, sin despachar y UNA fila no_aplicable", async () => {
+    const { clienteA2A, delegar, baseUrlDe } = makeClienteA2A();
+    const delegacionA2AStore = makeDelegacionA2AStore();
+    const registro = makeRegistro();
+    const deps = makeDeps({ clienteA2A, delegacionA2AStore, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_KPI, consultaId: "lo-que-sea" }),
+      deps,
+    );
+
+    expect(texto).toBe("No conozco esa consulta.");
+    expect(texto).not.toContain("lo-que-sea");
+    expect(delegar).not.toHaveBeenCalled();
+    expect(baseUrlDe).not.toHaveBeenCalled();
+    expect(delegacionA2AStore.crearDelegacionA2A).not.toHaveBeenCalled();
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(registro.registrarAccion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comando: COMANDO_CONSULTAR_KPI,
+        resultado: RESULTADO_NO_APLICABLE,
+        casoId: CASO_ACTUAL,
+      }),
+    );
+  });
+
+  it("(iii) test 10 — el rol se evalua antes que la clave: no admin + clave desconocida es no_autorizado, no no_aplicable", async () => {
+    const { clienteA2A } = makeClienteA2A();
+    const registro = makeRegistro();
+    const deps = makeDeps({ clienteA2A, rolPort: makeRolPort(ROL_EMPLEADO), registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_KPI, consultaId: "lo-que-sea" }),
+      deps,
+    );
+
+    expect(texto).toContain("No estás autorizado");
+    expect(texto).not.toBe("No conozco esa consulta.");
+    expect(registro.registrarAccion).toHaveBeenCalledTimes(1);
+    expect(registro.registrarAccion).toHaveBeenCalledWith(
+      expect.objectContaining({ resultado: RESULTADO_NO_AUTORIZADO }),
+    );
+  });
+
+  it("(iv) test 11 — el cuerpo de ejecutarConsultarKpi solo lee operacion.consultaId (acotado por NOMBRE)", () => {
+    const cuerpo = cuerpoDeFuncion(leerFuente(), "ejecutarConsultarKpi");
+
+    const camposLeidos = [...new Set([...cuerpo.matchAll(/operacion\.(\w+)/g)].map((m) => m[1]))];
+
+    expect(camposLeidos).toEqual(["consultaId"]);
+  });
+
+  it("(v) test 12 — el cuerpo de ejecutarConsultarKpi no reimplementa el marco, no escribe el insumo como literal y no crea un caso propio", () => {
+    const cuerpo = cuerpoDeFuncion(leerFuente(), "ejecutarConsultarKpi");
+
+    // (a) los valores del marco, leidos de las constantes exportadas, nunca tipeados aca.
+    expect(cuerpo).not.toContain(ROTULO_EXTERNO_NO_CONFIABLE);
+    expect(cuerpo).not.toContain(MARCA_EXTERNO_INICIO);
+    expect(cuerpo).not.toContain(MARCA_EXTERNO_FIN);
+    // (b) D3: forma de CADENA LITERAL, no la clave suelta (que es la de InsumoDelegado).
+    expect(cuerpo).not.toMatch(/instruccion\s*:\s*["'`]/);
+    expect(cuerpo).not.toMatch(/material\s*:\s*["'`]/);
+    // (c) RD-118: la operacion reusa el caso del turno.
+    expect(cuerpo).not.toMatch(/createCaso/);
+  });
+
+  it.each([
+    ["apagado", false, CLAVE_VALIDA, ROL_ADMINISTRADOR],
+    ["sin rol", true, CLAVE_VALIDA, ROL_EMPLEADO],
+    ["clave desconocida", true, "lo-que-sea", ROL_ADMINISTRADOR],
+  ] as const)(
+    "(vi) test 18 — rama %s: la confirmacion NO se toca y la promesa RESUELVE con el texto de la rama",
+    async (_nombre, conCliente, consultaId, rol) => {
+      const { clienteA2A } = makeClienteA2A();
+      const confirmacion = makeConfirmacion();
+      const deps = makeDeps({ ...(conCliente ? { clienteA2A } : {}), rolPort: makeRolPort(rol) });
+
+      const promesa = ejecutarOperacion(
+        makeInput({ operacion: OPERACION_CONSULTAR_KPI, consultaId }, { confirmacion }),
+        deps,
+      );
+
+      await expect(promesa).resolves.toMatch(/desactivada|No estás autorizado|No conozco esa consulta/);
+      expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+      expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+      expect(confirmacion.consumir).not.toHaveBeenCalled();
+    },
+  );
 });
