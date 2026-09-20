@@ -83,9 +83,23 @@ import type { SesionEmpleado } from "../auth/sesion.js";
 import { agruparReporteMensual, formatearReporteMensual, formatMoney, resolverPeriodoReporte } from "../ventas/reporte.js";
 import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
-import type { ClienteA2APort } from "../agents/a2a-contract.js";
-import type { DelegacionA2AStorePort } from "../turn-selector/dispatch-delegation-a2a.js";
-import { esConsultaKpiConocida } from "../agents/consultas-kpi-catalogo.js";
+import {
+  DESTINO_A2A_KPI_INCIDENTE,
+  DelegacionA2ANoCompletadaError,
+  type ClienteA2APort,
+} from "../agents/a2a-contract.js";
+import {
+  despacharDelegacionA2A,
+  resolverDestinoA2A,
+  type DelegacionA2AStorePort,
+} from "../turn-selector/dispatch-delegation-a2a.js";
+import { mensajeDeMotivoA2A } from "../agents/a2a-saliente-textos.js";
+import { enmarcarTextoExterno } from "../agents/texto-externo.js";
+import {
+  INSTRUCCION_CONSULTA_KPI,
+  esConsultaKpiConocida,
+  materialDeConsultaKpi,
+} from "../agents/consultas-kpi-catalogo.js";
 import { esAdministrador } from "../auth/autorizacion-resolucion.js";
 import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
 import {
@@ -108,6 +122,7 @@ import {
   RESULTADO_CONFIRMADA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
+  RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
   RESULTADO_NO_AUTORIZADO,
   RESULTADO_RECHAZADA,
@@ -1036,12 +1051,13 @@ function ejecutarVerSolicitudesA2A(
 }
 
 /**
- * `consulta-kpi-a2a-chat`, ADR 243/244, tarea 7.2. Ciclo A: SOLO los tres
- * controles, en este orden — (a) apagado (sin auditar, antes que todo), (b) rol
- * administrador, (c) clave contra el catalogo cerrado. SIN caso de uso de nucleo
- * nuevo. El modelo aporta unicamente `consultaId`; ninguna clave recibida se
- * repite en un texto. El camino feliz es un STUB explicito que la tarea 9.2
- * reemplaza por el despacho real: no despacha, no escribe, no sale nada.
+ * `consulta-kpi-a2a-chat`, ADR 243/244/245/246, tareas 7.2 y 9.2. Ciclo A: los
+ * tres controles, en este orden — (a) apagado (sin auditar, antes que todo), (b)
+ * rol administrador, (c) clave contra el catalogo cerrado. Ciclo B: despacho por
+ * el camino A2A del nucleo, resultado enmarcado y UNA fila de auditoria. SIN
+ * caso de uso de nucleo nuevo y SIN caso propio (reusa el del turno). El modelo
+ * aporta unicamente `consultaId`; ninguna clave recibida se repite en un texto.
+ * NUNCA lanza desde el despacho en adelante (ver el `catch` propio).
  */
 async function ejecutarConsultarKpi(
   operacion: OperacionConsultarKpi,
@@ -1071,8 +1087,52 @@ async function ejecutarConsultarKpi(
     );
     return "No conozco esa consulta.";
   }
+  const consultaId = operacion.consultaId;
 
-  return "La consulta a agentes externos de KPIs/incidentes todavía no está disponible en este canal.";
+  // Ciclo B (tarea 9.2, ADR 243/245/246). A partir de aca la consulta puede SALIR del arnes y lo que sale no
+  // vuelve: el `catch` global de `ejecutarOperacion` ("contá con que no se aplicó nada") seria FALSO, asi que
+  // esta funcion tiene su propio `try`/`catch` y NUNCA lanza. El insumo sale del catalogo; el marco, del nucleo.
+  try {
+    const material = materialDeConsultaKpi(consultaId);
+    const delegacion = await despacharDelegacionA2A(
+      {
+        casoId: input.casoIdActual,
+        destino: resolverDestinoA2A(DESTINO_A2A_KPI_INCIDENTE),
+        insumo: { instruccion: INSTRUCCION_CONSULTA_KPI, material },
+      },
+      {
+        store: deps.delegacionA2AStore,
+        cliente: deps.clienteA2A,
+        newId: deps.newId,
+        now: deps.now,
+        logEvent: deps.logEvent,
+      },
+    );
+    // Primero se arma el texto, despues se audita: `registrar` no lanza, asi que ninguna rama deja dos filas.
+    const texto = enmarcarTextoExterno("resultado de la consulta", delegacion.resultado);
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_ATENDIDA, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return texto;
+  } catch (error) {
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_FALLIDA, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    if (error instanceof DelegacionA2ANoCompletadaError) {
+      deps.logEvent(input.casoIdActual, "consultar-kpi-fallido", { tipada: true, reason: error.reason });
+      return mensajeDeMotivoA2A(error.reason);
+    }
+    // Rama NO tipada: DIVERGE de la TUI a proposito (efecto irreversible, lector modelo). Ni el mensaje del error
+    // ni la clave ni "no se aplico nada" entran al texto.
+    deps.logEvent(input.casoIdActual, "consultar-kpi-fallido", { tipada: false });
+    return "No pude completar la consulta al agente externo de KPIs/incidentes. No puedo asegurarte si llegó a salir o no — revisá el registro de la consulta antes de reintentar.";
+  }
 }
 
 /**
