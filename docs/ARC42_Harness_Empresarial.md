@@ -623,6 +623,8 @@ Hasta v3.11 la única credencial que autorizaba una devolución era el `token_co
 
 **Addendum v3.14 (`consulta-solicitud-propia`)**: la herramienta `operaciones` llega a **once** operaciones — la nueva es `consultar_solicitud { solicitudId? }`, sólo lectura y escopada a solicitud propia (mismo criterio de proyección que `consultar_venta`), con el gate de propiedad viviendo en el núcleo (ADR 238) y sin fila de auditoría en ninguna rama.
 
+**Addendum v3.15 (`visibilidad-a2a-entrante-chat`)**: la herramienta `operaciones` llega a **doce** operaciones — la nueva es `ver_solicitudes_a2a { a2aTaskId? }`, sólo lectura y de alcance organizacional (no escopada al empleado, a diferencia de `consultar_venta`/`consultar_solicitud`), que expone desde el chat las solicitudes que un agente externo le hizo al arnés vía A2A entrante.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
