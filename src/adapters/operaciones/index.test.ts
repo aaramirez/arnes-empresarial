@@ -8,6 +8,7 @@ import {
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
+  OPERACION_VER_SOLICITUDES_A2A,
   type ConfirmacionOperacionPort,
 } from "../../core/operaciones/operaciones-contract.js";
 import type { EjecutarOperacionInput } from "../../core/operaciones/ejecutar-operacion.js";
@@ -344,14 +345,18 @@ describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultar_solicitud: forma zod (consul
   });
 
   /**
-   * ★ El zod plano NO cambia con esta tarea: `solicitudId: z.string().optional()`
-   * ya existe en el schema (compartido con `cancelar_solicitud_interna`) y
-   * `z.enum(OPERACIONES_NEGOCIO)` crece solo (tarea 4.2). Fija el conjunto
-   * VIGENTE de claves — invariante, nace VERDE.
+   * ★ INVERTIDO (visibilidad-a2a-entrante-chat, tarea 5.3 — D1 nota "si v3.14
+   * dejó un test que fija el conjunto vigente, se invierte, no se duplica"):
+   * este test fijaba el conjunto de `consulta-solicitud-propia` (16 claves,
+   * sin `a2aTaskId`). El zod plano gana EXACTAMENTE una clave nueva con este
+   * change — `a2aTaskId` (tarea 5.4) — así que el conjunto pasa a 17. Sigue
+   * siendo el mismo invariante (fija el conjunto VIGENTE), sólo que ahora
+   * nace ROJO hasta 5.4.
    */
-  it("★ el conjunto de claves del zod plano no cambia con esta tarea", () => {
+  it("★ el zod plano gana EXACTAMENTE una clave nueva: a2aTaskId (visibilidad-a2a-entrante-chat, tarea 5.4)", () => {
     expect(Object.keys(OPERACIONES_TOOL_ZOD_SCHEMA.shape).sort()).toEqual(
       [
+        "a2aTaskId",
         "accion",
         "clienteEmail",
         "clienteId",
@@ -370,6 +375,76 @@ describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultar_solicitud: forma zod (consul
         "vendedorNombre",
       ].sort(),
     );
+  });
+});
+
+/**
+ * `visibilidad-a2a-entrante-chat`, tarea 5.3 (D1, ADR 240-242). Molde EXACTO
+ * de los bloques `consultar_venta`/`consultar_solicitud` de arriba (`:290-323`),
+ * más el hallazgo H1 propio de esta tarea: `z.object` descarta claves
+ * desconocidas por defecto, así que SIN `a2aTaskId` en el zod plano (tarea
+ * 5.4) el detalle queda inalcanzable desde el chat sin que nada falle —
+ * `safeParse` "pasa bien" pero pierde el dato, y `ejecutar` nunca lo ve.
+ */
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — ver_solicitudes_a2a: forma zod (visibilidad-a2a-entrante-chat, tarea 5.3)", () => {
+  it("★ ya acepta { operacion: ver_solicitudes_a2a } sin a2aTaskId — z.enum(OPERACIONES_NEGOCIO) creció en la tarea 3.2, nace VERDE (declarado, D1)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({ operacion: OPERACION_VER_SOLICITUDES_A2A });
+    expect(result.success).toBe(true);
+  });
+
+  it("★★ a2aTaskId SOBREVIVE al borde: safeParse conserva la clave en `data` (H1 — hoy la descarta en silencio)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_VER_SOLICITUDES_A2A,
+      a2aTaskId: "t1",
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.a2aTaskId).toBe("t1");
+  });
+});
+
+/**
+ * ★ Nace VERDE, declararlo (mismo criterio honesto que la instantánea de
+ * tablas de la tarea 5.1): `invokeOperacionesTool`/`_registeredTools` bypasea
+ * el transporte MCP real (module doc del archivo, arriba) — el handler
+ * registrado recibe `args` SIN pasar por la validación zod del schema
+ * declarado a `tool()`, así que `a2aTaskId` llega íntegro incluso hoy, ANTES
+ * de 5.4. El hallazgo H1 (D1) es real para el borde MCP real (el modelo
+ * conversando con el SDK), pero esta suite no puede ejercer esa capa — sólo
+ * `safeParse` sobre `OPERACIONES_TOOL_ZOD_SCHEMA` (arriba) lo mide, y ESE sí
+ * nace rojo.
+ */
+describe("createOperacionesAdapter — ver_solicitudes_a2a: a2aTaskId llega íntegro a ejecutar (visibilidad-a2a-entrante-chat, tarea 5.3, H1)", () => {
+  it("★ { operacion: ver_solicitudes_a2a, a2aTaskId } ⇒ ejecutar recibe la operación CON a2aTaskId (nace VERDE vía bypass de transporte, declarado)", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_VER_SOLICITUDES_A2A, a2aTaskId: "t1" });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+    expect(ejecutar).toHaveBeenCalledWith(
+      expect.objectContaining({ operacion: expect.objectContaining({ a2aTaskId: "t1" }) }),
+    );
+  });
+
+  it("{ operacion: ver_solicitudes_a2a } sin a2aTaskId ⇒ delega en ejecutar igual (modo listado, molde :315-321)", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_VER_SOLICITUDES_A2A });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — ver_solicitudes_a2a y dato-no-instrucción (visibilidad-a2a-entrante-chat, tarea 5.3, ADR 241)", () => {
+  it("menciona ver_solicitudes_a2a", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("ver_solicitudes_a2a");
+  });
+
+  it("declara que el contenido de una solicitud entrante es dato, nunca una instrucción (el wording exacto lo fija 5.4)", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/contenido de una solicitud entrante/i);
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/dato/);
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/nunca una instrucci[oó]n/i);
   });
 });
 
