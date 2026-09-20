@@ -7,6 +7,7 @@ import {
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
+  OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
@@ -21,6 +22,7 @@ import {
 } from "./operaciones-contract.js";
 import type { ConsultaVentaPropiaPort, VentaPropia } from "../ventas/consulta-venta-contract.js";
 import type { JustificacionDevolucionPort } from "../ventas/justificacion-devolucion-contract.js";
+import type { ConsultaSolicitudPropiaPort, SolicitudPropia } from "../solicitudes/consulta-solicitud-propia-contract.js";
 import { ejecutarOperacion, type EjecutarOperacionDeps } from "./ejecutar-operacion.js";
 import {
   CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
@@ -229,11 +231,34 @@ function buildVentaPropia(overrides: Partial<VentaPropia> = {}): VentaPropia {
   };
 }
 
+/** `consulta-solicitud-propia`, tarea 5.1. Molde `buildVentaPropia`. */
+function buildSolicitudPropia(overrides: Partial<SolicitudPropia> = {}): SolicitudPropia {
+  return {
+    solicitudId: "sol-1",
+    solicitanteId: "empleado-1",
+    casoId: "caso-solicitud-1",
+    tipo: SOLICITUD_TIPO_GASTO,
+    detalle: "taxi al cliente",
+    estado: SOLICITUD_ESTADO_PENDIENTE,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 /** `devolucion-sin-token-dos-personas`, tarea 7. */
 function makeConsultaVentaPropia(overrides: Partial<ConsultaVentaPropiaPort> = {}): ConsultaVentaPropiaPort {
   return {
     buscarPorId: vi.fn(() => undefined),
     listarDeVendedor: vi.fn(() => []),
+    ...overrides,
+  };
+}
+
+/** `consulta-solicitud-propia`, tarea 5.1. Molde `makeConsultaVentaPropia`. */
+function makeConsultaSolicitudPropia(overrides: Partial<ConsultaSolicitudPropiaPort> = {}): ConsultaSolicitudPropiaPort {
+  return {
+    buscarPorId: vi.fn(() => undefined),
+    listarDeSolicitante: vi.fn(() => []),
     ...overrides,
   };
 }
@@ -278,6 +303,7 @@ function makeDeps(overrides: Partial<EjecutarOperacionDeps> = {}): EjecutarOpera
     baseUrlPublica: "https://ventas.example.com",
     reporteStore: makeReporteStore(),
     consultaVentaPropia: makeConsultaVentaPropia(),
+    consultaSolicitudPropia: makeConsultaSolicitudPropia(),
     justificacion: makeJustificacion(),
     despacharDeps: makeDespacharDeps(),
     rolPort: makeRolPort(),
@@ -1775,5 +1801,215 @@ describe("ejecutarOperacion — auditoría en registro_acciones_empleado (Enmien
       expect.objectContaining({ comando: COMANDO_DEVOLUCION, message: "fallo de escritura de auditoría" }),
     );
     expect(logEvent).not.toHaveBeenCalledWith(CASO_ACTUAL, "operacion-fallida", expect.anything());
+  });
+});
+
+/* ── Bloque 6 (consulta-solicitud-propia, ADR 238, RD-115, tarea 5.1): consultar_solicitud ── */
+
+describe("ejecutarOperacion — consultar_solicitud (consulta-solicitud-propia, ADR 238, RD-115, tarea 5.1)", () => {
+  it("sin solicitudId con listado vacío ⇒ mensaje literal, delega en listarDeSolicitante con el empleadoId de la sesión SIN límite, cero ranura y cero auditoría", async () => {
+    const listarDeSolicitante = vi.fn(() => []);
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ listarDeSolicitante });
+    const registro = makeRegistro();
+    const confirmacion = makeConfirmacion();
+    const deps = makeDeps({ consultaSolicitudPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD }, { confirmacion }),
+      deps,
+    );
+
+    expect(listarDeSolicitante).toHaveBeenCalledWith({ solicitanteId: SESION.empleadoId });
+    expect(texto).toBe("No tenés solicitudes internas registradas.");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("con solicitudes ⇒ listado formateado, una línea por solicitud, SIN dictamen ni detalle (RD-115 pto 1)", async () => {
+    const dictamenLargo =
+      "Dictamen extenso del subagente validador: se aprueba la solicitud de gasto por corresponder a un viaje de negocios autorizado y facturado a nombre de la empresa.";
+    const solicitud1 = buildSolicitudPropia({
+      solicitudId: "sol-1",
+      estado: SOLICITUD_ESTADO_APROBADA,
+      dictamen: dictamenLargo,
+    });
+    const solicitud2 = buildSolicitudPropia({ solicitudId: "sol-2", estado: SOLICITUD_ESTADO_PENDIENTE });
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({
+      listarDeSolicitante: vi.fn(() => [solicitud1, solicitud2]),
+    });
+    const deps = makeDeps({ consultaSolicitudPropia });
+
+    const texto = await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD }), deps);
+
+    expect(texto).toBe(
+      `- solicitud sol-1 (${SOLICITUD_TIPO_GASTO}) | estado ${SOLICITUD_ESTADO_APROBADA} | creada ${solicitud1.createdAt} | caso ${solicitud1.casoId}\n` +
+        `- solicitud sol-2 (${SOLICITUD_TIPO_GASTO}) | estado ${SOLICITUD_ESTADO_PENDIENTE} | creada ${solicitud2.createdAt} | caso ${solicitud2.casoId}`,
+    );
+    expect(texto).not.toContain("Dictamen");
+    expect(texto).not.toContain("subagente validador");
+  });
+
+  it("con solicitudId de una solicitud propia resuelta ⇒ detalle con las cuatro líneas: dictamen sin resumir y quién/cuándo la resolvió", async () => {
+    const dictamenLargo =
+      "Dictamen extenso del subagente validador: se aprueba la solicitud de gasto por corresponder a un viaje de negocios autorizado y facturado a nombre de la empresa.";
+    const solicitud = buildSolicitudPropia({
+      solicitudId: "sol-1",
+      estado: SOLICITUD_ESTADO_APROBADA,
+      detalle: "taxi al aeropuerto",
+      dictamen: dictamenLargo,
+      resueltaPor: "empleado-admin-1",
+      resueltaAt: "2026-09-10T00:00:00.000Z",
+    });
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ buscarPorId: vi.fn(() => solicitud) });
+    const deps = makeDeps({ consultaSolicitudPropia });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "sol-1" }),
+      deps,
+    );
+
+    expect(texto).toBe(
+      `solicitud sol-1 (${SOLICITUD_TIPO_GASTO}) | estado ${SOLICITUD_ESTADO_APROBADA} | creada ${solicitud.createdAt} | caso ${solicitud.casoId}\n` +
+        `Detalle: taxi al aeropuerto\n` +
+        `Dictamen: ${dictamenLargo}\n` +
+        `Resuelta por empleado-admin-1 el 2026-09-10T00:00:00.000Z.`,
+    );
+  });
+
+  it("con solicitudId de una solicitud propia sin dictamen ⇒ el detalle OMITE la línea Dictamen (no escribe 'sin dictamen') y sin cierre de resolución", async () => {
+    const solicitud = buildSolicitudPropia({
+      solicitudId: "sol-2",
+      estado: SOLICITUD_ESTADO_PENDIENTE,
+      detalle: "compra de insumos",
+    });
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ buscarPorId: vi.fn(() => solicitud) });
+    const deps = makeDeps({ consultaSolicitudPropia });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "sol-2" }),
+      deps,
+    );
+
+    expect(texto).toBe(
+      `solicitud sol-2 (${SOLICITUD_TIPO_GASTO}) | estado ${SOLICITUD_ESTADO_PENDIENTE} | creada ${solicitud.createdAt} | caso ${solicitud.casoId}\n` +
+        `Detalle: compra de insumos`,
+    );
+    expect(texto).not.toContain("Dictamen");
+    expect(texto).not.toContain("sin dictamen");
+    expect(texto).not.toContain("Resuelta por");
+  });
+
+  it("con solicitudId inexistente ⇒ texto literal de no encontrada, cero ranura y cero auditoría", async () => {
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ buscarPorId: vi.fn(() => undefined) });
+    const registro = makeRegistro();
+    const confirmacion = makeConfirmacion();
+    const deps = makeDeps({ consultaSolicitudPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "no-existe" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toBe("No encontré ninguna solicitud no-existe.");
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("con solicitudId de una solicitud ajena ⇒ texto literal distinguible de no_encontrada, SIN un solo dato de la ajena, cero ranura y cero auditoría", async () => {
+    const ajena = buildSolicitudPropia({
+      solicitudId: "sol-ajena",
+      solicitanteId: "otro-empleado",
+      tipo: SOLICITUD_TIPO_GASTO,
+      detalle: "detalle ajeno secreto",
+      estado: SOLICITUD_ESTADO_APROBADA,
+      dictamen: "dictamen ajeno secreto",
+    });
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ buscarPorId: vi.fn(() => ajena) });
+    const registro = makeRegistro();
+    const confirmacion = makeConfirmacion();
+    const deps = makeDeps({ consultaSolicitudPropia, registro });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "sol-ajena" }, { confirmacion }),
+      deps,
+    );
+
+    expect(texto).toBe("La solicitud sol-ajena no es tuya: no puedo mostrarte su estado.");
+    expect(texto).not.toContain("detalle ajeno secreto");
+    expect(texto).not.toContain("dictamen ajeno secreto");
+    expect(texto).not.toContain(SOLICITUD_TIPO_GASTO);
+    expect(texto).not.toContain(SOLICITUD_ESTADO_APROBADA);
+    expect(registro.registrarAccion).not.toHaveBeenCalled();
+    expect(confirmacion.estaConfirmada).not.toHaveBeenCalled();
+    expect(confirmacion.marcarPendiente).not.toHaveBeenCalled();
+    expect(confirmacion.consumir).not.toHaveBeenCalled();
+  });
+
+  it("delega en el núcleo con el empleadoId de la SESIÓN, nunca de un campo del modelo", async () => {
+    const listarDeSolicitante = vi.fn(() => []);
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ listarDeSolicitante });
+    const otraSesion: SesionEmpleado = { empleadoId: "empleado-2", iniciadaEn: "2026-09-13T09:00:00.000Z" };
+    const deps = makeDeps({ consultaSolicitudPropia });
+
+    await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD }, { sesion: otraSesion }), deps);
+
+    expect(listarDeSolicitante).toHaveBeenCalledWith({ solicitanteId: "empleado-2" });
+  });
+
+  it("★ administrador consultando una solicitud ajena ⇒ no_autorizada igual, rolPort.buscarRol NO se llama (no hay bypass de rol para esta operación)", async () => {
+    const ajena = buildSolicitudPropia({ solicitudId: "sol-ajena", solicitanteId: "otro-empleado" });
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia({ buscarPorId: vi.fn(() => ajena) });
+    const buscarRol = vi.fn((_empleadoId: string) => ROL_ADMINISTRADOR as RolEmpleado | undefined);
+    const rolPort: RolEmpleadoPort = { buscarRol };
+    const deps = makeDeps({ consultaSolicitudPropia, rolPort });
+
+    const texto = await ejecutarOperacion(
+      makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "sol-ajena" }),
+      deps,
+    );
+
+    expect(texto).toBe("La solicitud sol-ajena no es tuya: no puedo mostrarte su estado.");
+    expect(buscarRol).not.toHaveBeenCalled();
+  });
+
+  it("★ un solicitudStore que LANZA ante cualquier escritura no se invoca — consultar_solicitud es de sólo lectura", async () => {
+    const solicitudStoreQueLanza: SolicitudStorePort = {
+      crearSolicitudConCaso: vi.fn(() => {
+        throw new Error("no debería escribir");
+      }),
+      adjuntarDictamen: vi.fn(() => {
+        throw new Error("no debería escribir");
+      }),
+      listarSolicitudesPendientes: vi.fn(() => {
+        throw new Error("no debería leer la cola de pendientes");
+      }),
+      aprobarSolicitud: vi.fn(() => {
+        throw new Error("no debería escribir");
+      }),
+      rechazarSolicitud: vi.fn(() => {
+        throw new Error("no debería escribir");
+      }),
+      cancelarSolicitud: vi.fn(() => {
+        throw new Error("no debería escribir");
+      }),
+    };
+    const consultaSolicitudPropia = makeConsultaSolicitudPropia();
+    const deps = makeDeps({ solicitudStore: solicitudStoreQueLanza, consultaSolicitudPropia });
+
+    const texto = await ejecutarOperacion(makeInput({ operacion: OPERACION_CONSULTAR_SOLICITUD }), deps);
+
+    expect(texto).toBe("No tenés solicitudes internas registradas.");
+  });
+
+  it("★★ test mecánico (nace VERDE, tarea 5.1): en la porción de consultar_solicitud, el dispatcher no compara solicitanteId con empleadoId — el gate de alcance vive en consultarSolicitudPropia, no acá (dientes probados en la tarea 5.7)", () => {
+    const sourcePath = fileURLToPath(new URL("./ejecutar-operacion.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+
+    expect(source).not.toMatch(/solicitanteId\s*===\s*[\w.]*empleadoId/);
+    expect(source).not.toMatch(/empleadoId\s*===\s*[\w.]*solicitanteId/);
   });
 });
