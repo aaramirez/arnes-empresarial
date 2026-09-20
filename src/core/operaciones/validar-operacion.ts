@@ -46,6 +46,8 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   consultar_solicitud: ["operacion", "solicitudId"],
   // `visibilidad-a2a-entrante-chat`, ADR 240-242 — sólo lectura, a2aTaskId ausente = modo listado.
   ver_solicitudes_a2a: ["operacion", "a2aTaskId"],
+  // `consulta-kpi-a2a-chat`, ADR 243 — un solo campo, la clave del catálogo cerrado.
+  consultar_kpi: ["operacion", "consultaId"],
 };
 
 /** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
