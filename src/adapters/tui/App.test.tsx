@@ -866,6 +866,13 @@ describe("App", () => {
       // here only affects this test; every other `waitFor` call keeps the
       // default.
       await waitFor(() => (lastFrame() ?? "").includes(`respuesta ${i}`), 5000);
+      // The frame showing the response does not mean `useInput` is listening
+      // again: its subscription is `isActive: !pending`, re-armed in a
+      // `useEffect` after `pending` flips. Writing the next prompt before
+      // that happens drops the keystrokes silently and the next `waitFor`
+      // never resolves, regardless of its timeout (same race `settle()`
+      // exists for in `renderApp`).
+      await settle();
     }
 
     const frame = lastFrame() ?? "";
