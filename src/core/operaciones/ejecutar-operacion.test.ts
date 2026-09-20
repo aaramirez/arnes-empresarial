@@ -2565,13 +2565,16 @@ describe("ejecutarOperacion — consultar_kpi, ciclo A: los controles apagado, r
     expect(camposLeidos).toEqual(["consultaId"]);
   });
 
-  it("(v) test 12 — el cuerpo de ejecutarConsultarKpi no reimplementa el marco, no escribe el insumo como literal y no crea un caso propio", () => {
+  it("(v) test 12 — el cuerpo de ejecutarConsultarKpi no reimplementa el marco (ni por literales ni por las constantes importadas), no escribe el insumo como literal y no crea un caso propio", () => {
     const cuerpo = cuerpoDeFuncion(leerFuente(), "ejecutarConsultarKpi");
 
     // (a) los valores del marco, leidos de las constantes exportadas, nunca tipeados aca.
     expect(cuerpo).not.toContain(ROTULO_EXTERNO_NO_CONFIABLE);
     expect(cuerpo).not.toContain(MARCA_EXTERNO_INICIO);
     expect(cuerpo).not.toContain(MARCA_EXTERNO_FIN);
+    // M2 (Fase 12): armar el marco concatenando las constantes IMPORTADAS no deja literales; se prohiben tambien
+    // los identificadores (mismo criterio que el test 9a de v3.15). `enmarcarTextoExterno(` SI debe aparecer.
+    expect(cuerpo).not.toMatch(/MARCA_EXTERNO_|ROTULO_EXTERNO/);
     // (b) D3: forma de CADENA LITERAL, no la clave suelta (que es la de InsumoDelegado).
     expect(cuerpo).not.toMatch(/instruccion\s*:\s*["'`]/);
     expect(cuerpo).not.toMatch(/material\s*:\s*["'`]/);
