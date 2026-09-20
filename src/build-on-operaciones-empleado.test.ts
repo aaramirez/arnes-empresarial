@@ -23,9 +23,11 @@ import { buildOperacionesEmpleadoPrompt } from "./core/ventas/soporte-prompt.js"
 import { TurnFailedError } from "./core/turn-selector/turn-error.js";
 import { createHookEngine } from "./core/hooks/hook-engine.js";
 import { openDatabase } from "./adapters/memory/db.js";
-import { getCasoById } from "./adapters/memory/repository.js";
+import { createCaso, getCasoById, insertSolicitudA2AEntrante } from "./adapters/memory/repository.js";
 import type { MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
+import { TASK_STATE_WORKING } from "./core/agents/a2a-contract.js";
+import { COMANDO_VER_SOLICITUDES_A2A } from "./core/commands/registro-acciones-contract.js";
 import type {
   AccionConfirmable,
   ConfirmacionOperacionPort,
@@ -982,6 +984,101 @@ describe("buildOnOperacionesEmpleado", () => {
       // El ÚNICO caso nuevo es el overhead del propio turno (`newId` determinístico, primer valor "caso-1").
       expect(despuesCasos).toHaveLength(antesCasos.length + 1);
       expect(despuesCasos.filter((fila) => fila.id !== "caso-1")).toEqual(antesCasos);
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * `visibilidad-a2a-entrante-chat`, tarea 5.1 (ADR 240-242) — molde EXACTO
+   * del test "★ instantánea de tablas idéntica" de arriba (`consultar_solicitud`),
+   * para `ver_solicitudes_a2a`: TRES invocaciones dentro del MISMO turno
+   * (listado, detalle con casoId, id inexistente) contra una fila real de
+   * `solicitudes_a2a_entrantes` (siembra copiada de `seedA2AEntrante` en
+   * `build-on-comando-empleado.test.ts`, suite `:2073+` — no importada). A
+   * diferencia de `consultar_solicitud`/`consultar_venta` (sin auditoría),
+   * `ver_solicitudes_a2a` audita en las TRES ramas (ADR 240 pto 5): la
+   * instantánea exige EXACTAMENTE tres filas nuevas en
+   * `registro_acciones_empleado`, una por invocación, todas con el
+   * `empleado_id` de la sesión — inverso exacto de la verificación de v3.14
+   * (que exigía CERO filas para `consultar_solicitud`).
+   */
+  it("★ wiring + instantánea de tablas: ver_solicitudes_a2a (listado, detalle, id inexistente) deja EXACTAMENTE tres filas de auditoría con el empleado_id de la sesión, sin mutar solicitudes_a2a_entrantes/ventas/solicitudes_internas ni casos preexistentes", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      createCaso(db, { id: "caso-a2a-seed", tipo: "operaciones", estado: CASO_ESTADO_ACTIVO, createdAt: TIMESTAMP, updatedAt: TIMESTAMP });
+      insertSolicitudA2AEntrante(db, {
+        id: "sol-a2a-wiring-1",
+        a2aTaskId: "task-wiring-1",
+        casoId: "caso-a2a-seed",
+        origenTransporte: "https://externo.example.test/rpc",
+        mensajeRecibido: "hola desde afuera",
+        estado: TASK_STATE_WORKING,
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      });
+
+      const tablaSolicitudesA2A = () => db.prepare("SELECT * FROM solicitudes_a2a_entrantes ORDER BY id").all();
+      const tablaVentas = () => db.prepare("SELECT * FROM ventas ORDER BY id").all();
+      const tablaSolicitudesInternas = () => db.prepare("SELECT * FROM solicitudes_internas ORDER BY id").all();
+      const tablaCasos = () => db.prepare("SELECT * FROM casos ORDER BY id").all() as Array<{ readonly id: string }>;
+      const tablaRegistro = () =>
+        db.prepare("SELECT * FROM registro_acciones_empleado ORDER BY id").all() as Array<{
+          readonly empleado_id: string;
+          readonly comando: string;
+        }>;
+
+      const antesSolicitudesA2A = tablaSolicitudesA2A();
+      const antesVentas = tablaVentas();
+      const antesSolicitudesInternas = tablaSolicitudesInternas();
+      const antesCasos = tablaCasos();
+      const antesRegistro = tablaRegistro();
+
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      let textoListado = "";
+      let textoDetalle = "";
+      let textoInexistente = "";
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
+        const listado = await registeredTool?.handler({ operacion: "ver_solicitudes_a2a" }, {});
+        textoListado = listado?.content[0]?.text ?? "";
+        const detalle = await registeredTool?.handler({ operacion: "ver_solicitudes_a2a", a2aTaskId: "task-wiring-1" }, {});
+        textoDetalle = detalle?.content[0]?.text ?? "";
+        const inexistente = await registeredTool?.handler({ operacion: "ver_solicitudes_a2a", a2aTaskId: "no-existe" }, {});
+        textoInexistente = inexistente?.content[0]?.text ?? "";
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "¿Qué nos preguntaron por A2A?",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+
+      expect(textoListado).toContain("task-wiring-1");
+      expect(textoDetalle).toContain("task-wiring-1");
+      expect(textoInexistente).toBe("No existe ninguna solicitud A2A no-existe.");
+
+      expect(tablaSolicitudesA2A()).toEqual(antesSolicitudesA2A);
+      expect(tablaVentas()).toEqual(antesVentas);
+      expect(tablaSolicitudesInternas()).toEqual(antesSolicitudesInternas);
+
+      const despuesCasos = tablaCasos();
+      // El ÚNICO caso nuevo es el overhead del propio turno (`newId` determinístico, primer valor "caso-1").
+      expect(despuesCasos).toHaveLength(antesCasos.length + 1);
+      expect(despuesCasos.filter((fila) => fila.id !== "caso-1")).toEqual(antesCasos);
+
+      const despuesRegistro = tablaRegistro();
+      expect(despuesRegistro).toHaveLength(antesRegistro.length + 3);
+      const filasNuevas = despuesRegistro.slice(antesRegistro.length);
+      for (const fila of filasNuevas) {
+        expect(fila.empleado_id).toBe("empleado-1");
+        expect(fila.comando).toBe(COMANDO_VER_SOLICITUDES_A2A);
+      }
     } finally {
       db.close();
     }
