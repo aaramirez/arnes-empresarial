@@ -625,6 +625,8 @@ Hasta v3.11 la única credencial que autorizaba una devolución era el `token_co
 
 **Addendum v3.15 (`visibilidad-a2a-entrante-chat`)**: la herramienta `operaciones` llega a **doce** operaciones — la nueva es `ver_solicitudes_a2a { a2aTaskId? }`, sólo lectura y de alcance organizacional (no escopada al empleado, a diferencia de `consultar_venta`/`consultar_solicitud`), que expone desde el chat las solicitudes que un agente externo le hizo al arnés vía A2A entrante.
 
+**Addendum v3.16 (`consulta-kpi-a2a-chat`)**: la herramienta `operaciones` llega a **trece** operaciones — la nueva es `consultar_kpi { consultaId }`, que despacha por el camino A2A saliente del núcleo una consulta de KPI (clave de un catálogo cerrado) al destino `kpi-incidente`. Es la **única operación con efecto fuera del arnés** (manda contexto de la empresa a un tercero) y por eso exige rol `administrador`. Los conteos de "diez", "once" y "doce" de esta sección describen el estado de v3.12, v3.14 y v3.15; el estado vigente desde `v3.16.0` es trece.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
