@@ -14,6 +14,7 @@ import {
   OPERACION_CREAR_SOLICITUD_INTERNA,
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
+  OPERACION_CONSULTAR_KPI,
   OPERACION_CONSULTAR_VENTA,
   OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_RESOLVER_DECISION_VENTA,
@@ -28,6 +29,7 @@ import {
   type DominioConfirmacion,
   type LlaveConfirmacion,
   type OperacionCancelarSolicitudInterna,
+  type OperacionConsultarKpi,
   type OperacionConsultarReporteComisiones,
   type OperacionConsultarSolicitud,
   type OperacionConsultarVenta,
@@ -55,7 +57,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera DOCE operaciones — forma FINAL (visibilidad-a2a-entrante-chat, tarea 3.1): ver_solicitudes_a2a precede a nada, cierra el array", () => {
+  it("OPERACIONES_NEGOCIO enumera TRECE operaciones — consultar_kpi cierra el array (consulta-kpi-a2a-chat, tarea 6.1)", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -69,8 +71,9 @@ describe("operaciones-contract constants", () => {
       OPERACION_CONSULTAR_VENTA,
       OPERACION_CONSULTAR_SOLICITUD,
       OPERACION_VER_SOLICITUDES_A2A,
+      OPERACION_CONSULTAR_KPI,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(12);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(13);
   });
 });
 
@@ -106,6 +109,55 @@ describe("OperacionVerSolicitudesA2A (visibilidad-a2a-entrante-chat, tarea 3.1)"
     const op: OperacionVerSolicitudesA2A = {
       operacion: OPERACION_VER_SOLICITUDES_A2A,
       // @ts-expect-error — `empleadoId` NUNCA es campo de ninguna operación del contrato (ADR 147 pto 1) — viaja por closure.
+      empleadoId: "e1",
+    };
+    void op;
+  }
+});
+
+describe("OperacionConsultarKpi (consulta-kpi-a2a-chat, tarea 6.1, ADR 243/244)", () => {
+  it("consultaId es OBLIGATORIO en el tipo (sin ?), SIN accion, SIN confirmado, SIN empleadoId", () => {
+    const op: OperacionConsultarKpi = { operacion: OPERACION_CONSULTAR_KPI, consultaId: "kpis_del_mes" };
+    const generico: OperacionNegocio = op;
+
+    expect(generico.operacion).toBe("consultar_kpi");
+    expect(op.consultaId).toBe("kpis_del_mes");
+    expect("accion" in op).toBe(false);
+    expect("confirmado" in op).toBe(false);
+    expect("empleadoId" in op).toBe(false);
+  });
+
+  function _chequeoDeTipos_consultarKpiExigeConsultaId(): void {
+    // @ts-expect-error — `consultaId` es OBLIGATORIO en el TIPO: no hay modo listado (ADR 243).
+    const op: OperacionConsultarKpi = { operacion: OPERACION_CONSULTAR_KPI };
+    void op;
+  }
+
+  function _chequeoDeTipos_consultarKpiNoAceptaAccion(): void {
+    const op: OperacionConsultarKpi = {
+      operacion: OPERACION_CONSULTAR_KPI,
+      consultaId: "kpis_del_mes",
+      // @ts-expect-error — `accion` NUNCA es campo de `consultar_kpi` — un solo paso, sin elección de operación.
+      accion: "aprobar",
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_consultarKpiNoAceptaConfirmado(): void {
+    const op: OperacionConsultarKpi = {
+      operacion: OPERACION_CONSULTAR_KPI,
+      consultaId: "kpis_del_mes",
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1).
+      confirmado: true,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_consultarKpiNoAceptaEmpleadoId(): void {
+    const op: OperacionConsultarKpi = {
+      operacion: OPERACION_CONSULTAR_KPI,
+      consultaId: "kpis_del_mes",
+      // @ts-expect-error — `empleadoId` NUNCA es campo de ninguna operación del contrato (ADR 147 pto 1).
       empleadoId: "e1",
     };
     void op;
