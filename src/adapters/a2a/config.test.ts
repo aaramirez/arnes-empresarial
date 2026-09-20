@@ -7,6 +7,15 @@ import {
   isA2ASalienteEnabled,
   resolveA2AConfig,
 } from "./config.js";
+import { OPERACIONES_TIMEOUT_MS } from "../web/config.js";
+import {
+  A2A_POLL_INTERVAL_CHAT_MS,
+  A2A_REQUEST_TIMEOUT_CHAT_MS,
+  A2A_TASK_TIMEOUT_CHAT_MS,
+  type A2AConfig,
+  configParaCanalConversacional,
+  esperaTotalMaximaMs,
+} from "./config.js";
 
 describe("claveAVariableEntorno", () => {
   it.each([
@@ -183,5 +192,88 @@ describe("isA2ASalienteEnabled", () => {
     const env = valor === undefined ? {} : { HARNESS_A2A_SALIENTE: valor };
 
     expect(isA2ASalienteEnabled(env)).toBe(esperado);
+  });
+});
+
+function baseConfig(overrides: Partial<A2AConfig> = {}): A2AConfig {
+  return { ...resolveA2AConfig({}), ...overrides };
+}
+
+describe("configParaCanalConversacional (consulta-kpi-a2a-chat, ADR 245)", () => {
+  it("fija los valores de los tres techos, para que cambiarlos sea una edicion consciente", () => {
+    expect(A2A_REQUEST_TIMEOUT_CHAT_MS).toBe(8_000);
+    expect(A2A_POLL_INTERVAL_CHAT_MS).toBe(1_500);
+    expect(A2A_TASK_TIMEOUT_CHAT_MS).toBe(30_000);
+  });
+
+  it("con la base en defaults aplica los tres techos del canal", () => {
+    const derivada = configParaCanalConversacional(baseConfig());
+
+    expect(derivada.requestTimeoutMs).toBe(A2A_REQUEST_TIMEOUT_CHAT_MS);
+    expect(derivada.pollIntervalMs).toBe(A2A_POLL_INTERVAL_CHAT_MS);
+    expect(derivada.taskTimeoutMs).toBe(A2A_TASK_TIMEOUT_CHAT_MS);
+  });
+
+  it("nunca afloja: una base ya apretada queda con campos identicos", () => {
+    const derivada = configParaCanalConversacional(
+      baseConfig({ requestTimeoutMs: 5_000, pollIntervalMs: 500, taskTimeoutMs: 10_000 }),
+    );
+
+    expect(derivada.requestTimeoutMs).toBe(5_000);
+    expect(derivada.pollIntervalMs).toBe(500);
+    expect(derivada.taskTimeoutMs).toBe(10_000);
+  });
+
+  it("con una base mixta toma el minimo campo a campo", () => {
+    const derivada = configParaCanalConversacional(
+      baseConfig({ requestTimeoutMs: 3_000, pollIntervalMs: 1_000, taskTimeoutMs: 90_000 }),
+    );
+
+    expect(derivada.requestTimeoutMs).toBe(3_000);
+    expect(derivada.pollIntervalMs).toBe(1_000);
+    expect(derivada.taskTimeoutMs).toBe(A2A_TASK_TIMEOUT_CHAT_MS);
+  });
+
+  it("conserva destinos por la misma referencia y no muta la base", () => {
+    const base = baseConfig();
+    const copiaAntes = { ...base };
+
+    const derivada = configParaCanalConversacional(base);
+
+    expect(derivada.destinos).toBe(base.destinos);
+    expect(base).toEqual(copiaAntes);
+  });
+
+  it("test 2: la espera total del canal cabe en la mitad del plazo HTTP, con defaults y con la base a mano de 2b", () => {
+    const baseDefaults = baseConfig();
+    const baseAMano = baseConfig({ pollIntervalMs: 2_000, taskTimeoutMs: 1_500 });
+
+    for (const base of [baseDefaults, baseAMano]) {
+      expect(esperaTotalMaximaMs(configParaCanalConversacional(base))).toBeLessThanOrEqual(
+        OPERACIONES_TIMEOUT_MS / 2,
+      );
+    }
+  });
+
+  it("test 2: esperaTotalMaximaMs es la formula 3*request + task + poll, no un numero fijo", () => {
+    const arbitraria = baseConfig({ requestTimeoutMs: 1_000, pollIntervalMs: 100, taskTimeoutMs: 5_000 });
+
+    expect(esperaTotalMaximaMs(arbitraria)).toBe(8_100);
+
+    const derivada = configParaCanalConversacional(baseConfig());
+    expect(esperaTotalMaximaMs(derivada)).toBe(
+      3 * derivada.requestTimeoutMs + derivada.taskTimeoutMs + derivada.pollIntervalMs,
+    );
+  });
+
+  it("test 2b: una config a mano con poll >= task dispara la guarda y cae a los techos del CANAL, no a los defaults", () => {
+    const invalida = baseConfig({ pollIntervalMs: 2_000, taskTimeoutMs: 1_500 });
+
+    const derivada = configParaCanalConversacional(invalida);
+
+    expect(derivada.requestTimeoutMs).toBe(A2A_REQUEST_TIMEOUT_CHAT_MS);
+    expect(derivada.pollIntervalMs).toBe(A2A_POLL_INTERVAL_CHAT_MS);
+    expect(derivada.taskTimeoutMs).toBe(A2A_TASK_TIMEOUT_CHAT_MS);
+    expect(derivada.taskTimeoutMs).not.toBe(DEFAULT_A2A_TASK_TIMEOUT_MS);
   });
 });
