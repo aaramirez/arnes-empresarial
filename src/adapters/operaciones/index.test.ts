@@ -3,6 +3,7 @@ import {
   OPERACIONES_MCP_SERVER_NAME,
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
@@ -324,6 +325,77 @@ describe("createOperacionesAdapter — consultar_venta: input válido delega en 
 describe("OPERACIONES_TOOL_DESCRIPTION — menciona consultar_venta (devolucion-sin-token-dos-personas, tarea 5)", () => {
   it("incluye 'consultar_venta' en el texto de la descripción registrada", () => {
     expect(OPERACIONES_TOOL_DESCRIPTION).toContain("consultar_venta");
+  });
+});
+
+/** `consulta-solicitud-propia`, tarea 5.5. Molde EXACTO de los tres bloques de `consultar_venta` de arriba. */
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultar_solicitud: forma zod (consulta-solicitud-propia, tarea 5.5)", () => {
+  it("acepta { operacion: consultar_solicitud, solicitudId }", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({
+      operacion: OPERACION_CONSULTAR_SOLICITUD,
+      solicitudId: "sol-1",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("acepta { operacion: consultar_solicitud } sin solicitudId (modo listado)", () => {
+    const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({ operacion: OPERACION_CONSULTAR_SOLICITUD });
+    expect(result.success).toBe(true);
+  });
+
+  /**
+   * ★ El zod plano NO cambia con esta tarea: `solicitudId: z.string().optional()`
+   * ya existe en el schema (compartido con `cancelar_solicitud_interna`) y
+   * `z.enum(OPERACIONES_NEGOCIO)` crece solo (tarea 4.2). Fija el conjunto
+   * VIGENTE de claves — invariante, nace VERDE.
+   */
+  it("★ el conjunto de claves del zod plano no cambia con esta tarea", () => {
+    expect(Object.keys(OPERACIONES_TOOL_ZOD_SCHEMA.shape).sort()).toEqual(
+      [
+        "accion",
+        "clienteEmail",
+        "clienteId",
+        "decision",
+        "detalle",
+        "monto",
+        "motivo",
+        "operacion",
+        "periodo",
+        "planAnterior",
+        "planNuevo",
+        "solicitudId",
+        "tipo",
+        "token",
+        "ventaId",
+        "vendedorNombre",
+      ].sort(),
+    );
+  });
+});
+
+describe("createOperacionesAdapter — consultar_solicitud: input válido delega en ejecutar (consulta-solicitud-propia, tarea 5.5)", () => {
+  it("{ operacion: consultar_solicitud, solicitudId } ⇒ delega en ejecutar", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "sol-1" });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+
+  it("{ operacion: consultar_solicitud } sin solicitudId ⇒ delega en ejecutar (modo listado)", async () => {
+    const ejecutar = vi.fn().mockResolvedValue("ok");
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+    await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_SOLICITUD });
+
+    expect(ejecutar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — menciona consultar_solicitud (consulta-solicitud-propia, tarea 5.5)", () => {
+  it("incluye 'consultar_solicitud' en el texto de la descripción registrada (el único rojo real de esta tarea)", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("consultar_solicitud");
   });
 });
 
