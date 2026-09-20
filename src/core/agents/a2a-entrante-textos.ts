@@ -1,5 +1,6 @@
 import type { ListadoSolicitudesA2AEntrantes, SolicitudA2AEntranteVistaEmpleado } from "./a2a-entrante-contract.js";
 import { LINEAS_PAGINA_A2A } from "./a2a-entrante-contract.js";
+import { enmarcarTextoExterno } from "./texto-externo.js";
 
 /**
  * Una línea por fila — molde de `formatearLineaPropuesta` (más abajo). El
@@ -77,4 +78,21 @@ export function formatearDetalleSolicitudA2A(vista: SolicitudA2AEntranteVistaEmp
   const mensaje = formatearSeccionPaginadaA2A("mensaje recibido", vista.mensajeRecibido);
   const resultado = vista.resultado !== undefined ? formatearSeccionPaginadaA2A("resultado", vista.resultado) : "";
   return `${resumen}${mensaje}${resultado}`;
+}
+
+/**
+ * ★ El detalle que ve UN MODELO (ADR 241, visibilidad-a2a-entrante-chat,
+ * tarea 2.7). Mismo resumen que la TUI (R10) + las dos secciones de texto
+ * libre ENMARCADAS y TRUNCADAS por `enmarcarTextoExterno` — una sola función
+ * de marco usada dos veces, el tratamiento de las dos secciones es idéntico
+ * a propósito (RD-116 pto 1). `resultado` ausente ⇒ la sección se OMITE por
+ * completo, igual que hoy (ADR 142 pto 3). NO reemplaza a
+ * `formatearDetalleSolicitudA2A`: la TUI la lee un humano y sigue paginando
+ * por líneas.
+ */
+export function formatearDetalleSolicitudA2AParaModelo(vista: SolicitudA2AEntranteVistaEmpleado): string {
+  const resumen = formatearResumenSolicitudA2A(vista);
+  const mensaje = enmarcarTextoExterno("mensaje recibido", vista.mensajeRecibido);
+  const resultado = vista.resultado !== undefined ? `\n\n${enmarcarTextoExterno("resultado", vista.resultado)}` : "";
+  return `${resumen}\n${mensaje}${resultado}`;
 }
