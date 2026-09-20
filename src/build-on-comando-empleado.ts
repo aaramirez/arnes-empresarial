@@ -140,6 +140,7 @@ import {
   SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
+  SOLICITUD_ESTADOS,
   SOLICITUD_TIPOS,
   type SolicitudEstado,
   type SolicitudInterna,
@@ -358,14 +359,6 @@ function resultadoDevolucion(resultado: DevolucionResult["resultado"]): string {
   if (resultado === "escalada") return RESULTADO_ESCALADA;
   return RESULTADO_NO_APLICABLE;
 }
-
-/** Vocabulario de `estado` para validar contra la base — mismo criterio que `SOLICITUD_TIPOS`. */
-const SOLICITUD_ESTADOS = [
-  SOLICITUD_ESTADO_PENDIENTE,
-  SOLICITUD_ESTADO_APROBADA,
-  SOLICITUD_ESTADO_RECHAZADA,
-  SOLICITUD_ESTADO_CANCELADA,
-] as const;
 
 /**
  * Lanzado por `toPortSolicitud` cuando una fila de `solicitudes_internas`

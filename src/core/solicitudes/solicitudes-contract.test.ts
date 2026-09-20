@@ -8,6 +8,7 @@ import {
   SOLICITUD_ESTADO_CANCELADA,
   SOLICITUD_ESTADO_PENDIENTE,
   SOLICITUD_ESTADO_RECHAZADA,
+  SOLICITUD_ESTADOS,
   SOLICITUD_TIPO_GASTO,
   SOLICITUD_TIPO_VACACIONES,
   SOLICITUD_TIPOS,
@@ -73,6 +74,23 @@ describe("SOLICITUD_ESTADO_APROBADA y SOLICITUD_ESTADO_RECHAZADA", () => {
       "rechazada",
       "cancelada",
     ]);
+  });
+});
+
+describe("SOLICITUD_ESTADOS", () => {
+  it("tiene exactamente los cuatro literales, en ese orden: pendiente, aprobada, rechazada, cancelada", () => {
+    expect(SOLICITUD_ESTADOS).toEqual([
+      "pendiente_aprobacion_humana",
+      "aprobada",
+      "rechazada",
+      "cancelada",
+    ]);
+  });
+
+  it("SolicitudEstado se deriva del array: cada elemento es asignable al tipo", () => {
+    const estados: readonly SolicitudEstado[] = SOLICITUD_ESTADOS;
+
+    expect(estados).toBe(SOLICITUD_ESTADOS);
   });
 });
 

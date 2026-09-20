@@ -56,13 +56,16 @@ import { construirAgenteEmpleadoOperaciones } from "./core/agents/definitions.js
 import { buildOperacionesEmpleadoPrompt } from "./core/ventas/soporte-prompt.js";
 import {
   buscarRolEmpleado,
+  buscarSolicitudPropiaPorId,
   buscarVentaPropiaPorId,
   createCaso,
   insertAccionEmpleado,
   insertJustificacionDevolucion,
   listComisionesPorPeriodo,
+  listSolicitudesPropiasDeSolicitante,
   listVentasEnReembolsoPendiente,
   listVentasPropiasDeVendedor,
+  type SolicitudPropiaRow,
   type VentaPropiaRow,
 } from "./adapters/memory/repository.js";
 import { createOperacionesAdapter } from "./adapters/operaciones/index.js";
@@ -84,7 +87,9 @@ import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { createVentaStore, VentaEstadoInvalidoError } from "./build-on-venta.js";
-import { createSolicitudStore } from "./build-on-comando-empleado.js";
+import { createSolicitudStore, SolicitudTipoEstadoInvalidoError } from "./build-on-comando-empleado.js";
+import { SOLICITUD_ESTADOS, SOLICITUD_TIPOS } from "./core/solicitudes/solicitudes-contract.js";
+import { type ConsultaSolicitudPropiaPort, type SolicitudPropia } from "./core/solicitudes/consulta-solicitud-propia-contract.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
 
 /**
@@ -146,6 +151,27 @@ function toPortVentaPropia(row: VentaPropiaRow): VentaPropia {
   return {
     ...row,
     estado: row.estado as VentaEstado,
+  };
+}
+
+/**
+ * Traduce un `SolicitudPropiaRow` de `repository.ts` (`tipo`/`estado` como
+ * `string` suelto) a la `SolicitudPropia` del puerto (`tipo`/`estado` como
+ * uniones literales) — molde exacto de `toPortVentaPropia`, reusando el
+ * MISMO `SolicitudTipoEstadoInvalidoError` que `toPortSolicitud`
+ * (`build-on-comando-empleado.ts`) en vez de declarar una variante propia
+ * (`consulta-solicitud-propia`, RD-114 pto 2).
+ */
+function toPortSolicitudPropia(row: SolicitudPropiaRow): SolicitudPropia {
+  const tipoValido = (SOLICITUD_TIPOS as readonly string[]).includes(row.tipo);
+  const estadoValido = (SOLICITUD_ESTADOS as readonly string[]).includes(row.estado);
+  if (!tipoValido || !estadoValido) {
+    throw new SolicitudTipoEstadoInvalidoError(row.solicitudId, row.tipo, row.estado);
+  }
+  return {
+    ...row,
+    tipo: row.tipo as SolicitudPropia["tipo"],
+    estado: row.estado as SolicitudPropia["estado"],
   };
 }
 
@@ -217,6 +243,14 @@ export function buildOnOperacionesEmpleado(
   const justificacion: JustificacionDevolucionPort = {
     registrar: (input) => insertJustificacionDevolucion(db, input),
   };
+  /** `consulta-solicitud-propia`, RD-115 pto 4 — mismo molde inline que `consultaVentaPropia`. */
+  const consultaSolicitudPropia: ConsultaSolicitudPropiaPort = {
+    buscarPorId: (solicitudId) => {
+      const row = buscarSolicitudPropiaPorId(db, solicitudId);
+      return row ? toPortSolicitudPropia(row) : undefined;
+    },
+    listarDeSolicitante: (filtro) => listSolicitudesPropiasDeSolicitante(db, filtro).map(toPortSolicitudPropia),
+  };
   const logEvent = (casoId: string, event: string, fields?: Readonly<Record<string, unknown>>) =>
     logTurnEvent(casoId, event, fields, logDeps);
 
@@ -229,6 +263,7 @@ export function buildOnOperacionesEmpleado(
     ...(deps.riesgoCredito !== undefined ? { riesgoCredito: deps.riesgoCredito } : {}),
     reporteStore,
     consultaVentaPropia,
+    consultaSolicitudPropia,
     justificacion,
     registro,
     despacharDeps,

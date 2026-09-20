@@ -123,7 +123,10 @@ export const OPERACIONES_TOOL_DESCRIPTION =
   "deducido por vos de la conversación) — queda pendiente de que un administrador distinto la " +
   "apruebe, nunca la cerrás vos mismo — " +
   "o consultar el estado de una venta propia puntual (consultar_venta, incluida la decisión " +
-  "del cliente) o el listado de tus ventas propias si no das un ventaId. Nunca calculás " +
+  "del cliente) o el listado de tus ventas propias si no das un ventaId, " +
+  "o consultar el estado de una solicitud interna propia puntual (consultar_solicitud, incluidos " +
+  "el dictamen y quién/cuándo la resolvió) o el listado de tus solicitudes internas propias si " +
+  "no das un solicitudId — de sólo lectura, sin confirmación. Nunca calculás " +
   "ni proponés vos un monto, porcentaje o veredicto — eso lo hace esta herramienta. " +
   "Cuando el empleado te pida resolver una solicitud (`aprobar` o `rechazar`) o un " +
   "reembolso (`aprobar`, `rechazar` o `reabrir`), la acción tiene que salir de una " +

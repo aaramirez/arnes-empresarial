@@ -178,6 +178,26 @@ function parseLastLine(lines: readonly string[]): Record<string, unknown> {
   return JSON.parse(last as string) as Record<string, unknown>;
 }
 
+/**
+ * Cast repetido para acceder a la tool MCP registrada `operacion_negocio`
+ * (consulta-solicitud-propia, hallazgo code-review) — recibe
+ * `deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]` dentro de un
+ * `mockedHandleTurn.mockImplementation`.
+ */
+function getOperacionTool(
+  server: unknown,
+): { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> } | undefined {
+  const typed = server as unknown as {
+    readonly instance: {
+      readonly _registeredTools: Record<
+        string,
+        { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+      >;
+    };
+  };
+  return typed.instance._registeredTools["operacion_negocio"];
+}
+
 function makeCounterNewId(prefix = "id"): () => string {
   let contador = 0;
   return () => `${prefix}-${++contador}`;
@@ -762,6 +782,206 @@ describe("buildOnOperacionesEmpleado", () => {
       const logged = parseLastLine(logDeps.lines);
       expect(logged.event).toBe("operacion-fallida");
       expect(String(logged.message)).toContain("venta-corrupta-1 tiene estado inválido en la base: estado_invalido");
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * `consulta-solicitud-propia`, tarea 5.3. Molde EXACTO de los dos tests de
+   * `consultar_venta` de arriba, pero para `consultar_solicitud`, con
+   * solicitudes sembradas de verdad en SQLite vía `createSolicitudStore`
+   * (mismo store real que usa el módulo bajo prueba internamente).
+   */
+  it("wiring de extremo a extremo: consultar_solicitud delega en consultaSolicitudPropia.buscarPorId/listarDeSolicitante sobre datos reales", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const solicitudStore = createSolicitudStore(db);
+      solicitudStore.crearSolicitudConCaso({
+        caso: { id: "caso-solicitud-propia-1", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+        solicitud: {
+          id: "sol-propia-1",
+          solicitanteId: "empleado-1",
+          tipo: SOLICITUD_TIPO_GASTO,
+          detalle: "taxi al cliente",
+          estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+        },
+        timestamp: TIMESTAMP,
+      });
+
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      let textoDetalle = "";
+      let textoListado = "";
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
+
+        const detalle = await registeredTool?.handler(
+          { operacion: "consultar_solicitud", solicitudId: "sol-propia-1" },
+          {},
+        );
+        textoDetalle = detalle?.content[0]?.text ?? "";
+
+        const listado = await registeredTool?.handler({ operacion: "consultar_solicitud" }, {});
+        textoListado = listado?.content[0]?.text ?? "";
+
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "¿Cómo está mi solicitud sol-propia-1?",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+
+      expect(textoDetalle).toContain("sol-propia-1");
+      expect(textoDetalle).toContain("taxi al cliente");
+      expect(textoListado).toContain("sol-propia-1");
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * Hallazgo esperado (molde `VentaEstadoInvalidoError` de arriba, RD-114 pto
+   * 2): `toPortSolicitudPropia` reusa el MISMO `SolicitudTipoEstadoInvalidoError`
+   * que `toPortSolicitud` (`build-on-comando-empleado.ts`) — no declara una
+   * variante propia. Corrupción real vía `UPDATE solicitudes_internas SET
+   * estado = ...`, única forma de producir un valor fuera de `SOLICITUD_ESTADOS`
+   * sin pasar por ninguna validación de escritura.
+   */
+  it("toPortSolicitudPropia: fila con estado fuera de SOLICITUD_ESTADOS degrada la operación y loguea SolicitudTipoEstadoInvalidoError (RD-114 pto 2)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const solicitudStore = createSolicitudStore(db);
+      solicitudStore.crearSolicitudConCaso({
+        caso: { id: "caso-solicitud-corrupta", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+        solicitud: {
+          id: "sol-corrupta-1",
+          solicitanteId: "empleado-1",
+          tipo: SOLICITUD_TIPO_GASTO,
+          detalle: "taxi al cliente",
+          estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+        },
+        timestamp: TIMESTAMP,
+      });
+      db.prepare("UPDATE solicitudes_internas SET estado = ? WHERE id = ?").run("estado_invalido", "sol-corrupta-1");
+
+      const logDeps = fakeLogDeps();
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP, logDeps }),
+      );
+
+      let texto = "";
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
+        const resultado = await registeredTool?.handler(
+          { operacion: "consultar_solicitud", solicitudId: "sol-corrupta-1" },
+          {},
+        );
+        texto = resultado?.content[0]?.text ?? "";
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "¿Cómo está la solicitud sol-corrupta-1?",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+
+      expect(texto).toBe("No se pudo completar la operación por un error interno. Contá con que no se aplicó nada e intentá de nuevo.");
+      const logged = parseLastLine(logDeps.lines);
+      expect(logged.event).toBe("operacion-fallida");
+      expect(String(logged.message)).toContain("sol-corrupta-1 tiene tipo/estado inválido en la base");
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * ★ Instantánea de tablas idéntica (spec `herramienta-operaciones-negocio`,
+   * "no muta estado"). ★ El turno crea SU PROPIO `caso` (tipo "operaciones")
+   * ANTES de invocar `handleTurn` — overhead de CUALQUIER operación despachada
+   * por este módulo (no sólo `consultar_solicitud`); se excluye
+   * explícitamente por id (determinístico vía `newId`) de la comparación de
+   * `casos`. `solicitudes_internas` (incluido `updated_at`) y
+   * `registro_acciones_empleado` se comparan SIN excepciones.
+   *
+   * ★ **Nace VERDE, declararlo** (tarea 5.3, mismo criterio honesto que el
+   * test mecánico de `ejecutar-operacion.test.ts` tarea 5.1): ANTES del
+   * wiring de 5.4, `deps.consultaSolicitudPropia` es `undefined` en runtime
+   * (el campo requerido sólo falla en `tsc`, no en la transpilación de
+   * `vitest`) — la primera llamada al puerto lanza de inmediato y
+   * `ejecutarOperacion` la atrapa ANTES de que exista la oportunidad de
+   * escribir nada, así que la invariante "no muta" se cumple trivialmente
+   * incluso sin wiring. El wiring real lo ejercitan los otros dos tests de
+   * esta tarea (5.3), que SÍ están en rojo.
+   */
+  it("★ instantánea de tablas idéntica: consultar_solicitud con id propio, ajeno y sin id no muta solicitudes_internas (incl. updated_at), casos preexistentes ni registro_acciones_empleado", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const solicitudStore = createSolicitudStore(db);
+      solicitudStore.crearSolicitudConCaso({
+        caso: { id: "caso-snap-propia", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+        solicitud: {
+          id: "sol-snap-propia",
+          solicitanteId: "empleado-1",
+          tipo: SOLICITUD_TIPO_GASTO,
+          detalle: "taxi al cliente",
+          estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+        },
+        timestamp: TIMESTAMP,
+      });
+      solicitudStore.crearSolicitudConCaso({
+        caso: { id: "caso-snap-ajena", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
+        solicitud: {
+          id: "sol-snap-ajena",
+          solicitanteId: "otro-empleado",
+          tipo: SOLICITUD_TIPO_GASTO,
+          detalle: "hotel del cliente",
+          estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA,
+        },
+        timestamp: TIMESTAMP,
+      });
+
+      const tablaSolicitudes = () => db.prepare("SELECT * FROM solicitudes_internas ORDER BY id").all();
+      const tablaCasos = () => db.prepare("SELECT * FROM casos ORDER BY id").all() as Array<{ readonly id: string }>;
+      const tablaRegistro = () => db.prepare("SELECT * FROM registro_acciones_empleado ORDER BY id").all();
+
+      const antesSolicitudes = tablaSolicitudes();
+      const antesCasos = tablaCasos();
+      const antesRegistro = tablaRegistro();
+
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, { newId: makeCounterNewId("caso"), now: () => TIMESTAMP }),
+      );
+
+      mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
+        await registeredTool?.handler({ operacion: "consultar_solicitud", solicitudId: "sol-snap-propia" }, {});
+        await registeredTool?.handler({ operacion: "consultar_solicitud", solicitudId: "sol-snap-ajena" }, {});
+        await registeredTool?.handler({ operacion: "consultar_solicitud" }, {});
+        return outcomeBase;
+      });
+
+      await handler({
+        consulta: "¿Qué solicitudes tengo?",
+        sesion: fakeSesion({ empleadoId: "empleado-1" }),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+
+      const despuesCasos = tablaCasos();
+
+      expect(tablaSolicitudes()).toEqual(antesSolicitudes);
+      expect(tablaRegistro()).toEqual(antesRegistro);
+      // El ÚNICO caso nuevo es el overhead del propio turno (`newId` determinístico, primer valor "caso-1").
+      expect(despuesCasos).toHaveLength(antesCasos.length + 1);
+      expect(despuesCasos.filter((fila) => fila.id !== "caso-1")).toEqual(antesCasos);
     } finally {
       db.close();
     }

@@ -15,6 +15,7 @@ import {
   OPERACION_PROCESAR_DEVOLUCION,
   OPERACION_REGISTRAR_VENTA,
   OPERACION_CONSULTAR_VENTA,
+  OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
@@ -27,6 +28,7 @@ import {
   type LlaveConfirmacion,
   type OperacionCancelarSolicitudInterna,
   type OperacionConsultarReporteComisiones,
+  type OperacionConsultarSolicitud,
   type OperacionConsultarVenta,
   type OperacionCrearSolicitudInterna,
   type OperacionNegocio,
@@ -51,7 +53,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera DIEZ operaciones — forma FINAL (devolucion-sin-token-dos-personas, tarea 11): solicitar_devolucion precede a consultar_venta", () => {
+  it("OPERACIONES_NEGOCIO enumera ONCE operaciones — forma FINAL (consulta-solicitud-propia, tarea 4.1): consultar_solicitud precede a nada, cierra el array", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -63,8 +65,9 @@ describe("operaciones-contract constants", () => {
       OPERACION_RESOLVER_REEMBOLSO,
       OPERACION_SOLICITAR_DEVOLUCION,
       OPERACION_CONSULTAR_VENTA,
+      OPERACION_CONSULTAR_SOLICITUD,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(10);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(11);
   });
 });
 
@@ -94,6 +97,19 @@ describe("OperacionConsultarVenta (devolucion-sin-token-dos-personas, tarea 3, A
 
     expect(generico.operacion).toBe("consultar_venta");
     expect(conId.ventaId).toBe("venta-1");
+    expect("accion" in listado).toBe(false);
+    expect("confirmado" in listado).toBe(false);
+  });
+});
+
+describe("OperacionConsultarSolicitud (consulta-solicitud-propia, ADR 237/238/239, tarea 4.1)", () => {
+  it("solicitudId opcional (ausente ⇒ modo listado), SIN accion ni confirmado — es de sólo lectura", () => {
+    const listado: OperacionConsultarSolicitud = { operacion: OPERACION_CONSULTAR_SOLICITUD };
+    const conId: OperacionConsultarSolicitud = { operacion: OPERACION_CONSULTAR_SOLICITUD, solicitudId: "sol-1" };
+    const generico: OperacionNegocio = listado;
+
+    expect(generico.operacion).toBe("consultar_solicitud");
+    expect(conId.solicitudId).toBe("sol-1");
     expect("accion" in listado).toBe(false);
     expect("confirmado" in listado).toBe(false);
   });

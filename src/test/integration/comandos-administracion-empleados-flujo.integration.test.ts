@@ -38,6 +38,7 @@ import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/tu
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
 import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
+import type { ConsultaSolicitudPropiaPort } from "../../core/solicitudes/consulta-solicitud-propia-contract.js";
 import type { JustificacionDevolucionPort } from "../../core/ventas/justificacion-devolucion-contract.js";
 import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
 
@@ -146,6 +147,10 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     buscarPorId: noUsado("buscarPorId"),
     listarDeVendedor: noUsado("listarDeVendedor"),
   };
+  const consultaSolicitudPropia: ConsultaSolicitudPropiaPort = {
+    buscarPorId: noUsado("buscarPorId"),
+    listarDeSolicitante: noUsado("listarDeSolicitante"),
+  };
   const justificacion: JustificacionDevolucionPort = {
     registrar: noUsado("registrar"),
   };
@@ -172,6 +177,7 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     baseUrlPublica: "https://ventas.example.com",
     reporteStore,
     consultaVentaPropia,
+    consultaSolicitudPropia,
     justificacion,
     despacharDeps,
     rolPort: realRolPort(db),

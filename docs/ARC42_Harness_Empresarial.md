@@ -621,6 +621,8 @@ Hasta v3.11 la única credencial que autorizaba una devolución era el `token_co
 
 **Deuda declarada por este change**: ninguna nueva — ver Riesgo 9 (R5b) más abajo, aceptado y falla cerrado, no una deuda pendiente de resolver.
 
+**Addendum v3.14 (`consulta-solicitud-propia`)**: la herramienta `operaciones` llega a **once** operaciones — la nueva es `consultar_solicitud { solicitudId? }`, sólo lectura y escopada a solicitud propia (mismo criterio de proyección que `consultar_venta`), con el gate de propiedad viviendo en el núcleo (ADR 238) y sin fila de auditoría en ninguna rama.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)

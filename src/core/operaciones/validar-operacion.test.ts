@@ -333,6 +333,29 @@ describe("validarOperacion — consultar_venta: forma mínima se acepta (devoluc
   });
 });
 
+describe("validarOperacion — consultar_solicitud: forma mínima se acepta (consulta-solicitud-propia, tarea 4.1)", () => {
+  it("{ operacion } solo se acepta (modo listado)", () => {
+    const input = { operacion: "consultar_solicitud" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("{ operacion, solicitudId } se acepta", () => {
+    const input = { operacion: "consultar_solicitud", solicitudId: "sol-1" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it.each(["ventaId", "accion", "confirmado", "empleadoId", "solicitanteId"])(
+    "%s como clave extra en consultar_solicitud ⇒ rechazo, pareado con la forma válida como control (ADR 147 pto 1, ADR 166 pto 1)",
+    (claveExtra) => {
+      const valido = { operacion: "consultar_solicitud", solicitudId: "sol-1" };
+      expect(validarOperacion(valido)).toBe(valido);
+
+      const invalido = { ...valido, [claveExtra]: "x" };
+      expect(validarOperacion(invalido)).toBeUndefined();
+    },
+  );
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();

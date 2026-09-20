@@ -6,7 +6,7 @@
  * `operaciones`, antes de que exista cualquier adaptador o caso de uso que la
  * consuma.
  *
- * `OperacionNegocio` es la unión discriminada de las SEIS operaciones del
+ * `OperacionNegocio` es la unión discriminada de las ONCE operaciones del
  * contrato (ADR 163 pto 2 + ADR 171 pto 2 + ADR 174 pto 1): ningún campo de
  * dinero/porcentaje/período/veredicto CALCULADO por el modelo — la única
  * excepción probada por test mecánico es `monto` de `registrar_venta` (ADR
@@ -36,7 +36,7 @@ export const OPERACIONES_TOOL_NAME = "operacion_negocio";
 export const OPERACIONES_TOOL_QUALIFIED_NAME =
   `mcp__${OPERACIONES_MCP_SERVER_NAME}__${OPERACIONES_TOOL_NAME}` as const;
 
-/* ── Las seis operaciones del contrato (ADR 163 pto 2, ADR 171 pto 2, ADR 174 pto 1) ── */
+/* ── Las once operaciones del contrato (ADR 163 pto 2, ADR 171 pto 2, ADR 174 pto 1) ── */
 
 export const OPERACION_RESOLVER_DECISION_VENTA = "resolver_decision_venta";
 export const OPERACION_PROCESAR_DEVOLUCION = "procesar_devolucion";
@@ -68,6 +68,16 @@ export const OPERACION_CONSULTAR_VENTA = "consultar_venta";
  */
 export const OPERACION_SOLICITAR_DEVOLUCION = "solicitar_devolucion";
 
+/**
+ * `consulta-solicitud-propia`, ADR 237/238/239 — de sólo lectura, escopada al
+ * solicitante propio: estado y desenlace de una solicitud interna puntual
+ * (cualquiera de los cuatro estados, con su dictamen y su resolución) o, sin
+ * id, el listado de las propias. UNDÉCIMA entrada del contrato. SIN `accion`
+ * (no es una elección de operación) y SIN `confirmado` (no consume ninguna
+ * ranura de confirmación) — mismo criterio que `consultar_venta`.
+ */
+export const OPERACION_CONSULTAR_SOLICITUD = "consultar_solicitud";
+
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_PROCESAR_DEVOLUCION,
@@ -79,6 +89,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_SOLICITAR_DEVOLUCION,
   OPERACION_CONSULTAR_VENTA,
+  OPERACION_CONSULTAR_SOLICITUD,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -193,6 +204,18 @@ export interface OperacionSolicitarDevolucion {
   readonly motivo?: string;
 }
 
+/**
+ * `consulta-solicitud-propia`, ADR 237/238/239 — de sólo lectura: SIN `accion`
+ * (no es una elección de operación) y SIN `confirmado` (no consume ninguna
+ * ranura de confirmación) — mismo criterio que `consultar_venta`.
+ * `solicitudId` ausente ⇒ modo listado de TODAS las solicitudes propias,
+ * cualquier estado.
+ */
+export interface OperacionConsultarSolicitud {
+  readonly operacion: typeof OPERACION_CONSULTAR_SOLICITUD;
+  readonly solicitudId?: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
@@ -203,7 +226,8 @@ export type OperacionNegocio =
   | OperacionResolverSolicitud
   | OperacionResolverReembolso
   | OperacionSolicitarDevolucion
-  | OperacionConsultarVenta;
+  | OperacionConsultarVenta
+  | OperacionConsultarSolicitud;
 
 /**
  * Puerto de confirmación humana para las operaciones de dos pasos del canal
