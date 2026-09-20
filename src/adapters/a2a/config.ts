@@ -28,6 +28,15 @@ export const DEFAULT_A2A_POLL_INTERVAL_MS = 1_500;
 export const DEFAULT_A2A_TASK_TIMEOUT_MS = 120_000;
 
 /**
+ * Ceilings for the conversational channel (consulta-kpi-a2a-chat, ADR 245,
+ * design §9). NONE of them changes the `DEFAULT_*` values above: the TUI keeps
+ * 30 s / 1.5 s / 120 s untouched.
+ */
+export const A2A_REQUEST_TIMEOUT_CHAT_MS = 8_000;
+export const A2A_POLL_INTERVAL_CHAT_MS = 1_500;
+export const A2A_TASK_TIMEOUT_CHAT_MS = 30_000;
+
+/**
  * Parses a positive-integer env var, falling back to `defaultValue` when the
  * raw value is missing, blank, not a number, not finite, or not strictly
  * greater than zero. Never throws — this adapter's configuration is
@@ -185,4 +194,54 @@ export function resolveA2AConfig(env: NodeJS.ProcessEnv = process.env): A2AConfi
  */
 export function isA2ASalienteEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env.HARNESS_A2A_SALIENTE ?? "").trim().toLowerCase() === "on";
+}
+
+/**
+ * PURE. Worst-case wait of `delegarTarea` end to end, derived from `client.ts`:
+ *
+ *   3 x requestTimeoutMs + taskTimeoutMs + pollIntervalMs
+ *
+ * The three request timeouts are the Agent Card fetch, the SendMessage and the
+ * GetTask that starts right before the deadline and runs to completion (the
+ * deadline guard runs before the sleep and the GetTask). `taskTimeoutMs` is the
+ * polling window and `pollIntervalMs` the last sleep. `CancelTask` adds
+ * nothing: it is fired without `await`.
+ *
+ * It does NOT compare against `OPERACIONES_TIMEOUT_MS` here: that would make
+ * this adapter import another adapter (forbidden by AGENTS.md). The
+ * comparison lives in the test, which may import both.
+ */
+export function esperaTotalMaximaMs(config: A2AConfig): number {
+  return 3 * config.requestTimeoutMs + config.taskTimeoutMs + config.pollIntervalMs;
+}
+
+/**
+ * Derives the conversational-channel config from an already resolved one. Each
+ * field is `Math.min(base, ceiling)`: it never loosens what the operator
+ * already tightened via env, it only tightens. `destinos` is passed through by
+ * reference.
+ *
+ * Then it RE-APPLIES the `pollIntervalMs >= taskTimeoutMs` guard. On a config
+ * produced by `resolveA2AConfig` the guard cannot fire (the resolver already
+ * guarantees `poll < task` and `Math.min` preserves the order with ceilings
+ * 1 500 < 30 000); it is a safety net for a hand-built `A2AConfig`. When it
+ * fires it falls back to the CHANNEL ceilings, never to the adapter defaults:
+ * `DEFAULT_A2A_TASK_TIMEOUT_MS` (120 000) would give 3x8 + 120 + 1.5 = 145.5 s
+ * and break the bound.
+ *
+ * Postcondition: `esperaTotalMaximaMs(result)` <= 55 500 ms, that is
+ * <= `OPERACIONES_TIMEOUT_MS / 2`, on every path.
+ */
+export function configParaCanalConversacional(base: A2AConfig): A2AConfig {
+  let requestTimeoutMs = Math.min(base.requestTimeoutMs, A2A_REQUEST_TIMEOUT_CHAT_MS);
+  let pollIntervalMs = Math.min(base.pollIntervalMs, A2A_POLL_INTERVAL_CHAT_MS);
+  let taskTimeoutMs = Math.min(base.taskTimeoutMs, A2A_TASK_TIMEOUT_CHAT_MS);
+
+  if (pollIntervalMs >= taskTimeoutMs) {
+    requestTimeoutMs = A2A_REQUEST_TIMEOUT_CHAT_MS;
+    pollIntervalMs = A2A_POLL_INTERVAL_CHAT_MS;
+    taskTimeoutMs = A2A_TASK_TIMEOUT_CHAT_MS;
+  }
+
+  return { requestTimeoutMs, pollIntervalMs, taskTimeoutMs, destinos: base.destinos };
 }
