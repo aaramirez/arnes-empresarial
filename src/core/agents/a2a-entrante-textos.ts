@@ -53,17 +53,27 @@ function formatearSeccionPaginadaA2A(etiqueta: string, contenido: string): strin
 }
 
 /**
+ * Resumen de una línea (los cinco campos de `formatearLineaSolicitudA2A`,
+ * con el mismo rótulo `origen de transporte`) — extraído de
+ * `formatearDetalleSolicitudA2A` (visibilidad-a2a-entrante-chat, tarea 2.5,
+ * RD-116 pto 3) porque `formatearDetalleSolicitudA2AParaModelo` (tarea 2.7)
+ * necesita el MISMO resumen, byte a byte (R10). Privada, del mismo módulo.
+ */
+function formatearResumenSolicitudA2A(vista: SolicitudA2AEntranteVistaEmpleado): string {
+  return `solicitud A2A ${vista.a2aTaskId} · estado ${vista.estado.valor} · origen de transporte ${vista.origenTransporte} · recibida ${vista.createdAt} · actualizada ${vista.updatedAt}`;
+}
+
+/**
  * `formatearDetalleSolicitudA2A` (v3.4.0, tarea 7, ADR 142 pto 2-3). Resumen
- * de una línea (mismos cinco campos que `formatearLineaSolicitudA2A`, con
- * el mismo rótulo `origen de transporte`) + `mensajeRecibido`/`resultado`
- * paginados a `LINEAS_PAGINA_A2A` líneas cada uno. `resultado` ausente ⇒
- * la sección se OMITE por completo — no se imprime vacía ni la palabra
- * `"undefined"` (mismo binario que el `dictamen` de `formatearLineaSolicitud`,
- * ADR 142 pto 3). Exportada por el mismo motivo que
- * `formatearListadoSolicitudesA2A` — ver comentario de esa función.
+ * de una línea + `mensajeRecibido`/`resultado` paginados a
+ * `LINEAS_PAGINA_A2A` líneas cada uno. `resultado` ausente ⇒ la sección se
+ * OMITE por completo — no se imprime vacía ni la palabra `"undefined"`
+ * (mismo binario que el `dictamen` de `formatearLineaSolicitud`, ADR 142
+ * pto 3). Exportada por el mismo motivo que `formatearListadoSolicitudesA2A`
+ * — ver comentario de esa función.
  */
 export function formatearDetalleSolicitudA2A(vista: SolicitudA2AEntranteVistaEmpleado): string {
-  const resumen = `solicitud A2A ${vista.a2aTaskId} · estado ${vista.estado.valor} · origen de transporte ${vista.origenTransporte} · recibida ${vista.createdAt} · actualizada ${vista.updatedAt}`;
+  const resumen = formatearResumenSolicitudA2A(vista);
   const mensaje = formatearSeccionPaginadaA2A("mensaje recibido", vista.mensajeRecibido);
   const resultado = vista.resultado !== undefined ? formatearSeccionPaginadaA2A("resultado", vista.resultado) : "";
   return `${resumen}${mensaje}${resultado}`;
