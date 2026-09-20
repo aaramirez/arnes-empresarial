@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../memory/db.js";
-import { buildOnVenta, createVentaStore } from "../../build-on-venta.js";
-import { ejecutarOperacion, type EjecutarOperacionDeps } from "../../core/operaciones/ejecutar-operacion.js";
+import { buildOnVenta, createDelegacionA2AStore, createVentaStore } from "../../build-on-venta.js";
+import { createCaso, insertAccionEmpleado, upsertRolEmpleado } from "../memory/repository.js";
+import { ejecutarOperacion, type EjecutarOperacionDeps, type EjecutarOperacionInput } from "../../core/operaciones/ejecutar-operacion.js";
 import type { DelegacionA2AStorePort } from "../../core/turn-selector/dispatch-delegation-a2a.js";
-import { OPERACION_REGISTRAR_VENTA, OPERACION_RESOLVER_REEMBOLSO } from "../../core/operaciones/operaciones-contract.js";
+import {
+  OPERACION_CONSULTAR_KPI,
+  OPERACION_REGISTRAR_VENTA,
+  OPERACION_RESOLVER_REEMBOLSO,
+} from "../../core/operaciones/operaciones-contract.js";
+import { CONSULTAS_KPI } from "../../core/agents/consultas-kpi-catalogo.js";
+import type { ClienteA2APort, ResultadoA2A } from "../../core/agents/a2a-contract.js";
 import { ROL_ADMINISTRADOR, type RolEmpleado, type RolEmpleadoPort } from "../../core/auth/rol-contract.js";
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
@@ -1668,6 +1675,96 @@ describe("createRequestListener — POST /operaciones (operaciones-negocio-conve
     expect(deps.logEvent).toHaveBeenCalledWith(REQUEST_ID, "operaciones-timeout", expect.anything());
 
     resolverTurno(OPERACIONES_RESULT);
+  });
+
+  /**
+   * `consulta-kpi-a2a-chat`, tarea 10.2 -- TEST DE CARACTERIZACION, sin codigo de
+   * produccion. NACE VERDE por criterio declarado (no es test-first): fija el
+   * comportamiento VIGENTE de `handleOperaciones` (`server.ts`, carrera contra
+   * `OPERACIONES_TIMEOUT_MS`), el residual R11 (design §0.4): el 504 responde al
+   * cliente pero NO cancela el turno; si el handler completa despues, la fila de
+   * delegacion y la de auditoria se escriben igual. Un 504 NO significa "no se
+   * envio". Sus dientes se prueban por mutacion manual en 12.x.
+   */
+  it("caracterizacion (R11): un 504 de POST /operaciones no cancela el turno -- consultar_kpi completa despues y deja su fila de delegacion y su fila atendida", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      const ahora = "2026-09-13T10:00:00.000Z";
+      const admin: SesionEmpleado = { empleadoId: "admin-1", iniciadaEn: ahora };
+      upsertRolEmpleado(db, { empleadoId: admin.empleadoId, rol: ROL_ADMINISTRADOR, ahora });
+      createCaso(db, { id: "caso-turno-kpi", tipo: "soporte", estado: "abierto", createdAt: ahora, updatedAt: ahora });
+      const respuesta: ResultadoA2A = {
+        ok: true,
+        a2aTaskId: "task-externa-1",
+        estado: "TASK_STATE_COMPLETED",
+        resultado: "KPI: valor",
+        agenteNombre: "Agente KPI",
+        endpoint: "https://agente.example/rpc",
+      };
+      const clienteA2A: ClienteA2APort = {
+        baseUrlDe: () => "https://agente.example",
+        delegar: vi.fn<ClienteA2APort["delegar"]>(async () => respuesta),
+      };
+      const deps = ejecutarDepsR7(db, {
+        clienteA2A,
+        delegacionA2AStore: createDelegacionA2AStore(db),
+        registro: { registrarAccion: (accion) => insertAccionEmpleado(db, accion) },
+        rolPort: { buscarRol: (empleadoId) => (empleadoId === admin.empleadoId ? ROL_ADMINISTRADOR : undefined) },
+      });
+      let liberarTurno!: () => void;
+      const compuerta = new Promise<void>((resolve) => {
+        liberarTurno = resolve;
+      });
+      let turnoTerminado: Promise<unknown> = Promise.resolve();
+      const onOperacionesEmpleado = vi.fn().mockImplementation(() => {
+        const turno = (async (): Promise<SoporteResult> => {
+          await compuerta;
+          await ejecutarOperacion(
+            {
+              operacion: { operacion: OPERACION_CONSULTAR_KPI, consultaId: CONSULTAS_KPI[0] } as EjecutarOperacionInput["operacion"],
+              sesion: admin,
+              confirmacion: { estaConfirmada: () => false, marcarPendiente: () => undefined, consumir: () => undefined },
+              casoIdActual: "caso-turno-kpi",
+            },
+            deps,
+          );
+          return OPERACIONES_RESULT;
+        })();
+        turnoTerminado = turno;
+        return turno;
+      });
+      const sesionStore = fakeSesionStore({ buscar: vi.fn().mockReturnValue(admin) });
+      const listener = createRequestListener(makeDeps({ onOperacionesEmpleado, sesionStore }));
+      const req = new FakeRequest({
+        method: "POST",
+        url: RUTA_OPERACIONES,
+        headers: { authorization: "Bearer token-valido" },
+      });
+      const res = new FakeResponse();
+
+      listener(req, res);
+      req.emitBody([jsonBody({ consulta: "consultame el KPI" })]);
+      await vi.advanceTimersByTimeAsync(OPERACIONES_TIMEOUT_MS);
+
+      expect(res.statusCode).toBe(504);
+      const cuenta = (tabla: string): number =>
+        (db.prepare(`SELECT COUNT(*) AS n FROM ${tabla}`).get() as { n: number }).n;
+      expect(cuenta("delegaciones_a2a")).toBe(0);
+
+      // El handler completa DESPUES del 504: el turno sigue vivo y escribe igual.
+      liberarTurno();
+      await turnoTerminado;
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(res.statusCode).toBe(504);
+      expect(cuenta("delegaciones_a2a")).toBe(1);
+      const acciones = db
+        .prepare("SELECT resultado FROM registro_acciones_empleado WHERE comando = ?")
+        .all("/consultar-kpi") as { resultado: string }[];
+      expect(acciones).toEqual([{ resultado: "atendida" }]);
+    } finally {
+      db.close();
+    }
   });
 
   it("responds 502 and logs operaciones-turno-fallido when the handler rejects", async () => {
