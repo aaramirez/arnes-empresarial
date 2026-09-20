@@ -30,6 +30,7 @@ import {
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   OPERACION_SOLICITAR_DEVOLUCION,
+  OPERACION_VER_SOLICITUDES_A2A,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
   type OperacionConsultarSolicitud,
@@ -39,11 +40,14 @@ import {
   type OperacionResolverReembolso,
   type OperacionResolverSolicitud,
   type OperacionSolicitarDevolucion,
+  type OperacionVerSolicitudesA2A,
 } from "./operaciones-contract.js";
 import { consultarVentaPropia } from "../ventas/consultar-venta-propia.js";
 import { type ConsultaVentaPropiaPort, type VentaPropia } from "../ventas/consulta-venta-contract.js";
 import { consultarSolicitudPropia } from "../solicitudes/consultar-solicitud-propia.js";
 import { type ConsultaSolicitudPropiaPort, type SolicitudPropia } from "../solicitudes/consulta-solicitud-propia-contract.js";
+import { TASK_STATES_EN_CURSO, type SolicitudA2AEntranteStorePort } from "../agents/a2a-entrante-contract.js";
+import { formatearListadoSolicitudesA2A, formatearDetalleSolicitudA2AParaModelo } from "../agents/a2a-entrante-textos.js";
 import { solicitarDevolucion, type SolicitarDevolucionDeps, type SolicitarDevolucionResult } from "../ventas/solicitar-devolucion.js";
 import { type JustificacionDevolucionPort } from "../ventas/justificacion-devolucion-contract.js";
 import { resolverDecisionVenta, type ConfirmarVentaDeps, type DecisionVentaResult } from "../ventas/confirmar-venta.js";
@@ -91,6 +95,7 @@ import {
   COMANDO_RESOLVER_DECISION_VENTA,
   COMANDO_SOLICITAR,
   COMANDO_SOLICITAR_DEVOLUCION,
+  COMANDO_VER_SOLICITUDES_A2A,
   RESULTADO_ATENDIDA,
   RESULTADO_AUTOAPROBACION_PROHIBIDA,
   RESULTADO_CONFIRMADA,
@@ -122,6 +127,8 @@ export interface EjecutarOperacionDeps {
   readonly consultaVentaPropia: ConsultaVentaPropiaPort;
   /** `consulta-solicitud-propia`, RD-115 pto 4 — mismo criterio "requerido acá" que `consultaVentaPropia`: la opcionalidad, si hiciera falta, vive en `BuildOnOperacionesEmpleadoDeps`, resuelta antes de despachar. */
   readonly consultaSolicitudPropia: ConsultaSolicitudPropiaPort;
+  /** `visibilidad-a2a-entrante-chat`, ADR 240-242 — mismo criterio "requerido acá" que `consultaVentaPropia`/`consultaSolicitudPropia`. */
+  readonly solicitudA2AEntrante: SolicitudA2AEntranteStorePort;
   /** `devolucion-sin-token-dos-personas`, ADR 228 pto 6, tarea 16 — mismo criterio "requerido acá" que `consultaVentaPropia`. */
   readonly justificacion: JustificacionDevolucionPort;
   readonly despacharDeps: DespacharDelegacionDeps;
@@ -963,6 +970,54 @@ function ejecutarConsultarSolicitud(
 }
 
 /**
+ * `visibilidad-a2a-entrante-chat`, ADR 240-242, tarea 4.2. De sólo lectura,
+ * alcance ORGANIZACIONAL (RD-117 pto 1: SIN caso de uso de núcleo nuevo — se
+ * llama al puerto directo, mismo criterio que `ejecutarConsultarReporte`).
+ * SÍ audita en las tres ramas — a diferencia de `ejecutarConsultarVenta`/
+ * `ejecutarConsultarSolicitud` (ADR 240 pto 5). El literal de "no existe" es
+ * el mismo que la TUI (`build-on-comando-empleado.ts`, `manejarVerSolicitudesA2A`).
+ */
+function ejecutarVerSolicitudesA2A(
+  operacion: OperacionVerSolicitudesA2A,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): string {
+  if (operacion.a2aTaskId === undefined) {
+    const listado = deps.solicitudA2AEntrante.listarPorEstados({ estados: TASK_STATES_EN_CURSO });
+    registrar(
+      { comando: COMANDO_VER_SOLICITUDES_A2A, resultado: RESULTADO_ATENDIDA },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return formatearListadoSolicitudesA2A(listado);
+  }
+
+  const vista = deps.solicitudA2AEntrante.obtenerPorTaskId(operacion.a2aTaskId);
+  if (vista === undefined) {
+    registrar(
+      { comando: COMANDO_VER_SOLICITUDES_A2A, resultado: RESULTADO_NO_APLICABLE },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return `No existe ninguna solicitud A2A ${operacion.a2aTaskId}.`;
+  }
+
+  registrar(
+    {
+      comando: COMANDO_VER_SOLICITUDES_A2A,
+      ...(vista.casoId !== undefined ? { casoId: vista.casoId } : {}),
+      resultado: RESULTADO_ATENDIDA,
+    },
+    input.sesion,
+    input.casoIdActual,
+    deps,
+  );
+  return formatearDetalleSolicitudA2AParaModelo(vista);
+}
+
+/**
  * NUNCA lanza — cualquier error sincrónico o rechazo de una dependencia
  * inyectada (p. ej. `store.crearVentaConCaso` fallando ruidosamente) se
  * traduce a texto degradado, mismo contrato que `handleKnowledgeQuery`
@@ -1064,6 +1119,9 @@ export async function ejecutarOperacion(
 
       case OPERACION_CONSULTAR_SOLICITUD:
         return ejecutarConsultarSolicitud(operacion, input, deps);
+
+      case OPERACION_VER_SOLICITUDES_A2A:
+        return ejecutarVerSolicitudesA2A(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;
