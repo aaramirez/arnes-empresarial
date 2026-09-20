@@ -356,6 +356,52 @@ describe("validarOperacion — consultar_solicitud: forma mínima se acepta (con
   );
 });
 
+describe("validarOperacion — ver_solicitudes_a2a: forma mínima se acepta (visibilidad-a2a-entrante-chat, tarea 3.1)", () => {
+  it("{ operacion } solo se acepta (modo listado)", () => {
+    const input = { operacion: "ver_solicitudes_a2a" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it("{ operacion, a2aTaskId } se acepta", () => {
+    const input = { operacion: "ver_solicitudes_a2a", a2aTaskId: "task-1" };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  it.each([
+    "empleadoId",
+    "solicitanteId",
+    "origenTransporte",
+    "estado",
+    "estados",
+    "limite",
+    "solicitudId",
+    "ventaId",
+    "accion",
+    "confirmado",
+  ])(
+    "%s como clave extra en ver_solicitudes_a2a ⇒ rechazo, pareado con la forma válida como control",
+    (claveExtra) => {
+      const valido = { operacion: "ver_solicitudes_a2a", a2aTaskId: "task-1" };
+      expect(validarOperacion(valido)).toBe(valido);
+
+      const invalido = { ...valido, [claveExtra]: "x" };
+      expect(validarOperacion(invalido)).toBeUndefined();
+    },
+  );
+
+  it("a2aTaskId sólo pertenece a ver_solicitudes_a2a — otra operación con esa clave extra se rechaza", () => {
+    expect(validarOperacion({ operacion: "consultar_venta", a2aTaskId: "t1" })).toBeUndefined();
+    expect(validarOperacion({ operacion: "consultar_solicitud", a2aTaskId: "t1" })).toBeUndefined();
+  });
+
+  it("a2aTaskId de 256 caracteres se acepta; de 257 se rechaza (tope MAX_STRING_LENGTH)", () => {
+    const valido = { operacion: "ver_solicitudes_a2a", a2aTaskId: "x".repeat(256) };
+    expect(validarOperacion(valido)).toBe(valido);
+
+    expect(validarOperacion({ operacion: "ver_solicitudes_a2a", a2aTaskId: "x".repeat(257) })).toBeUndefined();
+  });
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();
