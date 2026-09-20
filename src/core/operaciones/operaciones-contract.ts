@@ -6,7 +6,7 @@
  * `operaciones`, antes de que exista cualquier adaptador o caso de uso que la
  * consuma.
  *
- * `OperacionNegocio` es la unión discriminada de las SEIS operaciones del
+ * `OperacionNegocio` es la unión discriminada de las ONCE operaciones del
  * contrato (ADR 163 pto 2 + ADR 171 pto 2 + ADR 174 pto 1): ningún campo de
  * dinero/porcentaje/período/veredicto CALCULADO por el modelo — la única
  * excepción probada por test mecánico es `monto` de `registrar_venta` (ADR
@@ -36,7 +36,7 @@ export const OPERACIONES_TOOL_NAME = "operacion_negocio";
 export const OPERACIONES_TOOL_QUALIFIED_NAME =
   `mcp__${OPERACIONES_MCP_SERVER_NAME}__${OPERACIONES_TOOL_NAME}` as const;
 
-/* ── Las seis operaciones del contrato (ADR 163 pto 2, ADR 171 pto 2, ADR 174 pto 1) ── */
+/* ── Las once operaciones del contrato (ADR 163 pto 2, ADR 171 pto 2, ADR 174 pto 1) ── */
 
 export const OPERACION_RESOLVER_DECISION_VENTA = "resolver_decision_venta";
 export const OPERACION_PROCESAR_DEVOLUCION = "procesar_devolucion";

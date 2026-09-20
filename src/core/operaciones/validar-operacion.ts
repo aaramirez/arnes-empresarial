@@ -153,7 +153,7 @@ export function validarOperacion(
   const camposRequeridos = CAMPOS_REQUERIDOS_POR_OPERACION[operacion];
   if (camposPermitidos === undefined || camposRequeridos === undefined) {
     // Inalcanzable: `Object.hasOwn` ya garantizó la clave en ambos records
-    // (tienen las mismas seis claves) — la guarda es sólo para satisfacer
+    // (tienen las mismas once claves) — la guarda es sólo para satisfacer
     // `noUncheckedIndexedAccess`, no un camino real.
     return undefined;
   }

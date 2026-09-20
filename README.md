@@ -344,6 +344,8 @@ Hasta v3.11.0, la única credencial que autorizaba una devolución era el `token
 
 Detalle completo (ADRs 223-233, riesgos R5b/R13/R18/R19, escenarios de separación de funciones con dos sesiones): [`docs/ARC42_Harness_Empresarial.md`](docs/ARC42_Harness_Empresarial.md), Concepto 11.
 
+★ **Addendum v3.14.0** (`consulta-solicitud-propia`): la herramienta `operaciones` llega a **once** operaciones — la nueva es `consultar_solicitud` (`consultarSolicitudPropia`), sólo lectura y escopada a solicitud propia, mismo criterio de proyección que `consultar_venta`.
+
 ### Skills (`.claude/skills/`)
 
 El arnés descubre skills en `.claude/skills/<nombre>/SKILL.md` — no en `src/core/skills/` (ese directorio es el cargador en TypeScript; el contenido de cada skill vive en el árbol versionado del repo, fuera de `src/`). Una skill empaqueta un procedimiento opcional que el modelo puede elegir invocar durante el turno; a diferencia de `allowedTools`, habilitarla no concede ninguna herramienta nueva.
