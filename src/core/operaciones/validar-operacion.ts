@@ -44,6 +44,8 @@ const CAMPOS_POR_OPERACION: Readonly<Record<string, readonly string[]>> = {
   consultar_venta: ["operacion", "ventaId"],
   // `consulta-solicitud-propia`, ADR 237/238/239 — sólo lectura, solicitudId ausente = modo listado.
   consultar_solicitud: ["operacion", "solicitudId"],
+  // `visibilidad-a2a-entrante-chat`, ADR 240-242 — sólo lectura, a2aTaskId ausente = modo listado.
+  ver_solicitudes_a2a: ["operacion", "a2aTaskId"],
 };
 
 /** Campos OBLIGATORIOS por operación — subconjunto de `CAMPOS_POR_OPERACION`, sin los opcionales. */
@@ -59,6 +61,7 @@ const CAMPOS_REQUERIDOS_POR_OPERACION: Readonly<Record<string, readonly string[]
   solicitar_devolucion: [],
   consultar_venta: [],
   consultar_solicitud: [],
+  ver_solicitudes_a2a: [],
 };
 
 /**
@@ -98,6 +101,7 @@ const CAMPOS_NUMERICOS_POR_OPERACION: Readonly<Record<string, readonly string[]>
   solicitar_devolucion: [],
   consultar_venta: [],
   consultar_solicitud: [],
+  ver_solicitudes_a2a: [],
 };
 
 /**
@@ -153,7 +157,7 @@ export function validarOperacion(
   const camposRequeridos = CAMPOS_REQUERIDOS_POR_OPERACION[operacion];
   if (camposPermitidos === undefined || camposRequeridos === undefined) {
     // Inalcanzable: `Object.hasOwn` ya garantizó la clave en ambos records
-    // (tienen las mismas once claves) — la guarda es sólo para satisfacer
+    // (tienen las mismas doce claves) — la guarda es sólo para satisfacer
     // `noUncheckedIndexedAccess`, no un camino real.
     return undefined;
   }

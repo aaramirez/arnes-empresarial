@@ -20,6 +20,7 @@ import {
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   OPERACION_SOLICITAR_DEVOLUCION,
+  OPERACION_VER_SOLICITUDES_A2A,
   type AccionConfirmable,
   type AccionReembolsoModelo,
   type AccionSolicitudModelo,
@@ -38,6 +39,7 @@ import {
   type OperacionResolverReembolso,
   type OperacionResolverSolicitud,
   type OperacionSolicitarDevolucion,
+  type OperacionVerSolicitudesA2A,
 } from "./operaciones-contract.js";
 
 /**
@@ -53,7 +55,7 @@ describe("operaciones-contract constants", () => {
     expect(OPERACIONES_TOOL_QUALIFIED_NAME).toBe("mcp__operaciones__operacion_negocio");
   });
 
-  it("OPERACIONES_NEGOCIO enumera ONCE operaciones — forma FINAL (consulta-solicitud-propia, tarea 4.1): consultar_solicitud precede a nada, cierra el array", () => {
+  it("OPERACIONES_NEGOCIO enumera DOCE operaciones — forma FINAL (visibilidad-a2a-entrante-chat, tarea 3.1): ver_solicitudes_a2a precede a nada, cierra el array", () => {
     expect(OPERACIONES_NEGOCIO).toEqual([
       OPERACION_RESOLVER_DECISION_VENTA,
       OPERACION_PROCESAR_DEVOLUCION,
@@ -66,9 +68,48 @@ describe("operaciones-contract constants", () => {
       OPERACION_SOLICITAR_DEVOLUCION,
       OPERACION_CONSULTAR_VENTA,
       OPERACION_CONSULTAR_SOLICITUD,
+      OPERACION_VER_SOLICITUDES_A2A,
     ]);
-    expect(OPERACIONES_NEGOCIO).toHaveLength(11);
+    expect(OPERACIONES_NEGOCIO).toHaveLength(12);
   });
+});
+
+describe("OperacionVerSolicitudesA2A (visibilidad-a2a-entrante-chat, tarea 3.1)", () => {
+  it("a2aTaskId opcional (ausente ⇒ modo listado), SIN accion, SIN confirmado, SIN empleadoId — es de sólo lectura", () => {
+    const listado: OperacionVerSolicitudesA2A = { operacion: OPERACION_VER_SOLICITUDES_A2A };
+    const conId: OperacionVerSolicitudesA2A = { operacion: OPERACION_VER_SOLICITUDES_A2A, a2aTaskId: "task-1" };
+    const generico: OperacionNegocio = listado;
+
+    expect(generico.operacion).toBe("ver_solicitudes_a2a");
+    expect(conId.a2aTaskId).toBe("task-1");
+  });
+
+  function _chequeoDeTipos_verSolicitudesA2ANoAceptaAccion(): void {
+    const op: OperacionVerSolicitudesA2A = {
+      operacion: OPERACION_VER_SOLICITUDES_A2A,
+      // @ts-expect-error — `accion` NUNCA es campo de `ver_solicitudes_a2a` — es de sólo lectura, sin elección de operación.
+      accion: "aprobar",
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_verSolicitudesA2ANoAceptaConfirmado(): void {
+    const op: OperacionVerSolicitudesA2A = {
+      operacion: OPERACION_VER_SOLICITUDES_A2A,
+      // @ts-expect-error — `confirmado` NUNCA es campo del schema (ADR 206, §0.1) — lo decide el composition root.
+      confirmado: true,
+    };
+    void op;
+  }
+
+  function _chequeoDeTipos_verSolicitudesA2ANoAceptaEmpleadoId(): void {
+    const op: OperacionVerSolicitudesA2A = {
+      operacion: OPERACION_VER_SOLICITUDES_A2A,
+      // @ts-expect-error — `empleadoId` NUNCA es campo de ninguna operación del contrato (ADR 147 pto 1) — viaja por closure.
+      empleadoId: "e1",
+    };
+    void op;
+  }
 });
 
 describe("OperacionSolicitarDevolucion (devolucion-sin-token-dos-personas, tarea 11, ADR 223/228/229 pto 3)", () => {
