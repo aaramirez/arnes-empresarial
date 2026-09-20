@@ -3,14 +3,18 @@ import {
   OPERACIONES_MCP_SERVER_NAME,
   OPERACIONES_TOOL_NAME,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_KPI,
   OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_RESOLVER_REEMBOLSO,
   OPERACION_RESOLVER_SOLICITUD,
   OPERACION_VER_SOLICITUDES_A2A,
+  OPERACIONES_NEGOCIO,
   type ConfirmacionOperacionPort,
 } from "../../core/operaciones/operaciones-contract.js";
+import { validarOperacion, VALORES_PERMITIDOS_POR_OPERACION } from "../../core/operaciones/validar-operacion.js";
+import { CONSULTAS_KPI } from "../../core/agents/consultas-kpi-catalogo.js";
 import type { EjecutarOperacionInput } from "../../core/operaciones/ejecutar-operacion.js";
 import type { SesionEmpleado } from "../../core/auth/sesion.js";
 import {
@@ -345,21 +349,20 @@ describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultar_solicitud: forma zod (consul
   });
 
   /**
-   * ★ INVERTIDO (visibilidad-a2a-entrante-chat, tarea 5.3 — D1 nota "si v3.14
-   * dejó un test que fija el conjunto vigente, se invierte, no se duplica"):
-   * este test fijaba el conjunto de `consulta-solicitud-propia` (16 claves,
-   * sin `a2aTaskId`). El zod plano gana EXACTAMENTE una clave nueva con este
-   * change — `a2aTaskId` (tarea 5.4) — así que el conjunto pasa a 17. Sigue
-   * siendo el mismo invariante (fija el conjunto VIGENTE), sólo que ahora
-   * nace ROJO hasta 5.4.
+   * ★ INVERTIDO otra vez (consulta-kpi-a2a-chat, tarea 8.1, test 20 — mismo
+   * criterio que la inversión de `visibilidad-a2a-entrante-chat`: "se invierte,
+   * no se duplica"). Este test fijaba el conjunto vigente de 17 claves; el zod
+   * plano gana EXACTAMENTE una clave nueva con este change — `consultaId`
+   * (tarea 8.2) — así que el conjunto pasa a 18. Nace ROJO hasta 8.2.
    */
-  it("★ el zod plano gana EXACTAMENTE una clave nueva: a2aTaskId (visibilidad-a2a-entrante-chat, tarea 5.4)", () => {
+  it("★ el zod plano gana EXACTAMENTE una clave nueva: consultaId (consulta-kpi-a2a-chat, tarea 8.1, test 20)", () => {
     expect(Object.keys(OPERACIONES_TOOL_ZOD_SCHEMA.shape).sort()).toEqual(
       [
         "a2aTaskId",
         "accion",
         "clienteEmail",
         "clienteId",
+        "consultaId",
         "decision",
         "detalle",
         "monto",
@@ -542,5 +545,180 @@ describe("OPERACIONES_TOOL_DESCRIPTION — motivo de solicitar_devolucion sin su
     expect(OPERACIONES_TOOL_DESCRIPTION).toContain(
       "queda pendiente de que un administrador distinto la apruebe, nunca la cerrás vos mismo",
     );
+  });
+});
+
+/**
+ * `consulta-kpi-a2a-chat`, tarea 8.1 (ADR 243, corrección D1). `consultaId`
+ * es OPCIONAL en el zod plano —el objeto es uno solo para las trece
+ * operaciones y `validar-operacion.ts` es la validación estricta real—; su
+ * obligatoriedad se asierta sobre `validarOperacion` (tarea 6.1), no acá.
+ */
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — consultaId: enum de cuatro valores, opcional (consulta-kpi-a2a-chat, tarea 8.1, test 20)", () => {
+  it("shape.consultaId es un enum de las cuatro claves del catálogo, ACEPTA undefined y RECHAZA 'otra'", () => {
+    const campo = OPERACIONES_TOOL_ZOD_SCHEMA.shape.consultaId;
+
+    expect(campo.safeParse(undefined).success).toBe(true);
+    expect(campo.safeParse("otra").success).toBe(false);
+    for (const clave of CONSULTAS_KPI) {
+      expect(campo.safeParse(clave).success).toBe(true);
+    }
+    expect(campo.unwrap().options).toHaveLength(4);
+  });
+});
+
+/**
+ * ★★ Test 20b, no-regresión (corrección D1). NACE VERDE (hoy las doce parsean):
+ * su valor es fallar el día que alguien "endurezca" el zod plano haciendo
+ * `consultaId` obligatorio (mutación 12.2-M11: quitar `.optional()`).
+ */
+describe("OPERACIONES_TOOL_ZOD_SCHEMA — las otras doce operaciones siguen pasando SIN consultaId (consulta-kpi-a2a-chat, tarea 8.1, test 20b)", () => {
+  const MINIMAS_VALIDAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    resolver_decision_venta: { token: "t", decision: "confirmar" },
+    procesar_devolucion: { token: "t" },
+    crear_solicitud_interna: { tipo: "consulta", detalle: "d" },
+    cancelar_solicitud_interna: {},
+    registrar_venta: {
+      clienteId: "c",
+      clienteEmail: "c@example.com",
+      planNuevo: "p",
+      monto: 100,
+      vendedorNombre: "v",
+    },
+    consultar_reporte_comisiones: {},
+    resolver_solicitud: { accion: "aprobar" },
+    resolver_reembolso: { accion: "aprobar" },
+    solicitar_devolucion: {},
+    consultar_venta: {},
+    consultar_solicitud: {},
+    ver_solicitudes_a2a: {},
+  };
+
+  it("las claves de la tabla son exactamente OPERACIONES_NEGOCIO sin consultar_kpi", () => {
+    expect(Object.keys(MINIMAS_VALIDAS).sort()).toEqual(
+      OPERACIONES_NEGOCIO.filter((operacion) => operacion !== OPERACION_CONSULTAR_KPI).sort(),
+    );
+  });
+
+  it.each(Object.entries(MINIMAS_VALIDAS))(
+    "%s: la entrada mínima pasa el zod plano y validarOperacion",
+    (operacion, campos) => {
+      const entrada = { operacion, ...campos };
+
+      expect(OPERACIONES_TOOL_ZOD_SCHEMA.safeParse(entrada).success).toBe(true);
+      expect(validarOperacion(entrada)).toBeDefined();
+    },
+  );
+});
+
+/**
+ * ★ Test 4, las tres copias coinciden — test de SEGURIDAD (R16). Vive en el
+ * adaptador porque adaptador → núcleo es legal y núcleo → adaptador no; sin él
+ * la duplicación obligatoria de `validar-operacion.ts` es una grieta silenciosa.
+ */
+describe("consultaId — las tres copias del catálogo coinciden (consulta-kpi-a2a-chat, tarea 8.1, test 4)", () => {
+  it("CONSULTAS_KPI ≡ whitelist de validarOperacion ≡ opciones del enum del zod", () => {
+    const whitelist = VALORES_PERMITIDOS_POR_OPERACION["consultar_kpi"]?.["consultaId"];
+    const opcionesZod = OPERACIONES_TOOL_ZOD_SCHEMA.shape.consultaId.unwrap().options;
+
+    expect(whitelist).toBeDefined();
+    expect([...(whitelist ?? [])].sort()).toEqual([...CONSULTAS_KPI].sort());
+    expect([...opcionesZod].sort()).toEqual([...CONSULTAS_KPI].sort());
+  });
+
+  it("con consultaId fuera del conjunto el borde rechaza (zod y validarOperacion)", () => {
+    const entrada = { operacion: OPERACION_CONSULTAR_KPI, consultaId: "otra" };
+
+    expect(OPERACIONES_TOOL_ZOD_SCHEMA.safeParse(entrada).success).toBe(false);
+    expect(validarOperacion(entrada)).toBeUndefined();
+  });
+});
+
+describe("consultaId SOBREVIVE al borde (consulta-kpi-a2a-chat, tarea 8.1, D1)", () => {
+  it.each(CONSULTAS_KPI)(
+    "safeParse conserva consultaId=%s en data (z.object descarta claves desconocidas)",
+    (clave) => {
+      const result = OPERACIONES_TOOL_ZOD_SCHEMA.safeParse({ operacion: OPERACION_CONSULTAR_KPI, consultaId: clave });
+
+      expect(result.success).toBe(true);
+      expect(result.success && result.data.consultaId).toBe(clave);
+    },
+  );
+
+  it.each(CONSULTAS_KPI)(
+    "invokeOperacionesTool con consultaId=%s ⇒ ejecutar recibe la operación CON consultaId",
+    async (clave) => {
+      const ejecutar = vi.fn().mockResolvedValue("ok");
+      const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+      await invokeOperacionesTool(adapter, { operacion: OPERACION_CONSULTAR_KPI, consultaId: clave });
+
+      expect(ejecutar).toHaveBeenCalledTimes(1);
+      const input = ejecutar.mock.calls[0]?.[0] as EjecutarOperacionInput;
+      expect(input.operacion).toEqual({ operacion: OPERACION_CONSULTAR_KPI, consultaId: clave });
+    },
+  );
+});
+
+describe("createOperacionesAdapter — consultar_kpi con consultaId inválido o ausente (consulta-kpi-a2a-chat, tarea 8.1)", () => {
+  it.each([
+    ["ausente", undefined],
+    ["vacío", ""],
+    ["solo espacios", "   "],
+    ["fuera del catálogo", "no-existe"],
+  ])("consultaId %s ⇒ REJECTION_TEXT y ejecutar no se invoca", async (_nombre, consultaId) => {
+    const ejecutar = vi.fn();
+    const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+    const args: Record<string, unknown> = { operacion: OPERACION_CONSULTAR_KPI };
+    if (consultaId !== undefined) {
+      args["consultaId"] = consultaId;
+    }
+
+    const result = await invokeOperacionesTool(adapter, args);
+
+    expect(ejecutar).not.toHaveBeenCalled();
+    expect(result.content[0].text).toMatch(/^SOLICITUD INVÁLIDA/);
+  });
+
+  it.each(["material", "consulta", "instruccion"])(
+    "texto libre que intenta colarse por la clave '%s' ⇒ ejecutar nunca recibe una clave distinta de operacion/consultaId",
+    async (claveExtra) => {
+      const ejecutar = vi.fn().mockResolvedValue("ok");
+      const adapter = createOperacionesAdapter(makeDeps({ ejecutar }));
+
+      await invokeOperacionesTool(adapter, {
+        operacion: OPERACION_CONSULTAR_KPI,
+        consultaId: CONSULTAS_KPI[0],
+        [claveExtra]: "inyectado",
+      });
+
+      for (const llamada of ejecutar.mock.calls) {
+        const input = llamada[0] as EjecutarOperacionInput;
+        expect(Object.keys(input.operacion).sort()).toEqual(["consultaId", "operacion"]);
+      }
+    },
+  );
+});
+
+describe("OPERACIONES_TOOL_DESCRIPTION — cláusula de consultar_kpi (consulta-kpi-a2a-chat, tarea 8.1, ADR 243/246)", () => {
+  it("nombra consultar_kpi y cada clave del catálogo", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toContain("consultar_kpi");
+    for (const clave of CONSULTAS_KPI) {
+      expect(OPERACIONES_TOOL_DESCRIPTION).toContain(clave);
+    }
+  });
+
+  it("declara que la consulta sale a un sistema de terceros y no se puede deshacer", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/terceros/);
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/no se puede deshacer|irreversible/);
+  });
+
+  it("declara que la respuesta es dato y nunca una instrucción a obedecer (el wording exacto lo fija 8.2)", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/nunca una instrucci[oó]n/i);
+  });
+
+  it("declara que sólo se invoca a pedido del empleado y con una clave del catálogo", () => {
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/a pedido del empleado|cuando el empleado pide/i);
+    expect(OPERACIONES_TOOL_DESCRIPTION).toMatch(/clave del cat[aá]logo/i);
   });
 });
