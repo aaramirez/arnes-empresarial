@@ -872,7 +872,10 @@ describe("App", () => {
     expect(frame).toContain("Vos: prompt 1");
     expect(frame).toContain(`Vos: prompt ${turnCount}`);
     expect(frame).not.toContain("oculto");
-  });
+    // Explicit per-test budget: the 30 sequential waits above can each take
+    // up to 5000ms under CI CPU contention, so vitest's default 5000ms test
+    // timeout (not `waitFor`) becomes the real ceiling.
+  }, 30000);
 
   /**
    * `ink-testing-library`'s `render` (used by every other test in this
@@ -937,7 +940,9 @@ describe("App", () => {
 
         stdin.write("primer turno");
         stdin.write(ENTER);
-        await waitFor(() => stdout.writes.some((chunk) => chunk.includes("respuesta uno")));
+        // 5000ms instead of the 2000ms default: same CI CPU-contention flake
+        // as the 30-turn test above.
+        await waitFor(() => stdout.writes.some((chunk) => chunk.includes("respuesta uno")), 5000);
 
         const bannerIndex = stdout.writes.findIndex((chunk) => chunk.includes("arnés empresarial de IA"));
         const firstTurnIndex = stdout.writes.findIndex((chunk) => chunk.includes("respuesta uno"));
@@ -951,7 +956,7 @@ describe("App", () => {
 
         stdin.write("segundo turno");
         stdin.write(ENTER);
-        await waitFor(() => stdout.writes.some((chunk) => chunk.includes("respuesta dos")));
+        await waitFor(() => stdout.writes.some((chunk) => chunk.includes("respuesta dos")), 5000);
 
         // The regression this bug actually was: the banner getting
         // rewritten to the stream again (and again) as more turns settle,
