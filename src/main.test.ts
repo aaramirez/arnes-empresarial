@@ -463,3 +463,61 @@ describe("main.ts -- hallazgos de Reviewer sobre createConsultas (consultas-nego
     resolverSalidaTui();
   });
 });
+
+/**
+ * `consulta-kpi-a2a-chat`, tarea 4.1 (ADR 245 pto 3). Test mecanico sobre el
+ * fuente de `main.ts` (NO importa `./main.js`): la segunda instancia del
+ * adaptador A2A, la del canal conversacional, existe si y solo si existe la
+ * de la TUI, y la config de la TUI queda intacta.
+ */
+function bloqueEntre(source: string, inicio: string, fin: string): string {
+  const desde = source.indexOf(inicio);
+  if (desde === -1) {
+    throw new Error(`ancla de inicio no encontrada en main.ts: ${inicio}`);
+  }
+  const hasta = source.indexOf(fin, desde + inicio.length);
+  if (hasta === -1) {
+    throw new Error(`ancla de fin no encontrada en main.ts: ${fin}`);
+  }
+  return source.slice(desde, hasta);
+}
+
+function contar(texto: string, aguja: string): number {
+  return texto.split(aguja).length - 1;
+}
+
+describe("main.ts -- segunda instancia del adaptador A2A para el canal conversacional (consulta-kpi-a2a-chat, tarea 4.1)", () => {
+  const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+  it("(i) el interruptor y la config se resuelven una vez y el adaptador se instancia dos veces", () => {
+    const tramo = bloqueEntre(source, "const a2aConfig", "const riesgoCredito");
+    expect(contar(tramo, "resolveA2AConfig(")).toBe(1);
+    expect(contar(tramo, "createA2AAdapter(")).toBe(2);
+    expect(contar(tramo, "isA2ASalienteEnabled(")).toBe(1);
+  });
+
+  it("(ii) clienteA2AChat existe si y solo si existe el de la TUI y usa configParaCanalConversacional", () => {
+    const bloque = bloqueEntre(source, "const clienteA2AChat", "const riesgoCredito");
+    expect(bloque).toContain("clienteA2A !== undefined");
+    expect(bloque).toContain("configParaCanalConversacional(a2aConfig)");
+  });
+
+  it("(iii) el cliente de la TUI/ventas conserva su config, sin los techos del canal conversacional", () => {
+    const bloque = bloqueEntre(source, "const clienteA2A =", "const clienteA2AChat");
+    expect(bloque).not.toContain("configParaCanalConversacional");
+  });
+
+  it("(iv) el turno de operaciones recibe el cliente del chat y el resto sigue con el de la TUI", () => {
+    const llamada = bloqueEntre(source, "buildOnOperacionesEmpleado({", "\n});");
+    expect(llamada).toContain("clienteA2A: clienteA2AChat");
+    // `\b`: "clienteA2A: clienteA2AChat" contiene como prefijo "clienteA2A: clienteA2A".
+    expect(llamada).not.toMatch(/clienteA2A: clienteA2A\b/);
+
+    const riesgo = bloqueEntre(source, "const riesgoCredito", "const ventaHandlers");
+    expect(riesgo).toContain("cliente: clienteA2A,");
+
+    expect(source).toContain(
+      "...(clienteA2A !== undefined ? { clienteA2A } : {}), // exactOptionalPropertyTypes\n});",
+    );
+  });
+});
