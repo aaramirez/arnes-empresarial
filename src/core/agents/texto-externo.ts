@@ -21,10 +21,24 @@ export const ROTULO_EXTERNO_NO_CONFIABLE =
 
 /**
  * Enmarca texto de origen no confiable para que entre al contexto de un
- * modelo como DATO (ADR 241). ★ ALCANCE HONESTO (§4.4): esto es una
- * CONVENCIÓN DE PRESENTACIÓN, no un sandbox — el modelo PUEDE ignorar el
- * marco. La única garantía dura es el tope de caracteres.
+ * modelo como DATO (ADR 241). Orden OBLIGATORIO — escapar, truncar, reportar
+ * el largo ORIGINAL: el escape ALARGA el texto, así que truncar antes lo
+ * dejaría por encima del tope; y truncar después es seguro porque el escape
+ * ya eliminó todo token completo y un corte sólo puede dejar uno parcial,
+ * que no cierra nada.
+ *
+ * ★ ALCANCE HONESTO (ADR 241 §4.4): esto es una CONVENCIÓN DE PRESENTACIÓN,
+ * no un sandbox — misma clase de nota que `invoke-model.ts:353-358` ya deja
+ * para `options.skills`. El modelo PUEDE ignorar el marco. La única
+ * garantía dura es el tope de caracteres.
  */
 export function enmarcarTextoExterno(etiqueta: string, contenido: string): string {
-  return `${etiqueta} ${ROTULO_EXTERNO_NO_CONFIABLE}\n${MARCA_EXTERNO_INICIO}\n${contenido}\n${MARCA_EXTERNO_FIN}`;
+  const largoOriginal = contenido.length;
+  const escapado = contenido.replace(/<<<EXTERNO:/gi, "[[EXTERNO-ESCAPADO:");
+  const truncado = escapado.slice(0, MAX_CHARS_TEXTO_EXTERNO_MODELO);
+  const nota =
+    escapado.length > MAX_CHARS_TEXTO_EXTERNO_MODELO
+      ? `\n\n[…el arnés truncó este texto: se muestran ${MAX_CHARS_TEXTO_EXTERNO_MODELO} de ${largoOriginal} caracteres…]`
+      : "";
+  return `${etiqueta} ${ROTULO_EXTERNO_NO_CONFIABLE}\n${MARCA_EXTERNO_INICIO}\n${truncado}\n${MARCA_EXTERNO_FIN}${nota}`;
 }
