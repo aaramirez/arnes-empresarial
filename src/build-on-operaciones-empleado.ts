@@ -87,7 +87,7 @@ import { type ReporteStorePort } from "./core/ventas/reporte-contract.js";
 import { type RegistroAccionesEmpleadoPort } from "./core/commands/registro-acciones-contract.js";
 import { type DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import { createVentaStore, VentaEstadoInvalidoError } from "./build-on-venta.js";
-import { createSolicitudStore, SolicitudTipoEstadoInvalidoError } from "./build-on-comando-empleado.js";
+import { createSolicitudA2AEntranteStore, createSolicitudStore, SolicitudTipoEstadoInvalidoError } from "./build-on-comando-empleado.js";
 import { SOLICITUD_ESTADOS, SOLICITUD_TIPOS } from "./core/solicitudes/solicitudes-contract.js";
 import { type ConsultaSolicitudPropiaPort, type SolicitudPropia } from "./core/solicitudes/consulta-solicitud-propia-contract.js";
 import type { KnowledgeAdapter } from "./adapters/knowledge/index.js";
@@ -215,6 +215,8 @@ export function buildOnOperacionesEmpleado(
 
   const store = createVentaStore(db);
   const solicitudStore = createSolicitudStore(db);
+  /** `visibilidad-a2a-entrante-chat`, ADR 240-242 — mismo molde que `solicitudStore`. */
+  const solicitudA2AEntrante = createSolicitudA2AEntranteStore(db);
   /** Mismo molde inline que `build-on-comando-empleado.ts` — `cancelar_solicitud_interna` nunca evalúa el gate de rol (bypass estructural, `esAccionAutoservicio`), pero `ResolverSolicitudDeps.rolPort` es un campo requerido del tipo. */
   const rolPort: RolEmpleadoPort = {
     buscarRol: (empleadoId) => {
@@ -264,6 +266,7 @@ export function buildOnOperacionesEmpleado(
     reporteStore,
     consultaVentaPropia,
     consultaSolicitudPropia,
+    solicitudA2AEntrante,
     justificacion,
     registro,
     despacharDeps,

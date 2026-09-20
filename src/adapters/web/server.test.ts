@@ -9,6 +9,7 @@ import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-cont
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
 import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
 import type { ConsultaSolicitudPropiaPort } from "../../core/solicitudes/consulta-solicitud-propia-contract.js";
+import type { SolicitudA2AEntranteStorePort } from "../../core/agents/a2a-entrante-contract.js";
 import type { JustificacionDevolucionPort } from "../../core/ventas/justificacion-devolucion-contract.js";
 import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
 import { getSubagentDefinition } from "../../core/agents/definitions.js";
@@ -550,6 +551,14 @@ function unusedConsultaSolicitudPropiaR7(): ConsultaSolicitudPropiaPort {
   return { buscarPorId: unused, listarDeSolicitante: unused };
 }
 
+/** `visibilidad-a2a-entrante-chat`, tarea 5.2 — mismo molde "unused" que `unusedConsultaSolicitudPropiaR7` (campo requerido de `EjecutarOperacionDeps` desde la tarea 4.2, no ejercitado por resolver_reembolso/registrar_venta). */
+function unusedSolicitudA2AEntranteR7(): SolicitudA2AEntranteStorePort {
+  const unused = (): never => {
+    throw new Error("SolicitudA2AEntranteStorePort no debería invocarse — resolver_reembolso/registrar_venta no lo tocan");
+  };
+  return { listarPorEstados: unused, obtenerPorTaskId: unused };
+}
+
 /** `devolucion-sin-token-dos-personas`, tarea 16 — mismo criterio "unused" que `unusedConsultaVentaPropiaR7`. */
 function unusedJustificacionR7(): JustificacionDevolucionPort {
   return {
@@ -601,6 +610,7 @@ function ejecutarDepsR7(db: Database.Database, overrides: Partial<EjecutarOperac
     reporteStore: unusedReporteStoreR7(),
     consultaVentaPropia: unusedConsultaVentaPropiaR7(),
     consultaSolicitudPropia: unusedConsultaSolicitudPropiaR7(),
+    solicitudA2AEntrante: unusedSolicitudA2AEntranteR7(),
     justificacion: unusedJustificacionR7(),
     despacharDeps: unusedDespacharDepsR7(),
     rolPort: realRolPortR7(),

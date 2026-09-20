@@ -39,6 +39,7 @@ import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-cont
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
 import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
 import type { ConsultaSolicitudPropiaPort } from "../../core/solicitudes/consulta-solicitud-propia-contract.js";
+import type { SolicitudA2AEntranteStorePort } from "../../core/agents/a2a-entrante-contract.js";
 import type { JustificacionDevolucionPort } from "../../core/ventas/justificacion-devolucion-contract.js";
 import type { RegistroAccionesEmpleadoPort } from "../../core/commands/registro-acciones-contract.js";
 
@@ -151,6 +152,11 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     buscarPorId: noUsado("buscarPorId"),
     listarDeSolicitante: noUsado("listarDeSolicitante"),
   };
+  /** `visibilidad-a2a-entrante-chat`, tarea 5.2 — campo requerido de `EjecutarOperacionDeps` desde la tarea 4.2, no ejercitado por resolver_reembolso. */
+  const solicitudA2AEntrante: SolicitudA2AEntranteStorePort = {
+    listarPorEstados: noUsado("listarPorEstados"),
+    obtenerPorTaskId: noUsado("obtenerPorTaskId"),
+  };
   const justificacion: JustificacionDevolucionPort = {
     registrar: noUsado("registrar"),
   };
@@ -178,6 +184,7 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     reporteStore,
     consultaVentaPropia,
     consultaSolicitudPropia,
+    solicitudA2AEntrante,
     justificacion,
     despacharDeps,
     rolPort: realRolPort(db),
