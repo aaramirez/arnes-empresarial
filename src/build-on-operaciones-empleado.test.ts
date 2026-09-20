@@ -178,6 +178,26 @@ function parseLastLine(lines: readonly string[]): Record<string, unknown> {
   return JSON.parse(last as string) as Record<string, unknown>;
 }
 
+/**
+ * Cast repetido para acceder a la tool MCP registrada `operacion_negocio`
+ * (consulta-solicitud-propia, hallazgo code-review) — recibe
+ * `deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]` dentro de un
+ * `mockedHandleTurn.mockImplementation`.
+ */
+function getOperacionTool(
+  server: unknown,
+): { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> } | undefined {
+  const typed = server as unknown as {
+    readonly instance: {
+      readonly _registeredTools: Record<
+        string,
+        { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
+      >;
+    };
+  };
+  return typed.instance._registeredTools["operacion_negocio"];
+}
+
 function makeCounterNewId(prefix = "id"): () => string {
   let contador = 0;
   return () => `${prefix}-${++contador}`;
@@ -796,15 +816,7 @@ describe("buildOnOperacionesEmpleado", () => {
       let textoDetalle = "";
       let textoListado = "";
       mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
-        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
-          readonly instance: {
-            readonly _registeredTools: Record<
-              string,
-              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
-            >;
-          };
-        };
-        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
 
         const detalle = await registeredTool?.handler(
           { operacion: "consultar_solicitud", solicitudId: "sol-propia-1" },
@@ -865,15 +877,7 @@ describe("buildOnOperacionesEmpleado", () => {
 
       let texto = "";
       mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
-        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
-          readonly instance: {
-            readonly _registeredTools: Record<
-              string,
-              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
-            >;
-          };
-        };
-        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
         const resultado = await registeredTool?.handler(
           { operacion: "consultar_solicitud", solicitudId: "sol-corrupta-1" },
           {},
@@ -957,15 +961,7 @@ describe("buildOnOperacionesEmpleado", () => {
       );
 
       mockedHandleTurn.mockImplementation(async (_casoId, _prompt, deps) => {
-        const server = deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME] as unknown as {
-          readonly instance: {
-            readonly _registeredTools: Record<
-              string,
-              { readonly handler: (args: unknown, extra: unknown) => Promise<{ content: [{ text: string }] }> }
-            >;
-          };
-        };
-        const registeredTool = server.instance._registeredTools["operacion_negocio"];
+        const registeredTool = getOperacionTool(deps.mcpServers?.[OPERACIONES_MCP_SERVER_NAME]);
         await registeredTool?.handler({ operacion: "consultar_solicitud", solicitudId: "sol-snap-propia" }, {});
         await registeredTool?.handler({ operacion: "consultar_solicitud", solicitudId: "sol-snap-ajena" }, {});
         await registeredTool?.handler({ operacion: "consultar_solicitud" }, {});

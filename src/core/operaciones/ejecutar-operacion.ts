@@ -897,21 +897,27 @@ async function ejecutarConsultarVenta(
   }
 }
 
+/** Cabecera compartida por listado y detalle (refactor, hallazgo code-review): las dos
+ *  recalculaban por separado la misma línea `solicitud <id> (<tipo>) | estado <estado> |
+ *  creada <createdAt> | caso <casoId>` (`design.md` §7 pto 1, formas exactas líneas 352-364).
+ *  SIN el prefijo `- ` del listado: ese prefijo es exclusivo de `formatearLineaSolicitudPropia`. */
+function construirCabeceraSolicitudPropia(s: SolicitudPropia): string {
+  return `solicitud ${s.solicitudId} (${s.tipo}) | estado ${s.estado} | creada ${s.createdAt} | caso ${s.casoId}`;
+}
+
 /** Una línea por solicitud propia — listado. ★ SIN `dictamen` ni `detalle`: los dos son texto
- *  libre sin tope y un listado de hasta 20 los multiplicaría (RD-115 pto 1). NO comparte
- *  formateador con `formatearDetalleSolicitudPropia` — a propósito, `design.md` §7 pto 1. */
+ *  libre sin tope y un listado de hasta 20 los multiplicaría (RD-115 pto 1). NO comparte el
+ *  formateador COMPLETO con `formatearDetalleSolicitudPropia` — a propósito, `design.md` §7 pto
+ *  1 (el detalle sí agrega `dictamen`/`detalle`) — sólo la cabecera, vía `construirCabeceraSolicitudPropia`. */
 function formatearLineaSolicitudPropia(s: SolicitudPropia): string {
-  return `- solicitud ${s.solicitudId} (${s.tipo}) | estado ${s.estado} | creada ${s.createdAt} | caso ${s.casoId}`;
+  return `- ${construirCabeceraSolicitudPropia(s)}`;
 }
 
 /** Multilínea: cabecera + `detalle`, + `dictamen` si existe (SIN resumir, R8), + quién/cuándo la
  *  resolvió si existe. La línea `Dictamen:` se OMITE cuando no hay — no se escribe "sin
  *  dictamen" (`design.md` §7 pto 1). */
 function formatearDetalleSolicitudPropia(s: SolicitudPropia): string {
-  const lineas = [
-    `solicitud ${s.solicitudId} (${s.tipo}) | estado ${s.estado} | creada ${s.createdAt} | caso ${s.casoId}`,
-    `Detalle: ${s.detalle}`,
-  ];
+  const lineas = [construirCabeceraSolicitudPropia(s), `Detalle: ${s.detalle}`];
   if (s.dictamen !== undefined) {
     lineas.push(`Dictamen: ${s.dictamen}`);
   }
