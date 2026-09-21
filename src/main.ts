@@ -68,6 +68,7 @@ import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle
 import { logTurnEvent } from "./core/logging/turn-logger.js";
 import { openDatabase } from "./adapters/memory/db.js";
 import { resolveDbPath } from "./adapters/memory/config.js";
+import { esModoHeadless, esperarSenalDeCierre, finalizarCierreHeadless } from "./proceso-cierre.js";
 import {
   buscarCredencialEmpleado,
   createCaso,
@@ -727,9 +728,23 @@ try {
 //    `finally` de abajo nunca correría. `startTui` sigue recibiendo un
 //    `SubmitPromptHandler` — I1 no cambia (design.md §8 punto 5): rollback
 //    en caliente es volver a `startTui(onSubmit)`, una sola línea.
+//
+//    `modo-headless-cierre-limpio` (ADR 249): con `HARNESS_HEADLESS=1` no se
+//    monta Ink; el `await` que sostiene el módulo pasa a ser la promesa de
+//    "señal de cierre" de `esperarSenalDeCierre()` — misma posición, mismo
+//    `try`, mismo `finally` de abajo, que no sabe ni le importa cuál de las
+//    dos ramas resolvió. `esModoHeadless()` se invoca DENTRO del `try` a
+//    propósito (S-c, falla cerrada): si el valor no es `"0"`/`"1"`/ausente,
+//    lanza, y el `finally` corre igual (cierra los listeners de red ya
+//    abiertos) antes de que el error termine el proceso con código 1 — sin
+//    Ink y sin listeners de señal registrados.
 try {
-  const tui = startTui(onComandoEmpleado);
-  await tui.waitUntilExit();
+  if (esModoHeadless()) {
+    await esperarSenalDeCierre();
+  } else {
+    const tui = startTui(onComandoEmpleado);
+    await tui.waitUntilExit();
+  }
 } finally {
   // `finally`, no solo el camino feliz de Ctrl+C: si `App.tsx` tira un error
   // de render, el error boundary de Ink (`node_modules/ink/build/ink.js`,
@@ -787,3 +802,7 @@ try {
     console.error(`No se pudo cerrar la base de datos: ${toErrorMessage(error)}`);
   }
 }
+// Headless: quita los listeners de señal (que mantienen vivo el event loop)
+// y sale con código explícito. En TUI es un no-op — nunca se registró nada,
+// porque `esperarSenalDeCierre()` no se llamó (design.md §0.7, §3.3).
+finalizarCierreHeadless();
