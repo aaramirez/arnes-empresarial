@@ -209,3 +209,124 @@ export function manejarErrorNoCapturado(
   }
   salir(1);
 }
+
+/**
+ * Estado del módulo (§3.4 del diseño): la señal, el watchdog y la
+ * finalización son el ÚNICO tramo con estado mutable de todo `proceso-cierre.ts`
+ * — todo lo de arriba es puro. `faseDeCierre` es la garantía de que la
+ * promesa se resuelve una sola vez y de que un cierre no arranca dos veces,
+ * NO un `boolean` suelto.
+ */
+let faseDeCierre: "inactiva" | "esperando" | "cerrando" | "terminada" = "inactiva";
+/** Deps completas capturadas en la llamada a `esperarSenalDeCierre` — `finalizarCierreHeadless` las reutiliza (mismo `proceso`/`desarmarTimer` que armó todo). */
+let depsCapturadas: ProcesoCierreDeps | undefined;
+/** Los cuatro pares (evento, handler) registrados, para poder hacer `.off()` con la MISMA referencia de función. */
+let handlersRegistrados: {
+  evento: SenalDeCierre | TipoErrorNoCapturado;
+  handler: (arg?: unknown) => void;
+}[] = [];
+/** Handle devuelto por `armarTimer`, pasado TAL CUAL a `desarmarTimer` — nunca se le hace `.unref()`. */
+let watchdogHandle: unknown;
+
+function resolverDepsCompletas(deps: Partial<ProcesoCierreDeps>): ProcesoCierreDeps {
+  return { ...DEPS_POR_DEFECTO, ...deps };
+}
+
+/**
+ * ★ Registra los cuatro handlers (`SIGTERM`, `SIGINT`, `unhandledRejection`,
+ * `uncaughtException`) SOBRE `deps.proceso` y devuelve una promesa que
+ * resuelve con la PRIMERA señal recibida. NUNCA rechaza. Llamarla es el
+ * ÚNICO camino por el que este módulo toca `process` — importarlo no
+ * registra nada (R18).
+ *
+ * El presupuesto (`resolvePresupuestoCierreMs`) se resuelve UNA VEZ, AL
+ * REGISTRAR (no en cada señal): así el evento `cierre-presupuesto-invalido`,
+ * si corresponde, sale en el arranque headless, no en el apagado (design §5.3).
+ *
+ * En la 1.ª señal: loguea `cierre-senal-recibida`, arma el watchdog del
+ * presupuesto (SIN `.unref()`: el watchdog DEBE poder disparar aunque no
+ * quede nada más pendiente) y resuelve la promesa — la fase pasa a
+ * `"cerrando"` ANTES de resolver. Una señal repetida (2.ª+, en cualquier
+ * combinación de `SIGTERM`/`SIGINT`) es idempotente: solo loguea
+ * `cierre-senal-repetida`, no acorta ni prolonga la espera ni fuerza la
+ * salida (ADR 249 pto 5, S-b). Si el watchdog vence, loguea
+ * `cierre-presupuesto-excedido{presupuestoMs, senal}` y `salir(1)` — SIN
+ * `db.close()` (SQLite es crash-safe).
+ *
+ * Una falla no capturada durante la espera o el drenaje (incluso con un
+ * cierre ya en curso) delega en `manejarErrorNoCapturado` (ADR 250) — nunca
+ * se intenta el cierre ordenado desde ahí.
+ */
+export function esperarSenalDeCierre(
+  deps: Partial<ProcesoCierreDeps> = {},
+): Promise<SenalDeCierre> {
+  const depsCompletas = resolverDepsCompletas(deps);
+  depsCapturadas = depsCompletas;
+  const presupuestoMs = resolvePresupuestoCierreMs(depsCompletas);
+  faseDeCierre = "esperando";
+  handlersRegistrados = [];
+  watchdogHandle = undefined;
+
+  return new Promise<SenalDeCierre>((resolve) => {
+    const manejarSenal = (senal: SenalDeCierre): void => {
+      if (faseDeCierre !== "esperando") {
+        depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-senal-repetida", { senal });
+        return;
+      }
+      depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-senal-recibida", { senal });
+      watchdogHandle = depsCompletas.armarTimer(() => {
+        depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-presupuesto-excedido", {
+          presupuestoMs,
+          senal,
+        });
+        depsCompletas.salir(1);
+      }, presupuestoMs);
+      faseDeCierre = "cerrando";
+      resolve(senal);
+    };
+
+    const manejarFalla =
+      (tipo: TipoErrorNoCapturado) =>
+      (motivo?: unknown): void => {
+        manejarErrorNoCapturado(motivo, tipo, depsCompletas);
+      };
+
+    handlersRegistrados = [
+      { evento: "SIGTERM", handler: (): void => manejarSenal("SIGTERM") },
+      { evento: "SIGINT", handler: (): void => manejarSenal("SIGINT") },
+      { evento: "unhandledRejection", handler: manejarFalla("unhandledRejection") },
+      { evento: "uncaughtException", handler: manejarFalla("uncaughtException") },
+    ];
+    for (const { evento, handler } of handlersRegistrados) {
+      depsCompletas.proceso.on(evento, handler);
+    }
+  });
+}
+
+/**
+ * §0.7 + §3.3 — desarma el watchdog, quita los cuatro listeners (con la
+ * MISMA referencia con la que se registraron), loguea `cierre-completado`,
+ * `salir(0)`. Un handler de señal mantiene vivo el event loop por sí solo:
+ * por eso este `salir(0)` explícito es lo que realmente termina el proceso,
+ * no una red de seguridad — de ahí que se llame SIEMPRE después del
+ * `finally` de `main.ts` (nunca antes). Código `0`: es un cierre iniciado
+ * por señal que completó el drenaje, no la muerte reportada por una shell
+ * (`128+N` confundiría un `docker stop` normal con un fallo, §3.3).
+ *
+ * No-op si `esperarSenalDeCierre` nunca se llamó (modo TUI: no hay fase que
+ * cerrar) y no-op si ya se llamó antes (`"terminada"`): idempotente.
+ */
+export function finalizarCierreHeadless(deps: Partial<ProcesoCierreDeps> = {}): void {
+  if (faseDeCierre === "inactiva" || faseDeCierre === "terminada") {
+    return;
+  }
+  const depsCompletas = resolverDepsCompletas({ ...depsCapturadas, ...deps });
+  depsCompletas.desarmarTimer(watchdogHandle);
+  for (const { evento, handler } of handlersRegistrados) {
+    depsCompletas.proceso.off(evento, handler);
+  }
+  handlersRegistrados = [];
+  faseDeCierre = "terminada";
+  depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-completado", {});
+  depsCompletas.salir(0);
+}
