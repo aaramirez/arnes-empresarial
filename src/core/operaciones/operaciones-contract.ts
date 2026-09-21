@@ -6,7 +6,7 @@
  * `operaciones`, antes de que exista cualquier adaptador o caso de uso que la
  * consuma.
  *
- * `OperacionNegocio` es la unión discriminada de las DOCE operaciones del
+ * `OperacionNegocio` es la unión discriminada de las TRECE operaciones del
  * contrato (ADR 163 pto 2 + ADR 171 pto 2 + ADR 174 pto 1): ningún campo de
  * dinero/porcentaje/período/veredicto CALCULADO por el modelo — la única
  * excepción probada por test mecánico es `monto` de `registrar_venta` (ADR
@@ -36,7 +36,7 @@ export const OPERACIONES_TOOL_NAME = "operacion_negocio";
 export const OPERACIONES_TOOL_QUALIFIED_NAME =
   `mcp__${OPERACIONES_MCP_SERVER_NAME}__${OPERACIONES_TOOL_NAME}` as const;
 
-/* ── Las doce operaciones del contrato (ADR 163 pto 2, ADR 171 pto 2, ADR 174 pto 1) ── */
+/* ── Las trece operaciones del contrato (ADR 163 pto 2, ADR 171 pto 2, ADR 174 pto 1) ── */
 
 export const OPERACION_RESOLVER_DECISION_VENTA = "resolver_decision_venta";
 export const OPERACION_PROCESAR_DEVOLUCION = "procesar_devolucion";
@@ -88,6 +88,16 @@ export const OPERACION_CONSULTAR_SOLICITUD = "consultar_solicitud";
  */
 export const OPERACION_VER_SOLICITUDES_A2A = "ver_solicitudes_a2a";
 
+/**
+ * `consulta-kpi-a2a-chat`, ADR 243/244/245/246 — consulta a un agente EXTERNO
+ * por A2A saliente. DECIMOTERCERA entrada del contrato. ★ ÚNICA operación del
+ * contrato con efecto FUERA del arnés, y por eso la única que exige rol
+ * `administrador` (ADR 244) pese a ser de un solo paso.
+ * `consultaId` es una clave de un conjunto CERRADO (`CONSULTAS_KPI`): el modelo
+ * NUNCA compone el texto que sale (ADR 243). SIN `accion` y SIN `confirmado`.
+ */
+export const OPERACION_CONSULTAR_KPI = "consultar_kpi";
+
 export const OPERACIONES_NEGOCIO = [
   OPERACION_RESOLVER_DECISION_VENTA,
   OPERACION_PROCESAR_DEVOLUCION,
@@ -101,6 +111,7 @@ export const OPERACIONES_NEGOCIO = [
   OPERACION_CONSULTAR_VENTA,
   OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_VER_SOLICITUDES_A2A,
+  OPERACION_CONSULTAR_KPI,
 ] as const;
 
 /** `decision` del CLIENTE, ya tomada por otro medio — el empleado la transcribe (ADR 163 pto 2). No es "un veredicto libre". */
@@ -237,6 +248,19 @@ export interface OperacionVerSolicitudesA2A {
   readonly a2aTaskId?: string;
 }
 
+export interface OperacionConsultarKpi {
+  readonly operacion: typeof OPERACION_CONSULTAR_KPI;
+  /** ★ OBLIGATORIO EN EL TIPO, a diferencia de `ventaId?`/`a2aTaskId?`: no hay
+   *  modo listado. ★ D1: en el ZOD PLANO va `.optional()` (el objeto es
+   *  compartido por las trece operaciones); quien exige la presencia es
+   *  `CAMPOS_REQUERIDOS_POR_OPERACION`, ANTES del cast a esta unión — así que
+   *  cuando el dispatcher recibe este tipo, el campo ya está garantizado.
+   *  Tipado como `string` y NO como `ConsultaKpiClave` — este módulo no importa
+   *  nada (regla escrita, `:1-8`); el narrowing lo hace el dispatcher con
+   *  `esConsultaKpiConocida` (§7 pto 3). */
+  readonly consultaId: string;
+}
+
 export type OperacionNegocio =
   | OperacionResolverDecisionVenta
   | OperacionProcesarDevolucion
@@ -249,7 +273,8 @@ export type OperacionNegocio =
   | OperacionSolicitarDevolucion
   | OperacionConsultarVenta
   | OperacionConsultarSolicitud
-  | OperacionVerSolicitudesA2A;
+  | OperacionVerSolicitudesA2A
+  | OperacionConsultarKpi;
 
 /**
  * Puerto de confirmación humana para las operaciones de dos pasos del canal

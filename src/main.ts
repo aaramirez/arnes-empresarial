@@ -95,7 +95,7 @@ import { createKeyedQueue } from "./core/concurrency/keyed-queue.js";
 import { resolveVentasConfig, type VentasConfig } from "./core/ventas/ventas-config.js";
 import { createNotificadorAdapter } from "./adapters/notificaciones/index.js";
 import { createA2AAdapter } from "./adapters/a2a/index.js";
-import { isA2ASalienteEnabled } from "./adapters/a2a/config.js";
+import { configParaCanalConversacional, isA2ASalienteEnabled, resolveA2AConfig } from "./adapters/a2a/config.js";
 import { startA2AServer, type A2AServerAdapter } from "./adapters/a2a/server-index.js";
 import { A2A_SERVER_LOG_CORRELATION_ID } from "./adapters/a2a/server-config.js";
 import { resolveWebConfig, WEB_LOG_CORRELATION_ID } from "./adapters/web/config.js";
@@ -376,11 +376,24 @@ const webConfig = resolveWebConfig();
 //         no tiene interruptor y A2A sí: duplicar la lectura de
 //         `HARNESS_A2A_SALIENTE` pondría el rollback a `v2.1.0` en dos
 //         lugares distintos en vez de uno solo, acá.
+const a2aConfig = resolveA2AConfig();
 const clienteA2A = isA2ASalienteEnabled()
   ? createA2AAdapter({
+      config: a2aConfig,
       logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
     })
   : undefined;
+// Segunda instancia, para el turno de operaciones del chat (consulta-kpi-a2a-chat,
+// ADR 245 pto 3): existe si y sólo si existe la de la TUI, así el rollback a
+// v2.1.0 sigue en un solo lugar. Usa los techos del canal conversacional; la de
+// la TUI/ventas conserva los suyos.
+const clienteA2AChat =
+  clienteA2A !== undefined
+    ? createA2AAdapter({
+        config: configParaCanalConversacional(a2aConfig),
+        logEvent: (casoId, event, fields) => logTurnEvent(casoId, event, fields),
+      })
+    : undefined;
 
 const riesgoCredito =
   clienteA2A !== undefined
@@ -510,6 +523,7 @@ const onOperacionesEmpleado = buildOnOperacionesEmpleado({
   notifier,
   baseUrlPublica: webConfig.publicUrl,
   ...(riesgoCredito !== undefined ? { riesgoCredito } : {}), // exactOptionalPropertyTypes
+  ...(clienteA2AChat !== undefined ? { clienteA2A: clienteA2AChat } : {}), // exactOptionalPropertyTypes
   reporteStore,
   registro,
   despacharDeps,

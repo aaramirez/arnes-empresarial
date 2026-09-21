@@ -35,6 +35,7 @@ import { OPERACION_RESOLVER_REEMBOLSO } from "../../core/operaciones/operaciones
 import { crearConfirmacionOperacionesStore } from "../../adapters/web/confirmacion-operaciones-store.js";
 import { getSubagentDefinition } from "../../core/agents/definitions.js";
 import type { DelegacionStorePort, DespacharDelegacionDeps } from "../../core/turn-selector/dispatch-delegation.js";
+import type { DelegacionA2AStorePort } from "../../core/turn-selector/dispatch-delegation-a2a.js";
 import type { SolicitudStorePort } from "../../core/solicitudes/solicitudes-contract.js";
 import type { ReporteStorePort } from "../../core/ventas/reporte-contract.js";
 import type { ConsultaVentaPropiaPort } from "../../core/ventas/consulta-venta-contract.js";
@@ -164,6 +165,11 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     crearDelegacion: noUsado("crearDelegacion"),
     completarDelegacion: noUsado("completarDelegacion"),
   };
+  /** `consulta-kpi-a2a-chat`, tarea 3.1 — campo requerido de `EjecutarOperacionDeps`, no ejercitado por resolver_reembolso. */
+  const delegacionA2AStore: DelegacionA2AStorePort = {
+    crearDelegacionA2A: noUsado("crearDelegacionA2A"),
+    actualizarDelegacionA2A: noUsado("actualizarDelegacionA2A"),
+  };
   const despacharDeps: DespacharDelegacionDeps = {
     store: delegacionStore,
     invocar: noUsado("invocar"),
@@ -186,6 +192,7 @@ function realEjecutarOperacionDepsParaReembolso(db: Database.Database): Ejecutar
     consultaSolicitudPropia,
     solicitudA2AEntrante,
     justificacion,
+    delegacionA2AStore,
     despacharDeps,
     rolPort: realRolPort(db),
     registro,

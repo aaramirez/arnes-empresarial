@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { type A2AConfig, type DestinoA2AConfig, resolveA2AConfig } from "./config.js";
+import { OPERACIONES_TIMEOUT_MS } from "../web/config.js";
+import { configParaCanalConversacional } from "./config.js";
+import { createA2AAdapter } from "./index.js";
 import { type A2AClientDeps, type FetchFn, type FetchResponseLike, delegarTarea } from "./client.js";
 
 /**
@@ -1106,5 +1109,43 @@ describe("delegarTarea — el Authorization nunca aparece en un mensaje, detalle
       a2aTaskId: "task-1",
       endpoint: ENTRADA_JSONRPC.url,
     });
+  });
+});
+
+describe("createA2AAdapter con configParaCanalConversacional — test 2c (consulta-kpi-a2a-chat, ADR 245)", () => {
+  it("un agente que responde WORKING para siempre resuelve timeout UNA vez, en tiempo virtual acotado a la mitad del plazo HTTP", async () => {
+    const reloj = makeRelojFake();
+    const base = resolveA2AConfig({ HARNESS_A2A_ENDPOINT_KPI_INCIDENTE: "https://agente.example.com" });
+    const fetchFn = vi.fn(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(init?.body ?? "{}") as { method?: string };
+      if (body.method === "SendMessage") {
+        return sendMessageTaskResponse(taskSubmitted());
+      }
+      if (body.method === "GetTask" || body.method === "CancelTask") {
+        return taskResponse(taskWorking());
+      }
+      return CARD_JSONRPC;
+    }) as unknown as FetchFn;
+    const cliente = createA2AAdapter({
+      config: configParaCanalConversacional(base),
+      fetchFn,
+      ahoraMs: reloj.ahoraMs,
+      dormir: reloj.dormir,
+      logEvent: vi.fn(),
+    });
+
+    let resoluciones = 0;
+    const resultado = await cliente
+      .delegar({ clave: "kpi-incidente", tarea: "t", casoId: "caso-1" })
+      .then((r) => {
+        resoluciones += 1;
+        return r;
+      });
+    await Promise.resolve();
+
+    expect(resultado).toMatchObject({ ok: false, reason: "timeout" });
+    expect(resoluciones).toBe(1);
+    expect(reloj.ahoraMs()).toBeGreaterThan(0);
+    expect(reloj.ahoraMs()).toBeLessThanOrEqual(OPERACIONES_TIMEOUT_MS / 2);
   });
 });

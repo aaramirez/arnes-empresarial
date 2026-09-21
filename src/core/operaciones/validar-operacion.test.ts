@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { CONSULTAS_KPI } from "../agents/consultas-kpi-catalogo.js";
 import { CAMPOS_POR_OPERACION, VALORES_PERMITIDOS_POR_OPERACION, validarOperacion } from "./validar-operacion.js";
 
 /**
@@ -402,6 +403,68 @@ describe("validarOperacion — ver_solicitudes_a2a: forma mínima se acepta (vis
   });
 });
 
+describe("validarOperacion — consultar_kpi (consulta-kpi-a2a-chat, tarea 6.1, ADR 243, D1)", () => {
+  it.each(CONSULTAS_KPI)("acepta { operacion, consultaId: '%s' } para cada clave del catálogo", (consultaId) => {
+    const input = { operacion: "consultar_kpi", consultaId };
+    expect(validarOperacion(input)).toBe(input);
+  });
+
+  // D1: la obligatoriedad de `consultaId` vive ACÁ (el zod del borde es opcional).
+  it("rechaza consultaId ausente, pareado con el positivo de la misma operación", () => {
+    const positivo = { operacion: "consultar_kpi", consultaId: "kpis_del_mes" };
+    expect(validarOperacion(positivo)).toBe(positivo);
+    expect(validarOperacion({ operacion: "consultar_kpi" })).toBeUndefined();
+  });
+
+  it.each([
+    ["vacío", ""],
+    ["sólo espacios", "   "],
+    ["clave inventada", "no-existe"],
+    ["clave válida en mayúsculas", "KPIS_DEL_MES"],
+    ["clave válida con un espacio antes", " kpis_del_mes"],
+    ["clave válida con un espacio después", "kpis_del_mes "],
+  ])("rechaza consultaId %s (coincidencia EXACTA: sin trim ni normalización)", (_titulo, consultaId) => {
+    const positivo = { operacion: "consultar_kpi", consultaId: "kpis_del_mes" };
+    expect(validarOperacion(positivo)).toBe(positivo);
+    expect(validarOperacion({ operacion: "consultar_kpi", consultaId })).toBeUndefined();
+  });
+
+  it("consultaId de 256 caracteres se topa con la whitelist; el de 257 se rechaza por largo", () => {
+    const positivo = { operacion: "consultar_kpi", consultaId: "kpis_del_mes" };
+    expect(validarOperacion(positivo)).toBe(positivo);
+    expect(validarOperacion({ operacion: "consultar_kpi", consultaId: "x".repeat(257) })).toBeUndefined();
+  });
+
+  it("rechaza consultaId que no es string", () => {
+    const positivo = { operacion: "consultar_kpi", consultaId: "kpis_del_mes" };
+    expect(validarOperacion(positivo)).toBe(positivo);
+    expect(validarOperacion({ operacion: "consultar_kpi", consultaId: 1 })).toBeUndefined();
+  });
+
+  it("rechaza una clave del catálogo bajo otra operación: { operacion: 'consultar_venta', consultaId }", () => {
+    const positivo = { operacion: "consultar_kpi", consultaId: "kpis_del_mes" };
+    expect(validarOperacion(positivo)).toBe(positivo);
+    expect(validarOperacion({ operacion: "consultar_venta", consultaId: "kpis_del_mes" })).toBeUndefined();
+  });
+
+  it.each([
+    "consulta",
+    "material",
+    "instruccion",
+    "texto",
+    "destino",
+    "clave",
+    "empleadoId",
+    "rol",
+    "accion",
+    "confirmado",
+  ])("rechaza la clave extra '%s' aun con consultaId válido presente", (extra) => {
+    const positivo = { operacion: "consultar_kpi", consultaId: "kpis_del_mes" };
+    expect(validarOperacion(positivo)).toBe(positivo);
+    expect(validarOperacion({ ...positivo, [extra]: "x" })).toBeUndefined();
+  });
+});
+
 describe("validarOperacion — operación fuera del enum", () => {
   it("operacion desconocida ⇒ rechazo", () => {
     expect(validarOperacion({ operacion: "borrar_todo", token: "t" })).toBeUndefined();
@@ -416,17 +479,19 @@ describe("validarOperacion — operación fuera del enum", () => {
 describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION: test estructural de regresión (hallazgo Reviewer, altura/robustez — ADR 217 pto 2-3)", () => {
   /**
    * Convención del módulo (única fuente de verdad, ver `VALORES_PERMITIDOS_
-   * POR_OPERACION`): un campo se considera "de tipo acción/enum-like" cuando
-   * su NOMBRE es literalmente `accion` o `decision` — las tres filas hoy
-   * vigentes (`resolver_solicitud.accion`, `resolver_reembolso.accion`,
-   * `resolver_decision_venta.decision`) siguen esa convención. Este test NO
+   * POR_OPERACION`): un campo se considera "de tipo enum-like" cuando es de
+   * valor acotado a un conjunto cerrado — hoy se llaman `accion`, `decision`
+   * o `consultaId` (consulta-kpi-a2a-chat, tarea 6.1: `consultar_kpi.consultaId`,
+   * ADR 243) —; las cuatro filas vigentes (`resolver_solicitud.accion`,
+   * `resolver_reembolso.accion`, `resolver_decision_venta.decision`,
+   * `consultar_kpi.consultaId`) siguen esa convención. Este test NO
    * cambia `validarOperacion` en sí (permanece fail-open por diseño para
    * campos sin fila — decisión de runtime fuera de alcance de este
    * hallazgo): es una regresión que falla en TIEMPO DE TEST si una operación
    * futura agrega un campo `accion`/`decision` y se olvida su fila en
    * `VALORES_PERMITIDOS_POR_OPERACION`, sin agregar overhead al dispatcher.
    */
-  const CAMPOS_ENUM_LIKE = ["accion", "decision"];
+  const CAMPOS_ENUM_LIKE = ["accion", "decision", "consultaId"];
 
   it("toda operación con un campo 'accion'/'decision' en CAMPOS_POR_OPERACION tiene su fila en VALORES_PERMITIDOS_POR_OPERACION para ESE campo", () => {
     const operacionesConCampoEnumLike = Object.entries(CAMPOS_POR_OPERACION).flatMap(([operacion, campos]) =>
@@ -453,6 +518,14 @@ describe("validarOperacion — VALORES_PERMITIDOS_POR_OPERACION: test estructura
     expect(VALORES_PERMITIDOS_POR_OPERACION["resolver_solicitud"]?.["accion"]).toBeDefined();
     expect(VALORES_PERMITIDOS_POR_OPERACION["resolver_reembolso"]?.["accion"]).toBeDefined();
     expect(VALORES_PERMITIDOS_POR_OPERACION["resolver_decision_venta"]?.["decision"]).toBeDefined();
+  });
+});
+
+describe("validarOperacion — 7b: catálogo ≡ cuarta tabla (consulta-kpi-a2a-chat, tarea 6.1)", () => {
+  it("VALORES_PERMITIDOS_POR_OPERACION.consultar_kpi.consultaId es exactamente CONSULTAS_KPI (ordenado)", () => {
+    const fila = VALORES_PERMITIDOS_POR_OPERACION["consultar_kpi"]?.["consultaId"];
+    expect(fila).toBeDefined();
+    expect([...(fila ?? [])].sort()).toEqual([...CONSULTAS_KPI].sort());
   });
 });
 

@@ -20,6 +20,7 @@ import {
   DOMINIO_REEMBOLSO,
   DOMINIO_SOLICITUD,
   OPERACION_CANCELAR_SOLICITUD_INTERNA,
+  OPERACION_CONSULTAR_KPI,
   OPERACION_CONSULTAR_REPORTE_COMISIONES,
   OPERACION_CONSULTAR_SOLICITUD,
   OPERACION_CONSULTAR_VENTA,
@@ -33,6 +34,7 @@ import {
   OPERACION_VER_SOLICITUDES_A2A,
   type ConfirmacionOperacionPort,
   type LlaveConfirmacion,
+  type OperacionConsultarKpi,
   type OperacionConsultarSolicitud,
   type OperacionConsultarVenta,
   type OperacionNegocio,
@@ -81,11 +83,30 @@ import type { SesionEmpleado } from "../auth/sesion.js";
 import { agruparReporteMensual, formatearReporteMensual, formatMoney, resolverPeriodoReporte } from "../ventas/reporte.js";
 import { type ReporteStorePort } from "../ventas/reporte-contract.js";
 import { type DespacharDelegacionDeps } from "../turn-selector/dispatch-delegation.js";
+import {
+  DESTINO_A2A_KPI_INCIDENTE,
+  DelegacionA2ANoCompletadaError,
+  type ClienteA2APort,
+} from "../agents/a2a-contract.js";
+import {
+  despacharDelegacionA2A,
+  resolverDestinoA2A,
+  type DelegacionA2AStorePort,
+} from "../turn-selector/dispatch-delegation-a2a.js";
+import { mensajeDeMotivoA2A } from "../agents/a2a-saliente-textos.js";
+import { enmarcarTextoExterno } from "../agents/texto-externo.js";
+import {
+  INSTRUCCION_CONSULTA_KPI,
+  esConsultaKpiConocida,
+  materialDeConsultaKpi,
+} from "../agents/consultas-kpi-catalogo.js";
+import { esAdministrador } from "../auth/autorizacion-resolucion.js";
 import { MOTIVO_CAS } from "../hitl/hitl-contract.js";
 import {
   COMANDO_APROBAR_REEMBOLSO,
   COMANDO_APROBAR_SOLICITUD,
   COMANDO_CANCELAR_SOLICITUD,
+  COMANDO_CONSULTAR_KPI,
   COMANDO_DEVOLUCION,
   COMANDO_REABRIR_REEMBOLSO,
   COMANDO_RECHAZAR_REEMBOLSO,
@@ -101,6 +122,7 @@ import {
   RESULTADO_CONFIRMADA,
   RESULTADO_CREADA,
   RESULTADO_ESCALADA,
+  RESULTADO_FALLIDA,
   RESULTADO_NO_APLICABLE,
   RESULTADO_NO_AUTORIZADO,
   RESULTADO_RECHAZADA,
@@ -118,6 +140,12 @@ export interface EjecutarOperacionDeps {
   readonly baseUrlPublica: string;
   readonly riesgoCredito?: ConsultaRiesgoCreditoPort;
   /**
+   * `consulta-kpi-a2a-chat`, ADR 245 pto 4 — OPCIONAL a propósito: el tipo ES el
+   * interruptor. `undefined` es el estado sin `HARNESS_A2A_SALIENTE=on` (mismo
+   * molde que `riesgoCredito?`), no un descuido.
+   */
+  readonly clienteA2A?: ClienteA2APort;
+  /**
    * Requerida acá (nunca `undefined`) — la opcionalidad vive únicamente en
    * `BuildOnOperacionesEmpleadoDeps` (tarea 5), resuelta a una instancia
    * concreta antes de despachar (ADR 174 pto 6).
@@ -131,6 +159,11 @@ export interface EjecutarOperacionDeps {
   readonly solicitudA2AEntrante: SolicitudA2AEntranteStorePort;
   /** `devolucion-sin-token-dos-personas`, ADR 228 pto 6, tarea 16 — mismo criterio "requerido acá" que `consultaVentaPropia`. */
   readonly justificacion: JustificacionDevolucionPort;
+  /**
+   * `consulta-kpi-a2a-chat`, design §7 pto 6 — REQUERIDO a propósito (closures
+   * sobre `db`, siempre construibles): olvidar el wiring no compila.
+   */
+  readonly delegacionA2AStore: DelegacionA2AStorePort;
   readonly despacharDeps: DespacharDelegacionDeps;
   /**
    * Requerido (`autorizacion-empleado`, ADR 157/159/162, ya mergeado a esta
@@ -1018,6 +1051,91 @@ function ejecutarVerSolicitudesA2A(
 }
 
 /**
+ * `consulta-kpi-a2a-chat`, ADR 243/244/245/246, tareas 7.2 y 9.2. Ciclo A: los
+ * tres controles, en este orden — (a) apagado (sin auditar, antes que todo), (b)
+ * rol administrador, (c) clave contra el catalogo cerrado. Ciclo B: despacho por
+ * el camino A2A del nucleo, resultado enmarcado y UNA fila de auditoria. SIN
+ * caso de uso de nucleo nuevo y SIN caso propio (reusa el del turno). El modelo
+ * aporta unicamente `consultaId`; ninguna clave recibida se repite en un texto.
+ * NUNCA lanza desde el despacho en adelante (ver el `catch` propio).
+ */
+async function ejecutarConsultarKpi(
+  operacion: OperacionConsultarKpi,
+  input: EjecutarOperacionInput,
+  deps: EjecutarOperacionDeps,
+): Promise<string> {
+  if (deps.clienteA2A === undefined) {
+    return "La consulta a agentes externos de KPIs/incidentes está desactivada.";
+  }
+
+  if (!esAdministrador(deps.rolPort, input.sesion.empleadoId)) {
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_NO_AUTORIZADO, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return "No estás autorizado para consultar KPIs al agente externo: se requiere rol elevado.";
+  }
+
+  if (!esConsultaKpiConocida(operacion.consultaId)) {
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_NO_APLICABLE, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return "No conozco esa consulta.";
+  }
+  const consultaId = operacion.consultaId;
+
+  // Ciclo B (tarea 9.2, ADR 243/245/246). A partir de aca la consulta puede SALIR del arnes y lo que sale no
+  // vuelve: el `catch` global de `ejecutarOperacion` ("contá con que no se aplicó nada") seria FALSO, asi que
+  // esta funcion tiene su propio `try`/`catch` y NUNCA lanza. El insumo sale del catalogo; el marco, del nucleo.
+  try {
+    const material = materialDeConsultaKpi(consultaId);
+    const delegacion = await despacharDelegacionA2A(
+      {
+        casoId: input.casoIdActual,
+        destino: resolverDestinoA2A(DESTINO_A2A_KPI_INCIDENTE),
+        insumo: { instruccion: INSTRUCCION_CONSULTA_KPI, material },
+      },
+      {
+        store: deps.delegacionA2AStore,
+        cliente: deps.clienteA2A,
+        newId: deps.newId,
+        now: deps.now,
+        logEvent: deps.logEvent,
+      },
+    );
+    // Primero se arma el texto, despues se audita: `registrar` no lanza, asi que ninguna rama deja dos filas.
+    const texto = enmarcarTextoExterno("resultado de la consulta", delegacion.resultado);
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_ATENDIDA, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    return texto;
+  } catch (error) {
+    registrar(
+      { comando: COMANDO_CONSULTAR_KPI, resultado: RESULTADO_FALLIDA, casoId: input.casoIdActual },
+      input.sesion,
+      input.casoIdActual,
+      deps,
+    );
+    if (error instanceof DelegacionA2ANoCompletadaError) {
+      deps.logEvent(input.casoIdActual, "consultar-kpi-fallido", { tipada: true, reason: error.reason });
+      return mensajeDeMotivoA2A(error.reason);
+    }
+    // Rama NO tipada: DIVERGE de la TUI a proposito (efecto irreversible, lector modelo). Ni el mensaje del error
+    // ni la clave ni "no se aplico nada" entran al texto.
+    deps.logEvent(input.casoIdActual, "consultar-kpi-fallido", { tipada: false });
+    return "No pude completar la consulta al agente externo de KPIs/incidentes. No puedo asegurarte si llegó a salir o no — revisá el registro de la consulta antes de reintentar.";
+  }
+}
+
+/**
  * NUNCA lanza — cualquier error sincrónico o rechazo de una dependencia
  * inyectada (p. ej. `store.crearVentaConCaso` fallando ruidosamente) se
  * traduce a texto degradado, mismo contrato que `handleKnowledgeQuery`
@@ -1122,6 +1240,9 @@ export async function ejecutarOperacion(
 
       case OPERACION_VER_SOLICITUDES_A2A:
         return ejecutarVerSolicitudesA2A(operacion, input, deps);
+
+      case OPERACION_CONSULTAR_KPI:
+        return await ejecutarConsultarKpi(operacion, input, deps);
 
       default: {
         const _exhaustivo: never = operacion;

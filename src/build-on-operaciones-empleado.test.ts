@@ -12,6 +12,8 @@
  * SÍ recibe `createKnowledge`, requerido, sin default), nunca la de
  * `consultas`, y que `handleTurn` NUNCA recibe `knowledgeFeedback` (ADR 235).
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type Database from "better-sqlite3";
 import {
@@ -26,7 +28,7 @@ import { openDatabase } from "./adapters/memory/db.js";
 import { createCaso, getCasoById, insertSolicitudA2AEntrante } from "./adapters/memory/repository.js";
 import type { MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
-import { TASK_STATE_WORKING } from "./core/agents/a2a-contract.js";
+import { TASK_STATE_WORKING, type ClienteA2APort } from "./core/agents/a2a-contract.js";
 import { COMANDO_VER_SOLICITUDES_A2A } from "./core/commands/registro-acciones-contract.js";
 import type {
   AccionConfirmable,
@@ -228,6 +230,8 @@ interface BaseDepsOverrides {
   readonly logDeps?: LogTurnEventDeps;
   readonly memory?: MemoryPort;
   readonly createKnowledge?: (casoId: string) => KnowledgeAdapter;
+  /** `consulta-kpi-a2a-chat`, tarea 3.1 — ausente ⇒ A2A saliente apagado. */
+  readonly clienteA2A?: ClienteA2APort;
 }
 
 function makeBaseDeps(db: Database.Database, overrides: BaseDepsOverrides = {}): BuildOnOperacionesEmpleadoDeps {
@@ -244,6 +248,7 @@ function makeBaseDeps(db: Database.Database, overrides: BaseDepsOverrides = {}):
     ...(overrides.newToken ? { newToken: overrides.newToken } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.logDeps ? { logDeps: overrides.logDeps } : {}),
+    ...(overrides.clienteA2A !== undefined ? { clienteA2A: overrides.clienteA2A } : {}),
   };
 }
 
@@ -1420,5 +1425,71 @@ describe("buildOnOperacionesEmpleado — autoconfirmación imposible con memoria
     } finally {
       db.close();
     }
+  });
+});
+
+/**
+ * `consulta-kpi-a2a-chat`, tarea 3.1 — `clienteA2A?` opcional y
+ * `delegacionA2AStore` requerido en las deps del turno de operaciones, SIN
+ * comportamiento observable nuevo (design §7 pto 6 y §8).
+ */
+describe("buildOnOperacionesEmpleado — deps A2A (consulta-kpi-a2a-chat, tarea 3.1)", () => {
+  function clienteA2ADoble(): ClienteA2APort {
+    return { baseUrlDe: vi.fn(), delegar: vi.fn() };
+  }
+
+  async function correrTurno(clienteA2A: ClienteA2APort | undefined): Promise<unknown> {
+    const db = openDatabase(":memory:");
+    try {
+      const handler = buildOnOperacionesEmpleado(
+        makeBaseDeps(db, {
+          newId: makeCounterNewId("caso"),
+          now: () => TIMESTAMP,
+          ...(clienteA2A !== undefined ? { clienteA2A } : {}),
+        }),
+      );
+      return await handler({
+        consulta: "consulta cualquiera",
+        sesion: fakeSesion(),
+        confirmacion: fakeConfirmacion(),
+        conversacion: fakeConversacion(),
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  it("sin clienteA2A el handler resuelve igual que antes ({casoId, respuesta})", async () => {
+    const resultado = await correrTurno(undefined);
+
+    expect(resultado).toEqual({ casoId: "caso-1", respuesta: outcomeBase.responseText });
+  });
+
+  it("con clienteA2A el handler resuelve el MISMO resultado y no invoca delegar ni baseUrlDe", async () => {
+    const cliente = clienteA2ADoble();
+
+    const sin = await correrTurno(undefined);
+    const con = await correrTurno(cliente);
+
+    expect(con).toEqual(sin);
+    expect(cliente.delegar).not.toHaveBeenCalled();
+    expect(cliente.baseUrlDe).not.toHaveBeenCalled();
+  });
+
+  it("test mecanico: el literal `const ejecutarDeps: EjecutarOperacionDeps = {` cablea delegacionA2AStore y el spread condicional de clienteA2A", () => {
+    const sourcePath = fileURLToPath(new URL("./build-on-operaciones-empleado.ts", import.meta.url));
+    const source = readFileSync(sourcePath, "utf-8");
+    const inicio = source.indexOf("const ejecutarDeps: EjecutarOperacionDeps = {");
+    if (inicio === -1) {
+      throw new Error("No se encontro el literal `const ejecutarDeps: EjecutarOperacionDeps = {`");
+    }
+    const fin = source.indexOf("\n  };", inicio);
+    if (fin === -1) {
+      throw new Error("No se encontro el cierre `};` del literal ejecutarDeps");
+    }
+    const bloque = source.slice(inicio, fin);
+
+    expect(bloque).toContain("delegacionA2AStore");
+    expect(bloque).toMatch(/\.\.\.\(deps\.clienteA2A !== undefined \? \{ clienteA2A: deps\.clienteA2A \} : \{\}\)/);
   });
 });

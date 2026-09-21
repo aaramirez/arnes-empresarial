@@ -1012,8 +1012,9 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
    *     `buildOnSoporte`, paso 1): obligatorio, no cosmético —
    *     `delegaciones_a2a.caso_id` es NOT NULL REFERENCES casos(id).
    *  c. `await despacharDelegacionA2A(...)` con `resolverDestinoA2A(
-   *     DESTINO_A2A_KPI_INCIDENTE)` y el insumo FIJO EN CÓDIGO (nunca del
-   *     modelo, nunca de un prompt libre).
+   *     DESTINO_A2A_KPI_INCIDENTE)`. El destino y la instrucción son FIJOS
+   *     EN CÓDIGO (nunca del modelo); el `material` es el texto que escribió
+   *     el empleado (`comando.consulta`), no un insumo fijo.
    *  d. éxito ⇒ `registrar(RESULTADO_ATENDIDA)` y se devuelve el texto.
    *  e. `catch` ÚNICO y EXPLÍCITO sobre b-c-d completo — mismo criterio que
    *     `manejarSoporte`/ADR 40 (la TUI no puede quedarse sin respuesta):
