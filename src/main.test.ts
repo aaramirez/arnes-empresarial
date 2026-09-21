@@ -697,3 +697,163 @@ describe("main.ts -- abre la base por resolveDbPath (modo-headless-cierre-limpio
     expect(dbPathCapturado).toBe("data/harness.db");
   });
 });
+
+/**
+ * CANDADOS (`modo-headless-cierre-limpio`, tarea 3.2) — nacen VERDES: hoy
+ * (antes de la tarea 3.6) no hay ninguna rama headless en `main.ts`, así que
+ * estos tests no prueban una regresión que ya exista, sino que fijan una
+ * garantía de NO-FUGA que la tarea 3.6 debe seguir cumpliendo. Su valor real
+ * se demuestra por MUTACIÓN, con evidencia en `docs/progreso/` (tarea 3.8).
+ * `npm test`/`npm run typecheck` quedan verdes al crearlos.
+ */
+describe("main.ts -- candados de no-fuga de listeners, finally intacto y cero funciones extraidas (modo-headless-cierre-limpio, tarea 3.2)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  const EVENTOS_DE_PROCESO = ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"] as const;
+
+  function contarListenersReales(): Record<(typeof EVENTOS_DE_PROCESO)[number], number> {
+    const conteos = {} as Record<(typeof EVENTOS_DE_PROCESO)[number], number>;
+    for (const evento of EVENTOS_DE_PROCESO) {
+      conteos[evento] = process.listenerCount(evento);
+    }
+    return conteos;
+  }
+
+  it("(a, R18/H5) importar main.js seis veces en TUI, sobre el process REAL, no acumula listeners -- incluido un import suspendido", async () => {
+    const antes = contarListenersReales();
+
+    for (let vez = 0; vez < 6; vez += 1) {
+      vi.resetModules();
+
+      if (vez < 5) {
+        await import("./main.js");
+      } else {
+        // Import SUSPENDIDO a propósito (mismo patrón que `getCreateConsultas`
+        // más arriba en este archivo, `:319` de la nota del módulo): se
+        // resuelve una promesa controlada por este test en vez de dejar que
+        // `waitUntilExit()` resuelva sola, para cubrir también el camino
+        // "importación en vuelo" antes de cerrar la base.
+        const { startTui } = await import("./adapters/tui/start-tui.js");
+        const startTuiMock = vi.mocked(startTui);
+        const llamadasPrevias = startTuiMock.mock.calls.length;
+        let resolverSalida: () => void = () => {};
+        const salidaPendiente = new Promise<void>((resolve) => {
+          resolverSalida = resolve;
+        });
+        startTuiMock.mockImplementationOnce(() => ({
+          unmount: () => {},
+          waitUntilExit: () => salidaPendiente,
+        }));
+
+        void import("./main.js");
+
+        const MAX_INTENTOS = 5000;
+        for (
+          let intento = 0;
+          intento < MAX_INTENTOS && startTuiMock.mock.calls.length === llamadasPrevias;
+          intento += 1
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+
+        expect(contarListenersReales()).toEqual(antes);
+
+        resolverSalida();
+        // Deja que la importación suspendida termine de cerrar su base antes
+        // de que el test siguiente reciclee el entorno.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(contarListenersReales()).toEqual(antes);
+    }
+  });
+
+  it("(b, R4) el finally queda intacto: los cuatro close() en el orden del ADR 10", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const tramo = bloqueEntre(source, "} finally {", "\n}\n");
+    // Sin líneas de comentario: el propio `finally` menciona los cuatro
+    // `close()` DENTRO de un comentario narrativo antes de invocarlos de
+    // verdad (p. ej. "`web.close()` corre PRIMERO... y de `db.close()`"), lo
+    // que adelantaría un `indexOf` falso si no se descartan esas líneas.
+    const tramoSinComentarios = tramo
+      .split("\n")
+      .filter((linea) => !linea.trim().startsWith("//"))
+      .join("\n");
+
+    const indiceWeb = tramoSinComentarios.indexOf("web.close()");
+    const indiceWebhook = tramoSinComentarios.indexOf("webhook.close()");
+    const indiceA2a = tramoSinComentarios.indexOf("a2aServidor.close()");
+    const indiceDb = tramoSinComentarios.indexOf("db.close()");
+
+    expect(indiceWeb).toBeGreaterThanOrEqual(0);
+    expect(indiceWebhook).toBeGreaterThan(indiceWeb);
+    expect(indiceA2a).toBeGreaterThan(indiceWebhook);
+    expect(indiceDb).toBeGreaterThan(indiceA2a);
+  });
+
+  it("(c) no se extraen funciones nuevas desde el bloque final del composition root hasta el final del archivo", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    // Ancla re-`Grep`eada (design/tasks citaban `"const a2aEntrante"`, sin
+    // verificar contra el árbol -- Contradicción residual #9 de `tasks.md`;
+    // en este árbol SÍ existe): es la última constante del wiring de A2A
+    // entrante, justo antes del bloque final `try`/`finally`.
+    const desde = source.indexOf("const a2aEntrante");
+    expect(desde).toBeGreaterThanOrEqual(0);
+
+    const tramoConComentarios = source.slice(desde);
+    // Descartar toda línea que empiece con `//` ANTES de buscar: si no, un
+    // doc-comment nuevo que mencione la palabra "function" o "shutdown" daría
+    // un falso rojo (corrección (d) de `tasks.md`).
+    const sinComentarios = tramoConComentarios
+      .split("\n")
+      .filter((linea) => !linea.trim().startsWith("//"))
+      .join("\n");
+
+    expect(sinComentarios).not.toMatch(/\bfunction\s+\w+/);
+    expect(sinComentarios).not.toContain("const shutdown");
+  });
+
+  it("(d, H7) ningún test de main construye una señal real contra el proceso del runner", () => {
+    const directorioDeEsteArchivo = new URL(".", import.meta.url);
+    const archivosMain = readdirSync(directorioDeEsteArchivo).filter((nombre) => /^main.*\.test\.ts$/.test(nombre));
+    expect(archivosMain.length).toBeGreaterThan(0);
+
+    // Construidos por concatenación a propósito: si se escribieran como
+    // literales, este mismo test se encontraría a sí mismo (Contradicción
+    // residual #6 de `tasks.md`).
+    const patronesProhibidos = [
+      "process." + "kill(process.pid",
+      "process." + 'emit("SIG',
+      "process." + 'emit("unhandledRejection',
+    ];
+
+    for (const nombre of archivosMain) {
+      const contenido = readFileSync(new URL(nombre, directorioDeEsteArchivo), "utf8");
+      for (const patron of patronesProhibidos) {
+        expect(contenido).not.toContain(patron);
+      }
+    }
+  });
+});
