@@ -29,9 +29,10 @@
  * sus argumentos.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { CONSULTAS_MCP_SERVER_NAME, CONSULTAS_TOOL_NAME } from "./core/agents/consultas-negocio-tool.js";
+import { insertAccionEmpleado } from "./adapters/memory/repository.js";
 
 /**
  * Capturado por el mock de `openDatabase` de abajo — mismo `:memory:` REAL
@@ -86,6 +87,106 @@ vi.mock("./build-on-a2a-entrante.js", async (importOriginal) => {
   return { ...actual, buildOnA2AEntrante: vi.fn(actual.buildOnA2AEntrante) };
 });
 
+/**
+ * `modo-headless-cierre-limpio` (tareas 3.4/3.5) — los tres arranques de
+ * servidor se mockean al nivel del MÓDULO (no por variable de entorno, como
+ * hacía el resto de la suite hasta acá): así cada test de cierre por señal
+ * controla directamente cuándo resuelve/rechaza `close()`, sin tener que
+ * levantar un socket real. Sin `mockResolvedValueOnce` explícito, el
+ * `vi.fn()` sin implementación devuelve `undefined` -- EXACTAMENTE el mismo
+ * resultado que el resto de los tests de este archivo ya observaban con los
+ * puertos/tokens deshabilitados (E9), así que esto no cambia ningún test
+ * existente.
+ */
+vi.mock("./adapters/web/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/web/index.js")>();
+  return { ...actual, startWebServer: vi.fn() };
+});
+
+vi.mock("./adapters/webhooks/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/webhooks/index.js")>();
+  return { ...actual, startWebhookServer: vi.fn() };
+});
+
+vi.mock("./adapters/a2a/server-index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/a2a/server-index.js")>();
+  return { ...actual, startA2AServer: vi.fn() };
+});
+
+/**
+ * `modo-headless-cierre-limpio` (tarea 3.3) — decisión de wiring documentada
+ * en el commit: `main.ts` llama a `esperarSenalDeCierre()`/
+ * `finalizarCierreHeadless()` SIN argumentos (design.md §3.2), así que estos
+ * tests inyectan un EMISOR y un SALIR falsos por `vi.mock` de
+ * `./proceso-cierre.js` — la lógica REAL de ese módulo corre siempre (nunca
+ * se reemplaza), solo se le fuerza `proceso`/`salir` a los dobles de abajo:
+ * el `process` real de Vitest NUNCA recibe un listener ni un `exit` (R18,
+ * R20). `vi.hoisted` porque el factory de `vi.mock` (hoisteado al tope del
+ * archivo por Vitest) necesita estas referencias ya creadas.
+ */
+const { procesoFalsoParaTest, salirEspiaParaTest, logEventEspiaParaTest, eventosDeProcesoParaTest } = vi.hoisted(
+  () => {
+    const handlers = new Map<string, Set<(arg?: unknown) => void>>();
+    const procesoFalsoParaTest = {
+      on: (evento: string, handler: (arg?: unknown) => void): void => {
+        const conjunto = handlers.get(evento) ?? new Set<(arg?: unknown) => void>();
+        conjunto.add(handler);
+        handlers.set(evento, conjunto);
+      },
+      off: (evento: string, handler: (arg?: unknown) => void): void => {
+        handlers.get(evento)?.delete(handler);
+      },
+      emitir: (evento: string, arg?: unknown): void => {
+        for (const handler of [...(handlers.get(evento) ?? [])]) {
+          handler(arg);
+        }
+      },
+      contarListeners: (evento: string): number => handlers.get(evento)?.size ?? 0,
+      /** Fuerza el mapa de handlers a vacío entre tests, sin depender de que un `import("./main.js")` suspendido llegue a llamar `finalizarCierreHeadless()`. */
+      limpiar: (): void => {
+        handlers.clear();
+      },
+    };
+    // Espía de `logEvent`, en vez de dejar correr el `logTurnEvent` real: los
+    // tests de 3.4/3.5 necesitan afirmar sobre `cierre-senal-recibida`,
+    // `cierre-presupuesto-excedido`, etc. sin depender de `data/harness.log`
+    // en disco ni de su timing de escritura síncrona.
+    const eventosDeProcesoParaTest: { casoId: string; event: string; fields: Record<string, unknown> }[] = [];
+    const logEventEspiaParaTest = vi.fn(
+      (casoId: string, event: string, fields: Record<string, unknown> = {}): void => {
+        eventosDeProcesoParaTest.push({ casoId, event, fields });
+      },
+    );
+    return {
+      procesoFalsoParaTest,
+      salirEspiaParaTest: vi.fn((_codigo: number): void => {}),
+      logEventEspiaParaTest,
+      eventosDeProcesoParaTest,
+    };
+  },
+);
+
+vi.mock("./proceso-cierre.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./proceso-cierre.js")>();
+  return {
+    ...real,
+    esperarSenalDeCierre: (deps?: Parameters<typeof real.esperarSenalDeCierre>[0]) =>
+      real.esperarSenalDeCierre({
+        proceso: procesoFalsoParaTest,
+        salir: salirEspiaParaTest,
+        logEvent: logEventEspiaParaTest,
+        ...deps,
+      }),
+    finalizarCierreHeadless: (deps?: Parameters<typeof real.finalizarCierreHeadless>[0]) =>
+      real.finalizarCierreHeadless({
+        proceso: procesoFalsoParaTest,
+        salir: salirEspiaParaTest,
+        logEvent: logEventEspiaParaTest,
+        ...deps,
+      }),
+  };
+});
+
 const ENV_KEYS_A_LIMPIAR = [
   "WEB_PORT",
   "WEBHOOK_PORT",
@@ -93,6 +194,8 @@ const ENV_KEYS_A_LIMPIAR = [
   "GITHUB_TOKEN",
   "HARNESS_A2A_ENTRANTE_TOKEN",
   "HARNESS_A2A_SALIENTE",
+  "HARNESS_HEADLESS",
+  "HARNESS_SHUTDOWN_TIMEOUT_MS",
 ] as const;
 
 describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conversacionales, tarea 10)", () => {
@@ -110,6 +213,13 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
       original[key] = process.env[key];
       delete process.env[key];
     }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): FIJADA, no solo borrada.
+    // `ENV_KEYS_A_LIMPIAR` de arriba solo hace `delete`, y cada reimportación
+    // de `main.js` re-ejecuta `loadDotenv()`, que rellena desde `.env` lo que
+    // falta -- `dotenv` no pisa una variable ya definida, aunque sea `"0"`.
+    // Sin esto, un `HARNESS_HEADLESS=1` en el `.env` del dev cuelga las seis
+    // importaciones de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
@@ -193,6 +303,9 @@ describe("main.ts -- wiring de createConsultas local al bloque de A2A entrante (
       original[key] = process.env[key];
       delete process.env[key];
     }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
@@ -273,6 +386,9 @@ describe("main.ts -- hallazgos de Reviewer sobre createConsultas (consultas-nego
       original[key] = process.env[key];
       delete process.env[key];
     }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
@@ -544,6 +660,9 @@ describe("main.ts -- abre la base por resolveDbPath (modo-headless-cierre-limpio
     }
     dbPathPrevio = process.env.HARNESS_DB_PATH;
     delete process.env.HARNESS_DB_PATH;
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
