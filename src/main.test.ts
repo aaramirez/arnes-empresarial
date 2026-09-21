@@ -40,12 +40,20 @@ import { CONSULTAS_MCP_SERVER_NAME, CONSULTAS_TOOL_NAME } from "./core/agents/co
  * pueden sembrar filas ANTES de invocar la tool, sin mockear `repository.ts`.
  */
 let dbCapturadoParaTest: Database.Database | undefined;
+/**
+ * Argumento REAL con el que `main.ts` invocó `openDatabase` (`resolveDbPath()`
+ * resuelto por `main.ts`, no un valor fijo) — capturado sin alterar el
+ * comportamiento de arriba: la base que usan los tests sigue siendo
+ * `:memory:` siempre (`modo-headless-cierre-limpio`, tarea 1.4, E1).
+ */
+let dbPathCapturado: string | undefined;
 
 vi.mock("./adapters/memory/db.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/memory/db.js")>();
   return {
     ...actual,
-    openDatabase: () => {
+    openDatabase: (filePath: string) => {
+      dbPathCapturado = filePath;
       dbCapturadoParaTest = actual.openDatabase(":memory:");
       return dbCapturadoParaTest;
     },
@@ -519,5 +527,54 @@ describe("main.ts -- segunda instancia del adaptador A2A para el canal conversac
     expect(source).toContain(
       "...(clienteA2A !== undefined ? { clienteA2A } : {}), // exactOptionalPropertyTypes\n});",
     );
+  });
+});
+
+describe("main.ts -- abre la base por resolveDbPath (modo-headless-cierre-limpio, tarea 1.4, E1)", () => {
+  const original: Record<string, string | undefined> = {};
+  let dbPathPrevio: string | undefined;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    dbPathCapturado = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    dbPathPrevio = process.env.HARNESS_DB_PATH;
+    delete process.env.HARNESS_DB_PATH;
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    if (dbPathPrevio === undefined) {
+      delete process.env.HARNESS_DB_PATH;
+    } else {
+      process.env.HARNESS_DB_PATH = dbPathPrevio;
+    }
+  });
+
+  it("sin HARNESS_DB_PATH, openDatabase recibe el default data/harness.db", async () => {
+    await import("./main.js");
+    expect(dbPathCapturado).toBe("data/harness.db");
+  });
+
+  it("con HARNESS_DB_PATH definida, openDatabase recibe ese valor", async () => {
+    process.env.HARNESS_DB_PATH = "/var/lib/arnes/harness.db";
+    await import("./main.js");
+    expect(dbPathCapturado).toBe("/var/lib/arnes/harness.db");
+  });
+
+  it.each(["", "   "])("HARNESS_DB_PATH=%j equivale a ausente ⇒ default", async (valor) => {
+    process.env.HARNESS_DB_PATH = valor;
+    await import("./main.js");
+    expect(dbPathCapturado).toBe("data/harness.db");
   });
 });
