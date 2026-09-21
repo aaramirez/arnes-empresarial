@@ -9,6 +9,13 @@ import "../../core/config/env.js";
 export interface WebConfig {
   /** `0` = adaptador DESHABILITADO: no se abre ningún puerto (spec `venta-confirmacion`, req. 1). */
   readonly port: number;
+  /**
+   * Interfaz de escucha (`WEB_HOST`, `modo-headless-cierre-limpio` RD-123).
+   * AUSENTE por CLAVE (nunca `host: undefined`, `exactOptionalPropertyTypes`)
+   * = `startServer` NO pasa `host` a `listen`: mismo bind de siempre (`::`,
+   * IPv4 e IPv6). `"0.0.0.0"` no es equivalente (dejaria de escuchar en IPv6).
+   */
+  readonly host?: string;
   /** Base pública para armar el link. Sin `/` final (se normaliza). */
   readonly publicUrl: string;
   /** `""` = `POST /ventas` responde 401 SIEMPRE. Nunca "abierta por defecto" (propuesta, *Approach*). */
@@ -110,6 +117,7 @@ function normalizeUrl(url: string): string {
  * | Env var | Campo | Default |
  * |---|---|---|
  * | `WEB_PORT` | `port` | `0` (deshabilitado) |
+ * | `WEB_HOST` | `host` | clave AUSENTE (`listen` sin `host`); blanco = ausente |
  * | `WEB_PUBLIC_URL` | `publicUrl` | `DEFAULT_WEB_PUBLIC_URL`, sin `/` final |
  * | `VENTAS_API_TOKEN` | `ventasApiToken` | `""` (ruta `/ventas` siempre 401) |
  * | `WEB_MAX_BODY_BYTES` | `maxBodyBytes` | `DEFAULT_WEB_MAX_BODY_BYTES` |
@@ -120,8 +128,12 @@ function normalizeUrl(url: string): string {
  * 3, mismo criterio opt-in con otra llave), así que un default lo rompería.
  */
 export function resolveWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
+  // `.trim()`: un `WEB_HOST=` vacio en un `.env` no puede significar "escucha
+  // en la cadena vacia". Blanco = ausente; la clave se OMITE (no `undefined`).
+  const host = env.WEB_HOST?.trim();
   return {
     port: resolvePositiveNumber(env.WEB_PORT, 0),
+    ...(host !== undefined && host !== "" ? { host } : {}), // exactOptionalPropertyTypes
     publicUrl: normalizeUrl(env.WEB_PUBLIC_URL ?? DEFAULT_WEB_PUBLIC_URL),
     ventasApiToken: env.VENTAS_API_TOKEN ?? "",
     maxBodyBytes: resolvePositiveNumber(env.WEB_MAX_BODY_BYTES, DEFAULT_WEB_MAX_BODY_BYTES),

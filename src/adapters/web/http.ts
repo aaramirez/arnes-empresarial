@@ -40,7 +40,18 @@ export interface WebResponse {
 
 export interface WebHttpServerLike {
   listen(port: number, callback: () => void): unknown;
+  /** `modo-headless-cierre-limpio` (E2, RD-123): solo con `WEB_HOST` no blanco. */
+  listen(port: number, host: string, callback: () => void): unknown;
   close(callback: (error?: Error) => void): unknown;
+  /**
+   * Fuerza el cierre de conexiones keep-alive OCIOSAS (Node 18.2+), sin
+   * afectar las que tienen una request en curso (`modo-headless-cierre-limpio`,
+   * design §0.2; molde de `a2a/server.ts`). Sin esto `close()` puede colgar
+   * detras de un cliente keep-alive que nunca cierra su conexion. Opcional en
+   * el tipo (como `closeAllConnections?` en webhooks): un doble sin el metodo
+   * sigue siendo valido; el `http.Server` real de Node 18.2+ lo trae.
+   */
+  closeIdleConnections?(): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
 }
 
