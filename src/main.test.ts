@@ -1575,3 +1575,167 @@ describe("main.ts -- cierre por señal y fallas no capturadas (modo-headless-cie
     await promesaImport.catch(() => {});
   });
 });
+
+/**
+ * ROJO (de aserción) — `modo-headless-cierre-limpio`, tarea 3.5: R1, EL
+ * CRITERIO QUE DEFINE EL HIJO (H9). Todavía NO hay rama headless en
+ * `main.ts`: estos tests deben FALLAR a propósito.
+ *
+ * ★ Desvío declarado del texto de la tarea, necesario y documentado en el
+ * commit: el turno irreversible NO se dispara a través de la pila HTTP real
+ * (`POST /operaciones` -> `consultar_kpi` -> `ClienteA2APort.delegar`),
+ * porque `startWebServer` está mockeado por MÓDULO en este archivo (tareas
+ * 3.4/3.5, para controlar `close()` sin abrir un socket) -- no existe un
+ * servidor real al que pegarle un request. En su lugar, el propio `close()`
+ * del adaptador WEB hace de estand-in del "socket retenido por un turno en
+ * vuelo" (exactamente la semántica que `design.md` §0.1 describe: el
+ * `callback` de `server.close()` no llega hasta que el socket del turno
+ * cierra) y, al resolver, ESCRIBE la fila de auditoría con
+ * `insertAccionEmpleado` sobre la base `:memory:` REAL -- la misma función
+ * que usa el composition root real y que el hallazgo 1/3 de
+ * `consultas-negocio-a2a-entrante` ya ejercita en este mismo archivo. La
+ * garantía verificada es la que este change agrega (el proceso no mata la
+ * base antes de que la escritura en vuelo termine); la garantía de que
+ * `consultar_kpi` específicamente llega a esa escritura ya la cubre
+ * `src/test/integration/consulta-kpi-a2a-chat.integration.test.ts`, de otro
+ * change, y no se re-deriva acá.
+ */
+describe("main.ts -- R1: turno irreversible en vuelo al recibir SIGTERM (modo-headless-cierre-limpio, tarea 3.5)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    vi.useRealTimers();
+  });
+
+  function contarFilasRegistro(db: Database.Database): number {
+    const fila = db.prepare("SELECT COUNT(*) AS total FROM registro_acciones_empleado").get() as {
+      total: number;
+    };
+    return fila.total;
+  }
+
+  function escribirFilaDelTurno(db: Database.Database): void {
+    insertAccionEmpleado(db, {
+      id: "accion-turno-irreversible",
+      empleadoId: "empleado-consulta-kpi",
+      comando: "/consultar-kpi",
+      resultado: "KPI: 42",
+      ocurridoAt: new Date().toISOString(),
+    });
+  }
+
+  it("(H9, escenario 1) el turno de 50 s deja su fila antes de db.close, con el default de 70000", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const db = obtenerDbOLanzar();
+    const conteoPrevio = contarFilasRegistro(db);
+
+    // `db.close()` se cierra de verdad (mejor-sqlite3 lanza al consultar una
+    // conexión cerrada): el conteo hay que capturarlo EN el instante de la
+    // llamada real a `close()`, no después de awaitear el import completo.
+    let conteoAlCerrar: number | undefined;
+    const closeOriginal = db.close.bind(db);
+    const dbCloseSpy = vi.spyOn(db, "close").mockImplementation(() => {
+      conteoAlCerrar = contarFilasRegistro(db);
+      return closeOriginal();
+    });
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    // El turno "completa" a t=50 000: el socket que retenía el turno se
+    // libera y, en ese mismo instante, la fila de auditoría queda escrita
+    // ANTES de que `web.close()` resuelva (mismo orden que un handler HTTP
+    // real: primero el `INSERT`, después el `return`/cierre de la conexión).
+    await vi.advanceTimersByTimeAsync(50_000);
+    escribirFilaDelTurno(db);
+    web.resolver();
+
+    vi.useRealTimers();
+    await promesaImport.catch(() => {});
+
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(conteoAlCerrar).toBe(conteoPrevio + 1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido")).toHaveLength(0);
+  });
+
+  it("(H9, escenario 2) el turno que nunca termina agota el presupuesto y lo registra: SALIR 1, db.close 0", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const db = obtenerDbOLanzar();
+    const dbCloseSpy = vi.spyOn(db, "close");
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(70_000);
+
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+
+    vi.useRealTimers();
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H9, escenario 3) DEFAULT_SHUTDOWN_TIMEOUT_MS es estrictamente mayor que 55500 (peor caso de consultar_kpi)", async () => {
+    const { DEFAULT_SHUTDOWN_TIMEOUT_MS } = await import("./proceso-cierre.js");
+    expect(DEFAULT_SHUTDOWN_TIMEOUT_MS).toBeGreaterThan(55_500);
+  });
+
+  it("(H9, escenario 4) con el presupuesto bajado a 15000, el mismo turno de 50 s pierde la fila y queda registrado", async () => {
+    process.env.HARNESS_SHUTDOWN_TIMEOUT_MS = "15000";
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const db = obtenerDbOLanzar();
+    const conteoPrevio = contarFilasRegistro(db);
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 15_000 });
+    // El turno de 50 s no llegó a completar dentro de los 15 s: la fila NO existe.
+    expect(contarFilasRegistro(db)).toBe(conteoPrevio);
+
+    vi.useRealTimers();
+    // El turno "completa" tarde (a los 50 s reales del negocio, ya sin
+    // efecto sobre el proceso, que ya salió) -- se resuelve solo para no
+    // dejar la promesa de `web.close()` colgada entre tests.
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+});
