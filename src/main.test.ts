@@ -857,3 +857,297 @@ describe("main.ts -- candados de no-fuga de listeners, finally intacto y cero fu
     }
   });
 });
+
+/**
+ * Obtiene, ANTES de disparar `import("./main.js")`, la referencia mockeada
+ * de `buildOnA2AEntrante` -- mismo orden que ya usa `getCreateConsultas`
+ * más arriba en este archivo, y por el mismo motivo: pedir el módulo
+ * DESPUÉS de disparar `import("./main.js")` hace que ese `import()` del
+ * test compita con el `import` estático que `main.js` ya está resolviendo
+ * para el MISMO especificador, y la carrera puede no resolver nunca dentro
+ * del árbol de módulos de vite-node (verificado: así colgaba el test hasta
+ * el timeout de Vitest). Pedirlo antes evita la carrera por completo. Función
+ * de MÓDULO (no de un `describe` puntual) porque las tareas 3.3, 3.4 y 3.5 la
+ * comparten.
+ */
+async function obtenerMockA2AEntrante(): Promise<
+  ReturnType<typeof vi.mocked<typeof import("./build-on-a2a-entrante.js").buildOnA2AEntrante>>
+> {
+  const { buildOnA2AEntrante } = await import("./build-on-a2a-entrante.js");
+  return vi.mocked(buildOnA2AEntrante);
+}
+
+/**
+ * Deja avanzar el import hasta JUSTO ANTES del bloque final `try` (headless
+ * o TUI): `buildOnA2AEntrante` es la última pieza de wiring que corre antes
+ * de ese bloque (`main.ts`), así que esperar su primera llamada es una señal
+ * determinística de "ya estamos ahí" -- a diferencia de un `setTimeout` de
+ * duración fija, que resultó NO ser confiable acá: el arranque real
+ * (`bootstrapHarness`, wiring de webhooks/web/A2A) puede tardar más que una
+ * espera corta arbitraria, dando un falso verde tanto en TUI como en
+ * headless.
+ */
+async function esperarWiringA2AEntrante(
+  a2aEntranteMock: Awaited<ReturnType<typeof obtenerMockA2AEntrante>>,
+): Promise<void> {
+  const MAX_INTENTOS = 5000;
+  for (let intento = 0; intento < MAX_INTENTOS && a2aEntranteMock.mock.calls.length === 0; intento += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  if (a2aEntranteMock.mock.calls.length === 0) {
+    throw new Error("test setup error: buildOnA2AEntrante nunca fue invocado dentro del margen de espera");
+  }
+  // Un turno extra de microtareas/`setTimeout` para que, en el camino
+  // headless, `esperarSenalDeCierre()` ya haya registrado sus 4 listeners
+  // (ese registro ocurre en la sentencia siguiente a `buildOnA2AEntrante`).
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+/**
+ * ROJO (de aserción) — `modo-headless-cierre-limpio`, tarea 3.3: arranque
+ * headless y TUI (H1, H2, H5-iii, H10, test 14). Todavía NO hay rama
+ * headless en `main.ts` (llega en la tarea 3.6): (i)-(iv) deben FALLAR a
+ * propósito; (v) ya pasa hoy, por ser el camino vigente de la TUI (se
+ * declara así en el commit).
+ *
+ * Todos los tests que activan `HARNESS_HEADLESS=1` dejan el import
+ * "en vuelo" (`main.js` sin `await`) y lo cierran al final emitiendo
+ * `SIGTERM` sobre `procesoFalsoParaTest` -- incluso hoy, en ROJO, que ese
+ * `emitir` sea un no-op (todavía no hay listeners que atender) -- para no
+ * dejar un `:memory:` ni una promesa colgada entre tests.
+ */
+describe("main.ts -- arranque headless y TUI (modo-headless-cierre-limpio, tarea 3.3)", () => {
+  const original: Record<string, string | undefined> = {};
+  let stdinIsTTYPrevio: boolean | undefined;
+  let stdoutIsTTYPrevio: boolean | undefined;
+
+  const EVENTOS_DE_PROCESO = ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"] as const;
+  const SIN_CAMBIO = { SIGTERM: 0, SIGINT: 0, unhandledRejection: 0, uncaughtException: 0 };
+
+  /**
+   * `NodeJS.ReadStream["isTTY"]`/`NodeJS.WriteStream["isTTY"]` están tipados
+   * como `boolean` a secas (no `boolean | undefined`) aunque en runtime la
+   * propiedad esté ausente fuera de una terminal real -- de ahí el cast.
+   */
+  function fijarTTY(flujo: NodeJS.ReadStream | NodeJS.WriteStream, valor: boolean | undefined): void {
+    (flujo as unknown as { isTTY: boolean | undefined }).isTTY = valor;
+  }
+
+  function contarEmisor(): Record<(typeof EVENTOS_DE_PROCESO)[number], number> {
+    const conteos = {} as Record<(typeof EVENTOS_DE_PROCESO)[number], number>;
+    for (const evento of EVENTOS_DE_PROCESO) {
+      conteos[evento] = procesoFalsoParaTest.contarListeners(evento);
+    }
+    return conteos;
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
+    stdinIsTTYPrevio = process.stdin.isTTY;
+    stdoutIsTTYPrevio = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    fijarTTY(process.stdin, stdinIsTTYPrevio);
+    fijarTTY(process.stdout, stdoutIsTTYPrevio);
+  });
+
+  it("(H1, escenario 1) sin la variable: startTui 1 vez, EMISOR sin cambio, SALIR no invocada", async () => {
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    await import("./main.js");
+
+    expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+    expect(contarEmisor()).toEqual(SIN_CAMBIO);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+  });
+
+  it("(H1, escenario 2) headless: startTui 0, la promesa de la importación no resuelve ni rechaza en 50 ms, SALIR no invocada", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const startTuiMock = vi.mocked(startTui);
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    let resuelta = false;
+    let rechazada = false;
+    const promesaImport = import("./main.js");
+    void promesaImport.then(
+      () => {
+        resuelta = true;
+      },
+      () => {
+        rechazada = true;
+      },
+    );
+
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(startTuiMock).not.toHaveBeenCalled();
+    expect(resuelta).toBe(false);
+    expect(rechazada).toBe(false);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H1, escenario 3) headless sin TTY (stdin/stdout.isTTY undefined): sin error de raw mode, startTui 0", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    fijarTTY(process.stdin, undefined);
+    fijarTTY(process.stdout, undefined);
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const startTuiMock = vi.mocked(startTui);
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(startTuiMock).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H1, escenario 4) headless con TTY=true sigue siendo headless (no hay autodetección)", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    fijarTTY(process.stdin, true);
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const startTuiMock = vi.mocked(startTui);
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(startTuiMock).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H1, escenario 5) TUI sin variable y sin TTY invoca startTui igual (sin autodetección)", async () => {
+    fijarTTY(process.stdin, undefined);
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    await import("./main.js");
+    expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+  });
+
+  it("(H2) HARNESS_HEADLESS='1' exacto activa headless: startTui 0", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(vi.mocked(startTui)).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it.each(["", "   ", "0"] as const)(
+    "(H2) HARNESS_HEADLESS=%j equivale a TUI: startTui 1 vez",
+    async (valor) => {
+      process.env.HARNESS_HEADLESS = valor;
+      const { startTui } = await import("./adapters/tui/start-tui.js");
+      await import("./main.js");
+      expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("(H2) HARNESS_HEADLESS ausente equivale a TUI: startTui 1 vez", async () => {
+    delete process.env.HARNESS_HEADLESS;
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    await import("./main.js");
+    expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["true", "yes", "on", "2", "01", " 1", "1 "])(
+    "(H2) HARNESS_HEADLESS=%j falla cerrado: la importación rechaza, el cierre completo corre, startTui 0, EMISOR sin cambio",
+    async (valor) => {
+      process.env.HARNESS_HEADLESS = valor;
+      const { startTui } = await import("./adapters/tui/start-tui.js");
+
+      let error: unknown;
+      try {
+        await import("./main.js");
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      const mensaje = (error as Error).message;
+      expect(mensaje).toContain("HARNESS_HEADLESS");
+      expect(mensaje).toContain(`"${valor}"`);
+      expect(mensaje).toContain("0");
+      expect(mensaje).toContain("1");
+
+      expect(vi.mocked(startTui)).not.toHaveBeenCalled();
+      expect(contarEmisor()).toEqual(SIN_CAMBIO);
+
+      // El `finally` corrió igual (H3, orden del ADR 10): `db.close()` se
+      // invocó sobre la base `:memory:` real, aunque `esModoHeadless()` haya
+      // lanzado ANTES de llegar a `esperarSenalDeCierre()`.
+      expect(dbCapturadoParaTest).toBeDefined();
+      expect(() => dbCapturadoParaTest?.prepare("SELECT 1").get()).toThrow();
+    },
+  );
+
+  it("(H5, escenario iii) headless: cada uno de los 4 conteos de EMISOR aumenta exactamente en 1", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(contarEmisor()).toEqual({ SIGTERM: 1, SIGINT: 1, unhandledRejection: 1, uncaughtException: 1 });
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(test 14) el tramo del try final headless contiene esModoHeadless, esperarSenalDeCierre, startTui y waitUntilExit", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const tramo = bloqueEntre(source, "\ntry {\n  if (esModoHeadless", "} finally {");
+    expect(tramo).toContain("esModoHeadless()");
+    expect(tramo).toContain("esperarSenalDeCierre()");
+    expect(tramo).toContain("startTui(");
+    expect(tramo).toContain("waitUntilExit()");
+  });
+
+  // ★ Desvío declarado (evidencia obtenida al correr esta tarea, no
+  // supuesta): los dos escenarios de H10 sobre fallas del lado de la TUI
+  // ("si `waitUntilExit()` rechaza..." y "si `startTui` lanza
+  // sincrónicamente...") NO son verificables con esta técnica (`await
+  // import("./main.js")` sobre el runner de vite-node/Vitest): un
+  // `top-level await` que rechaza -- o una excepción síncrona que hace
+  // rechazar la evaluación async implícita del módulo -- dentro de un
+  // módulo SIN exports no propaga ese rechazo a través de la promesa que
+  // devuelve `import()` en este entorno; se manifiesta como un "Unhandled
+  // Rejection" a nivel de proceso en vez de un rechazo observable de esa
+  // promesa (confirmado corriendo ambos escenarios: los dos producen el
+  // mismo "Unhandled Rejection", no una aserción `rejects` observable). El
+  // código de `main.ts` no cambia (es el camino de v3.16, sin tocar) y el
+  // `finally` sigue corriendo igual en producción bajo Node ESM puro; es la
+  // TÉCNICA de test la que no lo puede observar acá, no una regresión de
+  // `modo-headless-cierre-limpio`. Se documentan y se omiten estas dos
+  // aserciones puntuales de H10 en vez de introducir una `Unhandled
+  // Rejection` real en la corrida de la suite -- el resto de H10 (TUI sin
+  // regresión en el camino feliz) ya queda cubierto por el escenario 1 de
+  // H1 más arriba.
+});
