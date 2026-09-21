@@ -37,6 +37,7 @@ import {
   RUTA_VENTAS,
   SOPORTE_TIMEOUT_MS,
   WEB_CLOSE_TIMEOUT_MS,
+  resolveWebConfig,
   WEB_LOG_CORRELATION_ID,
   type WebConfig,
 } from "./config.js";
@@ -306,19 +307,28 @@ function authHeader(token = CONFIG.ventasApiToken): Record<string, string> {
  * duplicar el doble.
  */
 function makeFakeHttpServer(): {
-  server: { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> };
+  server: {
+    listen: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    closeIdleConnections: ReturnType<typeof vi.fn>;
+  };
   createServer: CreateWebServerFn;
   getListener: () => (req: WebRequest, res: WebResponse) => void;
 } {
   let capturedListener: ((req: WebRequest, res: WebResponse) => void) | undefined;
   const server = {
-    listen: vi.fn((_port: number, callback: () => void) => {
-      callback();
+    // Variádico (modo-headless-cierre-limpio, tarea 4.1): `listen(port, cb)`
+    // sin host o `listen(port, host, cb)` con host -- el callback es SIEMPRE
+    // el último argumento; los tests de aridad leen `listen.mock.calls`.
+    listen: vi.fn((...args: unknown[]) => {
+      (args[args.length - 1] as () => void)();
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
       callback();
     }),
     on: vi.fn(),
+    closeIdleConnections: vi.fn(),
   };
   const createServer = vi.fn((listener: (req: WebRequest, res: WebResponse) => void) => {
     capturedListener = listener;
@@ -1267,6 +1277,158 @@ describe("startServer — close() drains in-flight /soporte turns", () => {
       "web-cierre-con-turnos-en-vuelo",
       expect.anything(),
     );
+  });
+});
+
+/**
+ * `modo-headless-cierre-limpio`, tarea 4.1 (E2, R21, design §0.6 y §7.3): el
+ * invariante de "sin `*_HOST` no se cambia el bind actual" es de ARIDAD de
+ * `listen`, no de semántica de red -- con el `createServer` inyectado ningún
+ * test abre un socket. `listen(port, cb)` (2 args) es EXACTAMENTE lo de hoy;
+ * `listen(port, host, cb)` (3 args) solo con `WEB_HOST` no blanco. El default
+ * NUNCA es `"0.0.0.0"`/`"::"`/`"localhost"`/`""` (dejaría de escuchar en IPv6).
+ */
+describe("startServer — WEB_HOST y la aridad de listen (modo-headless-cierre-limpio, tarea 4.1, E2, R21)", () => {
+  const LITERALES_PROHIBIDOS_POR_DEFECTO = ["0.0.0.0", "::", "localhost", ""];
+
+  it("sin WEB_HOST, listen recibe EXACTAMENTE dos argumentos: el puerto (numero) y el callback (funcion)", async () => {
+    const deps = makeDeps({ config: resolveWebConfig({ WEB_PORT: "8080" }) });
+    const { createServer, server } = makeFakeHttpServer();
+
+    await startServer(deps, createServer);
+
+    expect(server.listen).toHaveBeenCalledTimes(1);
+    const args = server.listen.mock.calls[0] as unknown[];
+    expect(args).toHaveLength(2);
+    expect(args[0]).toBe(8080);
+    expect(args[1]).toBeTypeOf("function");
+  });
+
+  it("sin WEB_HOST, ningun argumento de listen es un string ni uno de los literales '0.0.0.0', '::', 'localhost' o ''", async () => {
+    const deps = makeDeps({ config: resolveWebConfig({ WEB_PORT: "8080" }) });
+    const { createServer, server } = makeFakeHttpServer();
+
+    await startServer(deps, createServer);
+
+    const args = server.listen.mock.calls[0] as unknown[];
+    expect(args.length).toBeGreaterThan(0);
+    for (const arg of args) {
+      expect(typeof arg).not.toBe("string");
+      expect(LITERALES_PROHIBIDOS_POR_DEFECTO).not.toContain(arg);
+    }
+  });
+
+  it.each(["127.0.0.1", "::1", "0.0.0.0"])(
+    "con WEB_HOST=%s, listen recibe TRES argumentos en el orden puerto, host identico al configurado, callback",
+    async (host) => {
+      const deps = makeDeps({ config: resolveWebConfig({ WEB_PORT: "8080", WEB_HOST: host }) });
+      const { createServer, server } = makeFakeHttpServer();
+
+      await startServer(deps, createServer);
+
+      const args = server.listen.mock.calls[0] as unknown[];
+      expect(args).toHaveLength(3);
+      expect(args[0]).toBe(8080);
+      expect(args[1]).toBe(host);
+      expect(args[2]).toBeTypeOf("function");
+    },
+  );
+
+  it.each([
+    ["empty string", ""],
+    ["blank (spaces only)", "   "],
+  ])("con WEB_HOST %s equivale a ausente: listen recibe DOS argumentos", async (_label, valor) => {
+    const deps = makeDeps({ config: resolveWebConfig({ WEB_PORT: "8080", WEB_HOST: valor }) });
+    const { createServer, server } = makeFakeHttpServer();
+
+    await startServer(deps, createServer);
+
+    const args = server.listen.mock.calls[0] as unknown[];
+    expect(args).toHaveLength(2);
+    expect(args[0]).toBe(8080);
+    expect(args[1]).toBeTypeOf("function");
+  });
+
+  it("con un host no enlazable (listen emite 'error'), startServer rechaza con ESE error -- camino vigente de web-arranque-fallido", async () => {
+    const error = new Error("EADDRNOTAVAIL");
+    let errorListener: ((error: Error) => void) | undefined;
+    const listen = vi.fn(() => {
+      errorListener?.(error);
+    });
+    const createServer: CreateWebServerFn = () => ({
+      listen,
+      close: vi.fn(),
+      on: vi.fn((event: string, listener: (error: Error) => void) => {
+        if (event === "error") {
+          errorListener = listener;
+        }
+      }),
+    });
+    const deps = makeDeps({ config: { ...CONFIG, host: "203.0.113.9" } });
+
+    await expect(startServer(deps, createServer)).rejects.toBe(error);
+
+    expect(listen).toHaveBeenCalledTimes(1);
+    expect(listen).toHaveBeenCalledWith(CONFIG.port, "203.0.113.9", expect.any(Function));
+  });
+});
+
+/**
+ * `modo-headless-cierre-limpio`, tarea 4.1 (design §0.2): con el presupuesto de
+ * cierre de 70 s, un solo cliente keep-alive OCIOSO contra `/chat` colgaria
+ * `server.close()` (Node no invoca su callback hasta que TODAS las conexiones
+ * terminan) y se comeria el presupuesto entero antes de llegar a la fila de
+ * auditoria. Molde LITERAL de `a2a/server.test.ts` ("close() invokes
+ * server.closeIdleConnections() ..."), con dos endurecimientos: el orden se
+ * verifica (ANTES de `server.close`) y se prueba que NO se usa
+ * `closeAllConnections()`, que destruiria tambien los sockets con una request
+ * en curso (la respuesta del turno irreversible que R1 quiere proteger).
+ */
+describe("startServer — close() corta las conexiones ociosas antes de esperar server.close() (modo-headless-cierre-limpio, tarea 4.1, design §0.2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("close() invoca server.closeIdleConnections() UNA vez, ANTES de server.close()", async () => {
+    const deps = makeDeps();
+    const { createServer, server } = makeFakeHttpServer();
+
+    const handle = await startServer(deps, createServer);
+    await handle.close();
+
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
+    expect(server.close).toHaveBeenCalledTimes(1);
+    const ordenIdle = server.closeIdleConnections.mock.invocationCallOrder[0] as number;
+    const ordenClose = server.close.mock.invocationCallOrder[0] as number;
+    expect(ordenIdle).toBeLessThan(ordenClose);
+  });
+
+  it("corta las ociosas SIN esperar el callback de server.close() (que un socket ocioso nunca dispara)", async () => {
+    const deps = makeDeps();
+    const { createServer, server } = makeFakeHttpServer();
+    server.close.mockImplementation(() => undefined);
+
+    const handle = await startServer(deps, createServer);
+    void handle.close();
+
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
+  });
+
+  it("NO usa closeAllConnections(): mataria la respuesta de un turno con request en curso", async () => {
+    const deps = makeDeps();
+    const { createServer, server } = makeFakeHttpServer();
+    const closeAllConnections = vi.fn();
+    Object.assign(server, { closeAllConnections });
+
+    const handle = await startServer(deps, createServer);
+    await handle.close();
+
+    expect(closeAllConnections).not.toHaveBeenCalled();
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
   });
 });
 
