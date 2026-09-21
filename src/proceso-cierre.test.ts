@@ -269,3 +269,270 @@ describe("manejarErrorNoCapturado (modo-headless-cierre-limpio, tarea 2.4, ADR 2
     expect(salir).toHaveBeenCalledWith(1);
   });
 });
+
+/**
+ * Test-first (RED) de `esperarSenalDeCierre` + `finalizarCierreHeadless`
+ * (tarea 2.6, ADR 248/249, H3-H8). `ProcesoLike` falso que captura handlers
+ * (el `process` real NUNCA se toca) + reloj falso (`vi.useFakeTimers`).
+ * Cada test parte de un módulo FRESCO (`vi.resetModules`) porque el estado
+ * de fase/handlers/watchdog vive en el módulo.
+ */
+describe("esperarSenalDeCierre + finalizarCierreHeadless (modo-headless-cierre-limpio, tarea 2.6)", () => {
+  const EVENTOS_DE_PROCESO = [
+    "SIGTERM",
+    "SIGINT",
+    "unhandledRejection",
+    "uncaughtException",
+  ] as const;
+
+  function crearProcesoFalso(): {
+    readonly proceso: import("./proceso-cierre.js").ProcesoLike;
+    readonly on: ReturnType<typeof vi.fn>;
+    readonly off: ReturnType<typeof vi.fn>;
+    readonly emitir: (evento: (typeof EVENTOS_DE_PROCESO)[number], arg?: unknown) => void;
+  } {
+    const handlers = new Map<string, Set<(arg?: unknown) => void>>();
+    const on = vi.fn((evento: string, handler: (arg?: unknown) => void) => {
+      const conjunto = handlers.get(evento) ?? new Set();
+      conjunto.add(handler);
+      handlers.set(evento, conjunto);
+      return undefined;
+    });
+    const off = vi.fn((evento: string, handler: (arg?: unknown) => void) => {
+      handlers.get(evento)?.delete(handler);
+      return undefined;
+    });
+    const proceso = { on, off } as unknown as import("./proceso-cierre.js").ProcesoLike;
+    const emitir = (evento: (typeof EVENTOS_DE_PROCESO)[number], arg?: unknown): void => {
+      for (const handler of [...(handlers.get(evento) ?? [])]) {
+        handler(arg);
+      }
+    };
+    return { proceso, on, off, emitir };
+  }
+
+  function crearArmarDesarmarReales(): {
+    readonly armarTimer: ReturnType<typeof vi.fn<(fn: () => void, ms: number) => unknown>>;
+    readonly desarmarTimer: ReturnType<typeof vi.fn<(handle: unknown) => void>>;
+  } {
+    const armarTimer = vi.fn<(fn: () => void, ms: number) => unknown>((fn, ms) =>
+      setTimeout(fn, ms),
+    );
+    const desarmarTimer = vi.fn<(handle: unknown) => void>((handle) => {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    });
+    return { armarTimer, desarmarTimer };
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("importar el módulo no registra listeners; esperarSenalDeCierre registra los 4 (R18)", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, on } = crearProcesoFalso();
+    expect(on).toHaveBeenCalledTimes(0);
+
+    const { logEvent } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir: vi.fn() });
+
+    expect(on).toHaveBeenCalledTimes(4);
+    const eventosRegistrados = on.mock.calls.map((llamada) => llamada[0]);
+    expect(new Set(eventosRegistrados)).toEqual(new Set(EVENTOS_DE_PROCESO));
+  });
+
+  it("SIGTERM resuelve la promesa con la señal, loguea cierre-senal-recibida, nunca rechaza", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+
+    const promesa = mod.esperarSenalDeCierre({
+      proceso,
+      logEvent,
+      env: {},
+      armarTimer,
+      desarmarTimer,
+      salir: vi.fn(),
+    });
+    emitir("SIGTERM");
+
+    await expect(promesa).resolves.toBe("SIGTERM");
+    const recibidas = eventos.filter((e) => e.event === "cierre-senal-recibida");
+    expect(recibidas).toHaveLength(1);
+    expect(recibidas[0]?.fields).toMatchObject({ senal: "SIGTERM" });
+  });
+
+  it("tres SIGTERM seguidos: una sola resolución, salir nunca llamado, 2 cierre-senal-repetida; la 2.ª no acorta ni fuerza", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    const salir = vi.fn();
+
+    let resueltoCon: string | undefined;
+    void mod
+      .esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir })
+      .then((senal) => {
+        resueltoCon = senal;
+      });
+
+    emitir("SIGTERM");
+    await Promise.resolve();
+    emitir("SIGTERM");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(salir).not.toHaveBeenCalled();
+    emitir("SIGTERM");
+    await Promise.resolve();
+
+    expect(resueltoCon).toBe("SIGTERM");
+    expect(salir).not.toHaveBeenCalled();
+    const repetidas = eventos.filter((e) => e.event === "cierre-senal-repetida");
+    expect(repetidas).toHaveLength(2);
+  });
+
+  it("SIGINT seguido de SIGTERM produce un solo cierre", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+
+    let resueltoCon: string | undefined;
+    void mod
+      .esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir: vi.fn() })
+      .then((senal) => {
+        resueltoCon = senal;
+      });
+
+    emitir("SIGINT");
+    await Promise.resolve();
+    emitir("SIGTERM");
+    await Promise.resolve();
+
+    expect(resueltoCon).toBe("SIGINT");
+    const repetidas = eventos.filter((e) => e.event === "cierre-senal-repetida");
+    expect(repetidas).toHaveLength(1);
+  });
+
+  it("watchdog: no vence a 69999 ms; vence a 70000 ms con cierre-presupuesto-excedido{presupuestoMs, senal} y salir(1) una vez", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    const salir = vi.fn();
+
+    void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir });
+    emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(69_999);
+    expect(salir).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(salir).toHaveBeenCalledTimes(1);
+    expect(salir).toHaveBeenCalledWith(1);
+    const excedidos = eventos.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 70_000, senal: "SIGTERM" });
+
+    // El handle devuelto por armarTimer se pasó tal cual a desarmarTimer cuando el watchdog venció
+    // (el vencimiento mismo no desarma; se verifica en el test de finalizarCierreHeadless de abajo).
+    expect(armarTimer).toHaveBeenCalledTimes(1);
+  });
+
+  it("watchdog con HARNESS_SHUTDOWN_TIMEOUT_MS=20000: vence a los 20000 ms con presupuestoMs:20000", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    const salir = vi.fn();
+
+    void mod.esperarSenalDeCierre({
+      proceso,
+      logEvent,
+      env: { HARNESS_SHUTDOWN_TIMEOUT_MS: "20000" },
+      armarTimer,
+      desarmarTimer,
+      salir,
+    });
+    emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(salir).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(salir).toHaveBeenCalledWith(1);
+    const excedidos = eventos.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 20_000 });
+  });
+
+  it("finalizarCierreHeadless: desarma el watchdog (handle intacto), quita los 4 listeners, salir(0) una vez, cierre-completado, sin timers pendientes", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, off, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    const salir = vi.fn();
+    const deps = { proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir };
+
+    void mod.esperarSenalDeCierre(deps);
+    emitir("SIGTERM");
+    mod.finalizarCierreHeadless(deps);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(salir).toHaveBeenCalledTimes(1);
+    expect(salir).toHaveBeenCalledWith(0);
+    expect(off).toHaveBeenCalledTimes(4);
+    const completados = eventos.filter((e) => e.event === "cierre-completado");
+    expect(completados).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // El handle que armarTimer devolvió para el watchdog se pasó tal cual a desarmarTimer.
+    const handleArmado = armarTimer.mock.results[0]?.value;
+    expect(desarmarTimer).toHaveBeenCalledWith(handleArmado);
+  });
+
+  it("finalizarCierreHeadless SIN esperarSenalDeCierre previa (TUI): no-op; llamarla dos veces sigue siendo no-op", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, off } = crearProcesoFalso();
+    const { logEvent } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    const salir = vi.fn();
+    const deps = { proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir };
+
+    mod.finalizarCierreHeadless(deps);
+    expect(off).toHaveBeenCalledTimes(0);
+    expect(salir).toHaveBeenCalledTimes(0);
+
+    mod.finalizarCierreHeadless(deps);
+    expect(off).toHaveBeenCalledTimes(0);
+    expect(salir).toHaveBeenCalledTimes(0);
+  });
+
+  it("una falla no capturada en headless delega en manejarErrorNoCapturado (salir(1)), incluso durante un cierre en curso", async () => {
+    const mod = await import("./proceso-cierre.js");
+    const { proceso, emitir } = crearProcesoFalso();
+    const { logEvent, eventos } = crearLogEventEspia();
+    const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+    const salir = vi.fn();
+
+    void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir });
+    // Cierre en curso (tras la señal), y AHORA llega una falla no capturada.
+    emitir("SIGTERM");
+    emitir("unhandledRejection", new Error("boom"));
+
+    expect(salir).toHaveBeenCalledWith(1);
+    const fallas = eventos.filter((e) => e.event === "proceso-error-no-capturado");
+    expect(fallas).toHaveLength(1);
+    expect(fallas[0]?.fields).toMatchObject({ tipo: "unhandledRejection" });
+
+    emitir("uncaughtException", new Error("kaput"));
+    const fallas2 = eventos.filter((e) => e.event === "proceso-error-no-capturado");
+    expect(fallas2).toHaveLength(2);
+  });
+});
