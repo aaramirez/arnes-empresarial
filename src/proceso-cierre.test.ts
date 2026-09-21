@@ -133,3 +133,139 @@ describe("proceso-cierre (modo-headless-cierre-limpio, tarea 2.1)", () => {
     });
   });
 });
+
+/**
+ * Test-first (RED) de `manejarErrorNoCapturado` (tarea 2.4, ADR 250, H6).
+ * `salir: vi.fn()` — el `process.exit` real JAMÁS se toca. Sin cierre
+ * ordenado: la política no recibe ni invoca ningún `close`/`db`.
+ */
+describe("manejarErrorNoCapturado (modo-headless-cierre-limpio, tarea 2.4, ADR 250)", () => {
+  function crearDeps(): {
+    readonly logEvent: typeof logTurnEvent;
+    readonly eventos: { casoId: string; event: string; fields: Record<string, unknown> }[];
+    readonly escribirError: ReturnType<typeof vi.fn<(linea: string) => void>>;
+    readonly salir: ReturnType<typeof vi.fn<(codigo: number) => void>>;
+  } {
+    const { logEvent, eventos } = crearLogEventEspia();
+    return {
+      logEvent,
+      eventos,
+      escribirError: vi.fn<(linea: string) => void>(),
+      salir: vi.fn<(codigo: number) => void>(),
+    };
+  }
+
+  it.each([
+    ["unhandledRejection", "boom"],
+    ["uncaughtException", "kaput"],
+  ] as const)("con Error y tipo %s: loguea, escribe y sale con 1", async (tipo, mensaje) => {
+    const { manejarErrorNoCapturado, PROCESO_LOG_CORRELATION_ID } = await import(
+      "./proceso-cierre.js"
+    );
+    const { logEvent, eventos, escribirError, salir } = crearDeps();
+
+    manejarErrorNoCapturado(new Error(mensaje), tipo, { logEvent, escribirError, salir });
+
+    expect(eventos).toHaveLength(1);
+    expect(eventos[0]?.casoId).toBe(PROCESO_LOG_CORRELATION_ID);
+    expect(eventos[0]?.event).toBe("proceso-error-no-capturado");
+    expect(eventos[0]?.fields).toMatchObject({ tipo });
+    expect(eventos[0]?.fields.message).toContain(mensaje);
+    expect(escribirError).toHaveBeenCalledTimes(1);
+    expect(salir).toHaveBeenCalledTimes(1);
+    expect(salir).toHaveBeenCalledWith(1);
+  });
+
+  it.each([["cadena"], [undefined], [null], [{ a: 1 }]])(
+    "motivo no-Error (%j): no lanza, evento con representación textual, sale con 1",
+    async (motivo) => {
+      const { manejarErrorNoCapturado } = await import("./proceso-cierre.js");
+      const { logEvent, eventos, escribirError, salir } = crearDeps();
+
+      expect(() => {
+        manejarErrorNoCapturado(motivo, "unhandledRejection", { logEvent, escribirError, salir });
+      }).not.toThrow();
+
+      expect(eventos).toHaveLength(1);
+      expect(eventos[0]?.event).toBe("proceso-error-no-capturado");
+      expect(typeof eventos[0]?.fields.message).toBe("string");
+      expect(salir).toHaveBeenCalledWith(1);
+    },
+  );
+
+  it("si logEvent lanza, igual se invoca escribirError y salir(1)", async () => {
+    const { manejarErrorNoCapturado } = await import("./proceso-cierre.js");
+    const escribirError = vi.fn<(linea: string) => void>();
+    const salir = vi.fn<(codigo: number) => void>();
+    const logEvent: typeof logTurnEvent = () => {
+      throw new Error("logger roto");
+    };
+
+    expect(() => {
+      manejarErrorNoCapturado(new Error("boom"), "unhandledRejection", {
+        logEvent,
+        escribirError,
+        salir,
+      });
+    }).not.toThrow();
+
+    expect(escribirError).toHaveBeenCalledTimes(1);
+    expect(salir).toHaveBeenCalledWith(1);
+  });
+
+  it("si escribirError lanza, igual se invoca salir(1)", async () => {
+    const { manejarErrorNoCapturado } = await import("./proceso-cierre.js");
+    const { logEvent, salir } = crearDeps();
+    const escribirError = vi.fn<(linea: string) => void>(() => {
+      throw new Error("stderr roto");
+    });
+
+    expect(() => {
+      manejarErrorNoCapturado(new Error("boom"), "unhandledRejection", {
+        logEvent,
+        escribirError,
+        salir,
+      });
+    }).not.toThrow();
+
+    expect(salir).toHaveBeenCalledWith(1);
+  });
+
+  it("si logEvent Y escribirError lanzan, salir(1) igual corre y ninguna excepción escapa", async () => {
+    const { manejarErrorNoCapturado } = await import("./proceso-cierre.js");
+    const salir = vi.fn<(codigo: number) => void>();
+    const logEvent: typeof logTurnEvent = () => {
+      throw new Error("logger roto");
+    };
+    const escribirError = (): void => {
+      throw new Error("stderr roto");
+    };
+
+    expect(() => {
+      manejarErrorNoCapturado(new Error("boom"), "unhandledRejection", {
+        logEvent,
+        escribirError,
+        salir,
+      });
+    }).not.toThrow();
+
+    expect(salir).toHaveBeenCalledWith(1);
+  });
+
+  it("no recibe ni invoca ningún close/db: la política no toma dependencias de cierre ordenado", async () => {
+    const { manejarErrorNoCapturado } = await import("./proceso-cierre.js");
+    const { logEvent, escribirError, salir } = crearDeps();
+
+    // Firma de tres parámetros: error, tipo, deps — sin un cuarto parámetro
+    // de adaptadores/db. Si la firma cambiara para aceptar cierre ordenado,
+    // este test (por aridad) fallaría.
+    expect(manejarErrorNoCapturado.length).toBeLessThanOrEqual(3);
+
+    manejarErrorNoCapturado(new Error("boom"), "uncaughtException", {
+      logEvent,
+      escribirError,
+      salir,
+    });
+    expect(salir).toHaveBeenCalledWith(1);
+  });
+});
