@@ -53,8 +53,10 @@ function makeDeps(overrides: {
 /** Doble de `A2AHttpServerLike` cuyo `listen` llama al callback de éxito sincrónicamente. */
 function makeSuccessfulServer(): { createServer: CreateA2AServerFn; fakeServer: A2AHttpServerLike } {
   const fakeServer: A2AHttpServerLike = {
-    listen: vi.fn((_port: number, callback: () => void) => {
-      callback();
+    // Variádico (modo-headless-cierre-limpio, tarea 4.5): `A2AHttpServerLike.listen`
+    // gana la sobrecarga `(port, host, callback)`; el callback es el último argumento.
+    listen: vi.fn((...args: unknown[]) => {
+      (args[args.length - 1] as () => void)();
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
       callback();
@@ -77,7 +79,7 @@ function makeSuccessfulServer(): { createServer: CreateA2AServerFn; fakeServer: 
 function makeFailingServer(error: Error): { createServer: CreateA2AServerFn } {
   let errorListener: ((error: Error) => void) | undefined;
   const fakeServer: A2AHttpServerLike = {
-    listen: vi.fn((_port: number, _callback: () => void) => {
+    listen: vi.fn((..._args: unknown[]) => {
       errorListener?.(error);
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
