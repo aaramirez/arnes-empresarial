@@ -7,8 +7,9 @@
  * Solo I/O y wiring — mismo criterio que `src/main.ts`: `parsePeriodo`
  * (única parte pura de este archivo, testeada en
  * `reporte-mensual.test.ts`) resuelve `--periodo` de `process.argv` o cae al
- * mes corriente (UTC); `openDatabase("data/harness.db")` es la MISMA función
- * y el MISMO path que `main.ts`, corre las migraciones si faltan;
+ * mes corriente (UTC); la base se abre por `resolveDbPath` (`HARNESS_DB_PATH`/
+ * default `data/harness.db`, modo-headless-cierre-limpio RD-122), el MISMO
+ * resolver y el MISMO path que `main.ts`, corre las migraciones si faltan;
  * `listComisionesPorPeriodo` + `listVentasEnReembolsoPendiente` (tarea 25,
  * adapter de memoria, solo lectura) alimentan `agruparReporteMensual` +
  * `formatearReporteMensual` (tarea 9, ambas PURAS, `src/core/ventas/
@@ -45,6 +46,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { openDatabase } from "./adapters/memory/db.js";
+import { resolveDbPath } from "./adapters/memory/config.js";
 import { listComisionesPorPeriodo, listVentasEnReembolsoPendiente } from "./adapters/memory/repository.js";
 import { agruparReporteMensual, formatearReporteMensual } from "./core/ventas/reporte.js";
 
@@ -90,7 +92,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const db = openDatabase("data/harness.db");
+  const db = openDatabase(resolveDbPath());
   try {
     const comisiones = listComisionesPorPeriodo(db, parsed.periodo);
     const reembolsosPendientes = listVentasEnReembolsoPendiente(db);

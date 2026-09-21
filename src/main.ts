@@ -67,6 +67,7 @@ import { bootstrapHarness, HarnessBootstrapError } from "./core/startup/bootstra
 import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle-turn.js";
 import { logTurnEvent } from "./core/logging/turn-logger.js";
 import { openDatabase } from "./adapters/memory/db.js";
+import { resolveDbPath } from "./adapters/memory/config.js";
 import {
   buscarCredencialEmpleado,
   createCaso,
@@ -180,7 +181,7 @@ function startHarness(): StartupResult {
   // 2. Adaptador de Memoria (I3) real: `data/harness.db`, relativa a la
   //    raíz del proyecto (`process.cwd()`). `openDatabase` crea el
   //    directorio padre si hace falta y aplica las migraciones.
-  const db = openDatabase("data/harness.db");
+  const db = openDatabase(resolveDbPath());
 
   // 2b. Configuración de reglas de negocio de ventas (Hito 4, tarea 2,
   //     ADR 17b): TODOS los errores juntos, no uno por uno. Un valor
