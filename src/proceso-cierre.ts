@@ -148,3 +148,64 @@ export function resolvePresupuestoCierreMs(deps: Partial<ProcesoCierreDeps> = {}
   logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-presupuesto-invalido", { raw });
   return DEFAULT_SHUTDOWN_TIMEOUT_MS;
 }
+
+/** Representación textual de un motivo que puede no ser un `Error` (`unhandledRejection` admite cualquier valor rechazado). */
+function toErrorMessage(motivo: unknown): string {
+  if (motivo instanceof Error) {
+    return motivo.message;
+  }
+  if (typeof motivo === "string") {
+    return motivo;
+  }
+  if (motivo === undefined) {
+    return "undefined";
+  }
+  try {
+    // `JSON.stringify` devuelve `undefined` (no la cadena) para algunos
+    // valores (funciones, símbolos) — de ahí el `?? String(motivo)`.
+    return JSON.stringify(motivo) ?? String(motivo);
+  } catch {
+    return String(motivo);
+  }
+}
+
+/**
+ * ADR 250 pto 2-3 — `unhandledRejection` / `uncaughtException`: log + `exit(1)`,
+ * SIN intentar el cierre ordenado de H3 (ningún `close`/`db`, R27). El estado
+ * del proceso es indeterminado por definición; correr un drenaje de decenas
+ * de segundos sobre invariantes recién rotas puede escribir MÁS basura de la
+ * que salva. SQLite es *crash-safe*: lo ya commiteado sobrevive a un `exit(1)`.
+ *
+ * PURA y observable (R20): el test inyecta `salir` y nunca ejecuta el
+ * `process.exit` real. Cada efecto va en su propio `try/catch` y `deps.salir(1)`
+ * corre FUERA de ambos, garantizado aunque el logger (o `escribirError`) falle.
+ *
+ * ★ Nota honesta [D]: en Node 20 el default es `--unhandled-rejections=throw`,
+ * o sea una promesa rechazada sin manejar YA mata el proceso por sí sola.
+ * Registrar este handler no cambia si el proceso muere; cambia que quede la
+ * línea estructurada en `data/harness.log` antes de morir.
+ */
+export function manejarErrorNoCapturado(
+  error: unknown,
+  tipo: TipoErrorNoCapturado,
+  deps: Partial<ProcesoCierreDeps> = {},
+): void {
+  const logEvent = deps.logEvent ?? DEPS_POR_DEFECTO.logEvent;
+  const escribirError = deps.escribirError ?? DEPS_POR_DEFECTO.escribirError;
+  const salir = deps.salir ?? DEPS_POR_DEFECTO.salir;
+
+  try {
+    logEvent(PROCESO_LOG_CORRELATION_ID, "proceso-error-no-capturado", {
+      tipo,
+      message: toErrorMessage(error),
+    });
+  } catch {
+    // El log falló: igual se sale. Ver doc del módulo.
+  }
+  try {
+    escribirError(`Error no capturado (${tipo}): ${toErrorMessage(error)}`);
+  } catch {
+    // Idem.
+  }
+  salir(1);
+}
