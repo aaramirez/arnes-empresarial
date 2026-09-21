@@ -1151,3 +1151,427 @@ describe("main.ts -- arranque headless y TUI (modo-headless-cierre-limpio, tarea
   // regresión en el camino feliz) ya queda cubierto por el escenario 1 de
   // H1 más arriba.
 });
+
+/**
+ * ROJO (de aserción) — `modo-headless-cierre-limpio`, tarea 3.4: cierre por
+ * señal y fallas no capturadas (H3, H4, H6, H8). Todavía NO hay rama
+ * headless en `main.ts` (llega en la 3.6): el `await` de headless nunca
+ * espera la señal hoy, así que TODOS estos tests deben FALLAR a propósito
+ * (típicamente por timeout de la espera interna, ver aceptación de la
+ * tarea).
+ *
+ * Los tres servidores se mockean por MÓDULO (arriba, cerca del tope del
+ * archivo) para poder controlar `close()` sin abrir sockets reales.
+ * `logEvent` está espiado (también arriba) en vez de dejar correr
+ * `logTurnEvent` real, para afirmar sobre los eventos `cierre-*` sin tocar
+ * `data/harness.log`.
+ */
+/** Doble de adaptador con `close()` controlable a mano por el test (resolver/rechazar cuándo quiera). Función de MÓDULO: la comparten las tareas 3.4 y 3.5. */
+function crearCierreControlable(): {
+  readonly close: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  readonly resolver: () => void;
+  readonly rechazar: (error: Error) => void;
+} {
+  let resolver: () => void = () => {};
+  let rechazar: (error: Error) => void = () => {};
+  const promesa = new Promise<void>((res, rej) => {
+    resolver = res;
+    rechazar = rej;
+  });
+  const close = vi.fn<() => Promise<void>>(() => promesa);
+  return { close, resolver, rechazar };
+}
+
+/** Configura los `startXServer` mockeados por módulo para devolver, UNA vez, el doble indicado (o ninguno, si se omite -- adaptador deshabilitado). */
+async function configurarAdaptadores(config: {
+  readonly web?: { readonly close: () => Promise<void> };
+  readonly webhook?: { readonly close: () => Promise<void> };
+  readonly a2a?: { readonly close: () => Promise<void> };
+}): Promise<void> {
+  const { startWebServer } = await import("./adapters/web/index.js");
+  const { startWebhookServer } = await import("./adapters/webhooks/index.js");
+  const { startA2AServer } = await import("./adapters/a2a/server-index.js");
+  if (config.web !== undefined) {
+    vi.mocked(startWebServer).mockResolvedValueOnce(
+      config.web as unknown as Awaited<ReturnType<typeof startWebServer>>,
+    );
+  }
+  if (config.webhook !== undefined) {
+    vi.mocked(startWebhookServer).mockResolvedValueOnce(
+      config.webhook as unknown as Awaited<ReturnType<typeof startWebhookServer>>,
+    );
+  }
+  if (config.a2a !== undefined) {
+    vi.mocked(startA2AServer).mockResolvedValueOnce(
+      config.a2a as unknown as Awaited<ReturnType<typeof startA2AServer>>,
+    );
+  }
+}
+
+/** Sondeo genérico -- más robusto que un `setTimeout` de duración fija (ver la nota de `esperarWiringA2AEntrante` de arriba). */
+async function esperarHasta(condicion: () => boolean, maxIntentosMs = 2000): Promise<void> {
+  for (let intento = 0; intento < maxIntentosMs && !condicion(); intento += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  if (!condicion()) {
+    throw new Error("test setup error: la condicion nunca se cumplio dentro del margen de espera");
+  }
+}
+
+/**
+ * Dispara `import("./main.js")` y lo deja avanzar hasta justo antes del
+ * `try` final (mismo criterio que el describe de la tarea 3.3). Envuelta
+ * en un objeto -- no devuelta directa -- porque una función `async` que
+ * `return`a una `Promise` la aplana automáticamente (semántica de
+ * `thenable`): `Promise<Promise<T>>` colapsa en runtime a `Promise<T>`, así
+ * que `await dispararImport()` daría el VALOR resuelto, no la promesa en
+ * vuelo que estos tests necesitan seguir controlando.
+ */
+async function dispararImport(): Promise<{ readonly promesaImport: Promise<unknown> }> {
+  const a2aEntranteMock = await obtenerMockA2AEntrante();
+  const promesaImport = import("./main.js");
+  await esperarWiringA2AEntrante(a2aEntranteMock);
+  return { promesaImport };
+}
+
+function obtenerDbOLanzar(): Database.Database {
+  if (dbCapturadoParaTest === undefined) {
+    throw new Error("test setup error: openDatabase no fue capturado");
+  }
+  return dbCapturadoParaTest;
+}
+
+describe("main.ts -- cierre por señal y fallas no capturadas (modo-headless-cierre-limpio, tarea 3.4)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // Todo este describe corre en headless: es la única rama que registra
+    // señales (H5).
+    process.env.HARNESS_HEADLESS = "1";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    vi.useRealTimers();
+  });
+
+  it("(H3) SIGTERM: orden estricto y secuencial web -> webhook -> a2a -> db, SALIR 0 después de db.close", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    const a2a = crearCierreControlable();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    expect(webhook.close).not.toHaveBeenCalled();
+    expect(a2a.close).not.toHaveBeenCalled();
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    web.resolver();
+    await esperarHasta(() => webhook.close.mock.calls.length === 1);
+    expect(a2a.close).not.toHaveBeenCalled();
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    webhook.resolver();
+    await esperarHasta(() => a2a.close.mock.calls.length === 1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    a2a.resolver();
+    await promesaImport.catch(() => {});
+
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H3) SIGINT produce la misma secuencia que SIGTERM", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGINT");
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H3) adaptadores deshabilitados se saltean: solo web habilitado ⇒ solo web.close corre; ninguno ⇒ solo db.close", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H3) un close() que rechaza no impide llegar a db.close(): se reporta y sigue", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    web.rechazar(new Error("boom"));
+    await promesaImport.catch(() => {});
+
+    expect(
+      stderrSpy.mock.calls.some((llamada) => String(llamada[0]).includes("No se pudo cerrar el servidor web: boom")),
+    ).toBe(true);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("(H3) db.close() que lanza se reporta sin propagarse, SALIR 0 igual", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(obtenerDbOLanzar(), "close").mockImplementation(() => {
+      throw new Error("locked");
+    });
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(
+      stderrSpy.mock.calls.some((llamada) =>
+        String(llamada[0]).includes("No se pudo cerrar la base de datos: locked"),
+      ),
+    ).toBe(true);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("(H4) dos SIGTERM durante el drenaje: una sola secuencia de cierre, 1 evento cierre-senal-repetida, no acorta la espera", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await Promise.resolve();
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-senal-repetida")).toHaveLength(1);
+
+    web.resolver();
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H4) SIGINT seguido de SIGTERM produce un solo cierre", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGINT");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await Promise.resolve();
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-senal-repetida")).toHaveLength(1);
+
+    web.resolver();
+    await promesaImport.catch(() => {});
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H4) una señal tardía, con el cierre ya completado, no lanza ni repite el cierre", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+
+    expect(() => procesoFalsoParaTest.emitir("SIGTERM")).not.toThrow();
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unhandledRejection", "boom"],
+    ["uncaughtException", "kaput"],
+  ] as const)(
+    "(H6) %s no capturado: 1 evento proceso-error-no-capturado, SALIR 1, cero close()",
+    async (tipo, mensaje) => {
+      // Los tres se resuelven de una: el criterio POST-3.6 es que una falla
+      // no capturada ANTES de cualquier señal deja el `await
+      // esperarSenalDeCierre()` colgado para siempre (nunca resuelve, salvo
+      // por una señal real) -- así que este `import()` queda deliberadamente
+      // "en vuelo" sin awaitearse al final (`manejarErrorNoCapturado` es
+      // síncrona, las aserciones no lo necesitan). Resolverlos de entrada
+      // evita además que la corrida ROJA de hoy (TUI incondicional, sin
+      // gate) cuelgue esperando un `close()` que nunca resuelve.
+      const web = crearCierreControlable();
+      web.resolver();
+      const webhook = crearCierreControlable();
+      webhook.resolver();
+      const a2a = crearCierreControlable();
+      a2a.resolver();
+      await configurarAdaptadores({ web, webhook, a2a });
+
+      await dispararImport();
+      procesoFalsoParaTest.emitir(tipo, new Error(mensaje));
+
+      const fallas = eventosDeProcesoParaTest.filter((e) => e.event === "proceso-error-no-capturado");
+      expect(fallas).toHaveLength(1);
+      expect(fallas[0]?.fields).toMatchObject({ tipo });
+      expect(String(fallas[0]?.fields.message)).toContain(mensaje);
+      expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+      expect(web.close).not.toHaveBeenCalled();
+      expect(webhook.close).not.toHaveBeenCalled();
+      expect(a2a.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it("(H6) una falla no capturada durante el drenaje de una señal previa: SALIR 1 y db.close 0 llamadas", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    procesoFalsoParaTest.emitir("unhandledRejection", new Error("boom"));
+
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    // Deja que el `web.close()` pendiente resuelva para no dejar el import
+    // colgado entre tests (el watchdog no se armó -- nunca hubo señal de
+    // cierre real, solo la falla no capturada).
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H7) una falla simulada no toca el process.exit real ni deja exitCode asignado", async () => {
+    // Mismo motivo que el `it.each` de H6 de arriba: no se awaitea el
+    // import al final (queda "en vuelo" a propósito, ver esa nota).
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    await dispararImport();
+    procesoFalsoParaTest.emitir("unhandledRejection", new Error("boom"));
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+    exitSpy.mockRestore();
+  });
+
+  it("(H8) sin la variable, un cierre colgado vence a los 70000 ms: log + SALIR 1, db.close 0", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(69_999);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 70_000, senal: "SIGTERM" });
+
+    vi.useRealTimers();
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H8) con HARNESS_SHUTDOWN_TIMEOUT_MS=20000, vence a los 20000 ms con presupuestoMs:20000", async () => {
+    process.env.HARNESS_SHUTDOWN_TIMEOUT_MS = "20000";
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 20_000 });
+
+    vi.useRealTimers();
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+});
