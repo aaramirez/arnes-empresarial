@@ -36,8 +36,10 @@ function makeDeps(overrides: {
 /** Doble de `HttpServerLike` cuyo `listen` llama al callback de éxito sincrónicamente. */
 function makeSuccessfulServer(): { createServer: CreateServerFn; fakeServer: HttpServerLike } {
   const fakeServer: HttpServerLike = {
-    listen: vi.fn((_port: number, callback: () => void) => {
-      callback();
+    // Variádico (modo-headless-cierre-limpio, tarea 4.3): `HttpServerLike.listen`
+    // gana la sobrecarga `(port, host, callback)`; el callback es el último argumento.
+    listen: vi.fn((...args: unknown[]) => {
+      (args[args.length - 1] as () => void)();
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
       callback();
@@ -57,7 +59,7 @@ function makeSuccessfulServer(): { createServer: CreateServerFn; fakeServer: Htt
 function makeFailingServer(error: Error): { createServer: CreateServerFn } {
   let errorListener: ((error: Error) => void) | undefined;
   const fakeServer: HttpServerLike = {
-    listen: vi.fn((_port: number, _callback: () => void) => {
+    listen: vi.fn((..._args: unknown[]) => {
       errorListener?.(error);
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
