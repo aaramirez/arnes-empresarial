@@ -46,9 +46,9 @@ describe.skipIf(!GIT_DIFF_AVAILABLE)(
       expect(diffStat(["src/core/auth/sesion.ts"]).trim()).toBe("");
     });
 
-    it("src/adapters/webhooks/, src/adapters/board/ y src/core/config/env.ts NO fueron tocados (ADR 178: el diferido se respetó pese a agregar /estado-bot-prs)", () => {
+    it("src/adapters/board/ y src/core/config/env.ts NO fueron tocados (ADR 178: el diferido sigue vigente; su parte webhooks/ queda superada por WEBHOOK_HOST y closeIdleConnections de modo-headless-cierre-limpio, ADR 248-251)", () => {
       expect(
-        diffStat(["src/adapters/webhooks/", "src/adapters/board/", "src/core/config/env.ts"]).trim(),
+        diffStat(["src/adapters/board/", "src/core/config/env.ts"]).trim(),
       ).toBe("");
     });
 
