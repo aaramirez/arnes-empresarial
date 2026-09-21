@@ -12,6 +12,14 @@ export interface A2AServerConfig {
   /** `""` (o sólo espacios) = adaptador DESHABILITADO: no se abre ningún puerto (ADR 88 pto 4). */
   readonly token: string;
   readonly port: number;
+  /**
+   * Interfaz de escucha (`HARNESS_A2A_ENTRANTE_HOST`, `modo-headless-cierre-limpio`
+   * RD-123). AUSENTE por CLAVE (nunca `host: undefined`,
+   * `exactOptionalPropertyTypes`) = `startServer` NO pasa `host` a `listen`:
+   * mismo bind de siempre (`::`, IPv4 e IPv6). `"0.0.0.0"` no es equivalente
+   * (dejaria de escuchar en IPv6).
+   */
+  readonly host?: string;
   /** Base pública para `supportedInterfaces[0].url`. Sin `/` final (se normaliza). */
   readonly publicUrl: string;
   readonly maxBodyBytes: number;
@@ -26,7 +34,7 @@ export const DEFAULT_A2A_ENTRANTE_MAX_EN_VUELO = 4;
 /**
  * Techo del drenaje de turnos en vuelo al cerrar. Constante, NO env var — es
  * un presupuesto de UX, no un hecho del entorno. Molde de
- * `WEBHOOK_CLOSE_TIMEOUT_MS`/`WEB_CLOSE_TIMEOUT_MS` (tercera instancia de
+ * `SERVER_CLOSE_TIMEOUT_MS`/`WEB_CLOSE_TIMEOUT_MS` (tercera instancia de
  * `5_000`, design.md §6.1).
  */
 export const A2A_CLOSE_TIMEOUT_MS = 5_000;
@@ -137,6 +145,7 @@ function normalizeUrl(url: string): string {
  * |---|---|---|
  * | `HARNESS_A2A_ENTRANTE_TOKEN` | `token` | `""` (deshabilitado) |
  * | `HARNESS_A2A_ENTRANTE_PORT` | `port` | `DEFAULT_A2A_ENTRANTE_PORT` |
+ * | `HARNESS_A2A_ENTRANTE_HOST` | `host` | clave AUSENTE (`listen` sin `host`); blanco = ausente |
  * | `HARNESS_A2A_ENTRANTE_PUBLIC_URL` | `publicUrl` | `DEFAULT_A2A_ENTRANTE_PUBLIC_URL`, sin `/` final |
  * | `HARNESS_A2A_ENTRANTE_MAX_BODY_BYTES` | `maxBodyBytes` | `DEFAULT_A2A_ENTRANTE_MAX_BODY_BYTES` |
  * | `HARNESS_A2A_ENTRANTE_MAX_EN_VUELO` | `maxEnVuelo` | `DEFAULT_A2A_ENTRANTE_MAX_EN_VUELO` |
@@ -146,6 +155,10 @@ function normalizeUrl(url: string): string {
  * completo en `design.md` §6.1.
  */
 export function resolveA2AServerConfig(env: NodeJS.ProcessEnv = process.env): A2AServerConfig {
+  // `.trim()` (mismo criterio que el token de abajo): un
+  // `HARNESS_A2A_ENTRANTE_HOST=` vacio en un `.env` no puede significar
+  // "escucha en la cadena vacia". Blanco = ausente; la clave se OMITE (no `undefined`).
+  const host = env.HARNESS_A2A_ENTRANTE_HOST?.trim();
   return {
     // `.trim()` acá (no sólo en `isA2AServerEnabled`, Hallazgo 1 Reviewer,
     // Hito 7): `esAutorizado` (`server.ts`) compara el header `Bearer`
@@ -157,6 +170,7 @@ export function resolveA2AServerConfig(env: NodeJS.ProcessEnv = process.env): A2
     // resolución, alinea ambos criterios.
     token: (env.HARNESS_A2A_ENTRANTE_TOKEN ?? "").trim(),
     port: resolvePositiveNumber(env.HARNESS_A2A_ENTRANTE_PORT, DEFAULT_A2A_ENTRANTE_PORT),
+    ...(host !== undefined && host !== "" ? { host } : {}), // exactOptionalPropertyTypes
     publicUrl: normalizeUrl(env.HARNESS_A2A_ENTRANTE_PUBLIC_URL ?? DEFAULT_A2A_ENTRANTE_PUBLIC_URL),
     maxBodyBytes: resolvePositiveNumber(
       env.HARNESS_A2A_ENTRANTE_MAX_BODY_BYTES,

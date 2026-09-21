@@ -88,6 +88,8 @@ export interface A2AResponse {
 
 export interface A2AHttpServerLike {
   listen(port: number, callback: () => void): unknown;
+  /** `modo-headless-cierre-limpio` (E2, RD-123): solo con `HARNESS_A2A_ENTRANTE_HOST` no blanco. */
+  listen(port: number, host: string, callback: () => void): unknown;
   close(callback: (error?: Error) => void): unknown;
   /** ★ NUEVO respecto de los otros dos: puerto EFECTIVO con `listen(0)` (ADR 101). */
   address(): { readonly port: number } | string | null;
@@ -862,7 +864,7 @@ export function startServer(
       reject(error);
     });
 
-    server.listen(deps.config.port, () => {
+    const alListen = (): void => {
       if (settled) {
         return;
       }
@@ -903,6 +905,16 @@ export function startServer(
       };
 
       resolve(handle);
-    });
+    };
+
+    // `modo-headless-cierre-limpio` (E2, R21, design §7.3): SIN
+    // `HARNESS_A2A_ENTRANTE_HOST`, `listen` recibe EXACTAMENTE dos argumentos,
+    // como siempre (Node escucha en `::`, IPv4 e IPv6; `"0.0.0.0"` NO es
+    // equivalente). Con `host`, tres, en el orden puerto/host/callback.
+    if (deps.config.host === undefined) {
+      server.listen(deps.config.port, alListen);
+    } else {
+      server.listen(deps.config.port, deps.config.host, alListen);
+    }
   });
 }
