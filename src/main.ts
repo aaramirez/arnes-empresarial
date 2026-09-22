@@ -124,6 +124,8 @@ import { buildOnOperacionesEmpleado } from "./build-on-operaciones-empleado.js";
 import { crearSesionEmpleadoStore } from "./adapters/web/sesion-empleado-store.js";
 import { crearConfirmacionOperacionesStore } from "./adapters/web/confirmacion-operaciones-store.js";
 import { crearConversacionEmpleadoStore } from "./adapters/web/conversacion-empleado-store.js";
+import { startOpsServer, type OpsAdapter } from "./adapters/ops/index.js";
+import { OPS_LOG_CORRELATION_ID } from "./adapters/ops/config.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -715,6 +717,25 @@ try {
   a2aServidor = undefined;
 }
 
+// `salud-operativa` (hijo 3, ADR 257, design.md §7.3 punto 5): arranca
+// ÚLTIMO, después de web/webhook/A2A -- arrancarlo antes dejaría su closure
+// de readiness leyendo `webhook`/`web`/`a2aServidor` en TDZ. Mismo
+// `try`/`catch` degradante que los otros tres: un `OPS_PORT` mal elegido no
+// puede tumbar el arnés entero (OQ2). El `salud` de acá es un STUB INERTE
+// (liveness-only): `/salud/listo` todavía no existe en este slice (el slice
+// D, tarea 4.8, lo reemplaza por los tres hechos reales inyectados desde
+// este mismo composition root).
+let opsServidor: OpsAdapter | undefined;
+try {
+  opsServidor = await startOpsServer({
+    salud: { estaCerrando: () => false, baseUtilizable: () => true, listenersCaidos: () => 0 },
+    logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
+  });
+} catch (error) {
+  logTurnEvent(OPS_LOG_CORRELATION_ID, "ops-arranque-fallido", { message: toErrorMessage(error) });
+  opsServidor = undefined;
+}
+
 // 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
 //    que se desmonte (p. ej. Ctrl+C — Ink lo maneja solo, `exitOnCtrlC` por
 //    defecto) y recién ahí cierra el servidor web (si arrancó), el servidor
@@ -791,6 +812,17 @@ try {
       // (`src/adapters/a2a/server-index.ts`), que ya promete no rechazar vía
       // `startServer`'s `Promise.allSettled` de drenaje.
       console.error(`No se pudo cerrar el Servidor A2A: ${toErrorMessage(error)}`);
+    }
+  }
+  // Cuarta guarda (design.md §8.1, ADR 10): `ops` cierra DESPUÉS de los tres
+  // de negocio y ANTES de `db.close()` -- así, mientras los tres drenan (hasta
+  // 70 s), el supervisor sigue viendo `503` en vez de perder la señal de
+  // drenaje; y `ops` nunca responde readiness sobre una base ya cerrada.
+  if (opsServidor !== undefined) {
+    try {
+      await opsServidor.close();
+    } catch (error) {
+      console.error(`No se pudo cerrar el listener de salud: ${toErrorMessage(error)}`);
     }
   }
   try {
