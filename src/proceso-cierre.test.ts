@@ -15,8 +15,10 @@
  *
  * `ProcesoLike` falso en toda la suite — CERO `process` real (R18).
  */
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { logTurnEvent } from "./core/logging/turn-logger.js";
+import type { ProcesoCierreDeps } from "./proceso-cierre.js";
 
 /**
  * Doble mínimo de `logTurnEvent`, con la misma firma posicional, que junta
@@ -534,5 +536,264 @@ describe("esperarSenalDeCierre + finalizarCierreHeadless (modo-headless-cierre-l
     emitir("uncaughtException", new Error("kaput"));
     const fallas2 = eventos.filter((e) => e.event === "proceso-error-no-capturado");
     expect(fallas2).toHaveLength(2);
+  });
+
+  /**
+   * Test-first (RED) de la enmienda post-evidencia (`modo-headless-cierre-limpio`,
+   * tarea 2.7a, H-1/H-2, design §0.7b y §8, spec H1 ampliado + H13).
+   * `armarAncla`/`desarmarAncla`/`ANCLA_INTERVALO_MS` y el evento
+   * `cierre-esperando-senal` TODAVÍA NO EXISTEN: `npm run typecheck` y
+   * `npm test -- proceso-cierre` deben fallar los dos, a propósito.
+   *
+   * Motivo (medido, evidencia-manual.md H-1): un handler de señal NO mantiene
+   * vivo el event loop en Node (`process.on("SIGTERM", …); await new
+   * Promise(() => {})` sale con código 13). Sin un handle ref'd propio, el
+   * proceso headless sin ningún listener de red moría solo a los ~0,8 s.
+   *
+   * ★ Los relojes son falsos (`vi.useFakeTimers` del `beforeEach` de arriba):
+   * un intervalo NO se vacía nunca, así que ningún test de este bloque puede
+   * usar `vi.runAllTimers()` — siempre `advanceTimersByTimeAsync`.
+   */
+  describe("ancla del event loop y marcador cierre-esperando-senal (tarea 2.7a, H-1/H-2)", () => {
+    /**
+     * Molde LITERAL de `crearArmarDesarmarReales`: `vi.fn` que envuelven el
+     * `setInterval`/`clearInterval` (falsos bajo `vi.useFakeTimers`) para que
+     * `vi.getTimerCount()` siga siendo significativo.
+     */
+    function crearAnclaReal(): {
+      readonly armarAncla: ReturnType<typeof vi.fn<() => unknown>>;
+      readonly desarmarAncla: ReturnType<typeof vi.fn<(handle: unknown) => void>>;
+    } {
+      const armarAncla = vi.fn<() => unknown>(() => setInterval(() => {}, 60_000));
+      const desarmarAncla = vi.fn<(handle: unknown) => void>((handle) => {
+        clearInterval(handle as ReturnType<typeof setInterval>);
+      });
+      return { armarAncla, desarmarAncla };
+    }
+
+    function armarDeps(): {
+      readonly deps: Partial<ProcesoCierreDeps>;
+      readonly emitir: ReturnType<typeof crearProcesoFalso>["emitir"];
+      readonly on: ReturnType<typeof crearProcesoFalso>["on"];
+      readonly eventos: ReturnType<typeof crearLogEventEspia>["eventos"];
+      readonly armarTimer: ReturnType<typeof crearArmarDesarmarReales>["armarTimer"];
+      readonly armarAncla: ReturnType<typeof crearAnclaReal>["armarAncla"];
+      readonly desarmarAncla: ReturnType<typeof crearAnclaReal>["desarmarAncla"];
+      readonly salir: ReturnType<typeof vi.fn<(codigo: number) => void>>;
+    } {
+      const { proceso, on, emitir } = crearProcesoFalso();
+      const { logEvent, eventos } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+      const { armarAncla, desarmarAncla } = crearAnclaReal();
+      const salir = vi.fn<(codigo: number) => void>();
+      // Anotado como `Partial<ProcesoCierreDeps>` A PROPÓSITO: es lo que hace
+      // fallar el typecheck mientras `armarAncla`/`desarmarAncla` no existan.
+      const deps: Partial<ProcesoCierreDeps> = {
+        proceso,
+        logEvent,
+        env: {},
+        armarTimer,
+        desarmarTimer,
+        armarAncla,
+        desarmarAncla,
+        salir,
+      };
+      return { deps, emitir, on, eventos, armarTimer, armarAncla, desarmarAncla, salir };
+    }
+
+    it("(test 25) esperarSenalDeCierre arma UN ancla (el watchdog todavía no); la 1.ª señal la desarma con el handle exacto y arma el watchdog: siempre hay >= 1 timer", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, emitir, armarTimer, armarAncla, desarmarAncla } = armarDeps();
+
+      void mod.esperarSenalDeCierre(deps);
+
+      expect(armarAncla).toHaveBeenCalledTimes(1);
+      expect(armarTimer).toHaveBeenCalledTimes(0);
+      expect(desarmarAncla).toHaveBeenCalledTimes(0);
+      // Antes de la señal: el ANCLA sostiene el loop.
+      expect(vi.getTimerCount()).toBeGreaterThanOrEqual(1);
+
+      emitir("SIGTERM");
+
+      const handleDelAncla = armarAncla.mock.results[0]?.value;
+      expect(handleDelAncla).toBeDefined();
+      expect(desarmarAncla).toHaveBeenCalledTimes(1);
+      expect(desarmarAncla).toHaveBeenCalledWith(handleDelAncla);
+      // El BATON: tras la señal el ancla ya no está, pero el WATCHDOG toma la posta.
+      expect(armarTimer).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBeGreaterThanOrEqual(1);
+
+      mod.finalizarCierreHeadless(deps);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("(test 25b) finalizarCierreHeadless tras la señal no lanza aunque el ancla ya esté desarmada (a lo sumo 2 llamadas en total)", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, emitir, armarAncla, desarmarAncla } = armarDeps();
+
+      void mod.esperarSenalDeCierre(deps);
+      emitir("SIGTERM");
+
+      expect(() => mod.finalizarCierreHeadless(deps)).not.toThrow();
+      expect(armarAncla).toHaveBeenCalledTimes(1);
+      expect(desarmarAncla.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(desarmarAncla.mock.calls.length).toBeLessThanOrEqual(2);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("(test 25b) finalizarCierreHeadless SIN esperarSenalDeCierre previa (TUI) no toca el ancla: 0 llamadas a armarAncla y a desarmarAncla", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, armarAncla, desarmarAncla } = armarDeps();
+
+      mod.finalizarCierreHeadless(deps);
+
+      expect(armarAncla).toHaveBeenCalledTimes(0);
+      expect(desarmarAncla).toHaveBeenCalledTimes(0);
+    });
+
+    it("(test 25b) la 2.ª señal no desarma el ancla otra vez: desarmarAncla sigue en 1", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, emitir, desarmarAncla } = armarDeps();
+
+      void mod.esperarSenalDeCierre(deps);
+      emitir("SIGTERM");
+      emitir("SIGINT");
+
+      expect(desarmarAncla).toHaveBeenCalledTimes(1);
+    });
+
+    it("(test 25c, mecánico sobre el fuente) proceso-cierre.ts no contiene el método que desreferencia un timer: el ancla y el watchdog DEBEN ser ref'd", () => {
+      // Patrón por CONCATENACIÓN (corrección (d) de la 3.2): el propio test no debe encontrarse a sí mismo.
+      const patronProhibido = "un" + "ref";
+      const fuente = readFileSync(new URL("./proceso-cierre.ts", import.meta.url), "utf8");
+
+      expect(fuente).not.toContain(patronProhibido);
+    });
+
+    it("(test 25d) ANCLA_INTERVALO_MS es 60000 y, sin inyectar, el default arma un intervalo real que NO llama a salir aunque pasen tres periodos", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso, emitir } = crearProcesoFalso();
+      const { logEvent } = crearLogEventEspia();
+      const salir = vi.fn<(codigo: number) => void>();
+
+      expect(mod.ANCLA_INTERVALO_MS).toBe(60_000);
+
+      // SIN `armarAncla`/`desarmarAncla`: corren los defaults (`setInterval`/`clearInterval`, falsos bajo el reloj falso).
+      void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, salir });
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(3 * mod.ANCLA_INTERVALO_MS);
+      expect(salir).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(1);
+
+      emitir("SIGTERM");
+      // Baton: sale el ancla, entra el watchdog (`setTimeout` por defecto).
+      expect(vi.getTimerCount()).toBe(1);
+
+      mod.finalizarCierreHeadless({ proceso, logEvent, env: {}, salir });
+      expect(vi.getTimerCount()).toBe(0);
+      expect(salir).toHaveBeenCalledWith(0);
+    });
+
+    it("(test 26) UN evento cierre-esperando-senal con el presupuesto efectivo por defecto (70000)", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, eventos } = armarDeps();
+
+      void mod.esperarSenalDeCierre(deps);
+
+      const marcadores = eventos.filter((e) => e.event === "cierre-esperando-senal");
+      expect(marcadores).toHaveLength(1);
+      expect(marcadores[0]?.casoId).toBe(mod.PROCESO_LOG_CORRELATION_ID);
+      expect(marcadores[0]?.fields).toMatchObject({ presupuestoMs: 70_000 });
+    });
+
+    it("(test 26) con HARNESS_SHUTDOWN_TIMEOUT_MS=20000 el marcador lleva presupuestoMs 20000", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, eventos } = armarDeps();
+
+      void mod.esperarSenalDeCierre({ ...deps, env: { HARNESS_SHUTDOWN_TIMEOUT_MS: "20000" } });
+
+      const marcadores = eventos.filter((e) => e.event === "cierre-esperando-senal");
+      expect(marcadores).toHaveLength(1);
+      expect(marcadores[0]?.fields).toMatchObject({ presupuestoMs: 20_000 });
+    });
+
+    it("(test 26) el marcador es lo ÚLTIMO del armado: su índice en un log de llamadas compartido es posterior a los 4 `on` y a armarAncla", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const llamadas: string[] = [];
+      const proceso = {
+        on: (evento: string): void => {
+          llamadas.push(`on:${evento}`);
+        },
+        off: (): void => {},
+      } as unknown as import("./proceso-cierre.js").ProcesoLike;
+      const logEvent: typeof logTurnEvent = (_casoId, event) => {
+        llamadas.push(`log:${event}`);
+      };
+      const deps: Partial<ProcesoCierreDeps> = {
+        proceso,
+        logEvent,
+        env: {},
+        armarAncla: () => {
+          llamadas.push("armarAncla");
+          return undefined;
+        },
+        desarmarAncla: () => {},
+        salir: vi.fn(),
+      };
+
+      void mod.esperarSenalDeCierre(deps);
+
+      const indiceMarcador = llamadas.indexOf("log:cierre-esperando-senal");
+      expect(indiceMarcador).toBeGreaterThanOrEqual(0);
+      expect(llamadas.filter((l) => l.startsWith("on:"))).toHaveLength(4);
+      expect(llamadas.indexOf("armarAncla")).toBeGreaterThanOrEqual(0);
+      // Es la ÚLTIMA llamada del armado: nada de lo registrado viene después.
+      expect(indiceMarcador).toBe(llamadas.length - 1);
+    });
+
+    it("(test 26) sin llamar a esperarSenalDeCierre (TUI) no hay ningún marcador", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, eventos } = armarDeps();
+
+      mod.finalizarCierreHeadless(deps);
+
+      expect(eventos.filter((e) => e.event === "cierre-esperando-senal")).toHaveLength(0);
+    });
+
+    it("(test 26) el marcador sigue en 1 tras dos señales (las repeticiones quedan en cierre-senal-repetida)", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, emitir, eventos } = armarDeps();
+
+      void mod.esperarSenalDeCierre(deps);
+      emitir("SIGTERM");
+      emitir("SIGTERM");
+
+      expect(eventos.filter((e) => e.event === "cierre-esperando-senal")).toHaveLength(1);
+      expect(eventos.filter((e) => e.event === "cierre-senal-repetida")).toHaveLength(1);
+    });
+
+    it("(test 26) un logEvent que lanza en el marcador NO impide el registro: el arranque no depende del log (molde H6)", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { deps, on, emitir } = armarDeps();
+      let intentosDelMarcador = 0;
+      const logEvent: typeof logTurnEvent = (_casoId, event) => {
+        if (event === "cierre-esperando-senal") {
+          intentosDelMarcador += 1;
+          throw new Error("logger roto");
+        }
+      };
+
+      let promesa: Promise<string> | undefined;
+      expect(() => {
+        promesa = mod.esperarSenalDeCierre({ ...deps, logEvent });
+      }).not.toThrow();
+
+      // Se INTENTÓ publicar el marcador (y el log lanzó), y aun así los 4 handlers están y la señal resuelve.
+      expect(intentosDelMarcador).toBe(1);
+      expect(on).toHaveBeenCalledTimes(4);
+      emitir("SIGTERM");
+      await expect(promesa).resolves.toBe("SIGTERM");
+    });
   });
 });

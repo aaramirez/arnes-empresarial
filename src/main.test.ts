@@ -124,7 +124,15 @@ vi.mock("./adapters/a2a/server-index.js", async (importOriginal) => {
  * R20). `vi.hoisted` porque el factory de `vi.mock` (hoisteado al tope del
  * archivo por Vitest) necesita estas referencias ya creadas.
  */
-const { procesoFalsoParaTest, salirEspiaParaTest, logEventEspiaParaTest, eventosDeProcesoParaTest } = vi.hoisted(
+const {
+  procesoFalsoParaTest,
+  salirEspiaParaTest,
+  logEventEspiaParaTest,
+  eventosDeProcesoParaTest,
+  armarAnclaEspiaParaTest,
+  desarmarAnclaEspiaParaTest,
+  anclasArmadasParaTest,
+} = vi.hoisted(
   () => {
     const handlers = new Map<string, Set<(arg?: unknown) => void>>();
     const procesoFalsoParaTest = {
@@ -157,11 +165,32 @@ const { procesoFalsoParaTest, salirEspiaParaTest, logEventEspiaParaTest, eventos
         eventosDeProcesoParaTest.push({ casoId, event, fields });
       },
     );
+    // `modo-headless-cierre-limpio`, tarea 2.7a (H-1, design §0.7b): el ancla
+    // del event loop TAMBIÉN se inyecta. Sin estos espías, un test de wiring
+    // headless que no use reloj falso armaría un `setInterval` REAL de 60 s
+    // sobre el proceso de Vitest -- la fuga que R18 existe para impedir. El
+    // espía NO crea ningún timer: devuelve un handle-objeto y lo registra en
+    // `anclasArmadasParaTest`; `desarmarAncla` lo saca. "Ninguna ancla armada"
+    // = el conjunto vacío.
+    const anclasArmadasParaTest = new Set<unknown>();
+    let contadorDeAnclas = 0;
+    const armarAnclaEspiaParaTest = vi.fn((): unknown => {
+      contadorDeAnclas += 1;
+      const handle = { ancla: contadorDeAnclas };
+      anclasArmadasParaTest.add(handle);
+      return handle;
+    });
+    const desarmarAnclaEspiaParaTest = vi.fn((handle: unknown): void => {
+      anclasArmadasParaTest.delete(handle);
+    });
     return {
       procesoFalsoParaTest,
       salirEspiaParaTest: vi.fn((_codigo: number): void => {}),
       logEventEspiaParaTest,
       eventosDeProcesoParaTest,
+      armarAnclaEspiaParaTest,
+      desarmarAnclaEspiaParaTest,
+      anclasArmadasParaTest,
     };
   },
 );
@@ -175,6 +204,8 @@ vi.mock("./proceso-cierre.js", async (importOriginal) => {
         proceso: procesoFalsoParaTest,
         salir: salirEspiaParaTest,
         logEvent: logEventEspiaParaTest,
+        armarAncla: armarAnclaEspiaParaTest,
+        desarmarAncla: desarmarAnclaEspiaParaTest,
         ...deps,
       }),
     finalizarCierreHeadless: (deps?: Parameters<typeof real.finalizarCierreHeadless>[0]) =>
@@ -182,6 +213,8 @@ vi.mock("./proceso-cierre.js", async (importOriginal) => {
         proceso: procesoFalsoParaTest,
         salir: salirEspiaParaTest,
         logEvent: logEventEspiaParaTest,
+        armarAncla: armarAnclaEspiaParaTest,
+        desarmarAncla: desarmarAnclaEspiaParaTest,
         ...deps,
       }),
   };
@@ -1737,5 +1770,65 @@ describe("main.ts -- R1: turno irreversible en vuelo al recibir SIGTERM (modo-he
     // dejar la promesa de `web.close()` colgada entre tests.
     web.resolver();
     await promesaImport.catch(() => {});
+  });
+});
+
+/**
+ * ROJO (de tipo + aserción) -- `modo-headless-cierre-limpio`, tarea 2.7a
+ * (H-1/H-2, design §0.7b y §8, spec H1 ampliado + H13). `armarAncla`/
+ * `desarmarAncla` todavía NO existen en `ProcesoCierreDeps` (el `vi.mock` del
+ * tope ya los inyecta: eso es lo que hace fallar el typecheck), así que este
+ * `it` falla a propósito hasta la 2.7b. Va AL FINAL del archivo, lejos de las
+ * anclas de `bloqueEntre`.
+ */
+describe("main.ts -- ancla del event loop en el wiring headless (modo-headless-cierre-limpio, tarea 2.7a)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    anclasArmadasParaTest.clear();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  it("(test 25, wiring) tras un cierre headless completo, desarmarAncla recibió el handle de armarAncla, no queda ningún ancla armada y el marcador salió una vez", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+
+    // Mientras espera la señal hay EXACTAMENTE un ancla armada y el marcador ya salió (H13).
+    expect(armarAnclaEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(anclasArmadasParaTest.size).toBe(1);
+    const marcadores = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-esperando-senal");
+    expect(marcadores).toHaveLength(1);
+    expect(marcadores[0]?.fields).toMatchObject({ presupuestoMs: 70_000 });
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    web.resolver();
+    await promesaImport.catch(() => {});
+
+    const handleDelAncla = armarAnclaEspiaParaTest.mock.results[0]?.value;
+    expect(handleDelAncla).toBeDefined();
+    expect(desarmarAnclaEspiaParaTest).toHaveBeenCalledWith(handleDelAncla);
+    expect(anclasArmadasParaTest.size).toBe(0);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
   });
 });
