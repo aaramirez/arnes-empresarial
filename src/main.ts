@@ -332,12 +332,14 @@ const botLogin = await resolveBotLogin({
   logEvent: (event, fields) => logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, event, fields),
 });
 
-// `salud-operativa` (slice D, R35, design.md §7.3 punto 2): el conjunto de
-// listeners HABILITADOS que no lograron arrancar -- "esperado y caído" ≡
-// "el arranque de ese listener lanzó" (S18). Declarado ANTES de `let
-// webhook` para que los tres `catch` de abajo (webhook/web/A2A) puedan
-// agregarle su nombre sin reordenar nada más.
-const listenersCaidos = new Set<string>();
+// `salud-operativa` (slice D, R35, design.md §7.3 punto 2): CUÁNTOS
+// listeners HABILITADOS no lograron arrancar -- "esperado y caído" ≡ "el
+// arranque de ese listener lanzó" (S18). Declarado ANTES de `let webhook`
+// para que los tres `catch` de abajo (webhook/web/A2A) puedan incrementarlo
+// sin reordenar nada más. Contador simple, no `Set<string>` (Reviewer
+// finding, simplificación): en ningún punto se lee un elemento, solo el
+// tamaño -- `listenersCaidos()` expone el NÚMERO, nunca nombres (S7).
+let listenersCaidos = 0;
 
 let webhook: WebhookAdapter | undefined;
 try {
@@ -349,7 +351,7 @@ try {
 } catch (error) {
   logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, "webhook-arranque-fallido", { message: toErrorMessage(error) });
   webhook = undefined;
-  listenersCaidos.add("webhook");
+  listenersCaidos += 1;
 }
 
 // 5b. Tercera fuente de turnos (Hito 4, tarea 28, design.md §6.5): el
@@ -556,7 +558,7 @@ try {
 } catch (error) {
   logTurnEvent(WEB_LOG_CORRELATION_ID, "web-arranque-fallido", { message: toErrorMessage(error) });
   web = undefined;
-  listenersCaidos.add("web");
+  listenersCaidos += 1;
 }
 
 // 5c. Dispatcher de comandos de empleado (Hito 5, tarea 14, design.md §8
@@ -724,7 +726,7 @@ try {
     message: toErrorMessage(error),
   });
   a2aServidor = undefined;
-  listenersCaidos.add("a2a");
+  listenersCaidos += 1;
 }
 
 // `salud-operativa` (slice D, ADR 257/258, design.md §7.3 punto 5): arranca
@@ -735,8 +737,8 @@ try {
 // `reembolsosPort` (S16): `estaCerrando` delega en `proceso-cierre.js`
 // (H13); `baseUtilizable` envuelve la sonda de S19, preparada UNA sola vez
 // acá dentro (K5, insumo de N2, R39/R40); `listenersCaidos` expone el
-// TAMAÑO del conjunto de arriba -- nunca los nombres (S7). `db` no cruza
-// hacia el adaptador: `ops` recibe funciones, nunca el handle.
+// CONTADOR de arriba -- nunca los nombres (S7). `db` no cruza hacia el
+// adaptador: `ops` recibe funciones, nunca el handle.
 let opsServidor: OpsAdapter | undefined;
 try {
   const sondaBase = db.prepare("SELECT 1 FROM sqlite_schema LIMIT 1");
@@ -751,7 +753,7 @@ try {
           return false;
         }
       },
-      listenersCaidos: () => listenersCaidos.size,
+      listenersCaidos: () => listenersCaidos,
     },
     logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
   });
