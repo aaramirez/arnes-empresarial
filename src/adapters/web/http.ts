@@ -50,6 +50,15 @@ export interface WebHttpServerLike {
    * detras de un cliente keep-alive que nunca cierra su conexion. Opcional en
    * el tipo (como `closeAllConnections?` en webhooks): un doble sin el metodo
    * sigue siendo valido; el `http.Server` real de Node 18.2+ lo trae.
+   *
+   * ★ Decisión deliberada (hallazgo 2, revisión post-Reviewer): `a2a/server.ts`
+   * SÍ lo declara obligatorio, así que esto queda inconsistente entre
+   * adaptadores. No se sube a obligatorio acá porque el doble de
+   * `index.test.ts` (`FakeHttpServer`) no implementa `closeIdleConnections`
+   * y SÍ ejercita `close()` — forzar el tipo no rompería el compilador (el
+   * doble se castea vía `unknown`), pero rompería ese test en runtime con
+   * `closeIdleConnections is not a function`. Mantener opcional + `?.()` es
+   * la opción de menor riesgo mientras ese doble no se actualice.
    */
   closeIdleConnections?(): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;

@@ -54,6 +54,14 @@ export interface HttpServerLike {
    * design §0.2 y §0.8). REEMPLAZA a la declaracion muerta del metodo que
    * cierra TODAS las conexiones: estaba sin llamador y era el metodo
    * equivocado (destruye tambien los sockets con request en curso).
+   *
+   * ★ Decisión deliberada (hallazgo 2, revisión post-Reviewer): queda
+   * opcional (a diferencia de `a2a/server.ts`, que lo declara obligatorio)
+   * porque el doble de `index.test.ts` no implementa `closeIdleConnections`
+   * y ese doble SÍ ejercita `close()`. Forzarlo obligatorio no fallaría en
+   * el compilador (el doble se castea vía `unknown`), pero rompería ese
+   * test en runtime. Opcional + `?.()` es la opción de menor riesgo mientras
+   * ese doble no se actualice.
    */
   closeIdleConnections?(): void;
   on(event: "error", listener: (error: Error) => void): unknown;
