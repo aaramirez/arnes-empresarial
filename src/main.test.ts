@@ -229,6 +229,7 @@ const ENV_KEYS_A_LIMPIAR = [
   "HARNESS_A2A_SALIENTE",
   "HARNESS_HEADLESS",
   "HARNESS_SHUTDOWN_TIMEOUT_MS",
+  "OPS_PORT",
 ] as const;
 
 describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conversacionales, tarea 10)", () => {
@@ -253,6 +254,13 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
     // Sin esto, un `HARNESS_HEADLESS=1` en el `.env` del dev cuelga las seis
     // importaciones de este archivo.
     process.env.HARNESS_HEADLESS = "0";
+    // `salud-operativa`, tarea 3.3 (R46): FIJADA, no solo borrada. Mismo
+    // motivo que `HARNESS_HEADLESS` arriba -- `dotenv` (vía
+    // `core/config/env.js`) rellena desde `.env` una variable que solo se
+    // borró, y cada `import("./main.js")` lo re-ejecuta. Sin esto, un
+    // `OPS_PORT` ambiental abriría un puerto real de `ops` en cada
+    // reimportación de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -339,6 +347,9 @@ describe("main.ts -- wiring de createConsultas local al bloque de A2A entrante (
     // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
     // primer `beforeEach` de este archivo.
     process.env.HARNESS_HEADLESS = "0";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -422,6 +433,9 @@ describe("main.ts -- hallazgos de Reviewer sobre createConsultas (consultas-nego
     // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
     // primer `beforeEach` de este archivo.
     process.env.HARNESS_HEADLESS = "0";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -696,6 +710,9 @@ describe("main.ts -- abre la base por resolveDbPath (modo-headless-cierre-limpio
     // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
     // primer `beforeEach` de este archivo.
     process.env.HARNESS_HEADLESS = "0";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -752,6 +769,9 @@ describe("main.ts -- candados de no-fuga de listeners, finally intacto y cero fu
     // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
     // primer `beforeEach` de este archivo.
     process.env.HARNESS_HEADLESS = "0";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -986,6 +1006,9 @@ describe("main.ts -- arranque headless y TUI (modo-headless-cierre-limpio, tarea
     // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
     // primer `beforeEach` de este archivo.
     process.env.HARNESS_HEADLESS = "0";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
     stdinIsTTYPrevio = process.stdin.isTTY;
     stdoutIsTTYPrevio = process.stdout.isTTY;
   });
@@ -1290,6 +1313,9 @@ describe("main.ts -- cierre por señal y fallas no capturadas (modo-headless-cie
     // Todo este describe corre en headless: es la única rama que registra
     // señales (H5).
     process.env.HARNESS_HEADLESS = "1";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -1647,6 +1673,9 @@ describe("main.ts -- R1: turno irreversible en vuelo al recibir SIGTERM (modo-he
       delete process.env[key];
     }
     process.env.HARNESS_HEADLESS = "1";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -1796,6 +1825,9 @@ describe("main.ts -- ancla del event loop en el wiring headless (modo-headless-c
       delete process.env[key];
     }
     process.env.HARNESS_HEADLESS = "1";
+    // `salud-operativa`, tarea 3.3: ver el comentario del primer `beforeEach`
+    // de este archivo.
+    process.env.OPS_PORT = "0";
   });
 
   afterEach(() => {
@@ -1830,5 +1862,550 @@ describe("main.ts -- ancla del event loop en el wiring headless (modo-headless-c
     expect(desarmarAnclaEspiaParaTest).toHaveBeenCalledWith(handleDelAncla);
     expect(anclasArmadasParaTest.size).toBe(0);
     expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+});
+
+/**
+ * `salud-operativa`, tarea 3.4: mismo criterio que los `vi.mock` de
+ * `web`/`webhook`/`a2a` de arriba (mockeado por MÓDULO, no por variable de
+ * entorno) -- Vitest hoistea un `vi.mock` sin importar dónde se declara
+ * textualmente en el archivo, así que esta declaración funciona igual que si
+ * viviera junto a las otras tres (arriba, cerca del tope del archivo) sin
+ * necesidad de tocar ese bloque: el diff de este change es únicamente una
+ * adición al final. `startOpsServer` se envuelve con `vi.fn(actual)`, no se
+ * reemplaza (mismo molde que `buildOnComandoEmpleado`/
+ * `buildOnOperacionesEmpleado`/`buildOnA2AEntrante`): sin `mockResolvedValueOnce`/
+ * `mockRejectedValueOnce` explícito, corre la implementación REAL (config
+ * real, `ops-deshabilitado` real si `OPS_PORT="0"`), lo que permite que los
+ * tests "sin OPS_PORT" (tarea 3.6) observen el comportamiento genuino del
+ * adaptador sin necesitar un segundo mecanismo de mock.
+ */
+vi.mock("./adapters/ops/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/ops/index.js")>();
+  return { ...actual, startOpsServer: vi.fn(actual.startOpsServer) };
+});
+
+/**
+ * `salud-operativa`, tarea 3.4: `logTurnEvent` NUNCA se mockeó por módulo en
+ * este archivo (a diferencia de `web`/`webhook`/`a2a`, los eventos de ciclo
+ * de vida de `ops` -- `ops-arranque-fallido` en particular -- se emiten
+ * DIRECTO desde `main.ts` vía la importación estática de
+ * `./core/logging/turn-logger.js`, no a través del `logEvent` inyectado en
+ * `proceso-cierre.js` (ese solo cubre los eventos `cierre-*`). Se envuelve
+ * con `vi.fn(actual)`, igual que arriba: la implementación REAL sigue
+ * corriendo (best-effort, nunca lanza -- ver el module doc de
+ * `turn-logger.ts`), solo se agrega la capacidad de espiar sus llamadas.
+ */
+vi.mock("./core/logging/turn-logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./core/logging/turn-logger.js")>();
+  return { ...actual, logTurnEvent: vi.fn(actual.logTurnEvent) };
+});
+
+/**
+ * Doble de `OpsAdapter` con `close()` controlable a mano (molde
+ * `crearCierreControlable`, que ya cubre `webhook`/`web`/`a2a`): agrega
+ * `port` porque `OpsAdapter` lo requiere.
+ */
+function crearOpsControlable(): {
+  readonly port: number;
+  readonly close: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  readonly resolver: () => void;
+  readonly rechazar: (error: Error) => void;
+} {
+  const controlable = crearCierreControlable();
+  return { port: 8788, ...controlable };
+}
+
+/** Configura el `startOpsServer` mockeado por módulo para devolver, UNA vez, el doble indicado (o dejarlo correr REAL, si se omite). */
+async function configurarOps(config?: { readonly port: number; readonly close: () => Promise<void> }): Promise<void> {
+  const { startOpsServer } = await import("./adapters/ops/index.js");
+  if (config !== undefined) {
+    vi.mocked(startOpsServer).mockResolvedValueOnce(
+      config as unknown as Awaited<ReturnType<typeof startOpsServer>>,
+    );
+  }
+}
+
+/**
+ * ROJO (de aserción) -- `salud-operativa`, tarea 3.4: arranque de `ops`
+ * DESPUÉS de los otros tres (S10) y su cierre entre `a2aServidor.close()` y
+ * `db.close()` (H3' NUEVO 1-3, S11). Todavía NO hay wiring de `ops` en
+ * `main.ts` (llega en la tarea 3.5): `startOpsServer` nunca se invoca, así
+ * que TODOS los tests de invocación/orden deben FALLAR a propósito.
+ */
+describe("main.ts -- arranque y cierre del listener ops, camino headless (salud-operativa, tarea 3.4)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // Este describe corre en headless -- mismo criterio que "cierre por
+    // señal y fallas no capturadas" más arriba.
+    process.env.HARNESS_HEADLESS = "1";
+    process.env.OPS_PORT = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    vi.useRealTimers();
+  });
+
+  it("(i, S10) startOpsServer se invoca 1 vez y DESPUÉS que web/webhook/a2a; un rechazo con EADDRINUSE no aborta el arranque", async () => {
+    const { startWebServer } = await import("./adapters/web/index.js");
+    const { startWebhookServer } = await import("./adapters/webhooks/index.js");
+    const { startA2AServer } = await import("./adapters/a2a/server-index.js");
+    const { startOpsServer } = await import("./adapters/ops/index.js");
+    const { logTurnEvent } = await import("./core/logging/turn-logger.js");
+    const { OPS_LOG_CORRELATION_ID } = await import("./adapters/ops/config.js");
+    const error = new Error("listen EADDRINUSE: address already in use :::8788");
+    vi.mocked(startOpsServer).mockRejectedValueOnce(error);
+
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(vi.mocked(startOpsServer)).toHaveBeenCalledTimes(1);
+    const ordenWeb = vi.mocked(startWebServer).mock.invocationCallOrder[0] as number;
+    const ordenWebhook = vi.mocked(startWebhookServer).mock.invocationCallOrder[0] as number;
+    const ordenA2a = vi.mocked(startA2AServer).mock.invocationCallOrder[0] as number;
+    const ordenOps = vi.mocked(startOpsServer).mock.invocationCallOrder[0] as number;
+    expect(ordenOps).toBeGreaterThan(ordenWeb);
+    expect(ordenOps).toBeGreaterThan(ordenWebhook);
+    expect(ordenOps).toBeGreaterThan(ordenA2a);
+
+    const fallidos = vi.mocked(logTurnEvent).mock.calls.filter((llamada) => llamada[1] === "ops-arranque-fallido");
+    expect(fallidos).toHaveLength(1);
+    expect(fallidos[0]?.[0]).toBe(OPS_LOG_CORRELATION_ID);
+    expect(String((fallidos[0]?.[2] as { message?: unknown } | undefined)?.message)).toContain("EADDRINUSE");
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(ii, H3' NUEVO 1/S11) orden exacto web -> webhook -> a2a -> ops -> db, una vez cada uno, SALIR 0 tras db.close", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    const a2a = crearCierreControlable();
+    const ops = crearOpsControlable();
+    await configurarAdaptadores({ web, webhook, a2a });
+    await configurarOps(ops);
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    expect(webhook.close).not.toHaveBeenCalled();
+    web.resolver();
+
+    await esperarHasta(() => webhook.close.mock.calls.length === 1);
+    expect(a2a.close).not.toHaveBeenCalled();
+    webhook.resolver();
+
+    await esperarHasta(() => a2a.close.mock.calls.length === 1);
+    expect(ops.close).not.toHaveBeenCalled();
+    a2a.resolver();
+
+    await esperarHasta(() => ops.close.mock.calls.length === 1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+    ops.resolver();
+
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(ops.close).toHaveBeenCalledTimes(1);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(iii, H3' NUEVO 3) un ops.close() que rechaza no impide db.close(): se reporta y sigue, SALIR 0", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    const ops = crearOpsControlable();
+    await configurarAdaptadores({ web, webhook, a2a });
+    await configurarOps(ops);
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => ops.close.mock.calls.length === 1);
+    ops.rechazar(new Error("boom"));
+    await promesaImport.catch(() => {});
+
+    expect(
+      stderrSpy.mock.calls.some((llamada) =>
+        String(llamada[0]).includes("No se pudo cerrar el listener de salud: boom"),
+      ),
+    ).toBe(true);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("(iv, S8+H8) un ops.close() colgado (servidor real inyectado cuyo close() nunca vuelve) se fuerza a los 5000 ms sin agotar el techo global de 70000 ms: SALIR 0, sin cierre-presupuesto-excedido", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { startServer: startOpsServerReal } = await import("./adapters/ops/server.js");
+    const { resolveOpsConfig } = await import("./adapters/ops/config.js");
+    const { startOpsServer } = await import("./adapters/ops/index.js");
+    const opsLogEvent = vi.fn();
+    const fakeHttpServer = {
+      listen: vi.fn((...args: unknown[]) => {
+        (args[args.length - 1] as () => void)();
+      }),
+      close: vi.fn(() => {
+        // El callback de `server.close()` NUNCA se invoca a propósito -- es
+        // lo único que puede colgar en `ops` (§0.4 del design, S8).
+      }),
+      on: vi.fn(),
+      closeIdleConnections: vi.fn(),
+    };
+    const opsHandle = await startOpsServerReal(
+      {
+        config: resolveOpsConfig({ OPS_PORT: "8788" }),
+        salud: { estaCerrando: () => false, baseUtilizable: () => true, listenersCaidos: () => 0 },
+        logEvent: opsLogEvent,
+      },
+      (() => fakeHttpServer) as unknown as Parameters<typeof startOpsServerReal>[1],
+    );
+    vi.mocked(startOpsServer).mockResolvedValueOnce({ port: opsHandle.port, close: () => opsHandle.close() });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await promesaImport.catch(() => {});
+
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+    expect(opsLogEvent.mock.calls.some((llamada) => llamada[1] === "ops-cierre-forzado")).toBe(true);
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido")).toHaveLength(0);
+  });
+});
+
+describe("main.ts -- cierre del listener ops en TUI (salud-operativa, tarea 3.4)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "0";
+    process.env.OPS_PORT = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  it("(iv, S11) en TUI el orden es el mismo con waitUntilExit() resuelto y SALIR 0 llamadas; durante el drenaje ops.close tiene 0 llamadas", async () => {
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    const ops = crearOpsControlable();
+    ops.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+    await configurarOps(ops);
+
+    let resolverSalidaTui: () => void = () => {};
+    const salidaTuiPromise = new Promise<void>((resolve) => {
+      resolverSalidaTui = resolve;
+    });
+    vi.mocked(startTui).mockImplementationOnce(() => ({
+      unmount: () => {},
+      waitUntilExit: () => salidaTuiPromise,
+    }));
+
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(ops.close).not.toHaveBeenCalled();
+    resolverSalidaTui();
+
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    expect(ops.close).not.toHaveBeenCalled();
+    web.resolver();
+
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(ops.close).toHaveBeenCalledTimes(1);
+    // TUI no pasa por `esperarSenalDeCierre`/`finalizarCierreHeadless`: `salir` nunca se invoca (H2).
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Test mecánico sobre el FUENTE de `main.ts` (S12) -- no importa `./main.js`,
+ * mismo criterio que la "segunda instancia del adaptador A2A" de arriba: el
+ * tramo del `finally`, SIN comentarios, referencia los cinco `close()` en un
+ * `indexOf` estrictamente creciente.
+ */
+describe("main.ts -- orden mecánico del finally con opsServidor.close incluido (salud-operativa, tarea 3.4)", () => {
+  it("(v, S12) web.close, webhook.close, a2aServidor.close, opsServidor.close y db.close en ese orden estrictamente creciente", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const tramo = bloqueEntre(source, "} finally {", "\n}\n");
+    const tramoSinComentarios = tramo
+      .split("\n")
+      .filter((linea) => !linea.trim().startsWith("//"))
+      .join("\n");
+
+    const indiceWeb = tramoSinComentarios.indexOf("web.close()");
+    const indiceWebhook = tramoSinComentarios.indexOf("webhook.close()");
+    const indiceA2a = tramoSinComentarios.indexOf("a2aServidor.close()");
+    const indiceOps = tramoSinComentarios.indexOf("opsServidor.close()");
+    const indiceDb = tramoSinComentarios.indexOf("db.close()");
+
+    expect(indiceWeb).toBeGreaterThanOrEqual(0);
+    expect(indiceWebhook).toBeGreaterThan(indiceWeb);
+    expect(indiceA2a).toBeGreaterThan(indiceWebhook);
+    expect(indiceOps).toBeGreaterThan(indiceA2a);
+    expect(indiceDb).toBeGreaterThan(indiceOps);
+  });
+});
+
+/**
+ * `salud-operativa`, tarea 3.6: `vi.spyOn` directo sobre el namespace de un
+ * módulo integrado de Node (`node:http`) no funciona en ESM ("Module
+ * namespace is not configurable", verificado) -- a diferencia de los módulos
+ * propios del repo, que sí lo permiten (mismo motivo que el `vi.mock` de
+ * `turn-logger.js` de arriba). Se mockea (hoisteado, igual que los de
+ * arriba) envolviendo `createServer` con `vi.fn(actual)`: sigue siendo el
+ * `createServer` REAL para cualquier caller, solo se agrega espionaje.
+ */
+vi.mock("node:http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:http")>();
+  return { ...actual, createServer: vi.fn(actual.createServer) };
+});
+
+/**
+ * CANDADO (nace VERDE) -- `salud-operativa`, tarea 3.6. Se declara: pasa
+ * desde que existe la guarda del `finally` (tarea 3.5); su valor es de
+ * NO-REGRESIÓN (S12/S13) y se prueba por MUTACIÓN en la tarea 3.8 (M1
+ * elimina la guarda `if (opsServidor !== undefined)`, M2 extrae el bloque de
+ * arranque a una función). `npm test`/`npm run typecheck` quedan verdes al
+ * crearlo.
+ */
+describe("main.ts -- candado: orden de cierre de hoy sin OPS_PORT y cero funciones extraídas del finally (salud-operativa, tarea 3.6)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+    process.env.OPS_PORT = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  it("(a, S12) sin OPS_PORT: orden exacto web.close, webhook.close, a2a.close, db.close; startOpsServer devuelve undefined y ops.close 0 llamadas", async () => {
+    const { startOpsServer } = await import("./adapters/ops/index.js");
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    expect(webhook.close).not.toHaveBeenCalled();
+    web.resolver();
+
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    const resultado = vi.mocked(startOpsServer).mock.results[0];
+    expect(resultado?.type).toBe("return");
+    await expect(resultado?.value as Promise<unknown>).resolves.toBeUndefined();
+    // M1 (tarea 3.8): sin `OPS_PORT`, `opsServidor` es `undefined` -- el
+    // `finally` NUNCA debe intentar `opsServidor.close()` (la guarda `if
+    // (opsServidor !== undefined)` existe para eso). Si esa guarda se
+    // quitara, `opsServidor.close()` lanzaría sobre `undefined` y el
+    // `catch` de al lado lo reportaría con este mensaje -- es la señal
+    // observable de la mutación.
+    expect(
+      stderrSpy.mock.calls.some((llamada) =>
+        String(llamada[0]).includes("No se pudo cerrar el listener de salud"),
+      ),
+    ).toBe(false);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("(b, S9) createServer de ops (node:http) espía ⇒ 0 llamadas; entre los eventos con correlación ops-adapter (S-e: OPS_PORT='0' fijada también emite ops-puerto-invalido) está ops-deshabilitado", async () => {
+    const http = await import("node:http");
+    const { OPS_LOG_CORRELATION_ID } = await import("./adapters/ops/config.js");
+    const { logTurnEvent } = await import("./core/logging/turn-logger.js");
+    const createServerMock = vi.mocked(http.createServer);
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(createServerMock).not.toHaveBeenCalled();
+    // S-e (`tasks.md`, "Supuestos pendientes" #8): `OPS_PORT="0"` es un valor
+    // CRUDO presente y no en blanco -- `resolveOpsConfig` lo trata como
+    // "vino y no sirvió" (fiel al diseño, RD-130 `design.md` §7.1), así que
+    // ESTE `beforeEach` (tarea 3.3, que fija `OPS_PORT="0"` en vez de
+    // borrarla) emite un segundo evento, `ops-puerto-invalido{raw:"0"}`,
+    // ADEMÁS de `ops-deshabilitado`. El único evento con correlación
+    // `ops-adapter` que NO se explica por esa señal ruidosa y documentada
+    // sigue siendo `ops-deshabilitado`.
+    const eventosOps = vi
+      .mocked(logTurnEvent)
+      .mock.calls.filter((llamada) => llamada[0] === OPS_LOG_CORRELATION_ID);
+    expect(eventosOps).toHaveLength(2);
+    expect(eventosOps.map((llamada) => llamada[1])).toEqual(["ops-puerto-invalido", "ops-deshabilitado"]);
+    expect(eventosOps[0]?.[2]).toEqual({ raw: "0" });
+  });
+
+  it("(c, R4) el tramo del finally, sin comentarios, no contiene ninguna declaración de función nueva", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const tramo = bloqueEntre(source, "} finally {", "\n}\n");
+    const tramoSinComentarios = tramo
+      .split("\n")
+      .filter((linea) => !linea.trim().startsWith("//"))
+      .join("\n");
+
+    expect(tramoSinComentarios).not.toMatch(/\bfunction\s+\w+/);
+  });
+
+  it("(d, S13) con OPS_PORT='8788' ambiental antes de la guarda de la tarea 3.3, cada importación la sobreescribe: real listen 0 llamadas y cada una registra ops-deshabilitado", { timeout: 15_000 }, async () => {
+    const http = await import("node:http");
+    const { OPS_LOG_CORRELATION_ID } = await import("./adapters/ops/config.js");
+    const { logTurnEvent } = await import("./core/logging/turn-logger.js");
+    const createServerMock = vi.mocked(http.createServer);
+
+    for (let vez = 0; vez < 3; vez += 1) {
+      // Simula un `OPS_PORT` que ya estaba presente en el entorno (p. ej. un
+      // `.env` real de desarrollo con la sugerencia comentada de `design.md`
+      // §7.1 vuelta activa) ANTES de que corra la guarda de la tarea 3.3 --
+      // la misma guarda que el `beforeEach` de este archivo ya aplica en
+      // cada test, reproducida acá explícitamente para dejar constancia de
+      // que sobrevive a "cada importación", no solo a la primera. NO se
+      // limpia el historial de mocks entre rondas (a propósito, sin
+      // `vi.clearAllMocks()`): la aserción de abajo necesita los TRES eventos
+      // `ops-deshabilitado` acumulados, uno por ronda.
+      process.env.OPS_PORT = "8788";
+      delete process.env.OPS_PORT;
+      process.env.OPS_PORT = "0";
+
+      vi.resetModules();
+      procesoFalsoParaTest.limpiar();
+      // `vi.mock`'s factory result (y el `vi.fn(actual)` de
+      // `buildOnA2AEntrante`) persiste entre `resetModules()` -- mismo
+      // comentario que el primer `beforeEach` de este archivo. Sin este
+      // `mockClear()` puntual, `esperarWiringA2AEntrante` (dentro de
+      // `dispararImport`) vería el conteo de la ronda ANTERIOR ya `> 0` y
+      // avanzaría antes de que esta ronda wireara de verdad, dejando el
+      // `SIGTERM` de abajo sin listener que lo atienda (import colgado).
+      (await obtenerMockA2AEntrante()).mockClear();
+
+      const web = crearCierreControlable();
+      web.resolver();
+      await configurarAdaptadores({ web });
+
+      const { promesaImport } = await dispararImport();
+      procesoFalsoParaTest.emitir("SIGTERM");
+      await promesaImport.catch(() => {});
+    }
+
+    expect(createServerMock).not.toHaveBeenCalled();
+    const eventosDeshabilitado = vi
+      .mocked(logTurnEvent)
+      .mock.calls.filter(
+        (llamada) => llamada[0] === OPS_LOG_CORRELATION_ID && llamada[1] === "ops-deshabilitado",
+      );
+    expect(eventosDeshabilitado).toHaveLength(3);
   });
 });
