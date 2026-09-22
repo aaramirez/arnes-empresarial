@@ -10,6 +10,7 @@ Esta bóveda de Obsidian sintetiza la investigación de los objetivos específic
 
 - [[00-MOC-Arneses]] — estudio comparativo de ocho arneses/frameworks de agentes de IA (Claude Code, OpenCode, memU, Hive, Codex, DeerFlow, OpenHands) contra un marco de 14 criterios empresariales, con la [[Matriz-Comparativa]] completa.
 - [[Node-vs-Go]] — investigación sobre lenguajes para programar con el Claude Agent SDK (Python vs. TypeScript/Node.js vs. Go) y la decisión final de lenguaje.
+- [[Librerias-TUI]] — evaluación de librerías TUI del ecosistema Node.js (Ink, blessed, terminal-kit, Enquirer) y la decisión final de librería.
 - [[00-MOC-Arquitectura-SDK]] — funcionamiento del Claude Agent SDK aplicado al diseño propio: componentes e interfaces ([[Componentes-e-Interfaces]]) y mensajes y flujos ([[Mensajes-y-Flujos]]).
 - [[Vision-General]] — visión general del arnés empresarial propio (agentes, sub-agentes, comandos, hooks, skills, A2A, memoria compartida en SQLite), con link al ARC42 completo del proyecto.
 
