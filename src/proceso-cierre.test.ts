@@ -796,4 +796,150 @@ describe("esperarSenalDeCierre + finalizarCierreHeadless (modo-headless-cierre-l
       await expect(promesa).resolves.toBe("SIGTERM");
     });
   });
+
+  /**
+   * Test-first (RED de TIPO) de `estaCerrando()` (`salud-operativa`, tarea
+   * 4.5, H13 del delta, ADR 258 §6.3, `[SUPUESTO — pendiente de checkpoint]`
+   * YA APROBADO por el checkpoint humano). Lector PURO SOBRE el `let
+   * faseDeCierre` que este archivo ya mantiene — NO se agrega EMISOR real
+   * sobre el proceso ni ningún `close`/`db`: esta suite verifica solo lo
+   * que `proceso-cierre.ts` sabe de sí mismo. `estaCerrando` TODAVÍA NO
+   * EXISTE: `npm run typecheck` y `npm test -- proceso-cierre` deben
+   * fallar los dos, a propósito.
+   */
+  describe("estaCerrando() (salud-operativa, tarea 4.5, H13, ADR 258 §6.3)", () => {
+    it("false en modo TUI (esperarSenalDeCierre nunca se llamó) y en un montaje headless recién creado", async () => {
+      const mod = await import("./proceso-cierre.js");
+      // Módulo recién importado tras `vi.resetModules()` del `beforeEach` de
+      // arriba: `esperarSenalDeCierre` todavía no corrió en este montaje —
+      // es, a la vez, "TUI" (la rama headless nunca se activó) y "recién
+      // creado" (H13, mismo estado `"inactiva"` para ambos casos).
+      expect(mod.estaCerrando()).toBe(false);
+    });
+
+    it("false mientras el proceso espera la señal (fase 'esperando')", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso } = crearProcesoFalso();
+      const { logEvent } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+
+      void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir: vi.fn() });
+
+      expect(mod.estaCerrando()).toBe(false);
+    });
+
+    it("★ true en el MISMO tick síncrono de la señal, sin await ni avanzar el reloj, con salir 0 llamadas", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso, emitir } = crearProcesoFalso();
+      const { logEvent } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+      const salir = vi.fn();
+
+      void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir });
+      expect(mod.estaCerrando()).toBe(false);
+
+      emitir("SIGTERM");
+      // NADA de `await`, NADA de avance de reloj entre la señal y la lectura:
+      // si `estaCerrando()` recién fuera `true` en un microtask posterior, la
+      // ventana de O6 se rompería.
+      expect(mod.estaCerrando()).toBe(true);
+      expect(salir).not.toHaveBeenCalled();
+    });
+
+    it("true tras finalizarCierreHeadless (fase 'terminada', salir(0))", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso, emitir } = crearProcesoFalso();
+      const { logEvent } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+      const salir = vi.fn();
+      const deps = { proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir };
+
+      void mod.esperarSenalDeCierre(deps);
+      emitir("SIGTERM");
+      mod.finalizarCierreHeadless(deps);
+
+      expect(mod.estaCerrando()).toBe(true);
+      expect(salir).toHaveBeenCalledWith(0);
+    });
+
+    it("true tras vencer el watchdog del presupuesto (salir(1)) — la fase sigue siendo 'cerrando'", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso, emitir } = crearProcesoFalso();
+      const { logEvent } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+      const salir = vi.fn();
+
+      void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir });
+      emitir("SIGTERM");
+
+      await vi.advanceTimersByTimeAsync(70_000);
+
+      expect(salir).toHaveBeenCalledWith(1);
+      expect(mod.estaCerrando()).toBe(true);
+    });
+
+    it("100 llamadas sin efectos: no invoca proceso.on/off, armarTimer/desarmarTimer ni salir", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso, on, off, emitir } = crearProcesoFalso();
+      const { logEvent } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+      const salir = vi.fn();
+
+      void mod.esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir });
+      emitir("SIGTERM");
+      on.mockClear();
+      off.mockClear();
+      armarTimer.mockClear();
+      desarmarTimer.mockClear();
+      salir.mockClear();
+
+      for (let i = 0; i < 100; i += 1) {
+        mod.estaCerrando();
+      }
+
+      expect(on).not.toHaveBeenCalled();
+      expect(off).not.toHaveBeenCalled();
+      expect(armarTimer).not.toHaveBeenCalled();
+      expect(desarmarTimer).not.toHaveBeenCalled();
+      expect(salir).not.toHaveBeenCalled();
+    });
+
+    it("importar el módulo y llamar estaCerrando() NO toca process: 0 llamadas a proceso.on/off (H5)", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { on, off } = crearProcesoFalso();
+
+      expect(mod.estaCerrando()).toBe(false);
+      expect(mod.estaCerrando()).toBe(false);
+
+      expect(on).not.toHaveBeenCalled();
+      expect(off).not.toHaveBeenCalled();
+    });
+
+    it("una segunda señal no cambia la respuesta (sigue true) ni la resolución: 1 sola entrada cierre-senal-repetida (H4)", async () => {
+      const mod = await import("./proceso-cierre.js");
+      const { proceso, emitir } = crearProcesoFalso();
+      const { logEvent, eventos } = crearLogEventEspia();
+      const { armarTimer, desarmarTimer } = crearArmarDesarmarReales();
+      const salir = vi.fn();
+
+      let resueltoCon: string | undefined;
+      void mod
+        .esperarSenalDeCierre({ proceso, logEvent, env: {}, armarTimer, desarmarTimer, salir })
+        .then((senal) => {
+          resueltoCon = senal;
+        });
+
+      emitir("SIGTERM");
+      expect(mod.estaCerrando()).toBe(true);
+      await Promise.resolve();
+
+      emitir("SIGTERM");
+      expect(mod.estaCerrando()).toBe(true);
+      await Promise.resolve();
+
+      expect(resueltoCon).toBe("SIGTERM");
+      const repetidas = eventos.filter((e) => e.event === "cierre-senal-repetida");
+      expect(repetidas).toHaveLength(1);
+    });
+  });
 });
