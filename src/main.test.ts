@@ -2409,3 +2409,502 @@ describe("main.ts -- candado: orden de cierre de hoy sin OPS_PORT y cero funcion
     expect(eventosDeshabilitado).toHaveLength(3);
   });
 });
+
+/**
+ * ★★ ROJO (de ASERCIÓN) — `salud-operativa`, tarea 4.7 (S16-S19, criterio
+ * O6). Todavía NO hay wiring de los tres hechos reales en `main.ts` (llega
+ * en la tarea 4.8): `startOpsServer` sigue recibiendo el STUB INERTE de la
+ * tarea 3.5 (`estaCerrando: () => false, baseUtilizable: () => true,
+ * listenersCaidos: () => 0`), así que TODOS los tests de este bloque deben
+ * FALLAR a propósito.
+ *
+ * Estrategia (equivalente a "GET /salud/listo", sin reabrir la plomería
+ * HTTP que 4.3 ya cubre exhaustivamente): se captura `deps.salud` con el
+ * que `main.ts` invocó el `startOpsServer` mockeado (molde `reembolsosPort`,
+ * S16) y se alimenta DIRECTO a `evaluarReadiness` (ADR 258, ya unitario en
+ * 4.1) — es EXACTAMENTE lo que `server.ts` hace internamente al atender
+ * `GET /salud/listo` (4.4, ya unitario en 4.3). Lo que este bloque verifica
+ * es el WIRING (que `deps.salud` refleje el estado real de `main.ts`), no
+ * el ruteo HTTP, que ya tiene su propia cobertura.
+ */
+describe("main.ts -- los tres hechos de readiness inyectados en deps.salud (salud-operativa, tarea 4.7, S16-S19, O6)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+    process.env.OPS_PORT = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    vi.useRealTimers();
+  });
+
+  /** El `deps.salud` con el que `main.ts` invocó `startOpsServer`, capturado por ÍNDICE de llamada (molde `reembolsosPort`, S16). */
+  async function capturarSaludDeOps(indice = 0): Promise<{
+    readonly estaCerrando: () => boolean;
+    readonly baseUtilizable: () => boolean;
+    readonly listenersCaidos: () => number;
+  }> {
+    const { startOpsServer } = await import("./adapters/ops/index.js");
+    const llamada = vi.mocked(startOpsServer).mock.calls[indice];
+    if (llamada === undefined) {
+      throw new Error("test setup error: startOpsServer no fue invocado");
+    }
+    return (
+      llamada[0] as {
+        salud: { estaCerrando: () => boolean; baseUtilizable: () => boolean; listenersCaidos: () => number };
+      }
+    ).salud;
+  }
+
+  /** Evalúa `evaluarReadiness` sobre el `salud` capturado — mismo cálculo que `responderListo` de `server.ts` (4.4). */
+  async function evaluarListoDesde(salud: {
+    estaCerrando: () => boolean;
+    baseUtilizable: () => boolean;
+    listenersCaidos: () => number;
+  }): Promise<{ statusCode: number; cuerpo: string }> {
+    const { evaluarReadiness } = await import("./adapters/ops/readiness.js");
+    const motivo = evaluarReadiness({
+      cerrando: salud.estaCerrando(),
+      baseUtilizable: salud.baseUtilizable(),
+      listenersCaidos: salud.listenersCaidos(),
+    });
+    return { statusCode: motivo === undefined ? 200 : 503, cuerpo: motivo ?? "listo" };
+  }
+
+  it("(i, S16) deps.salud tiene EXACTAMENTE estaCerrando, baseUtilizable y listenersCaidos, las tres funciones; listenersCaidos() es number", async () => {
+    const { startWebServer } = await import("./adapters/web/index.js");
+    vi.mocked(startWebServer).mockRejectedValueOnce(new Error("EADDRINUSE"));
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const salud = await capturarSaludDeOps();
+
+    expect(Object.keys(salud).sort()).toEqual(["baseUtilizable", "estaCerrando", "listenersCaidos"]);
+    expect(salud.estaCerrando).toBeTypeOf("function");
+    expect(salud.baseUtilizable).toBeTypeOf("function");
+    expect(salud.listenersCaidos).toBeTypeOf("function");
+    expect(salud.listenersCaidos()).toBe(1);
+    expect(salud.listenersCaidos()).toBeTypeOf("number");
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("★★ (ii, S17, O6) 200 antes de la señal; 503 cerrando en el MISMO tick de SIGTERM sin await ni avanzar el reloj; persiste a 50000ms y tras una 2.ª señal", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const salud = await capturarSaludDeOps();
+
+    vi.useFakeTimers();
+
+    expect(salud.estaCerrando()).toBe(false);
+    const antes = await evaluarListoDesde(salud);
+    expect(antes.statusCode).toBe(200);
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    // ★★ SIN `await`, SIN avanzar el reloj entre la señal y esta lectura:
+    // O6 exige que el 503 exista DESDE el instante de la señal, no desde que
+    // el primer `close()` resuelve.
+    expect(salud.estaCerrando()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(50_000);
+    const tras50s = await evaluarListoDesde(salud);
+    expect(tras50s.statusCode).toBe(503);
+    expect(tras50s.cuerpo).toBe("cerrando");
+
+    procesoFalsoParaTest.emitir("SIGTERM"); // 2.ª señal: idempotente (H4)
+    const trasSegunda = await evaluarListoDesde(salud);
+    expect(trasSegunda.statusCode).toBe(503);
+    expect(trasSegunda.cuerpo).toBe("cerrando");
+
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  describe.each([
+    ["web", async () => (await import("./adapters/web/index.js")).startWebServer, "web-arranque-fallido"] as const,
+    [
+      "webhook",
+      async () => (await import("./adapters/webhooks/index.js")).startWebhookServer,
+      "webhook-arranque-fallido",
+    ] as const,
+    [
+      "a2a",
+      async () => (await import("./adapters/a2a/server-index.js")).startA2AServer,
+      "a2a-servidor-arranque-fallido",
+    ] as const,
+  ])("(iii, S18, R35) listener %s habilitado y caído vs. deshabilitado", (_nombre, obtenerStart, eventoFallido) => {
+    it(`lanza al arrancar ⇒ listenersCaidos()=1, 503 listener, y existe ${eventoFallido}`, async () => {
+      const startFn = await obtenerStart();
+      vi.mocked(startFn).mockRejectedValueOnce(new Error("EADDRINUSE"));
+
+      const { promesaImport } = await dispararImport();
+      const salud = await capturarSaludDeOps();
+
+      expect(salud.listenersCaidos()).toBe(1);
+      const resultado = await evaluarListoDesde(salud);
+      expect(resultado.statusCode).toBe(503);
+      expect(resultado.cuerpo).toBe("listener");
+
+      const { logTurnEvent } = await import("./core/logging/turn-logger.js");
+      const fallidos = vi.mocked(logTurnEvent).mock.calls.filter((llamada) => llamada[1] === eventoFallido);
+      expect(fallidos).toHaveLength(1);
+
+      procesoFalsoParaTest.emitir("SIGTERM");
+      await promesaImport.catch(() => {});
+    });
+
+    it("devuelve undefined SIN lanzar (deshabilitado a propósito) ⇒ listenersCaidos()=0, 200 listo", async () => {
+      // Los tres `startXServer` quedan en su default (`vi.fn()` sin
+      // `mockResolvedValueOnce`, molde ya establecido en este archivo):
+      // `await undefined` resuelve sin lanzar, igual que un gate cerrado.
+      const { promesaImport } = await dispararImport();
+      const salud = await capturarSaludDeOps();
+
+      expect(salud.listenersCaidos()).toBe(0);
+      const resultado = await evaluarListoDesde(salud);
+      expect(resultado.statusCode).toBe(200);
+
+      procesoFalsoParaTest.emitir("SIGTERM");
+      await promesaImport.catch(() => {});
+    });
+  });
+
+  it("(iii, S18) los tres deshabilitados a la vez ⇒ nace 200 listo", async () => {
+    const { promesaImport } = await dispararImport();
+    const salud = await capturarSaludDeOps();
+
+    expect(salud.listenersCaidos()).toBe(0);
+    const resultado = await evaluarListoDesde(salud);
+    expect(resultado.statusCode).toBe(200);
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(iii, S18) dos caídos (web y a2a) suman: listenersCaidos()=2", async () => {
+    const { startWebServer } = await import("./adapters/web/index.js");
+    const { startA2AServer } = await import("./adapters/a2a/server-index.js");
+    vi.mocked(startWebServer).mockRejectedValueOnce(new Error("EADDRINUSE"));
+    vi.mocked(startA2AServer).mockRejectedValueOnce(new Error("EADDRINUSE"));
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    await configurarAdaptadores({ webhook });
+
+    const { promesaImport } = await dispararImport();
+    const salud = await capturarSaludDeOps();
+
+    expect(salud.listenersCaidos()).toBe(2);
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(iii, S18) la caída de ops mismo NO suma a listenersCaidos", async () => {
+    const { startOpsServer } = await import("./adapters/ops/index.js");
+    vi.mocked(startOpsServer).mockRejectedValueOnce(new Error("EADDRINUSE"));
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const salud = await capturarSaludDeOps();
+
+    // `startOpsServer` rechazó, pero `deps.salud` ya se había construido
+    // ANTES de esa llamada (design.md §7.3, punto 5): los tres listeners de
+    // negocio arrancaron bien, así que el conteo sigue en 0 pese a la
+    // caída de `ops`.
+    expect(salud.listenersCaidos()).toBe(0);
+
+    const { logTurnEvent } = await import("./core/logging/turn-logger.js");
+    const { OPS_LOG_CORRELATION_ID } = await import("./adapters/ops/config.js");
+    const fallidos = vi.mocked(logTurnEvent).mock.calls.filter((llamada) => llamada[1] === "ops-arranque-fallido");
+    expect(fallidos).toHaveLength(1);
+    expect(fallidos[0]?.[0]).toBe(OPS_LOG_CORRELATION_ID);
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(iv, S19) db.prepare se invoca 1 vez con el SQL de la sonda; baseUtilizable() ⇒ true las 3 veces", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { default: DatabaseCtor } = await import("better-sqlite3");
+    const prepareSpy = vi.spyOn(
+      DatabaseCtor.prototype as unknown as { prepare: (sql: string) => unknown },
+      "prepare",
+    );
+
+    try {
+      const { promesaImport } = await dispararImport();
+      const salud = await capturarSaludDeOps();
+
+      const llamadasSonda = prepareSpy.mock.calls.filter(
+        (llamada) => llamada[0] === "SELECT 1 FROM sqlite_schema LIMIT 1",
+      );
+      expect(llamadasSonda).toHaveLength(1);
+
+      expect(salud.baseUtilizable()).toBe(true);
+      expect(salud.baseUtilizable()).toBe(true);
+      expect(salud.baseUtilizable()).toBe(true);
+      // `baseUtilizable()` ejecuta `get()` sobre la sentencia YA preparada:
+      // `db.prepare` para la sonda sigue en 1 sola llamada.
+      expect(
+        prepareSpy.mock.calls.filter((llamada) => llamada[0] === "SELECT 1 FROM sqlite_schema LIMIT 1"),
+      ).toHaveLength(1);
+
+      procesoFalsoParaTest.emitir("SIGTERM");
+      await promesaImport.catch(() => {});
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+
+  it("(iv, S19) get() que lanza Error('locked') ⇒ baseUtilizable() false SIN propagar, y 503 base", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { default: DatabaseCtor } = await import("better-sqlite3");
+    const prototipo = DatabaseCtor.prototype as unknown as {
+      prepare: (sql: string, ...resto: unknown[]) => { get: (...args: unknown[]) => unknown };
+    };
+    const prepareOriginal = prototipo.prepare;
+    const prepareSpy = vi.spyOn(prototipo, "prepare").mockImplementation(function (
+      this: unknown,
+      sql: string,
+      ...resto: unknown[]
+    ) {
+      const statement = prepareOriginal.apply(this, [sql, ...resto]);
+      if (sql === "SELECT 1 FROM sqlite_schema LIMIT 1") {
+        vi.spyOn(statement, "get").mockImplementation(() => {
+          throw new Error("locked");
+        });
+      }
+      return statement;
+    });
+
+    try {
+      const { promesaImport } = await dispararImport();
+      const salud = await capturarSaludDeOps();
+
+      expect(() => salud.baseUtilizable()).not.toThrow();
+      expect(salud.baseUtilizable()).toBe(false);
+      const resultado = await evaluarListoDesde(salud);
+      expect(resultado.statusCode).toBe(503);
+      expect(resultado.cuerpo).toBe("base");
+
+      procesoFalsoParaTest.emitir("SIGTERM");
+      await promesaImport.catch(() => {});
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+
+  it("(iv, S19) db.prepare que LANZA Error('closed') al arrancar ⇒ 1 ops-arranque-fallido{message⊇closed}; la importación no rechaza; startOpsServer 0 llamadas", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { default: DatabaseCtor } = await import("better-sqlite3");
+    const prototipo = DatabaseCtor.prototype as unknown as {
+      prepare: (sql: string, ...resto: unknown[]) => unknown;
+    };
+    const prepareOriginal = prototipo.prepare;
+    const prepareSpy = vi.spyOn(prototipo, "prepare").mockImplementation(function (
+      this: unknown,
+      sql: string,
+      ...resto: unknown[]
+    ) {
+      if (sql === "SELECT 1 FROM sqlite_schema LIMIT 1") {
+        throw new Error("closed");
+      }
+      return prepareOriginal.apply(this, [sql, ...resto]);
+    });
+
+    try {
+      const { startOpsServer } = await import("./adapters/ops/index.js");
+      const { logTurnEvent } = await import("./core/logging/turn-logger.js");
+      const { OPS_LOG_CORRELATION_ID } = await import("./adapters/ops/config.js");
+
+      const { promesaImport } = await dispararImport();
+
+      procesoFalsoParaTest.emitir("SIGTERM");
+      await expect(promesaImport).resolves.not.toThrow();
+
+      expect(vi.mocked(startOpsServer)).not.toHaveBeenCalled();
+      const fallidos = vi
+        .mocked(logTurnEvent)
+        .mock.calls.filter((llamada) => llamada[1] === "ops-arranque-fallido");
+      expect(fallidos).toHaveLength(1);
+      expect(fallidos[0]?.[0]).toBe(OPS_LOG_CORRELATION_ID);
+      expect(String((fallidos[0]?.[2] as { message?: unknown } | undefined)?.message)).toContain("closed");
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+
+  it("(v, test 21) en TUI, main.ts NUNCA invoca esperarSenalDeCierre: cero listeners de señal en todo el ciclo de vida", async () => {
+    // ★ Nota de diseño de este test (deviation declarada en el reporte de
+    // 4.7/4.8): NO se lee `salud.estaCerrando()` directo acá. `proceso-cierre.js`
+    // REAL queda capturado UNA sola vez por el `vi.mock` de este archivo
+    // (comentario del segundo `beforeEach`, arriba) y su `faseDeCierre`
+    // SOBREVIVE a `vi.resetModules()` entre tests: en HEADLESS eso se
+    // "autosana" porque cada test vuelve a llamar `esperarSenalDeCierre()`
+    // (su primera sentencia resetea a `"esperando"`), pero TUI NUNCA la
+    // llama, así que un test headless anterior de ESTE MISMO archivo puede
+    // dejar `estaCerrando()` en `true` sin que el wiring de TUI de ESTE test
+    // haya hecho nada -- no es un observable confiable a nivel de wiring. El
+    // valor `false` de `estaCerrando()` en modo TUI YA está probado, sin
+    // esta fuga, en `proceso-cierre.test.ts` (tarea 4.5, "false en modo TUI
+    // ... y en un montaje headless recién creado"). Acá se verifica el
+    // observable que SÍ es leak-proof: que el wiring de `main.ts` en modo
+    // TUI nunca registra un solo listener de señal (`esperarSenalDeCierre`
+    // nunca corre) -- que es, precisamente, la RAZÓN por la que
+    // `estaCerrando()` se mantiene falsa en TUI (design.md §6.5).
+    process.env.HARNESS_HEADLESS = "0";
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    let resolverSalidaTui: () => void = () => {};
+    const salidaTuiPromise = new Promise<void>((resolve) => {
+      resolverSalidaTui = resolve;
+    });
+    vi.mocked(startTui).mockImplementationOnce(() => ({
+      unmount: () => {},
+      waitUntilExit: () => salidaTuiPromise,
+    }));
+
+    const { promesaImport } = await dispararImport();
+    await capturarSaludDeOps();
+
+    for (const evento of ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"] as const) {
+      expect(procesoFalsoParaTest.contarListeners(evento)).toBe(0);
+    }
+
+    resolverSalidaTui();
+    await promesaImport.catch(() => {});
+
+    for (const evento of ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"] as const) {
+      expect(procesoFalsoParaTest.contarListeners(evento)).toBe(0);
+    }
+  });
+});
+
+/**
+ * ★ CANDADO (nace VERDE) — `salud-operativa`, tarea 4.9, S19. Se declara:
+ * verifica sobre una base `:memory:` REAL (no un doble) lo que los
+ * unitarios de 4.7 ya dirigieron -- su valor es de NO-REGRESIÓN (red de
+ * seguridad del orden ADR 10: la sonda no debe lanzar ni aunque `db.close()`
+ * ya haya corrido) y se prueba por MUTACIÓN M5 en la tarea 4.10
+ * (`mutaciones-slice-d.md`). `npm test` queda verde al crearlo.
+ */
+describe("main.ts -- candado: baseUtilizable() sobre una base :memory: REAL, sana y tras db.close() (salud-operativa, tarea 4.9, S19)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+    process.env.OPS_PORT = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  it("base :memory: real con esquema aplicado ⇒ baseUtilizable() true; tras db.close() ⇒ false SIN lanzar", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { startOpsServer } = await import("./adapters/ops/index.js");
+    const { promesaImport } = await dispararImport();
+
+    const llamada = vi.mocked(startOpsServer).mock.calls[0];
+    if (llamada === undefined) {
+      throw new Error("test setup error: startOpsServer no fue invocado");
+    }
+    const salud = (llamada[0] as { salud: { baseUtilizable: () => boolean } }).salud;
+
+    expect(salud.baseUtilizable()).toBe(true);
+
+    // Cierra la base REAL a mano, ANTES de la señal -- red de seguridad del
+    // orden ADR 10: la sonda ya preparada NUNCA debe lanzar, ni siquiera
+    // sobre un handle cerrado por otra vía.
+    obtenerDbOLanzar().close();
+    expect(() => salud.baseUtilizable()).not.toThrow();
+    expect(salud.baseUtilizable()).toBe(false);
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+});
