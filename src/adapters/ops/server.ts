@@ -66,19 +66,31 @@ export interface OpsServerHandle {
   close(): Promise<void>;
 }
 
+/**
+ * `Cache-Control: no-store` + `Connection: close` (S7) — compartido por las
+ * tres funciones de abajo (`responderVivo`, `responderNoEncontrado`,
+ * `responderListo`), molde de `aplicarHeadersNoStore` en
+ * `web/server.ts:274` (Reviewer finding, reuse). NO importado desde `web/`:
+ * `src/adapters/ops/` no puede importar de otro adaptador (S5) — es una
+ * copia local del mismo patrón, no el mismo símbolo. `Content-Type` queda
+ * FUERA de este helper porque `responderNoEncontrado` (404) nunca lo fija.
+ */
+function aplicarHeadersComunes(res: OpsResponse): void {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Connection", "close");
+}
+
 /** Recorta la URL en el primer `?` — NO: S-a exige comparación LITERAL, así que NO se recorta acá (a diferencia de webhooks). */
 function responderVivo(res: OpsResponse, conCuerpo: boolean): void {
   res.statusCode = 200;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "close");
+  aplicarHeadersComunes(res);
   res.end(conCuerpo ? CUERPO_VIVO : undefined);
 }
 
 function responderNoEncontrado(res: OpsResponse): void {
   res.statusCode = 404;
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "close");
+  aplicarHeadersComunes(res);
   res.end();
 }
 
@@ -96,8 +108,7 @@ function responderListo(deps: OpsServerDeps, res: OpsResponse, conCuerpo: boolea
   });
   res.statusCode = motivo === undefined ? 200 : 503;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "close");
+  aplicarHeadersComunes(res);
   res.end(conCuerpo ? (motivo ?? CUERPO_LISTO) : undefined);
 }
 
