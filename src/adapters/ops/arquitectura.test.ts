@@ -6,8 +6,11 @@
  * tercero de turno" (Claude, GitHub, `graphify`, otro adaptador). Se valida
  * por MUTACIÓN en la tarea 2.6 (M3: agregar un import a `web/config.ts`).
  *
- * `readiness.ts` no existe todavía en este PR (nace en el slice D, tarea
- * 4.1): el escenario "readiness.ts no tiene ningún import" se agrega ahí.
+ * `readiness.ts` nace en el slice D (tarea 4.1) con el escenario adicional
+ * de abajo: cero líneas de import en ese archivo puntual (S5, S14) —
+ * duplicado a propósito con el test dedicado de `readiness.test.ts`, que
+ * es el rojo de tipo original; este es el candado estructural que barre
+ * TODOS los archivos, no solo ese uno.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -129,5 +132,10 @@ describe("Arquitectura — src/adapters/ops/ no importa de otro adaptador ni hac
 
     expect(contenido).toMatch(/closeIdleConnections\(\):\s*unknown;/);
     expect(contenido).not.toMatch(/closeIdleConnections\?\(/);
+  });
+
+  it("readiness.ts no tiene ninguna línea de import (S5, S14, slice D)", () => {
+    const contenido = readFileSync(join(OPS_DIR, "readiness.ts"), "utf-8");
+    expect(contenido).not.toMatch(/^\s*import\b/m);
   });
 });
