@@ -106,6 +106,48 @@ describe("resolveWebhookConfig", () => {
   });
 });
 
+describe("resolveWebhookConfig — WEBHOOK_HOST (modo-headless-cierre-limpio, tarea 4.3, E2, R21)", () => {
+  it.each([
+    ["missing", undefined],
+    ["empty string", ""],
+    ["blank (spaces only)", "   "],
+  ])("omits the host KEY (never host: undefined) when WEBHOOK_HOST is %s", (_label, value) => {
+    const config = resolveWebhookConfig({
+      GITHUB_WEBHOOK_SECRET: "s3cr3t",
+      ...(value === undefined ? {} : { WEBHOOK_HOST: value }),
+    });
+
+    expect("host" in config).toBe(false);
+    expect(Object.keys(config)).not.toContain("host");
+  });
+
+  it.each(["127.0.0.1", "::1", "0.0.0.0"])(
+    "passes WEBHOOK_HOST=%s through as host, exactly as configured",
+    (host) => {
+      const config = resolveWebhookConfig({ GITHUB_WEBHOOK_SECRET: "s3cr3t", WEBHOOK_HOST: host });
+
+      expect(config.host).toBe(host);
+    },
+  );
+
+  it("trims incidental blanks around a non-blank WEBHOOK_HOST", () => {
+    const config = resolveWebhookConfig({ WEBHOOK_HOST: "  127.0.0.1  " });
+
+    expect(config.host).toBe("127.0.0.1");
+  });
+
+  it("does not alter port, path nor the GITHUB_WEBHOOK_SECRET switch (WEBHOOK_HOST alone never enables the listener)", () => {
+    const soloHost = resolveWebhookConfig({ WEBHOOK_HOST: "127.0.0.1" });
+    const conSecreto = resolveWebhookConfig({ GITHUB_WEBHOOK_SECRET: "s3cr3t", WEBHOOK_HOST: "127.0.0.1" });
+
+    expect(soloHost.port).toBe(DEFAULT_WEBHOOK_PORT);
+    expect(soloHost.path).toBe(DEFAULT_WEBHOOK_PATH);
+    expect(isWebhookEnabled(soloHost)).toBe(false);
+    expect(conSecreto.port).toBe(DEFAULT_WEBHOOK_PORT);
+    expect(isWebhookEnabled(conSecreto)).toBe(true);
+  });
+});
+
 describe("isWebhookEnabled", () => {
   it("returns false when secret is empty", () => {
     expect(isWebhookEnabled(resolveWebhookConfig({ GITHUB_WEBHOOK_SECRET: "" }))).toBe(false);

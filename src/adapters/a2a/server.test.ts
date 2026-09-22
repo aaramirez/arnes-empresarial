@@ -15,6 +15,7 @@ import {
   METODO_CANCEL_TASK,
   METODO_GET_TASK,
   METODO_SEND_MESSAGE,
+  resolveA2AServerConfig,
   RUTA_AGENT_CARD,
   RUTA_JSONRPC,
   type A2AServerConfig,
@@ -1009,8 +1010,11 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
   } {
     let capturedListener: ((req: A2ARequest, res: A2AResponse) => void) | undefined;
     const server = {
-      listen: vi.fn((_port: number, callback: () => void) => {
-        callback();
+      // Variádico (modo-headless-cierre-limpio, tarea 4.5): `listen(port, cb)`
+      // sin host o `listen(port, host, cb)` con host -- el callback es SIEMPRE
+      // el último argumento; los tests de aridad leen `listen.mock.calls`.
+      listen: vi.fn((...args: unknown[]) => {
+        (args[args.length - 1] as () => void)();
       }),
       close: vi.fn((callback: (error?: Error) => void) => {
         callback();
@@ -1368,6 +1372,103 @@ describe("startServer — tope de turnos en vuelo, drenaje y puerto efectivo (Hi
       const { res: res3 } = postSendMessage(listener, "req-3");
       await esperarRespuesta(res3);
       expect(resultState(res3)).toBe("TASK_STATE_SUBMITTED");
+    });
+  });
+
+  /**
+   * `modo-headless-cierre-limpio`, tarea 4.5 (E2, R21, design §0.6 y §7.3): el
+   * invariante de "sin `HARNESS_A2A_ENTRANTE_HOST` no se cambia el bind actual"
+   * es de ARIDAD de `listen`, no de semántica de red. `listen(port, cb)` (2
+   * args) es EXACTAMENTE lo de hoy; `listen(port, host, cb)` (3 args) solo con
+   * el host no blanco. El default NUNCA es `"0.0.0.0"`/`"::"`/`"localhost"`/`""`.
+   * NO hay test nuevo de `closeIdleConnections`: ya existe arriba ("close()
+   * invokes server.closeIdleConnections() ...").
+   */
+  describe("HARNESS_A2A_ENTRANTE_HOST y la aridad de listen (modo-headless-cierre-limpio, tarea 4.5, E2, R21)", () => {
+    const LITERALES_PROHIBIDOS_POR_DEFECTO = ["0.0.0.0", "::", "localhost", ""];
+    const ENV_BASE = { HARNESS_A2A_ENTRANTE_TOKEN: TOKEN, HARNESS_A2A_ENTRANTE_PORT: "8888" };
+
+    it("sin HARNESS_A2A_ENTRANTE_HOST, listen recibe EXACTAMENTE dos argumentos: el puerto (numero) y el callback (funcion)", async () => {
+      const deps = makeDeps({ config: resolveA2AServerConfig(ENV_BASE) });
+      const { createServer, server } = makeFakeA2AHttpServer();
+
+      await startServer(deps, createServer);
+
+      expect(server.listen).toHaveBeenCalledTimes(1);
+      const args = server.listen.mock.calls[0] as unknown[];
+      expect(args).toHaveLength(2);
+      expect(args[0]).toBe(8888);
+      expect(args[1]).toBeTypeOf("function");
+    });
+
+    it("sin HARNESS_A2A_ENTRANTE_HOST, ningun argumento de listen es un string ni uno de los literales '0.0.0.0', '::', 'localhost' o ''", async () => {
+      const deps = makeDeps({ config: resolveA2AServerConfig(ENV_BASE) });
+      const { createServer, server } = makeFakeA2AHttpServer();
+
+      await startServer(deps, createServer);
+
+      const args = server.listen.mock.calls[0] as unknown[];
+      expect(args.length).toBeGreaterThan(0);
+      for (const arg of args) {
+        expect(typeof arg).not.toBe("string");
+        expect(LITERALES_PROHIBIDOS_POR_DEFECTO).not.toContain(arg);
+      }
+    });
+
+    it.each(["127.0.0.1", "::1", "0.0.0.0"])(
+      "con HARNESS_A2A_ENTRANTE_HOST=%s, listen recibe TRES argumentos en el orden puerto, host identico al configurado, callback",
+      async (host) => {
+        const deps = makeDeps({ config: resolveA2AServerConfig({ ...ENV_BASE, HARNESS_A2A_ENTRANTE_HOST: host }) });
+        const { createServer, server } = makeFakeA2AHttpServer();
+
+        await startServer(deps, createServer);
+
+        const args = server.listen.mock.calls[0] as unknown[];
+        expect(args).toHaveLength(3);
+        expect(args[0]).toBe(8888);
+        expect(args[1]).toBe(host);
+        expect(args[2]).toBeTypeOf("function");
+      },
+    );
+
+    it.each([
+      ["empty string", ""],
+      ["blank (spaces only)", "   "],
+    ])("con HARNESS_A2A_ENTRANTE_HOST %s equivale a ausente: listen recibe DOS argumentos", async (_label, valor) => {
+      const deps = makeDeps({ config: resolveA2AServerConfig({ ...ENV_BASE, HARNESS_A2A_ENTRANTE_HOST: valor }) });
+      const { createServer, server } = makeFakeA2AHttpServer();
+
+      await startServer(deps, createServer);
+
+      const args = server.listen.mock.calls[0] as unknown[];
+      expect(args).toHaveLength(2);
+      expect(args[0]).toBe(8888);
+      expect(args[1]).toBeTypeOf("function");
+    });
+
+    it("con un host no enlazable (listen emite 'error'), startServer rechaza con ESE error -- camino vigente de a2a-servidor-arranque-fallido", async () => {
+      const error = new Error("EADDRNOTAVAIL");
+      let errorListener: ((error: Error) => void) | undefined;
+      const listen = vi.fn(() => {
+        errorListener?.(error);
+      });
+      const createServer: CreateA2AServerFn = () => ({
+        listen,
+        close: vi.fn(),
+        address: vi.fn(() => null),
+        on: vi.fn((event: string, listener: (error: Error) => void) => {
+          if (event === "error") {
+            errorListener = listener;
+          }
+        }),
+        closeIdleConnections: vi.fn(),
+      });
+      const deps = makeDeps({ config: makeConfig({ host: "203.0.113.9" }) });
+
+      await expect(startServer(deps, createServer)).rejects.toBe(error);
+
+      expect(listen).toHaveBeenCalledTimes(1);
+      expect(listen).toHaveBeenCalledWith(8888, "203.0.113.9", expect.any(Function));
     });
   });
 });

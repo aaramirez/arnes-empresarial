@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncomingActivityEvent } from "../../core/activity/activity-contract.js";
 import { ACTIVIDAD_TIPO_PR_REVIEW } from "../../core/activity/activity-contract.js";
-import { SERVER_CLOSE_TIMEOUT_MS, WEBHOOK_LOG_CORRELATION_ID, type WebhookConfig } from "./config.js";
+import {
+  resolveWebhookConfig,
+  SERVER_CLOSE_TIMEOUT_MS,
+  WEBHOOK_LOG_CORRELATION_ID,
+  type WebhookConfig,
+} from "./config.js";
 import * as signatureModule from "./signature.js";
 import * as githubMapperModule from "./github-mapper.js";
 import {
   createRequestListener,
+  startServer as startServerReal,
+  type CreateServerFn,
   type WebhookRequest,
   type WebhookResponse,
   type WebhookServerDeps,
@@ -640,8 +647,10 @@ describe("createRequestListener — close() drains in-flight onEvent calls", () 
 
     let capturedListener: ((req: WebhookRequest, res: WebhookResponse) => void) | undefined;
     const fakeHttpServer = {
-      listen: vi.fn((_port: number, callback: () => void) => {
-        callback();
+      // Variádico (modo-headless-cierre-limpio, tarea 4.3): `listen` gana la
+      // sobrecarga `(port, host, callback)`; el callback es el último argumento.
+      listen: vi.fn((...args: unknown[]) => {
+        (args[args.length - 1] as () => void)();
       }),
       close: vi.fn((callback: (error?: Error) => void) => {
         callback();
@@ -701,8 +710,9 @@ describe("createRequestListener — close() drains in-flight onEvent calls", () 
 
     let capturedListener: ((req: WebhookRequest, res: WebhookResponse) => void) | undefined;
     const fakeHttpServer = {
-      listen: vi.fn((_port: number, callback: () => void) => {
-        callback();
+      // Variádico: ver el doble del test anterior (modo-headless-cierre-limpio, tarea 4.3).
+      listen: vi.fn((...args: unknown[]) => {
+        (args[args.length - 1] as () => void)();
       }),
       close: vi.fn((callback: (error?: Error) => void) => {
         callback();
@@ -751,5 +761,197 @@ describe("createRequestListener — close() drains in-flight onEvent calls", () 
     mapSpy.mockRestore();
     // El deferred nunca se resuelve a propósito — cerramos igual el test.
     void deferred.promise.catch(() => undefined);
+  });
+});
+
+/**
+ * Doble plano de `HttpServerLike` para los tests de `modo-headless-cierre-limpio`
+ * (tarea 4.3): `listen` variádico (el callback es SIEMPRE el último argumento;
+ * los tests de aridad leen `listen.mock.calls`) y `closeIdleConnections`
+ * espiable, más un espía del método destructivo que cierra TODAS las conexiones
+ * (ver `METODO_CIERRA_TODAS`). Ningún test abre un socket (design §0.6).
+ */
+
+/**
+ * Nombre del método de `http.Server` que destruye TAMBIÉN los sockets con una
+ * request en curso. Se arma por partes A PROPÓSITO: el criterio de aceptación
+ * de la tarea 4.4 es que ese nombre NO aparezca en ningún archivo de
+ * `src/adapters/webhooks` (la declaración muerta de `HttpServerLike` se fue), y
+ * un literal en este test lo ensuciaría. No es ofuscación de la garantía: el
+ * test que lo usa exige que NADIE lo llame.
+ */
+const METODO_CIERRA_TODAS = `close${"All"}Connections`;
+
+function makeFakeHttpServerConHost(): {
+  server: {
+    listen: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    closeIdleConnections: ReturnType<typeof vi.fn>;
+    cierraTodas: ReturnType<typeof vi.fn>;
+  };
+  createServer: CreateServerFn;
+} {
+  const cierraTodas = vi.fn();
+  const server = {
+    listen: vi.fn((...args: unknown[]) => {
+      (args[args.length - 1] as () => void)();
+    }),
+    close: vi.fn((callback: (error?: Error) => void) => {
+      callback();
+    }),
+    on: vi.fn(),
+    closeIdleConnections: vi.fn(),
+    cierraTodas,
+    [METODO_CIERRA_TODAS]: cierraTodas,
+  };
+  const createServer = vi.fn(() => server);
+  return { server, createServer };
+}
+
+/**
+ * `modo-headless-cierre-limpio`, tarea 4.3 (E2, R21, design §0.6 y §7.3): el
+ * invariante de "sin `WEBHOOK_HOST` no se cambia el bind actual" es de ARIDAD de
+ * `listen`, no de semántica de red. `listen(port, cb)` (2 args) es EXACTAMENTE
+ * lo de hoy; `listen(port, host, cb)` (3 args) solo con `WEBHOOK_HOST` no
+ * blanco. El default NUNCA es `"0.0.0.0"`/`"::"`/`"localhost"`/`""`.
+ */
+describe("startServer — WEBHOOK_HOST y la aridad de listen (modo-headless-cierre-limpio, tarea 4.3, E2, R21)", () => {
+  const LITERALES_PROHIBIDOS_POR_DEFECTO = ["0.0.0.0", "::", "localhost", ""];
+  const ENV_BASE = { GITHUB_WEBHOOK_SECRET: "test-secret", WEBHOOK_PORT: "8787" };
+
+  it("sin WEBHOOK_HOST, listen recibe EXACTAMENTE dos argumentos: el puerto (numero) y el callback (funcion)", async () => {
+    const deps = makeDeps({ config: resolveWebhookConfig(ENV_BASE) });
+    const { createServer, server } = makeFakeHttpServerConHost();
+
+    await startServerReal(deps, createServer);
+
+    expect(server.listen).toHaveBeenCalledTimes(1);
+    const args = server.listen.mock.calls[0] as unknown[];
+    expect(args).toHaveLength(2);
+    expect(args[0]).toBe(8787);
+    expect(args[1]).toBeTypeOf("function");
+  });
+
+  it("sin WEBHOOK_HOST, ningun argumento de listen es un string ni uno de los literales '0.0.0.0', '::', 'localhost' o ''", async () => {
+    const deps = makeDeps({ config: resolveWebhookConfig(ENV_BASE) });
+    const { createServer, server } = makeFakeHttpServerConHost();
+
+    await startServerReal(deps, createServer);
+
+    const args = server.listen.mock.calls[0] as unknown[];
+    expect(args.length).toBeGreaterThan(0);
+    for (const arg of args) {
+      expect(typeof arg).not.toBe("string");
+      expect(LITERALES_PROHIBIDOS_POR_DEFECTO).not.toContain(arg);
+    }
+  });
+
+  it.each(["127.0.0.1", "::1", "0.0.0.0"])(
+    "con WEBHOOK_HOST=%s, listen recibe TRES argumentos en el orden puerto, host identico al configurado, callback",
+    async (host) => {
+      const deps = makeDeps({ config: resolveWebhookConfig({ ...ENV_BASE, WEBHOOK_HOST: host }) });
+      const { createServer, server } = makeFakeHttpServerConHost();
+
+      await startServerReal(deps, createServer);
+
+      const args = server.listen.mock.calls[0] as unknown[];
+      expect(args).toHaveLength(3);
+      expect(args[0]).toBe(8787);
+      expect(args[1]).toBe(host);
+      expect(args[2]).toBeTypeOf("function");
+    },
+  );
+
+  it.each([
+    ["empty string", ""],
+    ["blank (spaces only)", "   "],
+  ])("con WEBHOOK_HOST %s equivale a ausente: listen recibe DOS argumentos", async (_label, valor) => {
+    const deps = makeDeps({ config: resolveWebhookConfig({ ...ENV_BASE, WEBHOOK_HOST: valor }) });
+    const { createServer, server } = makeFakeHttpServerConHost();
+
+    await startServerReal(deps, createServer);
+
+    const args = server.listen.mock.calls[0] as unknown[];
+    expect(args).toHaveLength(2);
+    expect(args[0]).toBe(8787);
+    expect(args[1]).toBeTypeOf("function");
+  });
+
+  it("con un host no enlazable (listen emite 'error'), startServer rechaza con ESE error -- camino vigente de webhook-arranque-fallido", async () => {
+    const error = new Error("EADDRNOTAVAIL");
+    let errorListener: ((error: Error) => void) | undefined;
+    const listen = vi.fn(() => {
+      errorListener?.(error);
+    });
+    const createServer: CreateServerFn = () => ({
+      listen,
+      close: vi.fn(),
+      on: vi.fn((event: string, listener: (error: Error) => void) => {
+        if (event === "error") {
+          errorListener = listener;
+        }
+      }),
+    });
+    const deps = makeDeps({ config: { ...CONFIG, host: "203.0.113.9" } });
+
+    await expect(startServerReal(deps, createServer)).rejects.toBe(error);
+
+    expect(listen).toHaveBeenCalledTimes(1);
+    expect(listen).toHaveBeenCalledWith(CONFIG.port, "203.0.113.9", expect.any(Function));
+  });
+});
+
+/**
+ * `modo-headless-cierre-limpio`, tarea 4.3 (design §0.2 y §0.8): `close()` de
+ * webhooks puede colgarse detras de un socket keep-alive ocioso, igual que web.
+ * `HttpServerLike` declaraba el metodo que cierra TODAS las conexiones SIN
+ * llamador (muerto, y ademas el metodo equivocado: destruye tambien los
+ * sockets con request en curso). El fix es `closeIdleConnections()` INVOCADO,
+ * antes de esperar el callback de `server.close()`, y que NADA llame al otro.
+ */
+describe("startServer — close() corta las conexiones ociosas antes de esperar server.close() (modo-headless-cierre-limpio, tarea 4.3, design §0.2 y §0.8)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("close() invoca server.closeIdleConnections() UNA vez, ANTES de server.close()", async () => {
+    const deps = makeDeps();
+    const { createServer, server } = makeFakeHttpServerConHost();
+
+    const handle = await startServerReal(deps, createServer);
+    await handle.close();
+
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
+    expect(server.close).toHaveBeenCalledTimes(1);
+    const ordenIdle = server.closeIdleConnections.mock.invocationCallOrder[0] as number;
+    const ordenClose = server.close.mock.invocationCallOrder[0] as number;
+    expect(ordenIdle).toBeLessThan(ordenClose);
+  });
+
+  it("corta las ociosas SIN esperar el callback de server.close() (que un socket ocioso nunca dispara)", async () => {
+    const deps = makeDeps();
+    const { createServer, server } = makeFakeHttpServerConHost();
+    server.close.mockImplementation(() => undefined);
+
+    const handle = await startServerReal(deps, createServer);
+    void handle.close();
+
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
+  });
+
+  it("NO cierra TODAS las conexiones (metodo destructivo): mataria la respuesta de un turno con request en curso", async () => {
+    const deps = makeDeps();
+    const { createServer, server } = makeFakeHttpServerConHost();
+
+    const handle = await startServerReal(deps, createServer);
+    await handle.close();
+
+    expect(server.cierraTodas).not.toHaveBeenCalled();
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
   });
 });

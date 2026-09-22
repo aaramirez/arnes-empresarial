@@ -45,8 +45,25 @@ export interface WebhookResponse {
 
 export interface HttpServerLike {
   listen(port: number, callback: () => void): unknown;
+  /** `modo-headless-cierre-limpio` (E2, RD-123): solo con `WEBHOOK_HOST` no blanco. */
+  listen(port: number, host: string, callback: () => void): unknown;
   close(callback: (error?: Error) => void): unknown;
-  closeAllConnections?(): void;
+  /**
+   * Fuerza el cierre de conexiones keep-alive OCIOSAS (Node 18.2+), sin
+   * afectar las que tienen una request en curso (`modo-headless-cierre-limpio`,
+   * design §0.2 y §0.8). REEMPLAZA a la declaracion muerta del metodo que
+   * cierra TODAS las conexiones: estaba sin llamador y era el metodo
+   * equivocado (destruye tambien los sockets con request en curso).
+   *
+   * ★ Decisión deliberada (hallazgo 2, revisión post-Reviewer): queda
+   * opcional (a diferencia de `a2a/server.ts`, que lo declara obligatorio)
+   * porque el doble de `index.test.ts` no implementa `closeIdleConnections`
+   * y ese doble SÍ ejercita `close()`. Forzarlo obligatorio no fallaría en
+   * el compilador (el doble se castea vía `unknown`), pero rompería ese
+   * test en runtime. Opcional + `?.()` es la opción de menor riesgo mientras
+   * ese doble no se actualice.
+   */
+  closeIdleConnections?(): void;
   on(event: "error", listener: (error: Error) => void): unknown;
 }
 
@@ -290,7 +307,7 @@ export function startServer(
       reject(error);
     });
 
-    server.listen(deps.config.port, () => {
+    const alListen = (): void => {
       if (settled) {
         return;
       }
@@ -300,6 +317,14 @@ export function startServer(
         port: deps.config.port,
         close(): Promise<void> {
           return new Promise((resolveClose) => {
+            // `modo-headless-cierre-limpio` (design §0.2): corta las conexiones
+            // keep-alive OCIOSAS ANTES de esperar el callback de `server.close()`
+            // -- sin esto ese callback no llega hasta que TODAS las conexiones
+            // cierran y un solo cliente ocioso se come el presupuesto de cierre.
+            // Solo las OCIOSAS, NO todas: cerrar todas mataria tambien la
+            // respuesta del turno en curso. No toca el `race` de
+            // `SERVER_CLOSE_TIMEOUT_MS` de abajo.
+            server.closeIdleConnections?.();
             server.close(() => {
               const drenaje = Promise.allSettled([...enVuelo]).then(() => undefined);
               const timeout = new Promise<"timeout">((resolveTimeout) => {
@@ -322,6 +347,16 @@ export function startServer(
       };
 
       resolve(handle);
-    });
+    };
+
+    // `modo-headless-cierre-limpio` (E2, R21, design §7.3): SIN `WEBHOOK_HOST`,
+    // `listen` recibe EXACTAMENTE dos argumentos, como siempre (Node escucha en
+    // `::`, IPv4 e IPv6; `"0.0.0.0"` NO es equivalente). Con `host`, tres, en el
+    // orden puerto/host/callback.
+    if (deps.config.host === undefined) {
+      server.listen(deps.config.port, alListen);
+    } else {
+      server.listen(deps.config.port, deps.config.host, alListen);
+    }
   });
 }

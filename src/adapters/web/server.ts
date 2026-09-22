@@ -966,7 +966,7 @@ export function startServer(
       reject(error);
     });
 
-    server.listen(deps.config.port, () => {
+    const alListen = (): void => {
       if (settled) {
         return;
       }
@@ -976,6 +976,14 @@ export function startServer(
         port: deps.config.port,
         close(): Promise<void> {
           return new Promise((resolveClose) => {
+            // `modo-headless-cierre-limpio` (design §0.2): corta las conexiones
+            // keep-alive OCIOSAS ANTES de esperar el callback de `server.close()`
+            // -- sin esto ese callback no llega hasta que TODAS las conexiones
+            // cierran y un solo navegador ocioso se come el presupuesto de
+            // cierre. `closeIdleConnections`, NO `closeAllConnections`: este
+            // ultimo mataria tambien la respuesta del turno en curso. No toca
+            // el `race` de `WEB_CLOSE_TIMEOUT_MS` de abajo.
+            server.closeIdleConnections?.();
             server.close(() => {
               const drenaje = Promise.allSettled([...enVuelo]).then(() => undefined);
               const timeout = new Promise<"timeout">((resolveTimeout) => {
@@ -996,6 +1004,16 @@ export function startServer(
       };
 
       resolve(handle);
-    });
+    };
+
+    // `modo-headless-cierre-limpio` (E2, R21, design §7.3): SIN `WEB_HOST`,
+    // `listen` recibe EXACTAMENTE dos argumentos, como siempre (Node escucha en
+    // `::`, IPv4 e IPv6; `"0.0.0.0"` NO es equivalente). Con `host`, tres, en el
+    // orden puerto/host/callback.
+    if (deps.config.host === undefined) {
+      server.listen(deps.config.port, alListen);
+    } else {
+      server.listen(deps.config.port, deps.config.host, alListen);
+    }
   });
 }

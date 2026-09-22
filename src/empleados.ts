@@ -1,10 +1,11 @@
 /**
  * Entrypoint de provisioning de credenciales de empleado (`tui-canal-empleado`,
  * ADR 33). Molde EXACTO de `src/reporte-mensual.ts` (verificado línea por
- * línea): parte pura testeada directo, `openDatabase("data/harness.db")`
- * (misma función y mismo path que `main.ts`, corre las migraciones si
- * faltan), `db.close()` en un `finally`, guard `isMainModule`, `stdout`
- * legítimo por ser un proceso sin TUI montada.
+ * línea): parte pura testeada directo, la base se abre por `resolveDbPath`
+ * (mismo resolver y mismo path que `main.ts`, `HARNESS_DB_PATH`/default
+ * `data/harness.db`, modo-headless-cierre-limpio RD-122, corre las
+ * migraciones si faltan), `db.close()` en un `finally`, guard
+ * `isMainModule`, `stdout` legítimo por ser un proceso sin TUI montada.
  *
  * `package.json`'s `empleados:crear` script apunta acá (`tsx
  * src/empleados.ts`). Uso:
@@ -28,6 +29,7 @@ import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { hashPassword } from "./adapters/crypto/password.js";
 import { openDatabase } from "./adapters/memory/db.js";
+import { resolveDbPath } from "./adapters/memory/config.js";
 import {
   buscarCredencialEmpleado,
   CredencialEmpleadoDuplicadaError,
@@ -210,7 +212,7 @@ export async function main(): Promise<void> {
   }
 
   if (parsed.modo === "asignar-rol") {
-    const db = openDatabase("data/harness.db");
+    const db = openDatabase(resolveDbPath());
     try {
       const credencial = buscarCredencialEmpleado(db, parsed.empleadoId);
       if (credencial === undefined) {
@@ -234,7 +236,7 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const db = openDatabase("data/harness.db");
+  const db = openDatabase(resolveDbPath());
   try {
     const ahora = new Date().toISOString();
     if (parsed.modo === "alta") {

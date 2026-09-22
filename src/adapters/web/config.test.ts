@@ -119,6 +119,41 @@ describe("resolveWebConfig", () => {
   });
 });
 
+describe("resolveWebConfig — WEB_HOST (modo-headless-cierre-limpio, tarea 4.1, E2, R21)", () => {
+  it.each([
+    ["missing", undefined],
+    ["empty string", ""],
+    ["blank (spaces only)", "   "],
+  ])("omits the host KEY (never host: undefined) when WEB_HOST is %s", (_label, value) => {
+    const config = resolveWebConfig({ WEB_PORT: "8080", ...(value === undefined ? {} : { WEB_HOST: value }) });
+
+    expect("host" in config).toBe(false);
+    expect(Object.keys(config)).not.toContain("host");
+  });
+
+  it.each(["127.0.0.1", "::1", "0.0.0.0"])("passes WEB_HOST=%s through as host, exactly as configured", (host) => {
+    const config = resolveWebConfig({ WEB_PORT: "8080", WEB_HOST: host });
+
+    expect(config.host).toBe(host);
+  });
+
+  it("trims incidental blanks around a non-blank WEB_HOST", () => {
+    const config = resolveWebConfig({ WEB_PORT: "8080", WEB_HOST: "  127.0.0.1  " });
+
+    expect(config.host).toBe("127.0.0.1");
+  });
+
+  it("does not alter port nor the WEB_PORT > 0 switch (WEB_HOST alone never enables the listener)", () => {
+    const soloHost = resolveWebConfig({ WEB_HOST: "127.0.0.1" });
+    const conPuerto = resolveWebConfig({ WEB_PORT: "8080", WEB_HOST: "127.0.0.1" });
+
+    expect(soloHost.port).toBe(0);
+    expect(isWebEnabled(soloHost)).toBe(false);
+    expect(conPuerto.port).toBe(8080);
+    expect(isWebEnabled(conPuerto)).toBe(true);
+  });
+});
+
 describe("isWebEnabled", () => {
   it("returns false when port is 0", () => {
     expect(isWebEnabled(resolveWebConfig({}))).toBe(false);

@@ -29,9 +29,10 @@
  * sus argumentos.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { CONSULTAS_MCP_SERVER_NAME, CONSULTAS_TOOL_NAME } from "./core/agents/consultas-negocio-tool.js";
+import { insertAccionEmpleado } from "./adapters/memory/repository.js";
 
 /**
  * Capturado por el mock de `openDatabase` de abajo — mismo `:memory:` REAL
@@ -40,12 +41,20 @@ import { CONSULTAS_MCP_SERVER_NAME, CONSULTAS_TOOL_NAME } from "./core/agents/co
  * pueden sembrar filas ANTES de invocar la tool, sin mockear `repository.ts`.
  */
 let dbCapturadoParaTest: Database.Database | undefined;
+/**
+ * Argumento REAL con el que `main.ts` invocó `openDatabase` (`resolveDbPath()`
+ * resuelto por `main.ts`, no un valor fijo) — capturado sin alterar el
+ * comportamiento de arriba: la base que usan los tests sigue siendo
+ * `:memory:` siempre (`modo-headless-cierre-limpio`, tarea 1.4, E1).
+ */
+let dbPathCapturado: string | undefined;
 
 vi.mock("./adapters/memory/db.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/memory/db.js")>();
   return {
     ...actual,
-    openDatabase: () => {
+    openDatabase: (filePath: string) => {
+      dbPathCapturado = filePath;
       dbCapturadoParaTest = actual.openDatabase(":memory:");
       return dbCapturadoParaTest;
     },
@@ -78,6 +87,139 @@ vi.mock("./build-on-a2a-entrante.js", async (importOriginal) => {
   return { ...actual, buildOnA2AEntrante: vi.fn(actual.buildOnA2AEntrante) };
 });
 
+/**
+ * `modo-headless-cierre-limpio` (tareas 3.4/3.5) — los tres arranques de
+ * servidor se mockean al nivel del MÓDULO (no por variable de entorno, como
+ * hacía el resto de la suite hasta acá): así cada test de cierre por señal
+ * controla directamente cuándo resuelve/rechaza `close()`, sin tener que
+ * levantar un socket real. Sin `mockResolvedValueOnce` explícito, el
+ * `vi.fn()` sin implementación devuelve `undefined` -- EXACTAMENTE el mismo
+ * resultado que el resto de los tests de este archivo ya observaban con los
+ * puertos/tokens deshabilitados (E9), así que esto no cambia ningún test
+ * existente.
+ */
+vi.mock("./adapters/web/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/web/index.js")>();
+  return { ...actual, startWebServer: vi.fn() };
+});
+
+vi.mock("./adapters/webhooks/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/webhooks/index.js")>();
+  return { ...actual, startWebhookServer: vi.fn() };
+});
+
+vi.mock("./adapters/a2a/server-index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./adapters/a2a/server-index.js")>();
+  return { ...actual, startA2AServer: vi.fn() };
+});
+
+/**
+ * `modo-headless-cierre-limpio` (tarea 3.3) — decisión de wiring documentada
+ * en el commit: `main.ts` llama a `esperarSenalDeCierre()`/
+ * `finalizarCierreHeadless()` SIN argumentos (design.md §3.2), así que estos
+ * tests inyectan un EMISOR y un SALIR falsos por `vi.mock` de
+ * `./proceso-cierre.js` — la lógica REAL de ese módulo corre siempre (nunca
+ * se reemplaza), solo se le fuerza `proceso`/`salir` a los dobles de abajo:
+ * el `process` real de Vitest NUNCA recibe un listener ni un `exit` (R18,
+ * R20). `vi.hoisted` porque el factory de `vi.mock` (hoisteado al tope del
+ * archivo por Vitest) necesita estas referencias ya creadas.
+ */
+const {
+  procesoFalsoParaTest,
+  salirEspiaParaTest,
+  logEventEspiaParaTest,
+  eventosDeProcesoParaTest,
+  armarAnclaEspiaParaTest,
+  desarmarAnclaEspiaParaTest,
+  anclasArmadasParaTest,
+} = vi.hoisted(
+  () => {
+    const handlers = new Map<string, Set<(arg?: unknown) => void>>();
+    const procesoFalsoParaTest = {
+      on: (evento: string, handler: (arg?: unknown) => void): void => {
+        const conjunto = handlers.get(evento) ?? new Set<(arg?: unknown) => void>();
+        conjunto.add(handler);
+        handlers.set(evento, conjunto);
+      },
+      off: (evento: string, handler: (arg?: unknown) => void): void => {
+        handlers.get(evento)?.delete(handler);
+      },
+      emitir: (evento: string, arg?: unknown): void => {
+        for (const handler of [...(handlers.get(evento) ?? [])]) {
+          handler(arg);
+        }
+      },
+      contarListeners: (evento: string): number => handlers.get(evento)?.size ?? 0,
+      /** Fuerza el mapa de handlers a vacío entre tests, sin depender de que un `import("./main.js")` suspendido llegue a llamar `finalizarCierreHeadless()`. */
+      limpiar: (): void => {
+        handlers.clear();
+      },
+    };
+    // Espía de `logEvent`, en vez de dejar correr el `logTurnEvent` real: los
+    // tests de 3.4/3.5 necesitan afirmar sobre `cierre-senal-recibida`,
+    // `cierre-presupuesto-excedido`, etc. sin depender de `data/harness.log`
+    // en disco ni de su timing de escritura síncrona.
+    const eventosDeProcesoParaTest: { casoId: string; event: string; fields: Record<string, unknown> }[] = [];
+    const logEventEspiaParaTest = vi.fn(
+      (casoId: string, event: string, fields: Record<string, unknown> = {}): void => {
+        eventosDeProcesoParaTest.push({ casoId, event, fields });
+      },
+    );
+    // `modo-headless-cierre-limpio`, tarea 2.7a (H-1, design §0.7b): el ancla
+    // del event loop TAMBIÉN se inyecta. Sin estos espías, un test de wiring
+    // headless que no use reloj falso armaría un `setInterval` REAL de 60 s
+    // sobre el proceso de Vitest -- la fuga que R18 existe para impedir. El
+    // espía NO crea ningún timer: devuelve un handle-objeto y lo registra en
+    // `anclasArmadasParaTest`; `desarmarAncla` lo saca. "Ninguna ancla armada"
+    // = el conjunto vacío.
+    const anclasArmadasParaTest = new Set<unknown>();
+    let contadorDeAnclas = 0;
+    const armarAnclaEspiaParaTest = vi.fn((): unknown => {
+      contadorDeAnclas += 1;
+      const handle = { ancla: contadorDeAnclas };
+      anclasArmadasParaTest.add(handle);
+      return handle;
+    });
+    const desarmarAnclaEspiaParaTest = vi.fn((handle: unknown): void => {
+      anclasArmadasParaTest.delete(handle);
+    });
+    return {
+      procesoFalsoParaTest,
+      salirEspiaParaTest: vi.fn((_codigo: number): void => {}),
+      logEventEspiaParaTest,
+      eventosDeProcesoParaTest,
+      armarAnclaEspiaParaTest,
+      desarmarAnclaEspiaParaTest,
+      anclasArmadasParaTest,
+    };
+  },
+);
+
+vi.mock("./proceso-cierre.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./proceso-cierre.js")>();
+  return {
+    ...real,
+    esperarSenalDeCierre: (deps?: Parameters<typeof real.esperarSenalDeCierre>[0]) =>
+      real.esperarSenalDeCierre({
+        proceso: procesoFalsoParaTest,
+        salir: salirEspiaParaTest,
+        logEvent: logEventEspiaParaTest,
+        armarAncla: armarAnclaEspiaParaTest,
+        desarmarAncla: desarmarAnclaEspiaParaTest,
+        ...deps,
+      }),
+    finalizarCierreHeadless: (deps?: Parameters<typeof real.finalizarCierreHeadless>[0]) =>
+      real.finalizarCierreHeadless({
+        proceso: procesoFalsoParaTest,
+        salir: salirEspiaParaTest,
+        logEvent: logEventEspiaParaTest,
+        armarAncla: armarAnclaEspiaParaTest,
+        desarmarAncla: desarmarAnclaEspiaParaTest,
+        ...deps,
+      }),
+  };
+});
+
 const ENV_KEYS_A_LIMPIAR = [
   "WEB_PORT",
   "WEBHOOK_PORT",
@@ -85,6 +227,8 @@ const ENV_KEYS_A_LIMPIAR = [
   "GITHUB_TOKEN",
   "HARNESS_A2A_ENTRANTE_TOKEN",
   "HARNESS_A2A_SALIENTE",
+  "HARNESS_HEADLESS",
+  "HARNESS_SHUTDOWN_TIMEOUT_MS",
 ] as const;
 
 describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conversacionales, tarea 10)", () => {
@@ -102,6 +246,13 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
       original[key] = process.env[key];
       delete process.env[key];
     }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): FIJADA, no solo borrada.
+    // `ENV_KEYS_A_LIMPIAR` de arriba solo hace `delete`, y cada reimportación
+    // de `main.js` re-ejecuta `loadDotenv()`, que rellena desde `.env` lo que
+    // falta -- `dotenv` no pisa una variable ya definida, aunque sea `"0"`.
+    // Sin esto, un `HARNESS_HEADLESS=1` en el `.env` del dev cuelga las seis
+    // importaciones de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
@@ -185,6 +336,9 @@ describe("main.ts -- wiring de createConsultas local al bloque de A2A entrante (
       original[key] = process.env[key];
       delete process.env[key];
     }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
@@ -265,6 +419,9 @@ describe("main.ts -- hallazgos de Reviewer sobre createConsultas (consultas-nego
       original[key] = process.env[key];
       delete process.env[key];
     }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
   });
 
   afterEach(() => {
@@ -519,5 +676,1159 @@ describe("main.ts -- segunda instancia del adaptador A2A para el canal conversac
     expect(source).toContain(
       "...(clienteA2A !== undefined ? { clienteA2A } : {}), // exactOptionalPropertyTypes\n});",
     );
+  });
+});
+
+describe("main.ts -- abre la base por resolveDbPath (modo-headless-cierre-limpio, tarea 1.4, E1)", () => {
+  const original: Record<string, string | undefined> = {};
+  let dbPathPrevio: string | undefined;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    dbPathCapturado = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    dbPathPrevio = process.env.HARNESS_DB_PATH;
+    delete process.env.HARNESS_DB_PATH;
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    if (dbPathPrevio === undefined) {
+      delete process.env.HARNESS_DB_PATH;
+    } else {
+      process.env.HARNESS_DB_PATH = dbPathPrevio;
+    }
+  });
+
+  it("sin HARNESS_DB_PATH, openDatabase recibe el default data/harness.db", async () => {
+    await import("./main.js");
+    expect(dbPathCapturado).toBe("data/harness.db");
+  });
+
+  it("con HARNESS_DB_PATH definida, openDatabase recibe ese valor", async () => {
+    process.env.HARNESS_DB_PATH = "/var/lib/arnes/harness.db";
+    await import("./main.js");
+    expect(dbPathCapturado).toBe("/var/lib/arnes/harness.db");
+  });
+
+  it.each(["", "   "])("HARNESS_DB_PATH=%j equivale a ausente ⇒ default", async (valor) => {
+    process.env.HARNESS_DB_PATH = valor;
+    await import("./main.js");
+    expect(dbPathCapturado).toBe("data/harness.db");
+  });
+});
+
+/**
+ * CANDADOS (`modo-headless-cierre-limpio`, tarea 3.2) — nacen VERDES: hoy
+ * (antes de la tarea 3.6) no hay ninguna rama headless en `main.ts`, así que
+ * estos tests no prueban una regresión que ya exista, sino que fijan una
+ * garantía de NO-FUGA que la tarea 3.6 debe seguir cumpliendo. Su valor real
+ * se demuestra por MUTACIÓN, con evidencia en `docs/progreso/` (tarea 3.8).
+ * `npm test`/`npm run typecheck` quedan verdes al crearlos.
+ */
+describe("main.ts -- candados de no-fuga de listeners, finally intacto y cero funciones extraidas (modo-headless-cierre-limpio, tarea 3.2)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  const EVENTOS_DE_PROCESO = ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"] as const;
+
+  function contarListenersReales(): Record<(typeof EVENTOS_DE_PROCESO)[number], number> {
+    const conteos = {} as Record<(typeof EVENTOS_DE_PROCESO)[number], number>;
+    for (const evento of EVENTOS_DE_PROCESO) {
+      conteos[evento] = process.listenerCount(evento);
+    }
+    return conteos;
+  }
+
+  it("(a, R18/H5) importar main.js seis veces en TUI, sobre el process REAL, no acumula listeners -- incluido un import suspendido", async () => {
+    const antes = contarListenersReales();
+
+    for (let vez = 0; vez < 6; vez += 1) {
+      vi.resetModules();
+
+      if (vez < 5) {
+        await import("./main.js");
+      } else {
+        // Import SUSPENDIDO a propósito (mismo patrón que `getCreateConsultas`
+        // más arriba en este archivo, `:319` de la nota del módulo): se
+        // resuelve una promesa controlada por este test en vez de dejar que
+        // `waitUntilExit()` resuelva sola, para cubrir también el camino
+        // "importación en vuelo" antes de cerrar la base.
+        const { startTui } = await import("./adapters/tui/start-tui.js");
+        const startTuiMock = vi.mocked(startTui);
+        const llamadasPrevias = startTuiMock.mock.calls.length;
+        let resolverSalida: () => void = () => {};
+        const salidaPendiente = new Promise<void>((resolve) => {
+          resolverSalida = resolve;
+        });
+        startTuiMock.mockImplementationOnce(() => ({
+          unmount: () => {},
+          waitUntilExit: () => salidaPendiente,
+        }));
+
+        void import("./main.js");
+
+        const MAX_INTENTOS = 5000;
+        for (
+          let intento = 0;
+          intento < MAX_INTENTOS && startTuiMock.mock.calls.length === llamadasPrevias;
+          intento += 1
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+
+        expect(contarListenersReales()).toEqual(antes);
+
+        resolverSalida();
+        // Deja que la importación suspendida termine de cerrar su base antes
+        // de que el test siguiente reciclee el entorno.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(contarListenersReales()).toEqual(antes);
+    }
+  });
+
+  it("(b, R4) el finally queda intacto: los cuatro close() en el orden del ADR 10", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const tramo = bloqueEntre(source, "} finally {", "\n}\n");
+    // Sin líneas de comentario: el propio `finally` menciona los cuatro
+    // `close()` DENTRO de un comentario narrativo antes de invocarlos de
+    // verdad (p. ej. "`web.close()` corre PRIMERO... y de `db.close()`"), lo
+    // que adelantaría un `indexOf` falso si no se descartan esas líneas.
+    const tramoSinComentarios = tramo
+      .split("\n")
+      .filter((linea) => !linea.trim().startsWith("//"))
+      .join("\n");
+
+    const indiceWeb = tramoSinComentarios.indexOf("web.close()");
+    const indiceWebhook = tramoSinComentarios.indexOf("webhook.close()");
+    const indiceA2a = tramoSinComentarios.indexOf("a2aServidor.close()");
+    const indiceDb = tramoSinComentarios.indexOf("db.close()");
+
+    expect(indiceWeb).toBeGreaterThanOrEqual(0);
+    expect(indiceWebhook).toBeGreaterThan(indiceWeb);
+    expect(indiceA2a).toBeGreaterThan(indiceWebhook);
+    expect(indiceDb).toBeGreaterThan(indiceA2a);
+  });
+
+  it("(c) no se extraen funciones nuevas desde el bloque final del composition root hasta el final del archivo", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    // Ancla re-`Grep`eada (design/tasks citaban `"const a2aEntrante"`, sin
+    // verificar contra el árbol -- Contradicción residual #9 de `tasks.md`;
+    // en este árbol SÍ existe): es la última constante del wiring de A2A
+    // entrante, justo antes del bloque final `try`/`finally`.
+    const desde = source.indexOf("const a2aEntrante");
+    expect(desde).toBeGreaterThanOrEqual(0);
+
+    const tramoConComentarios = source.slice(desde);
+    // Descartar toda línea que empiece con `//` ANTES de buscar: si no, un
+    // doc-comment nuevo que mencione la palabra "function" o "shutdown" daría
+    // un falso rojo (corrección (d) de `tasks.md`).
+    const sinComentarios = tramoConComentarios
+      .split("\n")
+      .filter((linea) => !linea.trim().startsWith("//"))
+      .join("\n");
+
+    expect(sinComentarios).not.toMatch(/\bfunction\s+\w+/);
+    expect(sinComentarios).not.toContain("const shutdown");
+  });
+
+  it("(d, H7) ningún test de main construye una señal real contra el proceso del runner", () => {
+    const directorioDeEsteArchivo = new URL(".", import.meta.url);
+    const archivosMain = readdirSync(directorioDeEsteArchivo).filter((nombre) => /^main.*\.test\.ts$/.test(nombre));
+    expect(archivosMain.length).toBeGreaterThan(0);
+
+    // Construidos por concatenación a propósito: si se escribieran como
+    // literales, este mismo test se encontraría a sí mismo (Contradicción
+    // residual #6 de `tasks.md`).
+    const patronesProhibidos = [
+      "process." + "kill(process.pid",
+      "process." + 'emit("SIG',
+      "process." + 'emit("unhandledRejection',
+    ];
+
+    for (const nombre of archivosMain) {
+      const contenido = readFileSync(new URL(nombre, directorioDeEsteArchivo), "utf8");
+      for (const patron of patronesProhibidos) {
+        expect(contenido).not.toContain(patron);
+      }
+    }
+  });
+});
+
+/**
+ * Obtiene, ANTES de disparar `import("./main.js")`, la referencia mockeada
+ * de `buildOnA2AEntrante` -- mismo orden que ya usa `getCreateConsultas`
+ * más arriba en este archivo, y por el mismo motivo: pedir el módulo
+ * DESPUÉS de disparar `import("./main.js")` hace que ese `import()` del
+ * test compita con el `import` estático que `main.js` ya está resolviendo
+ * para el MISMO especificador, y la carrera puede no resolver nunca dentro
+ * del árbol de módulos de vite-node (verificado: así colgaba el test hasta
+ * el timeout de Vitest). Pedirlo antes evita la carrera por completo. Función
+ * de MÓDULO (no de un `describe` puntual) porque las tareas 3.3, 3.4 y 3.5 la
+ * comparten.
+ */
+async function obtenerMockA2AEntrante(): Promise<
+  ReturnType<typeof vi.mocked<typeof import("./build-on-a2a-entrante.js").buildOnA2AEntrante>>
+> {
+  const { buildOnA2AEntrante } = await import("./build-on-a2a-entrante.js");
+  return vi.mocked(buildOnA2AEntrante);
+}
+
+/**
+ * Deja avanzar el import hasta JUSTO ANTES del bloque final `try` (headless
+ * o TUI): `buildOnA2AEntrante` es la última pieza de wiring que corre antes
+ * de ese bloque (`main.ts`), así que esperar su primera llamada es una señal
+ * determinística de "ya estamos ahí" -- a diferencia de un `setTimeout` de
+ * duración fija, que resultó NO ser confiable acá: el arranque real
+ * (`bootstrapHarness`, wiring de webhooks/web/A2A) puede tardar más que una
+ * espera corta arbitraria, dando un falso verde tanto en TUI como en
+ * headless.
+ */
+async function esperarWiringA2AEntrante(
+  a2aEntranteMock: Awaited<ReturnType<typeof obtenerMockA2AEntrante>>,
+): Promise<void> {
+  const MAX_INTENTOS = 5000;
+  for (let intento = 0; intento < MAX_INTENTOS && a2aEntranteMock.mock.calls.length === 0; intento += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  if (a2aEntranteMock.mock.calls.length === 0) {
+    throw new Error("test setup error: buildOnA2AEntrante nunca fue invocado dentro del margen de espera");
+  }
+  // Un turno extra de microtareas/`setTimeout` para que, en el camino
+  // headless, `esperarSenalDeCierre()` ya haya registrado sus 4 listeners
+  // (ese registro ocurre en la sentencia siguiente a `buildOnA2AEntrante`).
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+/**
+ * ROJO (de aserción) — `modo-headless-cierre-limpio`, tarea 3.3: arranque
+ * headless y TUI (H1, H2, H5-iii, H10, test 14). Todavía NO hay rama
+ * headless en `main.ts` (llega en la tarea 3.6): (i)-(iv) deben FALLAR a
+ * propósito; (v) ya pasa hoy, por ser el camino vigente de la TUI (se
+ * declara así en el commit).
+ *
+ * Todos los tests que activan `HARNESS_HEADLESS=1` dejan el import
+ * "en vuelo" (`main.js` sin `await`) y lo cierran al final emitiendo
+ * `SIGTERM` sobre `procesoFalsoParaTest` -- incluso hoy, en ROJO, que ese
+ * `emitir` sea un no-op (todavía no hay listeners que atender) -- para no
+ * dejar un `:memory:` ni una promesa colgada entre tests.
+ */
+describe("main.ts -- arranque headless y TUI (modo-headless-cierre-limpio, tarea 3.3)", () => {
+  const original: Record<string, string | undefined> = {};
+  let stdinIsTTYPrevio: boolean | undefined;
+  let stdoutIsTTYPrevio: boolean | undefined;
+
+  const EVENTOS_DE_PROCESO = ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"] as const;
+  const SIN_CAMBIO = { SIGTERM: 0, SIGINT: 0, unhandledRejection: 0, uncaughtException: 0 };
+
+  /**
+   * `NodeJS.ReadStream["isTTY"]`/`NodeJS.WriteStream["isTTY"]` están tipados
+   * como `boolean` a secas (no `boolean | undefined`) aunque en runtime la
+   * propiedad esté ausente fuera de una terminal real -- de ahí el cast.
+   */
+  function fijarTTY(flujo: NodeJS.ReadStream | NodeJS.WriteStream, valor: boolean | undefined): void {
+    (flujo as unknown as { isTTY: boolean | undefined }).isTTY = valor;
+  }
+
+  function contarEmisor(): Record<(typeof EVENTOS_DE_PROCESO)[number], number> {
+    const conteos = {} as Record<(typeof EVENTOS_DE_PROCESO)[number], number>;
+    for (const evento of EVENTOS_DE_PROCESO) {
+      conteos[evento] = procesoFalsoParaTest.contarListeners(evento);
+    }
+    return conteos;
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // `modo-headless-cierre-limpio`, tarea 3.1 (R26): ver el comentario del
+    // primer `beforeEach` de este archivo.
+    process.env.HARNESS_HEADLESS = "0";
+    stdinIsTTYPrevio = process.stdin.isTTY;
+    stdoutIsTTYPrevio = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    fijarTTY(process.stdin, stdinIsTTYPrevio);
+    fijarTTY(process.stdout, stdoutIsTTYPrevio);
+  });
+
+  it("(H1, escenario 1) sin la variable: startTui 1 vez, EMISOR sin cambio, SALIR no invocada", async () => {
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    await import("./main.js");
+
+    expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+    expect(contarEmisor()).toEqual(SIN_CAMBIO);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+  });
+
+  it("(H1, escenario 2) headless: startTui 0, la promesa de la importación no resuelve ni rechaza en 50 ms, SALIR no invocada", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const startTuiMock = vi.mocked(startTui);
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    let resuelta = false;
+    let rechazada = false;
+    const promesaImport = import("./main.js");
+    void promesaImport.then(
+      () => {
+        resuelta = true;
+      },
+      () => {
+        rechazada = true;
+      },
+    );
+
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(startTuiMock).not.toHaveBeenCalled();
+    expect(resuelta).toBe(false);
+    expect(rechazada).toBe(false);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H1, escenario 3) headless sin TTY (stdin/stdout.isTTY undefined): sin error de raw mode, startTui 0", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    fijarTTY(process.stdin, undefined);
+    fijarTTY(process.stdout, undefined);
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const startTuiMock = vi.mocked(startTui);
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(startTuiMock).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H1, escenario 4) headless con TTY=true sigue siendo headless (no hay autodetección)", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    fijarTTY(process.stdin, true);
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const startTuiMock = vi.mocked(startTui);
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(startTuiMock).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H1, escenario 5) TUI sin variable y sin TTY invoca startTui igual (sin autodetección)", async () => {
+    fijarTTY(process.stdin, undefined);
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    await import("./main.js");
+    expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+  });
+
+  it("(H2) HARNESS_HEADLESS='1' exacto activa headless: startTui 0", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(vi.mocked(startTui)).not.toHaveBeenCalled();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it.each(["", "   ", "0"] as const)(
+    "(H2) HARNESS_HEADLESS=%j equivale a TUI: startTui 1 vez",
+    async (valor) => {
+      process.env.HARNESS_HEADLESS = valor;
+      const { startTui } = await import("./adapters/tui/start-tui.js");
+      await import("./main.js");
+      expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("(H2) HARNESS_HEADLESS ausente equivale a TUI: startTui 1 vez", async () => {
+    delete process.env.HARNESS_HEADLESS;
+    const { startTui } = await import("./adapters/tui/start-tui.js");
+    await import("./main.js");
+    expect(vi.mocked(startTui)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["true", "yes", "on", "2", "01", " 1", "1 "])(
+    "(H2) HARNESS_HEADLESS=%j falla cerrado: la importación rechaza, el cierre completo corre, startTui 0, EMISOR sin cambio",
+    async (valor) => {
+      process.env.HARNESS_HEADLESS = valor;
+      const { startTui } = await import("./adapters/tui/start-tui.js");
+
+      let error: unknown;
+      try {
+        await import("./main.js");
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      const mensaje = (error as Error).message;
+      expect(mensaje).toContain("HARNESS_HEADLESS");
+      expect(mensaje).toContain(`"${valor}"`);
+      expect(mensaje).toContain("0");
+      expect(mensaje).toContain("1");
+
+      expect(vi.mocked(startTui)).not.toHaveBeenCalled();
+      expect(contarEmisor()).toEqual(SIN_CAMBIO);
+
+      // El `finally` corrió igual (H3, orden del ADR 10): `db.close()` se
+      // invocó sobre la base `:memory:` real, aunque `esModoHeadless()` haya
+      // lanzado ANTES de llegar a `esperarSenalDeCierre()`.
+      expect(dbCapturadoParaTest).toBeDefined();
+      expect(() => dbCapturadoParaTest?.prepare("SELECT 1").get()).toThrow();
+    },
+  );
+
+  it("(H5, escenario iii) headless: cada uno de los 4 conteos de EMISOR aumenta exactamente en 1", async () => {
+    process.env.HARNESS_HEADLESS = "1";
+    const a2aEntranteMock = await obtenerMockA2AEntrante();
+    const promesaImport = import("./main.js");
+    await esperarWiringA2AEntrante(a2aEntranteMock);
+
+    expect(contarEmisor()).toEqual({ SIGTERM: 1, SIGINT: 1, unhandledRejection: 1, uncaughtException: 1 });
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+  });
+
+  it("(test 14) el tramo del try final headless contiene esModoHeadless, esperarSenalDeCierre, startTui y waitUntilExit", () => {
+    const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const tramo = bloqueEntre(source, "\ntry {\n  if (esModoHeadless", "} finally {");
+    expect(tramo).toContain("esModoHeadless()");
+    expect(tramo).toContain("esperarSenalDeCierre()");
+    expect(tramo).toContain("startTui(");
+    expect(tramo).toContain("waitUntilExit()");
+  });
+
+  // ★ Desvío declarado (evidencia obtenida al correr esta tarea, no
+  // supuesta): los dos escenarios de H10 sobre fallas del lado de la TUI
+  // ("si `waitUntilExit()` rechaza..." y "si `startTui` lanza
+  // sincrónicamente...") NO son verificables con esta técnica (`await
+  // import("./main.js")` sobre el runner de vite-node/Vitest): un
+  // `top-level await` que rechaza -- o una excepción síncrona que hace
+  // rechazar la evaluación async implícita del módulo -- dentro de un
+  // módulo SIN exports no propaga ese rechazo a través de la promesa que
+  // devuelve `import()` en este entorno; se manifiesta como un "Unhandled
+  // Rejection" a nivel de proceso en vez de un rechazo observable de esa
+  // promesa (confirmado corriendo ambos escenarios: los dos producen el
+  // mismo "Unhandled Rejection", no una aserción `rejects` observable). El
+  // código de `main.ts` no cambia (es el camino de v3.16, sin tocar) y el
+  // `finally` sigue corriendo igual en producción bajo Node ESM puro; es la
+  // TÉCNICA de test la que no lo puede observar acá, no una regresión de
+  // `modo-headless-cierre-limpio`. Se documentan y se omiten estas dos
+  // aserciones puntuales de H10 en vez de introducir una `Unhandled
+  // Rejection` real en la corrida de la suite -- el resto de H10 (TUI sin
+  // regresión en el camino feliz) ya queda cubierto por el escenario 1 de
+  // H1 más arriba.
+});
+
+/**
+ * ROJO (de aserción) — `modo-headless-cierre-limpio`, tarea 3.4: cierre por
+ * señal y fallas no capturadas (H3, H4, H6, H8). Todavía NO hay rama
+ * headless en `main.ts` (llega en la 3.6): el `await` de headless nunca
+ * espera la señal hoy, así que TODOS estos tests deben FALLAR a propósito
+ * (típicamente por timeout de la espera interna, ver aceptación de la
+ * tarea).
+ *
+ * Los tres servidores se mockean por MÓDULO (arriba, cerca del tope del
+ * archivo) para poder controlar `close()` sin abrir sockets reales.
+ * `logEvent` está espiado (también arriba) en vez de dejar correr
+ * `logTurnEvent` real, para afirmar sobre los eventos `cierre-*` sin tocar
+ * `data/harness.log`.
+ */
+/** Doble de adaptador con `close()` controlable a mano por el test (resolver/rechazar cuándo quiera). Función de MÓDULO: la comparten las tareas 3.4 y 3.5. */
+function crearCierreControlable(): {
+  readonly close: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  readonly resolver: () => void;
+  readonly rechazar: (error: Error) => void;
+} {
+  let resolver: () => void = () => {};
+  let rechazar: (error: Error) => void = () => {};
+  const promesa = new Promise<void>((res, rej) => {
+    resolver = res;
+    rechazar = rej;
+  });
+  const close = vi.fn<() => Promise<void>>(() => promesa);
+  return { close, resolver, rechazar };
+}
+
+/** Configura los `startXServer` mockeados por módulo para devolver, UNA vez, el doble indicado (o ninguno, si se omite -- adaptador deshabilitado). */
+async function configurarAdaptadores(config: {
+  readonly web?: { readonly close: () => Promise<void> };
+  readonly webhook?: { readonly close: () => Promise<void> };
+  readonly a2a?: { readonly close: () => Promise<void> };
+}): Promise<void> {
+  const { startWebServer } = await import("./adapters/web/index.js");
+  const { startWebhookServer } = await import("./adapters/webhooks/index.js");
+  const { startA2AServer } = await import("./adapters/a2a/server-index.js");
+  if (config.web !== undefined) {
+    vi.mocked(startWebServer).mockResolvedValueOnce(
+      config.web as unknown as Awaited<ReturnType<typeof startWebServer>>,
+    );
+  }
+  if (config.webhook !== undefined) {
+    vi.mocked(startWebhookServer).mockResolvedValueOnce(
+      config.webhook as unknown as Awaited<ReturnType<typeof startWebhookServer>>,
+    );
+  }
+  if (config.a2a !== undefined) {
+    vi.mocked(startA2AServer).mockResolvedValueOnce(
+      config.a2a as unknown as Awaited<ReturnType<typeof startA2AServer>>,
+    );
+  }
+}
+
+/** Sondeo genérico -- más robusto que un `setTimeout` de duración fija (ver la nota de `esperarWiringA2AEntrante` de arriba). */
+async function esperarHasta(condicion: () => boolean, maxIntentosMs = 2000): Promise<void> {
+  for (let intento = 0; intento < maxIntentosMs && !condicion(); intento += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  if (!condicion()) {
+    throw new Error("test setup error: la condicion nunca se cumplio dentro del margen de espera");
+  }
+}
+
+/**
+ * Dispara `import("./main.js")` y lo deja avanzar hasta justo antes del
+ * `try` final (mismo criterio que el describe de la tarea 3.3). Envuelta
+ * en un objeto -- no devuelta directa -- porque una función `async` que
+ * `return`a una `Promise` la aplana automáticamente (semántica de
+ * `thenable`): `Promise<Promise<T>>` colapsa en runtime a `Promise<T>`, así
+ * que `await dispararImport()` daría el VALOR resuelto, no la promesa en
+ * vuelo que estos tests necesitan seguir controlando.
+ */
+async function dispararImport(): Promise<{ readonly promesaImport: Promise<unknown> }> {
+  const a2aEntranteMock = await obtenerMockA2AEntrante();
+  const promesaImport = import("./main.js");
+  await esperarWiringA2AEntrante(a2aEntranteMock);
+  return { promesaImport };
+}
+
+function obtenerDbOLanzar(): Database.Database {
+  if (dbCapturadoParaTest === undefined) {
+    throw new Error("test setup error: openDatabase no fue capturado");
+  }
+  return dbCapturadoParaTest;
+}
+
+describe("main.ts -- cierre por señal y fallas no capturadas (modo-headless-cierre-limpio, tarea 3.4)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    // Todo este describe corre en headless: es la única rama que registra
+    // señales (H5).
+    process.env.HARNESS_HEADLESS = "1";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    vi.useRealTimers();
+  });
+
+  it("(H3) SIGTERM: orden estricto y secuencial web -> webhook -> a2a -> db, SALIR 0 después de db.close", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    const a2a = crearCierreControlable();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    expect(webhook.close).not.toHaveBeenCalled();
+    expect(a2a.close).not.toHaveBeenCalled();
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    web.resolver();
+    await esperarHasta(() => webhook.close.mock.calls.length === 1);
+    expect(a2a.close).not.toHaveBeenCalled();
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    webhook.resolver();
+    await esperarHasta(() => a2a.close.mock.calls.length === 1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    a2a.resolver();
+    await promesaImport.catch(() => {});
+
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H3) SIGINT produce la misma secuencia que SIGTERM", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGINT");
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H3) adaptadores deshabilitados se saltean: solo web habilitado ⇒ solo web.close corre; ninguno ⇒ solo db.close", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H3) un close() que rechaza no impide llegar a db.close(): se reporta y sigue", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    web.rechazar(new Error("boom"));
+    await promesaImport.catch(() => {});
+
+    expect(
+      stderrSpy.mock.calls.some((llamada) => String(llamada[0]).includes("No se pudo cerrar el servidor web: boom")),
+    ).toBe(true);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("(H3) db.close() que lanza se reporta sin propagarse, SALIR 0 igual", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(obtenerDbOLanzar(), "close").mockImplementation(() => {
+      throw new Error("locked");
+    });
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(
+      stderrSpy.mock.calls.some((llamada) =>
+        String(llamada[0]).includes("No se pudo cerrar la base de datos: locked"),
+      ),
+    ).toBe(true);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+
+    stderrSpy.mockRestore();
+  });
+
+  it("(H4) dos SIGTERM durante el drenaje: una sola secuencia de cierre, 1 evento cierre-senal-repetida, no acorta la espera", async () => {
+    const web = crearCierreControlable();
+    const webhook = crearCierreControlable();
+    webhook.resolver();
+    const a2a = crearCierreControlable();
+    a2a.resolver();
+    await configurarAdaptadores({ web, webhook, a2a });
+
+    const { promesaImport } = await dispararImport();
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await Promise.resolve();
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-senal-repetida")).toHaveLength(1);
+
+    web.resolver();
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(webhook.close).toHaveBeenCalledTimes(1);
+    expect(a2a.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H4) SIGINT seguido de SIGTERM produce un solo cierre", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGINT");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await Promise.resolve();
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-senal-repetida")).toHaveLength(1);
+
+    web.resolver();
+    await promesaImport.catch(() => {});
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+  });
+
+  it("(H4) una señal tardía, con el cierre ya completado, no lanza ni repite el cierre", async () => {
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await promesaImport.catch(() => {});
+
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+
+    expect(() => procesoFalsoParaTest.emitir("SIGTERM")).not.toThrow();
+    expect(web.close).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["unhandledRejection", "boom"],
+    ["uncaughtException", "kaput"],
+  ] as const)(
+    "(H6) %s no capturado: 1 evento proceso-error-no-capturado, SALIR 1, cero close()",
+    async (tipo, mensaje) => {
+      // Los tres se resuelven de una: el criterio POST-3.6 es que una falla
+      // no capturada ANTES de cualquier señal deja el `await
+      // esperarSenalDeCierre()` colgado para siempre (nunca resuelve, salvo
+      // por una señal real) -- así que este `import()` queda deliberadamente
+      // "en vuelo" sin awaitearse al final (`manejarErrorNoCapturado` es
+      // síncrona, las aserciones no lo necesitan). Resolverlos de entrada
+      // evita además que la corrida ROJA de hoy (TUI incondicional, sin
+      // gate) cuelgue esperando un `close()` que nunca resuelve.
+      const web = crearCierreControlable();
+      web.resolver();
+      const webhook = crearCierreControlable();
+      webhook.resolver();
+      const a2a = crearCierreControlable();
+      a2a.resolver();
+      await configurarAdaptadores({ web, webhook, a2a });
+
+      await dispararImport();
+      procesoFalsoParaTest.emitir(tipo, new Error(mensaje));
+
+      const fallas = eventosDeProcesoParaTest.filter((e) => e.event === "proceso-error-no-capturado");
+      expect(fallas).toHaveLength(1);
+      expect(fallas[0]?.fields).toMatchObject({ tipo });
+      expect(String(fallas[0]?.fields.message)).toContain(mensaje);
+      expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+      expect(web.close).not.toHaveBeenCalled();
+      expect(webhook.close).not.toHaveBeenCalled();
+      expect(a2a.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it("(H6) una falla no capturada durante el drenaje de una señal previa: SALIR 1 y db.close 0 llamadas", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const dbCloseSpy = vi.spyOn(obtenerDbOLanzar(), "close");
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    await esperarHasta(() => web.close.mock.calls.length === 1);
+    procesoFalsoParaTest.emitir("unhandledRejection", new Error("boom"));
+
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+
+    // Deja que el `web.close()` pendiente resuelva para no dejar el import
+    // colgado entre tests (el watchdog no se armó -- nunca hubo señal de
+    // cierre real, solo la falla no capturada).
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H7) una falla simulada no toca el process.exit real ni deja exitCode asignado", async () => {
+    // Mismo motivo que el `it.each` de H6 de arriba: no se awaitea el
+    // import al final (queda "en vuelo" a propósito, ver esa nota).
+    const web = crearCierreControlable();
+    web.resolver();
+    await configurarAdaptadores({ web });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+    await dispararImport();
+    procesoFalsoParaTest.emitir("unhandledRejection", new Error("boom"));
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+    exitSpy.mockRestore();
+  });
+
+  it("(H8) sin la variable, un cierre colgado vence a los 70000 ms: log + SALIR 1, db.close 0", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(69_999);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 70_000, senal: "SIGTERM" });
+
+    vi.useRealTimers();
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H8) con HARNESS_SHUTDOWN_TIMEOUT_MS=20000, vence a los 20000 ms con presupuestoMs:20000", async () => {
+    process.env.HARNESS_SHUTDOWN_TIMEOUT_MS = "20000";
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(salirEspiaParaTest).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 20_000 });
+
+    vi.useRealTimers();
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+});
+
+/**
+ * ROJO (de aserción) — `modo-headless-cierre-limpio`, tarea 3.5: R1, EL
+ * CRITERIO QUE DEFINE EL HIJO (H9). Todavía NO hay rama headless en
+ * `main.ts`: estos tests deben FALLAR a propósito.
+ *
+ * ★ Desvío declarado del texto de la tarea, necesario y documentado en el
+ * commit: el turno irreversible NO se dispara a través de la pila HTTP real
+ * (`POST /operaciones` -> `consultar_kpi` -> `ClienteA2APort.delegar`),
+ * porque `startWebServer` está mockeado por MÓDULO en este archivo (tareas
+ * 3.4/3.5, para controlar `close()` sin abrir un socket) -- no existe un
+ * servidor real al que pegarle un request. En su lugar, el propio `close()`
+ * del adaptador WEB hace de estand-in del "socket retenido por un turno en
+ * vuelo" (exactamente la semántica que `design.md` §0.1 describe: el
+ * `callback` de `server.close()` no llega hasta que el socket del turno
+ * cierra) y, al resolver, ESCRIBE la fila de auditoría con
+ * `insertAccionEmpleado` sobre la base `:memory:` REAL -- la misma función
+ * que usa el composition root real y que el hallazgo 1/3 de
+ * `consultas-negocio-a2a-entrante` ya ejercita en este mismo archivo. La
+ * garantía verificada es la que este change agrega (el proceso no mata la
+ * base antes de que la escritura en vuelo termine); la garantía de que
+ * `consultar_kpi` específicamente llega a esa escritura ya la cubre
+ * `src/test/integration/consulta-kpi-a2a-chat.integration.test.ts`, de otro
+ * change, y no se re-deriva acá.
+ */
+describe("main.ts -- R1: turno irreversible en vuelo al recibir SIGTERM (modo-headless-cierre-limpio, tarea 3.5)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+    vi.useRealTimers();
+  });
+
+  function contarFilasRegistro(db: Database.Database): number {
+    const fila = db.prepare("SELECT COUNT(*) AS total FROM registro_acciones_empleado").get() as {
+      total: number;
+    };
+    return fila.total;
+  }
+
+  function escribirFilaDelTurno(db: Database.Database): void {
+    insertAccionEmpleado(db, {
+      id: "accion-turno-irreversible",
+      empleadoId: "empleado-consulta-kpi",
+      comando: "/consultar-kpi",
+      resultado: "KPI: 42",
+      ocurridoAt: new Date().toISOString(),
+    });
+  }
+
+  it("(H9, escenario 1) el turno de 50 s deja su fila antes de db.close, con el default de 70000", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const db = obtenerDbOLanzar();
+    const conteoPrevio = contarFilasRegistro(db);
+
+    // `db.close()` se cierra de verdad (mejor-sqlite3 lanza al consultar una
+    // conexión cerrada): el conteo hay que capturarlo EN el instante de la
+    // llamada real a `close()`, no después de awaitear el import completo.
+    let conteoAlCerrar: number | undefined;
+    const closeOriginal = db.close.bind(db);
+    const dbCloseSpy = vi.spyOn(db, "close").mockImplementation(() => {
+      conteoAlCerrar = contarFilasRegistro(db);
+      return closeOriginal();
+    });
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    // El turno "completa" a t=50 000: el socket que retenía el turno se
+    // libera y, en ese mismo instante, la fila de auditoría queda escrita
+    // ANTES de que `web.close()` resuelva (mismo orden que un handler HTTP
+    // real: primero el `INSERT`, después el `return`/cierre de la conexión).
+    await vi.advanceTimersByTimeAsync(50_000);
+    escribirFilaDelTurno(db);
+    web.resolver();
+
+    vi.useRealTimers();
+    await promesaImport.catch(() => {});
+
+    expect(dbCloseSpy).toHaveBeenCalledTimes(1);
+    expect(conteoAlCerrar).toBe(conteoPrevio + 1);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
+    expect(eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido")).toHaveLength(0);
+  });
+
+  it("(H9, escenario 2) el turno que nunca termina agota el presupuesto y lo registra: SALIR 1, db.close 0", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const db = obtenerDbOLanzar();
+    const dbCloseSpy = vi.spyOn(db, "close");
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(70_000);
+
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    expect(dbCloseSpy).not.toHaveBeenCalled();
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+
+    vi.useRealTimers();
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+
+  it("(H9, escenario 3) DEFAULT_SHUTDOWN_TIMEOUT_MS es estrictamente mayor que 55500 (peor caso de consultar_kpi)", async () => {
+    const { DEFAULT_SHUTDOWN_TIMEOUT_MS } = await import("./proceso-cierre.js");
+    expect(DEFAULT_SHUTDOWN_TIMEOUT_MS).toBeGreaterThan(55_500);
+  });
+
+  it("(H9, escenario 4) con el presupuesto bajado a 15000, el mismo turno de 50 s pierde la fila y queda registrado", async () => {
+    process.env.HARNESS_SHUTDOWN_TIMEOUT_MS = "15000";
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+    const db = obtenerDbOLanzar();
+    const conteoPrevio = contarFilasRegistro(db);
+
+    vi.useFakeTimers();
+    procesoFalsoParaTest.emitir("SIGTERM");
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(1);
+    const excedidos = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-presupuesto-excedido");
+    expect(excedidos).toHaveLength(1);
+    expect(excedidos[0]?.fields).toMatchObject({ presupuestoMs: 15_000 });
+    // El turno de 50 s no llegó a completar dentro de los 15 s: la fila NO existe.
+    expect(contarFilasRegistro(db)).toBe(conteoPrevio);
+
+    vi.useRealTimers();
+    // El turno "completa" tarde (a los 50 s reales del negocio, ya sin
+    // efecto sobre el proceso, que ya salió) -- se resuelve solo para no
+    // dejar la promesa de `web.close()` colgada entre tests.
+    web.resolver();
+    await promesaImport.catch(() => {});
+  });
+});
+
+/**
+ * ROJO (de tipo + aserción) -- `modo-headless-cierre-limpio`, tarea 2.7a
+ * (H-1/H-2, design §0.7b y §8, spec H1 ampliado + H13). `armarAncla`/
+ * `desarmarAncla` todavía NO existen en `ProcesoCierreDeps` (el `vi.mock` del
+ * tope ya los inyecta: eso es lo que hace fallar el typecheck), así que este
+ * `it` falla a propósito hasta la 2.7b. Va AL FINAL del archivo, lejos de las
+ * anclas de `bloqueEntre`.
+ */
+describe("main.ts -- ancla del event loop en el wiring headless (modo-headless-cierre-limpio, tarea 2.7a)", () => {
+  const original: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    procesoFalsoParaTest.limpiar();
+    anclasArmadasParaTest.clear();
+    eventosDeProcesoParaTest.length = 0;
+    dbCapturadoParaTest = undefined;
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      original[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.HARNESS_HEADLESS = "1";
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS_A_LIMPIAR) {
+      if (original[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original[key];
+      }
+    }
+  });
+
+  it("(test 25, wiring) tras un cierre headless completo, desarmarAncla recibió el handle de armarAncla, no queda ningún ancla armada y el marcador salió una vez", async () => {
+    const web = crearCierreControlable();
+    await configurarAdaptadores({ web });
+
+    const { promesaImport } = await dispararImport();
+
+    // Mientras espera la señal hay EXACTAMENTE un ancla armada y el marcador ya salió (H13).
+    expect(armarAnclaEspiaParaTest).toHaveBeenCalledTimes(1);
+    expect(anclasArmadasParaTest.size).toBe(1);
+    const marcadores = eventosDeProcesoParaTest.filter((e) => e.event === "cierre-esperando-senal");
+    expect(marcadores).toHaveLength(1);
+    expect(marcadores[0]?.fields).toMatchObject({ presupuestoMs: 70_000 });
+
+    procesoFalsoParaTest.emitir("SIGTERM");
+    web.resolver();
+    await promesaImport.catch(() => {});
+
+    const handleDelAncla = armarAnclaEspiaParaTest.mock.results[0]?.value;
+    expect(handleDelAncla).toBeDefined();
+    expect(desarmarAnclaEspiaParaTest).toHaveBeenCalledWith(handleDelAncla);
+    expect(anclasArmadasParaTest.size).toBe(0);
+    expect(salirEspiaParaTest).toHaveBeenCalledWith(0);
   });
 });

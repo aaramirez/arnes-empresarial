@@ -110,6 +110,55 @@ describe("resolveA2AServerConfig", () => {
   });
 });
 
+describe("resolveA2AServerConfig — HARNESS_A2A_ENTRANTE_HOST (modo-headless-cierre-limpio, tarea 4.5, E2, R21)", () => {
+  it.each([
+    ["missing", undefined],
+    ["empty string", ""],
+    ["blank (spaces only)", "   "],
+  ])("omite la CLAVE host (nunca host: undefined) cuando HARNESS_A2A_ENTRANTE_HOST es %s", (_label, value) => {
+    const config = resolveA2AServerConfig({
+      HARNESS_A2A_ENTRANTE_TOKEN: "secreto",
+      ...(value === undefined ? {} : { HARNESS_A2A_ENTRANTE_HOST: value }),
+    });
+
+    expect("host" in config).toBe(false);
+    expect(Object.keys(config)).not.toContain("host");
+  });
+
+  it.each(["127.0.0.1", "::1", "0.0.0.0"])(
+    "pasa HARNESS_A2A_ENTRANTE_HOST=%s como host, exactamente como se configuro",
+    (host) => {
+      const config = resolveA2AServerConfig({
+        HARNESS_A2A_ENTRANTE_TOKEN: "secreto",
+        HARNESS_A2A_ENTRANTE_HOST: host,
+      });
+
+      expect(config.host).toBe(host);
+    },
+  );
+
+  it("recorta espacios incidentales alrededor de un HARNESS_A2A_ENTRANTE_HOST no blanco (mismo .trim() que el token)", () => {
+    const config = resolveA2AServerConfig({ HARNESS_A2A_ENTRANTE_HOST: "  127.0.0.1  " });
+
+    expect(config.host).toBe("127.0.0.1");
+  });
+
+  it("no altera port, token ni el interruptor del token (el HOST solo nunca habilita el listener)", () => {
+    const soloHost = resolveA2AServerConfig({ HARNESS_A2A_ENTRANTE_HOST: "127.0.0.1" });
+    const conToken = resolveA2AServerConfig({
+      HARNESS_A2A_ENTRANTE_TOKEN: "secreto",
+      HARNESS_A2A_ENTRANTE_HOST: "127.0.0.1",
+    });
+
+    expect(soloHost.token).toBe("");
+    expect(soloHost.port).toBe(DEFAULT_A2A_ENTRANTE_PORT);
+    expect(isA2AServerEnabled(soloHost)).toBe(false);
+    expect(conToken.token).toBe("secreto");
+    expect(conToken.port).toBe(DEFAULT_A2A_ENTRANTE_PORT);
+    expect(isA2AServerEnabled(conToken)).toBe(true);
+  });
+});
+
 describe("isA2AServerEnabled", () => {
   it.each([
     ["", false],

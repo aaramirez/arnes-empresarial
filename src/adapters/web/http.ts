@@ -40,7 +40,27 @@ export interface WebResponse {
 
 export interface WebHttpServerLike {
   listen(port: number, callback: () => void): unknown;
+  /** `modo-headless-cierre-limpio` (E2, RD-123): solo con `WEB_HOST` no blanco. */
+  listen(port: number, host: string, callback: () => void): unknown;
   close(callback: (error?: Error) => void): unknown;
+  /**
+   * Fuerza el cierre de conexiones keep-alive OCIOSAS (Node 18.2+), sin
+   * afectar las que tienen una request en curso (`modo-headless-cierre-limpio`,
+   * design §0.2; molde de `a2a/server.ts`). Sin esto `close()` puede colgar
+   * detras de un cliente keep-alive que nunca cierra su conexion. Opcional en
+   * el tipo (como `closeAllConnections?` en webhooks): un doble sin el metodo
+   * sigue siendo valido; el `http.Server` real de Node 18.2+ lo trae.
+   *
+   * ★ Decisión deliberada (hallazgo 2, revisión post-Reviewer): `a2a/server.ts`
+   * SÍ lo declara obligatorio, así que esto queda inconsistente entre
+   * adaptadores. No se sube a obligatorio acá porque el doble de
+   * `index.test.ts` (`FakeHttpServer`) no implementa `closeIdleConnections`
+   * y SÍ ejercita `close()` — forzar el tipo no rompería el compilador (el
+   * doble se castea vía `unknown`), pero rompería ese test en runtime con
+   * `closeIdleConnections is not a function`. Mantener opcional + `?.()` es
+   * la opción de menor riesgo mientras ese doble no se actualice.
+   */
+  closeIdleConnections?(): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
 }
 
