@@ -802,7 +802,11 @@ try {
     console.error(`No se pudo cerrar la base de datos: ${toErrorMessage(error)}`);
   }
 }
-// Headless: quita los listeners de señal (que mantienen vivo el event loop)
-// y sale con código explícito. En TUI es un no-op — nunca se registró nada,
-// porque `esperarSenalDeCierre()` no se llamó (design.md §0.7, §3.3).
+// Headless: desarma el ancla del event loop y el watchdog, quita los
+// listeners de señal y sale con código explícito. Los listeners de señal NO
+// sostienen el event loop (medido: `process.on("SIGTERM", …)` + un `await`
+// pendiente sale con código 13): lo sostiene el ancla ref'd que arma
+// `esperarSenalDeCierre()` en `proceso-cierre.ts`. En TUI es un no-op — nunca
+// se registró nada, porque `esperarSenalDeCierre()` no se llamó (design.md
+// §0.7, §0.7b, §3.3).
 finalizarCierreHeadless();

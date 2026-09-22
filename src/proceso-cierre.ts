@@ -34,6 +34,26 @@ export const PROCESO_LOG_CORRELATION_ID = "proceso";
  */
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 70_000;
 
+/**
+ * Periodo del ANCLA del event loop (H-1, design §0.7b): un `setInterval`
+ * no-op que mantiene vivo el proceso headless mientras espera la señal.
+ *
+ * ★ POR QUÉ existe: un handler de señal NO ref'a el event loop en Node
+ * (medido: `process.on("SIGTERM", …); await new Promise(() => {})` sale con
+ * código 13). Sin un handle ref'd propio, un proceso headless sin ningún
+ * listener de red -- o con el único fallado al enlazar -- moría solo a los
+ * ~0,8 s, sin una línea de log. El ancla se arma al registrar los handlers, se
+ * desarma en la 1.ª señal (el watchdog del presupuesto, que también es ref'd,
+ * toma la posta) y `finalizarCierreHeadless` la desarma otra vez como red.
+ *
+ * ★ COSTO declarado y aceptado: UN wake-up del proceso por minuto en reposo.
+ * Un intervalo más corto no compra nada; uno más largo no ahorra nada medible.
+ * ★ NUNCA se desreferencia el handle (ni el del ancla ni el del watchdog): un
+ * ancla que no cuenta para el loop es exactamente el bug que este mecanismo
+ * arregla.
+ */
+export const ANCLA_INTERVALO_MS = 60_000;
+
 /** Las dos señales que disparan el cierre ordenado headless (ADR 249). */
 export type SenalDeCierre = "SIGTERM" | "SIGINT";
 
@@ -68,6 +88,16 @@ export interface ProcesoCierreDeps {
   readonly armarTimer: (fn: () => void, ms: number) => unknown;
   /** Default: `clearTimeout`. */
   readonly desarmarTimer: (handle: unknown) => void;
+  /**
+   * ★ ENMIENDA H-1 (design §0.7b, §8). Arma el ANCLA ref'd que sostiene el
+   * event loop mientras se espera la señal. Default: `setInterval` no-op cada
+   * `ANCLA_INTERVALO_MS`. ADITIVA (los consumidores pasan `Partial<ProcesoCierreDeps>`)
+   * y separada de `armarTimer` a propósito: son handles de vida distinta y el
+   * test tiene que poder distinguirlos.
+   */
+  readonly armarAncla: () => unknown;
+  /** ★ ENMIENDA H-1. Default: `clearInterval`. Recibe TAL CUAL el handle que devolvió `armarAncla`; con `undefined` es un no-op. */
+  readonly desarmarAncla: (handle: unknown) => void;
   /** Default: `process.env`. */
   readonly env: NodeJS.ProcessEnv;
 }
@@ -90,6 +120,10 @@ const DEPS_POR_DEFECTO: ProcesoCierreDeps = {
   armarTimer: (fn: () => void, ms: number): unknown => setTimeout(fn, ms),
   desarmarTimer: (handle: unknown): void => {
     clearTimeout(handle as ReturnType<typeof setTimeout>);
+  },
+  armarAncla: (): unknown => setInterval(() => {}, ANCLA_INTERVALO_MS),
+  desarmarAncla: (handle: unknown): void => {
+    clearInterval(handle as ReturnType<typeof setInterval>);
   },
   env: process.env,
 };
@@ -225,8 +259,14 @@ let handlersRegistrados: {
   evento: SenalDeCierre | TipoErrorNoCapturado;
   handler: (arg?: unknown) => void;
 }[] = [];
-/** Handle devuelto por `armarTimer`, pasado TAL CUAL a `desarmarTimer` — nunca se le hace `.unref()`. */
+/** Handle devuelto por `armarTimer`, pasado TAL CUAL a `desarmarTimer` — siempre ref'd (ver `ANCLA_INTERVALO_MS`). */
 let watchdogHandle: unknown;
+/**
+ * Handle devuelto por `armarAncla` (H-1, design §0.7b), pasado TAL CUAL a
+ * `desarmarAncla`. Se pone en `undefined` al desarmarlo en la 1.ª señal, así
+ * que el desarme de `finalizarCierreHeadless` es un no-op idempotente.
+ */
+let anclaHandle: unknown;
 
 function resolverDepsCompletas(deps: Partial<ProcesoCierreDeps>): ProcesoCierreDeps {
   return { ...DEPS_POR_DEFECTO, ...deps };
@@ -243,9 +283,19 @@ function resolverDepsCompletas(deps: Partial<ProcesoCierreDeps>): ProcesoCierreD
  * REGISTRAR (no en cada señal): así el evento `cierre-presupuesto-invalido`,
  * si corresponde, sale en el arranque headless, no en el apagado (design §5.3).
  *
- * En la 1.ª señal: loguea `cierre-senal-recibida`, arma el watchdog del
- * presupuesto (SIN `.unref()`: el watchdog DEBE poder disparar aunque no
- * quede nada más pendiente) y resuelve la promesa — la fase pasa a
+ * ★ ENMIENDA H-1/H-2 (design §0.7b y §8) — ORDEN OBLIGATORIO del armado, un
+ * contrato y no un detalle: (1) resolver el presupuesto, (2) armar el ANCLA
+ * ref'd (`armarAncla`), (3) registrar los cuatro handlers, (4) loguear
+ * `cierre-esperando-senal{presupuestoMs}` como ÚLTIMA sentencia. El marcador
+ * significa dos cosas a la vez: "ya es seguro mandar la señal" y "el proceso
+ * no se va a morir solo". Es el punto de sincronización del test de proceso
+ * hijo y lo que un supervisor puede leer; si el logger falla, el arranque
+ * continúa igual (mismo criterio que H6): no es un requisito de arranque.
+ *
+ * En la 1.ª señal: loguea `cierre-senal-recibida`, DESARMA el ancla y arma el
+ * watchdog del presupuesto (el baton: siempre hay >= 1 handle ref'd; el
+ * watchdog DEBE poder disparar aunque no quede nada más pendiente, así que
+ * también se deja ref'd) y resuelve la promesa — la fase pasa a
  * `"cerrando"` ANTES de resolver. Una señal repetida (2.ª+, en cualquier
  * combinación de `SIGTERM`/`SIGINT`) es idempotente: solo loguea
  * `cierre-senal-repetida`, no acorta ni prolonga la espera ni fuerza la
@@ -266,6 +316,8 @@ export function esperarSenalDeCierre(
   faseDeCierre = "esperando";
   handlersRegistrados = [];
   watchdogHandle = undefined;
+  // (2) El ANCLA va ANTES de los handlers: cuando el marcador aparece, el proceso ya no puede morirse solo.
+  anclaHandle = depsCompletas.armarAncla();
 
   return new Promise<SenalDeCierre>((resolve) => {
     const manejarSenal = (senal: SenalDeCierre): void => {
@@ -274,6 +326,9 @@ export function esperarSenalDeCierre(
         return;
       }
       depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-senal-recibida", { senal });
+      // El baton: el ancla sale y el watchdog (ref'd) entra en este mismo turno del event loop.
+      depsCompletas.desarmarAncla(anclaHandle);
+      anclaHandle = undefined;
       watchdogHandle = depsCompletas.armarTimer(() => {
         depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-presupuesto-excedido", {
           presupuestoMs,
@@ -300,16 +355,28 @@ export function esperarSenalDeCierre(
     for (const { evento, handler } of handlersRegistrados) {
       depsCompletas.proceso.on(evento, handler);
     }
+
+    // (4) ÚLTIMA sentencia del armado (H13). Un logger roto no puede impedir el arranque.
+    try {
+      depsCompletas.logEvent(PROCESO_LOG_CORRELATION_ID, "cierre-esperando-senal", { presupuestoMs });
+    } catch {
+      // Ver el doc de arriba: el marcador es informativo, no un requisito de arranque.
+    }
   });
 }
 
 /**
- * §0.7 + §3.3 — desarma el watchdog, quita los cuatro listeners (con la
- * MISMA referencia con la que se registraron), loguea `cierre-completado`,
- * `salir(0)`. Un handler de señal mantiene vivo el event loop por sí solo:
- * por eso este `salir(0)` explícito es lo que realmente termina el proceso,
- * no una red de seguridad — de ahí que se llame SIEMPRE después del
- * `finally` de `main.ts` (nunca antes). Código `0`: es un cierre iniciado
+ * §0.7 + §0.7b + §3.3 — desarma el watchdog Y el ancla (idempotente: tras la
+ * 1.ª señal el ancla ya está desarmada y esto es un no-op), quita los cuatro
+ * listeners (con la MISMA referencia con la que se registraron), loguea
+ * `cierre-completado`, `salir(0)`.
+ *
+ * ★ CORREGIDO por la evidencia (H-1): un handler de señal NO mantiene vivo el
+ * event loop, así que quitarlos es higiene, no mecanismo. Lo que este `salir(0)`
+ * explícito garantiza es que el proceso termine YA y con un código conocido
+ * tras el cierre ordenado, en vez de depender de qué otros handles queden
+ * pendientes. Se llama SIEMPRE después del `finally` de `main.ts` (nunca
+ * antes). Código `0`: es un cierre iniciado
  * por señal que completó el drenaje, no la muerte reportada por una shell
  * (`128+N` confundiría un `docker stop` normal con un fallo, §3.3).
  *
@@ -322,6 +389,8 @@ export function finalizarCierreHeadless(deps: Partial<ProcesoCierreDeps> = {}): 
   }
   const depsCompletas = resolverDepsCompletas({ ...depsCapturadas, ...deps });
   depsCompletas.desarmarTimer(watchdogHandle);
+  depsCompletas.desarmarAncla(anclaHandle);
+  anclaHandle = undefined;
   for (const { evento, handler } of handlersRegistrados) {
     depsCompletas.proceso.off(evento, handler);
   }
