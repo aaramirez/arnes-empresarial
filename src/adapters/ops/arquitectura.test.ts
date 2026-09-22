@@ -12,27 +12,13 @@
  * es el rojo de tipo original; este es el candado estructural que barre
  * TODOS los archivos, no solo ese uno.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { listarTodosLosArchivosTs } from "../../test/listar-archivos-ts.js";
 
 const OPS_DIR = dirname(fileURLToPath(import.meta.url));
-
-function listarArchivosTs(dir: string): string[] {
-  const archivos: string[] = [];
-  for (const entrada of readdirSync(dir, { withFileTypes: true })) {
-    const ruta = join(dir, entrada.name);
-    if (entrada.isDirectory()) {
-      archivos.push(...listarArchivosTs(ruta));
-      continue;
-    }
-    if (entrada.name.endsWith(".ts")) {
-      archivos.push(ruta);
-    }
-  }
-  return archivos;
-}
 
 /** Extrae los especificadores de TODO `import ... from "X"` y `import "X";` de efecto. */
 function especificadoresDeImport(contenido: string): string[] {
@@ -48,7 +34,7 @@ function especificadoresDeImport(contenido: string): string[] {
   return especificadores;
 }
 
-const TODOS_LOS_ARCHIVOS = listarArchivosTs(OPS_DIR);
+const TODOS_LOS_ARCHIVOS = listarTodosLosArchivosTs(OPS_DIR);
 const FUENTES_NO_TEST = TODOS_LOS_ARCHIVOS.filter((archivo) => !archivo.endsWith(".test.ts"));
 const ARCHIVOS_DE_TEST = TODOS_LOS_ARCHIVOS.filter((archivo) => archivo.endsWith(".test.ts"));
 

@@ -50,26 +50,49 @@ export const RUTA_LISTO = "/salud/listo";
 export const CUERPO_VIVO = "vivo";
 export const CUERPO_LISTO = "listo";
 
+/** Techo del rango TCP válido (RFC 793: 16 bits sin signo, `0` reservado para "deshabilitado"). */
+const PUERTO_TCP_MAXIMO = 65_535;
+
+/**
+ * Resultado de intentar leer un puerto TCP desde una variable de entorno.
+ * `estabaPresente` distingue "vacío/ausente" (silencio esperado, nunca
+ * `puertoInvalido`) de "vino pero no sirve" (sí `puertoInvalido`), sin que
+ * `resolveOpsConfig` tenga que re-evaluar el mismo string por su cuenta
+ * (Reviewer finding, simplificación).
+ */
+interface PuertoResuelto {
+  readonly port: number;
+  readonly estabaPresente: boolean;
+}
+
 /**
  * Parses a positive-integer env var, falling back to `0` when the raw value
- * is missing, blank, not a number, or not strictly greater than zero. Never
- * throws — this adapter's configuration is best-effort by design, same
- * criterion as `src/adapters/webhooks/config.ts`.
+ * is missing, blank, not an INTEGER, not strictly greater than zero, or por
+ * fuera del rango TCP válido (`> 65535`). Never throws — this adapter's
+ * configuration is best-effort by design, same criterion as
+ * `src/adapters/webhooks/config.ts`.
+ *
+ * `Number.isInteger` + el techo de 65535 (Reviewer finding, correctness):
+ * sin esto, `OPS_PORT="8788.5"` o `"99999"` pasaban como "válidos" (sin
+ * `puertoInvalido`) y solo fallaban después, dentro de `server.listen()`,
+ * con el `ERR_SOCKET_BAD_PORT` genérico de Node en vez del diagnóstico
+ * `ops-puerto-invalido{raw}` que este adaptador existe para dar.
  *
  * DELIBERATELY duplicated across the adapter config files (Reviewer finding,
  * reuse): not hoisted to `src/core/` because this is env-var parsing
  * infrastructure, not business logic, and AGENTS.md's non-negotiable rule
  * forbids one adapter importing from another.
  */
-function resolvePositiveNumber(raw: string | undefined): number {
-  if (raw === undefined || raw.trim() === "") {
-    return 0;
+function resolvePositiveNumber(raw: string | undefined): PuertoResuelto {
+  const estabaPresente = raw !== undefined && raw.trim() !== "";
+  if (!estabaPresente) {
+    return { port: 0, estabaPresente };
   }
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 0;
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > PUERTO_TCP_MAXIMO) {
+    return { port: 0, estabaPresente };
   }
-  return parsed;
+  return { port: parsed, estabaPresente };
 }
 
 /**
@@ -81,15 +104,16 @@ function resolvePositiveNumber(raw: string | undefined): number {
  * | `OPS_PORT` | `port` | `0` (deshabilitado) — **sin ningún otro default** (K6: un default abriría un puerto en toda instalación existente al actualizar) |
  * | `OPS_HOST` | `host` | clave AUSENTE (`listen` sin `host`); blanco = ausente |
  *
- * `port` ausente/vacío/no numérico/`<= 0` → `0`, y en ese caso, si el valor
- * CRUDO estaba presente y no en blanco, `puertoInvalido` lleva ese crudo.
+ * `port` ausente/vacío/no numérico/no ENTERO/`<= 0`/`> 65535` → `0`, y en
+ * ese caso, si el valor CRUDO estaba presente y no en blanco, `puertoInvalido`
+ * lleva ese crudo.
  * NUNCA lanza, NUNCA loguea, NUNCA exige ninguna otra variable (no hay
  * secreto: el puerto ES la decisión, `design.md` §7.1).
  */
 export function resolveOpsConfig(env: NodeJS.ProcessEnv = process.env): OpsConfig {
   const rawPort = env.OPS_PORT;
-  const port = resolvePositiveNumber(rawPort);
-  const puertoInvalido = port === 0 && rawPort !== undefined && rawPort.trim() !== "" ? rawPort : undefined;
+  const { port, estabaPresente } = resolvePositiveNumber(rawPort);
+  const puertoInvalido = port === 0 && estabaPresente ? rawPort : undefined;
   // `.trim()`: un `OPS_HOST=` vacío en un `.env` no puede significar
   // "escucha en la cadena vacía". Blanco = ausente; la clave se OMITE (no `undefined`).
   const host = env.OPS_HOST?.trim();
