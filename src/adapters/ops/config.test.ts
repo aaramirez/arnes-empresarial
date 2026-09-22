@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -12,23 +12,9 @@ import {
   isOpsEnabled,
   resolveOpsConfig,
 } from "./config.js";
+import { listarArchivosTs } from "../../test/listar-archivos-ts.js";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-
-function listarArchivosTs(dir: string): string[] {
-  const archivos: string[] = [];
-  for (const entrada of readdirSync(dir, { withFileTypes: true })) {
-    const ruta = join(dir, entrada.name);
-    if (entrada.isDirectory()) {
-      archivos.push(...listarArchivosTs(ruta));
-      continue;
-    }
-    if (entrada.name.endsWith(".ts") && !entrada.name.endsWith(".test.ts")) {
-      archivos.push(ruta);
-    }
-  }
-  return archivos;
-}
 
 describe("resolveOpsConfig — S1: OPS_PORT es el único gate, nunca lanza", () => {
   it("returns port 0 and isOpsEnabled false for an empty env", () => {
@@ -45,7 +31,7 @@ describe("resolveOpsConfig — S1: OPS_PORT es el único gate, nunca lanza", () 
     expect(isOpsEnabled(config)).toBe(true);
   });
 
-  it.each(["", "   ", "abc", "0", "-1", "NaN", "Infinity", "8788x"])(
+  it.each(["", "   ", "abc", "0", "-1", "NaN", "Infinity", "8788x", "8788.5", "99999", "65536"])(
     "does not throw and disables the listener when OPS_PORT is %s",
     (raw) => {
       expect(() => resolveOpsConfig({ OPS_PORT: raw })).not.toThrow();
@@ -59,7 +45,7 @@ describe("resolveOpsConfig — S1: OPS_PORT es el único gate, nunca lanza", () 
 });
 
 describe("resolveOpsConfig — S2: puertoInvalido presente SOLO si OPS_PORT venía y no servía", () => {
-  it.each(["abc", "0", "-1"])(
+  it.each(["abc", "0", "-1", "8788.5", "99999", "65536"])(
     "includes puertoInvalido with the raw value when OPS_PORT is %s",
     (raw) => {
       const config = resolveOpsConfig({ OPS_PORT: raw });
