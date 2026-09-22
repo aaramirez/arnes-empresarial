@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CUERPO_LISTO,
   CUERPO_VIVO,
   OPS_CLOSE_TIMEOUT_MS,
   OPS_LOG_CORRELATION_ID,
@@ -208,16 +209,6 @@ describe("startServer — cualquier otro metodo+ruta responde 404 sin cuerpo (S7
     expect(salud.listenersCaidos).not.toHaveBeenCalled();
   });
 
-  it("GET /salud/listo responde 404 en este PR (rojo inicial legitimo del slice D, S15 llega en 4.3-4.4)", async () => {
-    const { listener } = await montar();
-    const res = new FakeOpsResponse();
-
-    listener({ method: "GET", url: RUTA_LISTO }, res);
-
-    expect(res.statusCode).toBe(404);
-    expect(res.cuerpoFinal ?? "").toBe("");
-  });
-
   it("toda respuesta fija Cache-Control: no-store y Connection: close; Content-Type solo en 200", async () => {
     const { listener } = await montar();
     const resVivo = new FakeOpsResponse();
@@ -234,6 +225,118 @@ describe("startServer — cualquier otro metodo+ruta responde 404 sin cuerpo (S7
     }
     expect(resVivo.header("Content-Type")).toBe("text/plain; charset=utf-8");
     expect(resHeadVivo.header("Content-Type")).toBe("text/plain; charset=utf-8");
+  });
+});
+
+/**
+ * S15 (slice D, tarea 4.3) — `GET`/`HEAD /salud/listo` evalúa
+ * `evaluarReadiness` sobre los tres hechos del `OpsSaludPort` inyectado.
+ * ★ ÚNICA EDICIÓN DE UNA ASERCIÓN DE 2.1 (declarada, `tasks.md` 4.3): el
+ * escenario "GET /salud/listo responde 404 en este PR" del slice B/C — el
+ * rojo inicial DIFERIDO de este mismo slice D — se reemplaza por la
+ * suite real de abajo, que ahora cubre el camino sano (`200 listo`) y
+ * todos los caminos `503`.
+ */
+describe("startServer — GET/HEAD /salud/listo evalúa evaluarReadiness sobre el PUERTO (S15)", () => {
+  it("los tres hechos sanos ⇒ 200, text/plain; charset=utf-8, cuerpo listo", async () => {
+    const salud = makeSaludPort({
+      estaCerrando: vi.fn(() => false),
+      baseUtilizable: vi.fn(() => true),
+      listenersCaidos: vi.fn(() => 0),
+    });
+    const { listener } = await montar(makeDeps({ salud }));
+    const res = new FakeOpsResponse();
+
+    listener({ method: "GET", url: RUTA_LISTO }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.header("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(res.cuerpoFinal).toBe(CUERPO_LISTO);
+  });
+
+  it.each([
+    ["estaCerrando", true, true, 0, "cerrando"],
+    ["baseUtilizable", false, false, 0, "base"],
+    ["listenersCaidos", false, true, 1, "listener"],
+  ] as const)(
+    "cada hecho por separado (%s) ⇒ 503 con el motivo correspondiente",
+    async (_etiqueta, cerrando, baseUtilizable, listenersCaidos, motivo) => {
+      const salud = makeSaludPort({
+        estaCerrando: vi.fn((): boolean => cerrando),
+        baseUtilizable: vi.fn((): boolean => baseUtilizable),
+        listenersCaidos: vi.fn((): number => listenersCaidos),
+      });
+      const { listener } = await montar(makeDeps({ salud }));
+      const res = new FakeOpsResponse();
+
+      listener({ method: "GET", url: RUTA_LISTO }, res);
+
+      expect(res.statusCode).toBe(503);
+      expect(res.cuerpoFinal).toBe(motivo);
+    },
+  );
+
+  it("los tres hechos a la vez ⇒ 503 cerrando (prioridad); con estaCerrando false ⇒ base", async () => {
+    const saludTodosCaidos = makeSaludPort({
+      estaCerrando: vi.fn(() => true),
+      baseUtilizable: vi.fn(() => false),
+      listenersCaidos: vi.fn(() => 2),
+    });
+    const { listener: listenerTodos } = await montar(makeDeps({ salud: saludTodosCaidos }));
+    const resTodos = new FakeOpsResponse();
+    listenerTodos({ method: "GET", url: RUTA_LISTO }, resTodos);
+    expect(resTodos.statusCode).toBe(503);
+    expect(resTodos.cuerpoFinal).toBe("cerrando");
+
+    const saludSinCerrando = makeSaludPort({
+      estaCerrando: vi.fn(() => false),
+      baseUtilizable: vi.fn(() => false),
+      listenersCaidos: vi.fn(() => 2),
+    });
+    const { listener: listenerSinCerrando } = await montar(makeDeps({ salud: saludSinCerrando }));
+    const resSinCerrando = new FakeOpsResponse();
+    listenerSinCerrando({ method: "GET", url: RUTA_LISTO }, resSinCerrando);
+    expect(resSinCerrando.statusCode).toBe(503);
+    expect(resSinCerrando.cuerpoFinal).toBe("base");
+  });
+
+  it("HEAD /salud/listo responde 200 o 503 sin cuerpo (end() sin argumento)", async () => {
+    const saludSano = makeSaludPort();
+    const { listener: listenerSano } = await montar(makeDeps({ salud: saludSano }));
+    const resSano = new FakeOpsResponse();
+    listenerSano({ method: "HEAD", url: RUTA_LISTO }, resSano);
+    expect(resSano.statusCode).toBe(200);
+    expect(resSano.cuerpoFinal).toBeUndefined();
+
+    const saludCaido = makeSaludPort({ baseUtilizable: vi.fn(() => false) });
+    const { listener: listenerCaido } = await montar(makeDeps({ salud: saludCaido }));
+    const resCaido = new FakeOpsResponse();
+    listenerCaido({ method: "HEAD", url: RUTA_LISTO }, resCaido);
+    expect(resCaido.statusCode).toBe(503);
+    expect(resCaido.cuerpoFinal).toBeUndefined();
+  });
+
+  it("misma terna de headers que /salud/vivo en 200 y en 503", async () => {
+    const salud = makeSaludPort({ baseUtilizable: vi.fn(() => false) });
+    const { listener } = await montar(makeDeps({ salud }));
+    const res = new FakeOpsResponse();
+
+    listener({ method: "GET", url: RUTA_LISTO }, res);
+
+    expect(res.header("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(res.header("Cache-Control")).toBe("no-store");
+    expect(res.header("Connection")).toBe("close");
+  });
+
+  it("OpsServerDeps.salud sigue REQUERIDO (S16, sin churn): makeDeps() sin override ya lo exige por tipo", async () => {
+    // Si `salud` se volviera opcional, este test seguiría compilando igual
+    // que hoy -- lo que fija el requirement es `makeDeps()` (server.ts,
+    // `OpsServerDeps`), verificado por `tsc` en cada corrida de CI, no por
+    // una aserción en runtime.
+    const { listener } = await montar(makeDeps());
+    const res = new FakeOpsResponse();
+    listener({ method: "GET", url: RUTA_LISTO }, res);
+    expect(res.statusCode).toBe(200);
   });
 });
 
