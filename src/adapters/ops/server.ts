@@ -12,20 +12,26 @@
  * el único evento de ciclo de vida que le compete acá: `ops-cierre-forzado`
  * (S8, tarea 2.4).
  *
- * `GET /salud/listo` responde `404` en este PR a propósito: la rama de
- * `RUTA_LISTO` llega en el slice D (tarea 4.4) sobre `evaluarReadiness`.
- * Hasta entonces cae al `default` del `switch`, igual que cualquier otra
- * ruta no reconocida — es el rojo inicial legítimo de S15.
+ * `GET /salud/listo` (slice D, ADR 258, S15) evalúa `evaluarReadiness`
+ * SÍNCRONAMENTE sobre los tres hechos del `OpsSaludPort` inyectado: `200`
+ * con `CUERPO_LISTO` si está lista, `503` con el motivo (`cerrando`,
+ * `base` o `listener`) si no. Sin consultar terceros, sin I/O propia, sin
+ * loguear (S5, S9) — límite declarado en S-f: un `OpsSaludPort` cuyas
+ * funciones lanzan no está cubierto acá; `main.ts` garantiza que la sonda
+ * de base no lanza y las otras dos son triviales (design.md §7.3, nota).
  */
 import { createServer as createHttpServer } from "node:http";
 import {
+  CUERPO_LISTO,
   CUERPO_VIVO,
   OPS_CLOSE_TIMEOUT_MS,
   OPS_LOG_CORRELATION_ID,
+  RUTA_LISTO,
   RUTA_VIVO,
   type OpsConfig,
 } from "./config.js";
 import type { CreateOpsServerFn, OpsHttpServerLike, OpsRequest, OpsResponse } from "./http.js";
+import { evaluarReadiness } from "./readiness.js";
 
 /**
  * Los tres hechos de readiness llegan INYECTADOS desde el composition root
@@ -77,12 +83,32 @@ function responderNoEncontrado(res: OpsResponse): void {
 }
 
 /**
+ * `evaluarReadiness` sobre los tres hechos leídos DE NUEVO en cada request
+ * (S17: el `503 cerrando` tiene que reflejar el instante de la señal, no un
+ * valor cacheado al montar el listener). Síncrona por construcción: las
+ * tres funciones de `deps.salud` son llamadas síncronas (§7.4).
+ */
+function responderListo(deps: OpsServerDeps, res: OpsResponse, conCuerpo: boolean): void {
+  const motivo = evaluarReadiness({
+    cerrando: deps.salud.estaCerrando(),
+    baseUtilizable: deps.salud.baseUtilizable(),
+    listenersCaidos: deps.salud.listenersCaidos(),
+  });
+  res.statusCode = motivo === undefined ? 200 : 503;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Connection", "close");
+  res.end(conCuerpo ? (motivo ?? CUERPO_LISTO) : undefined);
+}
+
+/**
  * Ruteo EXHAUSTIVO — `switch` sobre `${method} ${url}` (S-a: comparación
  * LITERAL, sin normalizar `req.url`: `/salud/vivo/` y `/salud/vivo?x=1`
- * caen al `default`, igual que un `method` `undefined`). Síncrono: liveness
- * responde en el mismo tick sin tocar el `OpsSaludPort` (S6).
+ * caen al `default`, igual que un `method` `undefined`). Liveness responde
+ * en el mismo tick sin tocar el `OpsSaludPort` (S6); readiness sí lo
+ * consulta, también síncronamente (S15).
  */
-function crearListener(_deps: OpsServerDeps): (req: OpsRequest, res: OpsResponse) => void {
+function crearListener(deps: OpsServerDeps): (req: OpsRequest, res: OpsResponse) => void {
   return (req: OpsRequest, res: OpsResponse): void => {
     const clave = `${req.method ?? ""} ${req.url ?? ""}`;
     switch (clave) {
@@ -91,6 +117,12 @@ function crearListener(_deps: OpsServerDeps): (req: OpsRequest, res: OpsResponse
         return;
       case `HEAD ${RUTA_VIVO}`:
         responderVivo(res, false);
+        return;
+      case `GET ${RUTA_LISTO}`:
+        responderListo(deps, res, true);
+        return;
+      case `HEAD ${RUTA_LISTO}`:
+        responderListo(deps, res, false);
         return;
       default:
         responderNoEncontrado(res);
