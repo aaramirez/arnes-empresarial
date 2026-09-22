@@ -283,6 +283,54 @@ describe("invokeModel", () => {
     expect(calls).toEqual(["system", "result", "hook"]);
   });
 
+  it("triggers the PRE_TURN hook exactly once, before queryFn is invoked, with only casoId/agentId", async () => {
+    const agent = makeAgent({ id: "agente-conversacional" });
+    const context = makeContext({ caso: makeCaso({ id: "caso-pre-turn" }) });
+    const hookEngine = createHookEngine();
+    const preTurnHandler = vi.fn();
+    hookEngine.registerHook("PRE_TURN", preTurnHandler);
+    const calls: string[] = [];
+    hookEngine.registerHook("PRE_TURN", () => {
+      calls.push("pre-turn-hook");
+    });
+    const queryFn = vi.fn(async function* () {
+      calls.push("queryFn");
+      yield fakeSystemInitMessage("sdk-session-pre-turn");
+      yield fakeResultSuccessMessage("respuesta", "sdk-session-pre-turn");
+    });
+
+    await invokeModel(agent, context, "hola", hookEngine, queryFn);
+
+    expect(preTurnHandler).toHaveBeenCalledTimes(1);
+    expect(preTurnHandler).toHaveBeenCalledWith({
+      casoId: "caso-pre-turn",
+      agentId: "agente-conversacional",
+    });
+    expect(calls).toEqual(["pre-turn-hook", "queryFn"]);
+  });
+
+  it("still triggers the PRE_TURN hook even when queryFn throws before yielding anything", async () => {
+    const agent = makeAgent({ id: "agente-conversacional" });
+    const context = makeContext({ caso: makeCaso({ id: "caso-pre-turn-error" }) });
+    const hookEngine = createHookEngine();
+    const preTurnHandler = vi.fn();
+    hookEngine.registerHook("PRE_TURN", preTurnHandler);
+    const boom = new Error("network boom antes de arrancar el turno");
+    const queryFn = vi.fn(async function* (): AsyncGenerator<SDKMessage> {
+      throw boom;
+      // eslint-disable-next-line no-unreachable
+      yield fakeSystemInitMessage("unreachable");
+    });
+
+    await expect(invokeModel(agent, context, "hola", hookEngine, queryFn)).rejects.toBe(boom);
+
+    expect(preTurnHandler).toHaveBeenCalledTimes(1);
+    expect(preTurnHandler).toHaveBeenCalledWith({
+      casoId: "caso-pre-turn-error",
+      agentId: "agente-conversacional",
+    });
+  });
+
   it("throws ModelResponseIncompleteError when the turn ends without a successful result message", async () => {
     const agent = makeAgent();
     const context = makeContext();

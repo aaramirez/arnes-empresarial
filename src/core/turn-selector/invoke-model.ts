@@ -88,6 +88,13 @@
  * agent has `allowedTools: []`, so there is nothing to intercept around a
  * tool call), so wiring that integration now would be speculative.
  *
+ * `PRE_TURN` (added alongside this same design decision): fired right
+ * before `queryFn` is called — before the turn can fail — so a
+ * `queryFn` rejection or a turn that never resolves `responseText`/
+ * `sdkSessionId` still leaves a "turno-iniciado" trace. Its `HookContext`
+ * only carries `{ casoId, agentId }`: at this point in the flow the turn
+ * has not started, so `sdkSessionId`/`responseText` do not exist yet.
+ *
  * Design decision — error handling deferred: same criterion already applied
  * by `hook-engine.ts` and `assemble-context.ts` — Manejo de errores base
  * (Hito 1, tarea 11) has not run yet. If `queryFn` throws or its returned
@@ -450,6 +457,20 @@ export async function invokeModel(
   skills: readonly string[] = listarSkillsHabilitadas(),
 ): Promise<InvokeModelResult> {
   const options = toQueryOptions(agent, context, mcpServers, subagentes, cwd, skills);
+
+  // PRE_TURN dispara ANTES de la llamada real al SDK (`queryFn` más abajo),
+  // a propósito: hoy `POST_TURN` (más abajo) solo se dispara si el turno
+  // termina bien — si `queryFn` tira o el turno nunca resuelve
+  // `responseText`/`sdkSessionId`, no queda ningún rastro de que ese turno
+  // siquiera empezó. En este punto del flujo el turno ni arrancó, así que
+  // el `HookContext` todavía no tiene `sdkSessionId` ni `responseText` (esos
+  // solo existen una vez consumidos los mensajes del SDK, ver `POST_TURN`
+  // más abajo).
+  const preTurnHookContext: HookContext = {
+    casoId: context.caso.id,
+    agentId: agent.id,
+  };
+  await hookEngine.triggerHook("PRE_TURN", preTurnHookContext);
 
   let sdkSessionId: string | undefined;
   let responseText: string | undefined;

@@ -19,6 +19,8 @@
 
 import { listAgentDefinitions, type AgentDefinition } from "../agents/definitions.js";
 import { hookEngine as defaultHookEngine, type HookEngine } from "../hooks/hook-engine.js";
+import { logPostTurnHandler } from "../hooks/log-post-turn-handler.js";
+import { logPreTurnHandler } from "../hooks/log-pre-turn-handler.js";
 import { logTurnEvent } from "../logging/turn-logger.js";
 import type { ResultadoDescubrimiento } from "../skills/descubrir-skills.js";
 import { SkillInvalidaError } from "../skills/skill-frontmatter.js";
@@ -87,9 +89,14 @@ export function bootstrapHarness(
 
   // 2. Motor de Hooks después: en un hito futuro con Registro de Comandos/
   //    Skills, un hook podría necesitar inspeccionar qué agentes existen —
-  //    en Hito 1 el motor mínimo no tiene esa dependencia real todavía
-  //    (registro vacío, ver hook-engine.ts), pero el orden queda fijado acá
-  //    para cuando sí la tenga.
+  //    el orden queda fijado acá para cuando lo necesite. Ya no es un
+  //    registro vacío: `logPostTurnHandler` (`hooks/log-post-turn-handler.ts`)
+  //    se registra acá como primer handler real de POST_TURN, y
+  //    `logPreTurnHandler` (`hooks/log-pre-turn-handler.ts`) como primer
+  //    handler real de PRE_TURN, ambos reusando `logTurnEvent` para dejar
+  //    rastro en `data/harness.log`.
+  hooks.registerHook("PRE_TURN", logPreTurnHandler);
+  hooks.registerHook("POST_TURN", logPostTurnHandler);
 
   // 3. Registro de Skills tercero, después de Hooks — ninguna skill
   //    inspecciona hooks ni agentes, así que entrar al final es el diff

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { listAgentDefinitions, type AgentDefinition } from "../agents/definitions.js";
 import { createHookEngine, hookEngine } from "../hooks/hook-engine.js";
+import { logPostTurnHandler } from "../hooks/log-post-turn-handler.js";
+import { logPreTurnHandler } from "../hooks/log-pre-turn-handler.js";
 import type { ResultadoDescubrimiento } from "../skills/descubrir-skills.js";
 import { SkillInvalidaError } from "../skills/skill-frontmatter.js";
 import { bootstrapHarness, HarnessBootstrapError } from "./bootstrap.js";
@@ -35,6 +37,40 @@ describe("bootstrapHarness", () => {
 
     expect(registries.hooks).toBe(fakeHookEngine);
     expect(registries.hooks).not.toBe(hookEngine);
+  });
+
+  it("registers logPostTurnHandler for POST_TURN on the injected hook engine during startup", () => {
+    const registerHook = vi.fn();
+    const fakeHookEngine = {
+      registerHook,
+      triggerHook: vi.fn(),
+    } as unknown as ReturnType<typeof createHookEngine>;
+
+    bootstrapHarness(undefined, fakeHookEngine, resultadoVacioPorAusencia, vi.fn());
+
+    // Same handler instance exercised on its own in
+    // hooks/log-post-turn-handler.test.ts — reference equality here proves
+    // triggering POST_TURN on the returned engine really runs it, without
+    // this test needing to trigger it itself (which would hit the real
+    // logTurnEvent default and write to data/harness.log).
+    expect(registerHook).toHaveBeenCalledWith("POST_TURN", logPostTurnHandler);
+  });
+
+  it("registers logPreTurnHandler for PRE_TURN on the injected hook engine during startup", () => {
+    const registerHook = vi.fn();
+    const fakeHookEngine = {
+      registerHook,
+      triggerHook: vi.fn(),
+    } as unknown as ReturnType<typeof createHookEngine>;
+
+    bootstrapHarness(undefined, fakeHookEngine, resultadoVacioPorAusencia, vi.fn());
+
+    // Same handler instance exercised on its own in
+    // hooks/log-pre-turn-handler.test.ts — reference equality here proves
+    // triggering PRE_TURN on the returned engine really runs it, without
+    // this test needing to trigger it itself (which would hit the real
+    // logTurnEvent default and write to data/harness.log).
+    expect(registerHook).toHaveBeenCalledWith("PRE_TURN", logPreTurnHandler);
   });
 
   it("throws HarnessBootstrapError when the injected Agent Registry has no agents defined", () => {
