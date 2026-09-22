@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { WEB_LOG_CORRELATION_ID, type WebConfig } from "./config.js";
-import type { CreateWebServerFn, WebRequest, WebResponse } from "./http.js";
+import type { CreateWebServerFn, WebHttpServerLike, WebRequest, WebResponse } from "./http.js";
 import { startWebServer } from "./index.js";
 
 const DISABLED_CONFIG: WebConfig = {
@@ -16,12 +16,6 @@ const ENABLED_CONFIG: WebConfig = {
   ventasApiToken: "test-token",
   maxBodyBytes: 65_536,
 };
-
-interface FakeHttpServer {
-  listen: (port: number, callback: () => void) => void;
-  close: (callback: (error?: Error) => void) => void;
-  on: (event: "error", listener: (error: Error) => void) => void;
-}
 
 function makeDeps(overrides: { logEvent?: (correlationId: string, event: string, fields?: Readonly<Record<string, unknown>>) => void } = {}): {
   onAltaVenta: () => Promise<never>;
@@ -72,11 +66,13 @@ function makeDeps(overrides: { logEvent?: (correlationId: string, event: string,
   };
 }
 
-/** Doble de servidor HTTP cuyo `listen` llama al callback de éxito sincrónicamente. */
-function makeSuccessfulServer(): { createServer: CreateWebServerFn; fakeServer: FakeHttpServer } {
-  const fakeServer: FakeHttpServer = {
-    listen: vi.fn((_port: number, callback: () => void) => {
-      callback();
+/** Doble de `WebHttpServerLike` cuyo `listen` llama al callback de éxito sincrónicamente. */
+function makeSuccessfulServer(): { createServer: CreateWebServerFn; fakeServer: WebHttpServerLike } {
+  const fakeServer: WebHttpServerLike = {
+    // Variádico (modo-headless-cierre-limpio, tarea 4.3): `WebHttpServerLike.listen`
+    // gana la sobrecarga `(port, host, callback)`; el callback es el último argumento.
+    listen: vi.fn((...args: unknown[]) => {
+      (args[args.length - 1] as () => void)();
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
       callback();
@@ -96,8 +92,8 @@ function makeSuccessfulServer(): { createServer: CreateWebServerFn; fakeServer: 
  */
 function makeFailingServer(error: Error): { createServer: CreateWebServerFn } {
   let errorListener: ((error: Error) => void) | undefined;
-  const fakeServer: FakeHttpServer = {
-    listen: vi.fn((_port: number, _callback: () => void) => {
+  const fakeServer: WebHttpServerLike = {
+    listen: vi.fn((..._args: unknown[]) => {
       errorListener?.(error);
     }),
     close: vi.fn((callback: (error?: Error) => void) => {
