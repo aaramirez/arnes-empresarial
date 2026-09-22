@@ -183,24 +183,15 @@ export function resolvePresupuestoCierreMs(deps: Partial<ProcesoCierreDeps> = {}
   return DEFAULT_SHUTDOWN_TIMEOUT_MS;
 }
 
-/** Representación textual de un motivo que puede no ser un `Error` (`unhandledRejection` admite cualquier valor rechazado). */
+/**
+ * Representación textual de un motivo que puede no ser un `Error`
+ * (`unhandledRejection` admite cualquier valor rechazado). Mismo one-liner
+ * que las otras 13 copias del molde en el repo (`main.ts`, `bootstrap.ts`,
+ * `ejecutar-operacion.ts`, etc.) — sin ramas extra, para no divergir del
+ * formato de log que ya usa el resto del código.
+ */
 function toErrorMessage(motivo: unknown): string {
-  if (motivo instanceof Error) {
-    return motivo.message;
-  }
-  if (typeof motivo === "string") {
-    return motivo;
-  }
-  if (motivo === undefined) {
-    return "undefined";
-  }
-  try {
-    // `JSON.stringify` devuelve `undefined` (no la cadena) para algunos
-    // valores (funciones, símbolos) — de ahí el `?? String(motivo)`.
-    return JSON.stringify(motivo) ?? String(motivo);
-  } catch {
-    return String(motivo);
-  }
+  return motivo instanceof Error ? motivo.message : String(motivo);
 }
 
 /**
