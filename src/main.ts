@@ -68,7 +68,7 @@ import { CASO_ESTADO_ACTIVO, type MemoryPort } from "./core/turn-selector/handle
 import { logTurnEvent } from "./core/logging/turn-logger.js";
 import { openDatabase } from "./adapters/memory/db.js";
 import { resolveDbPath } from "./adapters/memory/config.js";
-import { esModoHeadless, esperarSenalDeCierre, finalizarCierreHeadless } from "./proceso-cierre.js";
+import { esModoHeadless, esperarSenalDeCierre, estaCerrando, finalizarCierreHeadless } from "./proceso-cierre.js";
 import {
   buscarCredencialEmpleado,
   createCaso,
@@ -124,6 +124,8 @@ import { buildOnOperacionesEmpleado } from "./build-on-operaciones-empleado.js";
 import { crearSesionEmpleadoStore } from "./adapters/web/sesion-empleado-store.js";
 import { crearConfirmacionOperacionesStore } from "./adapters/web/confirmacion-operaciones-store.js";
 import { crearConversacionEmpleadoStore } from "./adapters/web/conversacion-empleado-store.js";
+import { startOpsServer, type OpsAdapter } from "./adapters/ops/index.js";
+import { OPS_LOG_CORRELATION_ID } from "./adapters/ops/config.js";
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -330,6 +332,15 @@ const botLogin = await resolveBotLogin({
   logEvent: (event, fields) => logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, event, fields),
 });
 
+// `salud-operativa` (slice D, R35, design.md §7.3 punto 2): CUÁNTOS
+// listeners HABILITADOS no lograron arrancar -- "esperado y caído" ≡ "el
+// arranque de ese listener lanzó" (S18). Declarado ANTES de `let webhook`
+// para que los tres `catch` de abajo (webhook/web/A2A) puedan incrementarlo
+// sin reordenar nada más. Contador simple, no `Set<string>` (Reviewer
+// finding, simplificación): en ningún punto se lee un elemento, solo el
+// tamaño -- `listenersCaidos()` expone el NÚMERO, nunca nombres (S7).
+let listenersCaidos = 0;
+
 let webhook: WebhookAdapter | undefined;
 try {
   webhook = await startWebhookServer({
@@ -340,6 +351,7 @@ try {
 } catch (error) {
   logTurnEvent(WEBHOOK_LOG_CORRELATION_ID, "webhook-arranque-fallido", { message: toErrorMessage(error) });
   webhook = undefined;
+  listenersCaidos += 1;
 }
 
 // 5b. Tercera fuente de turnos (Hito 4, tarea 28, design.md §6.5): el
@@ -546,6 +558,7 @@ try {
 } catch (error) {
   logTurnEvent(WEB_LOG_CORRELATION_ID, "web-arranque-fallido", { message: toErrorMessage(error) });
   web = undefined;
+  listenersCaidos += 1;
 }
 
 // 5c. Dispatcher de comandos de empleado (Hito 5, tarea 14, design.md §8
@@ -713,6 +726,40 @@ try {
     message: toErrorMessage(error),
   });
   a2aServidor = undefined;
+  listenersCaidos += 1;
+}
+
+// `salud-operativa` (slice D, ADR 257/258, design.md §7.3 punto 5): arranca
+// ÚLTIMO, después de web/webhook/A2A -- arrancarlo antes dejaría su closure
+// de readiness leyendo `webhook`/`web`/`a2aServidor` en TDZ. Mismo
+// `try`/`catch` degradante que los otros tres: un `OPS_PORT` mal elegido no
+// puede tumbar el arnés entero (OQ2). Los tres hechos reales, molde
+// `reembolsosPort` (S16): `estaCerrando` delega en `proceso-cierre.js`
+// (H13); `baseUtilizable` envuelve la sonda de S19, preparada UNA sola vez
+// acá dentro (K5, insumo de N2, R39/R40); `listenersCaidos` expone el
+// CONTADOR de arriba -- nunca los nombres (S7). `db` no cruza hacia el
+// adaptador: `ops` recibe funciones, nunca el handle.
+let opsServidor: OpsAdapter | undefined;
+try {
+  const sondaBase = db.prepare("SELECT 1 FROM sqlite_schema LIMIT 1");
+  opsServidor = await startOpsServer({
+    salud: {
+      estaCerrando: () => estaCerrando(),
+      baseUtilizable: () => {
+        try {
+          sondaBase.get();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      listenersCaidos: () => listenersCaidos,
+    },
+    logEvent: (correlationId, event, fields) => logTurnEvent(correlationId, event, fields),
+  });
+} catch (error) {
+  logTurnEvent(OPS_LOG_CORRELATION_ID, "ops-arranque-fallido", { message: toErrorMessage(error) });
+  opsServidor = undefined;
 }
 
 // 6. Monta la TUI (I1) con `onComandoEmpleado` como su handler del Núcleo, espera a
@@ -791,6 +838,17 @@ try {
       // (`src/adapters/a2a/server-index.ts`), que ya promete no rechazar vía
       // `startServer`'s `Promise.allSettled` de drenaje.
       console.error(`No se pudo cerrar el Servidor A2A: ${toErrorMessage(error)}`);
+    }
+  }
+  // Cuarta guarda (design.md §8.1, ADR 10): `ops` cierra DESPUÉS de los tres
+  // de negocio y ANTES de `db.close()` -- así, mientras los tres drenan (hasta
+  // 70 s), el supervisor sigue viendo `503` en vez de perder la señal de
+  // drenaje; y `ops` nunca responde readiness sobre una base ya cerrada.
+  if (opsServidor !== undefined) {
+    try {
+      await opsServidor.close();
+    } catch (error) {
+      console.error(`No se pudo cerrar el listener de salud: ${toErrorMessage(error)}`);
     }
   }
   try {

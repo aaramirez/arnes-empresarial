@@ -16,12 +16,13 @@
  * documentada (el caso de R10), y variable DOCUMENTADA que ya nadie lee
  * (archivo que envejece al revés).
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { claveAVariableEntorno } from "./adapters/a2a/config.js";
 import { DESTINOS_A2A } from "./core/agents/a2a-contract.js";
+import { listarArchivosTs } from "./test/listar-archivos-ts.js";
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SRC_DIR, "..");
@@ -36,21 +37,6 @@ const SECRETOS = [
   "EMAIL_API_KEY",
   "GITHUB_WEBHOOK_SECRET",
 ] as const;
-
-function listarArchivosTs(dir: string): string[] {
-  const archivos: string[] = [];
-  for (const entrada of readdirSync(dir, { withFileTypes: true })) {
-    const ruta = join(dir, entrada.name);
-    if (entrada.isDirectory()) {
-      archivos.push(...listarArchivosTs(ruta));
-      continue;
-    }
-    if (entrada.name.endsWith(".ts") && !entrada.name.endsWith(".test.ts")) {
-      archivos.push(ruta);
-    }
-  }
-  return archivos;
-}
 
 /** Mitad 1 del barrido (ADR 232 pto 1): literales `env.NOMBRE` sobre `src/**\/*.ts`, sin tests. */
 function variablesLeidasLiteral(): Set<string> {

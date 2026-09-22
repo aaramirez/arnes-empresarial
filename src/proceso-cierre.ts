@@ -374,6 +374,23 @@ export function esperarSenalDeCierre(
  * No-op si `esperarSenalDeCierre` nunca se llamó (modo TUI: no hay fase que
  * cerrar) y no-op si ya se llamó antes (`"terminada"`): idempotente.
  */
+/**
+ * Lector PURO de la fase de cierre (`salud-operativa`, tarea 4.6, ADR 258
+ * §6.3, H13 del delta de `modo-headless-proceso`). NO toca `process`, NO
+ * registra nada, NO cambia ninguna transición: solo lee el `let
+ * faseDeCierre` que este módulo ya mantiene. `"esperando"` es `false` A
+ * PROPÓSITO — en esa fase el proceso está vivo, sano y aceptando tráfico;
+ * recién la PRIMERA señal lo pasa a `"cerrando"`, y esa transición ocurre
+ * ANTES de resolver la promesa de `esperarSenalDeCierre` (ver el manejador
+ * de la señal, arriba): por eso `estaCerrando()` es `true` en el MISMO
+ * tick síncrono de la señal, mientras el `finally` de `main.ts` todavía no
+ * arrancó — el `503` de `/salud/listo` (S17, criterio O6) ocurre antes que
+ * el primer `close()` por CONSTRUCCIÓN, no por carrera.
+ */
+export function estaCerrando(): boolean {
+  return faseDeCierre === "cerrando" || faseDeCierre === "terminada";
+}
+
 export function finalizarCierreHeadless(deps: Partial<ProcesoCierreDeps> = {}): void {
   if (faseDeCierre === "inactiva" || faseDeCierre === "terminada") {
     return;
