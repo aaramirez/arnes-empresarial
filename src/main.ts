@@ -573,7 +573,20 @@ try {
 // (`operaciones-negocio-conversacionales`, ADR 173 pto 5, ADR 174
 // consecuencias): cero duplicación de closure entre los dos composition
 // roots.
+//
+// `operacionesTui` (`operaciones-negocio-tui`, ADR 297-299, RD-170/171): el
+// texto libre autenticado de la TUI llega a `operacion_negocio` por el MISMO
+// handler `onOperacionesEmpleado` que ya sirve a la web (una instancia, dos
+// canales), pero con stores PROPIOS de la TUI -- confirmación y memoria
+// conversacional NUNCA se cruzan con los de `startWebServer` (R2).
+const confirmacionOperacionesStoreTui = crearConfirmacionOperacionesStore();
+const conversacionStoreTui = crearConversacionEmpleadoStore();
 const onComandoEmpleado = buildOnComandoEmpleado({
+  operacionesTui: {
+    onOperaciones: onOperacionesEmpleado,
+    confirmacionStore: confirmacionOperacionesStoreTui,
+    conversacionStore: conversacionStoreTui,
+  },
   onSubmit,
   onSoporte,
   db,
