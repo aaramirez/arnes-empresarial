@@ -386,4 +386,95 @@ describe("operaciones-negocio-tui — flujo de composicion con stores y base rea
       flujo.db.close();
     }
   });
+
+  /**
+   * Remediacion W3a (Reviewer): "Cero cruce web-TUI" (ADR 298, D4, R2) con
+   * piezas REALES, no solo por identidad de instancias (`main.test.ts`, 4.1).
+   * Hay DOS stores independientes: el de la web (aca, un objeto suelto, porque
+   * este arnes no levanta el servidor web) y el de la TUI que recibe el
+   * dispatcher. Una confirmacion marcada del lado de la web, para el mismo
+   * empleado y la misma operacion, NO debe confirmar en la TUI.
+   */
+  it("it 6 — cero cruce web-TUI: una confirmacion marcada en el store de la web NO ejecuta en la TUI; el primer turno pide confirmar y la ranura de la web queda intacta", async () => {
+    const storeWeb = crearConfirmacionOperacionesStore();
+    const storeTui = crearConfirmacionOperacionesStore();
+    const flujo = armarFlujo({ confirmacionStoreTui: storeTui });
+    try {
+      const llave = { dominio: DOMINIO_SOLICITUD, itemId: SOLICITUD_ID, accion: "aprobar" } as const;
+      await loginAna(flujo);
+      // La ranura de la web se marca DESPUES del login: L3/L4 limpian al empleado en su store de la TUI al
+      // entrar, asi que marcarla antes dejaria pasar una mutacion que comparta el store (verificado).
+      storeWeb.paraEmpleado("ana").marcarPendiente({
+        ...llave,
+        casoId: "caso-sol-1",
+        empleadoId: "ana",
+        origenCasoId: "caso-web-previo",
+      });
+      // Precondicion: del lado de la web esa ranura SI confirmaria un turno posterior (el test no es vacuo).
+      expect(storeWeb.paraEmpleado("ana").estaConfirmada(llave, "ana", "caso-web-posterior")).toBe(true);
+      const solicitudesAntes = volcado(flujo.db, "solicitudes_internas");
+
+      const turno1 = await flujo.handler("sí, confirmo");
+
+      // Se comporta como PRIMER turno: la tool corre, pide confirmar y nada cambia en la BD.
+      expect(flujo.onSubmit).not.toHaveBeenCalled();
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
+      expect(turno1.responseText).toContain(`Vas a aprobar la solicitud ${SOLICITUD_ID} (${DETALLE_SOLICITUD})`);
+      expect(turno1.responseText).not.toContain("Listo");
+      expect(volcado(flujo.db, "solicitudes_internas")).toBe(solicitudesAntes);
+      expect(estadoDeSolicitud(flujo.db)).toBe(CASO_ESTADO_PENDIENTE_APROBACION_HUMANA);
+      expect(filasDeAuditoria(flujo.db)).toEqual([]);
+      // La TUI no toco ni consumio la ranura de la web.
+      expect(storeWeb.paraEmpleado("ana").estaConfirmada(llave, "ana", "caso-web-posterior")).toBe(true);
+
+      // Triangulacion: la confirmacion propia de la TUI (turno 1) SI habilita el turno 2.
+      const turno2 = await flujo.handler("sí, confirmo");
+
+      expect(turno2.responseText).toBe(`Listo: la solicitud ${SOLICITUD_ID} quedó aprobada.`);
+      expect(estadoDeSolicitud(flujo.db)).toBe("aprobada");
+      expect(filasDeAuditoria(flujo.db)).toHaveLength(1);
+    } finally {
+      flujo.db.close();
+    }
+  });
+
+  /**
+   * Remediacion W3b (Reviewer): RD-170 / D4. Un comando slash entre los dos
+   * turnos de confirmacion NO borra la ranura (solo el logout, la expiracion y
+   * el login la limpian: L1-L4). El unitario de 1.3 lo afirma con dobles; aca
+   * se ve con el store REAL y la operacion real.
+   */
+  it("it 7 — RD-170: un slash (/ayuda) entre los dos turnos conserva la confirmacion y el turno 2 ejecuta con fila de auditoria", async () => {
+    const flujo = armarFlujo();
+    try {
+      await loginAna(flujo);
+      const solicitudesAntes = volcado(flujo.db, "solicitudes_internas");
+
+      const turno1 = await flujo.handler("aprobá la solicitud sol-1");
+
+      expect(turno1.responseText).toContain(`Vas a aprobar la solicitud ${SOLICITUD_ID} (${DETALLE_SOLICITUD})`);
+      expect(volcado(flujo.db, "solicitudes_internas")).toBe(solicitudesAntes);
+      expect(filasDeAuditoria(flujo.db)).toEqual([]);
+
+      const ayuda = await flujo.handler("/ayuda");
+
+      // El slash lo resuelve el dispatcher: ni la tool ni `onSubmit`, y la BD sigue igual.
+      expect(ayuda.agentLabel).toBe("sistema");
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
+      expect(flujo.onSubmit).not.toHaveBeenCalled();
+      expect(volcado(flujo.db, "solicitudes_internas")).toBe(solicitudesAntes);
+
+      const turno2 = await flujo.handler("sí, confirmo");
+
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(2);
+      expect(turno2.responseText).toBe(`Listo: la solicitud ${SOLICITUD_ID} quedó aprobada.`);
+      expect(estadoDeSolicitud(flujo.db)).toBe("aprobada");
+      const auditoria = filasDeAuditoria(flujo.db);
+      expect(auditoria).toHaveLength(1);
+      expect(auditoria[0]?.empleado_id).toBe("ana");
+      expect(flujo.onSubmit).not.toHaveBeenCalled();
+    } finally {
+      flujo.db.close();
+    }
+  });
 });
