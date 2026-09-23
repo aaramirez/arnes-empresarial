@@ -24,3 +24,5 @@ Resume el catálogo de interfaces (I1-I5) y los escenarios de ejecución del ARC
 ## Relevancia para nuestro arnés
 
 Este catálogo I1-I5 es el contrato explícito que mantiene desacoplados los adaptadores del núcleo (ver [[Componentes-e-Interfaces]]); ningún adaptador se comunica con otro directamente, solo a través de estas interfaces — la condición que sostiene la Meta de Extensibilidad del ARC42.
+
+Ver también: [[Tipos-de-Mensaje-SDK]]
