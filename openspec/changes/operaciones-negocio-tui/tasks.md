@@ -139,6 +139,16 @@ Commit: `test(root): exige que el camino onSubmit no lleve la tool operaciones y
 - [x] **8.3** W3 — integración `it` 6 (cero cruce web-TUI con dos stores reales; la ranura de la web se marca **después** del login para que la mutación de store compartido no quede enmascarada por L3/L4) e `it` 7 (RD-170: un `/ayuda` entre los dos turnos conserva la confirmación). Mutaciones: store compartido en el arnes y limpieza de la confirmación en cada slash.
 Commit: `test(root): exige cero cruce de confirmacion entre web y TUI y que un slash entre los dos turnos conserve la confirmacion, con stores y base reales (Hito v3.19, tarea 8.3)`
 
+## Phase 9: Hallazgos menores del code-review
+
+> **Origen**: tres hallazgos menores del code-review del Reviewer, atendidos a pedido del humano (2026-09-23). Sin cambios de código de producción. Evidencia: sección "Batch 5" de `docs/progreso/v3.19-operaciones-negocio-tui/remediacion-revision.md`.
+
+- [ ] **9.1** Los turnos de la TUI no entran en el drenaje de cierre (`main.ts` entrega el handler crudo a `operacionesTui`; el `Set` de turnos en vuelo es privado de `startServer`). **Hallazgo CONFIRMADO, NO APLICADO — detenida por requerir decisión de diseño/ADR**: contradice H10 de `modo-headless-cierre-limpio` (orden fijo del `finally` en TUI), exige fijar presupuesto y UX de Ctrl+C, y el alcance coherente es todo turno de la TUI (`onComandoEmpleado`), no sólo `operaciones`. Recomendado: change propio con enmienda de H10. Sin commit.
+- [x] **9.2** `src/main.test.ts`: se quita la aserción vacua `confirmacionStore not.toBe conversacionStore` (dos tipos distintos, no podía fallar) del test de cero cruce web-TUI. Las dos aserciones reales contra los stores de la web siguen mordiendo: mutaciones A/B en `main.ts` (pasar el store de la web) rompen `main.test.ts:380` y `:381`; restaurado por copia.
+Commit: `test(root): quita la asercion vacua que comparaba stores de tipos distintos en el test de cero cruce web-TUI (Hito v3.19, tarea 9.2)`
+- [x] **9.3** Docs: la cita `build-on-comando-empleado.test.ts:3040` de `mutacion-limpieza-logout.md` **es correcta** (verificada, sin cambio; también `:851` y `:1505`). Sí estaban obsoletas y se corrigen en `remediacion-revision.md`: `252-277` -> `252-276`, `it 5` `359-396` -> `359-388`, `it 6` `398-445` -> `398-439`, `it 7` `447-478` -> `447-479`.
+Commit: `docs(root): corrige las referencias de linea obsoletas de la evidencia de remediacion (Hito v3.19, tarea 9.3)`
+
 ---
 
 ## Dependencias entre tareas
