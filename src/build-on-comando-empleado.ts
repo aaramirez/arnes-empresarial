@@ -765,6 +765,26 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   }
 
   /**
+   * `operaciones-negocio-tui`, ADR 298: limpia el estado de operaciones de la
+   * sesión que termina. Idempotente y no-op sin `operacionesTui`. Sus ÚNICOS
+   * cuatro sitios de llamada son L1 (expiración, paso 1), L2 (`manejarLogout`),
+   * L3 (entrada de `manejarLogin`, aunque el login falle, H3) y L4 (login
+   * exitoso). No escribe en `registro_acciones_empleado` ni avisa al usuario (D2).
+   */
+  function cerrarEstadoOperaciones(empleadoId: string | undefined): void {
+    if (operacionesTui === undefined) {
+      return;
+    }
+    if (empleadoId !== undefined) {
+      operacionesTui.confirmacionStore.limpiarEmpleado(empleadoId);
+    }
+    if (claveConversacion !== undefined) {
+      operacionesTui.conversacionStore.eliminar(claveConversacion);
+    }
+    claveConversacion = undefined;
+  }
+
+  /**
    * Único punto donde el dispatcher escribe FUERA de una transacción
    * (design.md §6.5). ADR 40: nunca propaga — degrada a un evento.
    */
@@ -790,6 +810,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   function manejarLogin(comando: Extract<ComandoEmpleado, { tipo: "login" }>, ahora: string): TuiTurnResult {
     // ADR 36: SIEMPRE se limpia, exitoso o no — un intento de login es un cambio de contexto.
     confirmacionPendiente = undefined;
+    // L3 (ADR 298, H3): un login fallido también destruye la sesión vigente.
+    cerrarEstadoOperaciones(sesion?.empleadoId);
 
     const resultado = resolverLogin(
       { empleadoId: comando.empleadoId, password: comando.password },
@@ -811,6 +833,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     }
 
     sesion = resultado.sesion;
+    // L4 (ADR 298): defensivo e idempotente — un login arranca con la confirmación vacía.
+    cerrarEstadoOperaciones(resultado.sesion.empleadoId);
     registrar({ comando: COMANDO_LOGIN, resultado: RESULTADO_EXITOSA }, ahora);
     const detalleExpiracion =
       resultado.sesion.expiraEn !== undefined ? ` Vence ${resultado.sesion.expiraEn}.` : " Sin expiración.";
@@ -824,6 +848,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     const empleadoId = sesion.empleadoId;
     sesion = undefined;
     confirmacionPendiente = undefined;
+    cerrarEstadoOperaciones(empleadoId); // L2 (ADR 298)
     logEvent(COMANDO_LOG_CORRELATION_ID, "logout", { empleadoId });
     return sistema("Sesión cerrada.");
   }
@@ -1459,6 +1484,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         const empleadoId = sesion.empleadoId;
         sesion = undefined;
         confirmacionPendiente = undefined;
+        cerrarEstadoOperaciones(empleadoId); // L1 (ADR 298, R8: el store no tiene TTL)
         logEvent(COMANDO_LOG_CORRELATION_ID, "sesion-expirada", { empleadoId });
       } else {
         sesion = renovarSesion(sesion, ahora, authConfig.sesionInactividadMinutos);
