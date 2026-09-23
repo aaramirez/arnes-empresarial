@@ -94,3 +94,13 @@ Origen: tres hallazgos menores del code-review del Reviewer, atendidos a pedido 
 4. **Identidad del handler (4.1(a))**: envolver `onOperaciones` rompe el `toBe` de identidad del test 4.1(a) y la decision de diseno "MISMA instancia"; envolver `onComandoEmpleado` no la toca.
 
 **Recomendacion**: un change propio ("drenaje de turnos de la TUI al cerrar", con enmienda explicita de H10) que decida presupuesto, alcance y aviso al usuario. Mientras tanto queda declarado como limite conocido, preexistente y no introducido por `operaciones-negocio-tui`. Sin cambios en `main.ts` ni `main.test.ts` por 9.1.
+
+### 9.2 - asercion vacua en el test 4.1 "cero cruce web-TUI": APLICADO
+
+`src/main.test.ts` (test "los stores de operacionesTui son de la TUI y NO son los que recibe startWebServer"): se quitaron el comentario y `expect(operacionesTui?.confirmacionStore).not.toBe(operacionesTui?.conversacionStore)` (-2 lineas, 0 agregadas). Comparaba un store de confirmacion con un store de conversacion, dos tipos distintos: no podia fallar. No se propuso un reemplazo: los cuatro `toBeDefined` y los dos `not.toBe` contra los stores de la web ya cubren R2.
+
+Prueba de que las dos aserciones reales siguen mordiendo (respaldo de `main.ts` en el scratchpad, `sha256` `0dac2e44...490d`; restauracion por copia, `cmp` identico):
+
+- Mutacion A: `confirmacionStore: confirmacionOperacionesStoreTui` -> `confirmacionStore: confirmacionOperacionesStore` (la instancia de la web). `npm test -- main.test` = 1 failed | 86 passed: el test de stores, `AssertionError: expected { ... } not to be { ... } // Object.is equality` en `src/main.test.ts:380:51`.
+- Mutacion B: `conversacionStore: conversacionStoreTui` -> `conversacionStore` (la instancia de la web). 1 failed | 86 passed, mismo test, `src/main.test.ts:381:51`.
+- Tras cada una: copia del respaldo, `cmp` identico, `sha256` `0dac2e44...490d`, `npm test -- main.test` = 87/87.

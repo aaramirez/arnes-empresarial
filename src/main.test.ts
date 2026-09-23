@@ -379,8 +379,6 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
 
     expect(operacionesTui?.confirmacionStore).not.toBe(depsWeb?.confirmacionOperacionesStore);
     expect(operacionesTui?.conversacionStore).not.toBe(depsWeb?.conversacionStore);
-    // Y tampoco se comparten entre sí: dos instancias distintas para la TUI.
-    expect(operacionesTui?.confirmacionStore).not.toBe(operacionesTui?.conversacionStore);
   });
 });
 
