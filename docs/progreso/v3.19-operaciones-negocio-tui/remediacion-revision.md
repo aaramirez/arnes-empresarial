@@ -71,3 +71,26 @@ Mutacion (`src/build-on-comando-empleado.ts`, restaurado desde el respaldo `sha2
 ## Verificacion final
 
 `rm -rf dist`; `npm run typecheck` verde; `npm test` = **162 archivos passed | 2 skipped (164); 3256 passed | 5 skipped (3261)** (linea base 3252 + 1 de `build-on-submit` + 3 de integracion `it 5-7`; el numero de archivos no cambia); `npm run build` verde; `dist/` borrado. `git diff --stat` solo lista `src/build-on-submit.test.ts` (+35/-0) y `src/test/integration/operaciones-negocio-tui-flujo.integration.test.ts` (+166/-11; los 11 borrados son lineas de imports y del encabezado de `armarFlujo` reescritas sin cambiar comportamiento); `src/main.ts`, `build-on-submit.ts`, `build-on-operaciones-empleado.ts`, `build-on-comando-empleado.ts`, `src/core`, `src/adapters` y `package.json` sin cambios.
+
+## Batch 5 - hallazgos menores del code-review (Fase 9, tareas 9.1-9.3)
+
+Origen: tres hallazgos menores del code-review del Reviewer, atendidos a pedido del humano (2026-09-23). Sin cambios de codigo de produccion: `src/main.ts` se mutó sobre un respaldo y se restauro por copia.
+
+### 9.1 - los turnos de la TUI no estan en el drenaje de cierre: CONFIRMADO, NO APLICADO (requiere decision de diseno)
+
+**Rastro del codigo (confirma el hallazgo).**
+
+- La web rastrea sus turnos DENTRO de `startServer` (`src/adapters/web/server.ts:919-949`): un `Set<Promise<unknown>>` privado (`enVuelo`) y un envoltorio `onOperacionesEmpleadoConDrenaje` sobre `deps.onOperacionesEmpleado`. `close()` (`:977-1003`) hace `server.close()` y luego `Promise.allSettled([...enVuelo])` en carrera contra `WEB_CLOSE_TIMEOUT_MS` (5 000 ms).
+- `main.ts` entrega el handler CRUDO a la web (`:552`, `onOperacionesEmpleado`) y ese mismo handler crudo a la TUI (`:585-586`, `operacionesTui.onOperaciones`). El envoltorio con drenaje vive dentro de la web: el `Set` no es alcanzable desde `main.ts`, asi que los turnos de la TUI nunca entran en el.
+- Cierre de la TUI (`main.ts:801-875`): `await tui.waitUntilExit()` resuelve con Ctrl+C (Ink desmonta, `exitOnCtrlC` por defecto) y el `finally` corre `web.close()`, `webhook.close()`, `a2aServidor.close()`, `opsServidor.close()` y `db.close()`. Nada espera a un turno de la TUI: `App.tsx:625` lanza `onSubmit(...).then(...)` y no lo registra en ningun lado. Si `web`, `webhook` y A2A no estan habilitados, `db.close()` corre a los pocos ms de Ctrl+C.
+
+**Ventana real.** No es una carrera de un instante: un turno con la tool `operaciones` pasa la mayor parte del tiempo esperando al modelo (segundos). Ctrl+C durante esa espera cierra la base; el proceso NO muere (la promesa pendiente sostiene el event loop) y, cuando el modelo llama a la tool, la primera escritura sincrona de better-sqlite3 lanza porque la conexion esta cerrada (el suite ya lo documenta en `main.test.ts:1767-1769`). Resultado tipico: la operacion confirmada no se aplica y nadie lo ve (la TUI ya se desmonto). Ventana de escritura parcial, mas estrecha: operaciones con un `await` entre dos escrituras, p. ej. `ejecutarRegistrarVenta` (`src/core/operaciones/ejecutar-operacion.ts:754-772`: `await registrarVenta(...)`, que notifica, y despues `registrar(...)` de la fila de auditoria); un Ctrl+C durante ese `await` deja la venta sin su fila de auditoria. No hay corrupcion (cada escritura es atomica). El camino conversacional `onSubmit` y `/soporte` de la TUI tienen exactamente la misma exposicion desde antes de este change: `operacionesTui` solo agrego un tercer tipo de turno.
+
+**Por que no se aplico la correccion.** Existe un arreglo tecnico chico (un `Set` local en `main.ts`, un envoltorio y un `await` acotado antes de `db.close()`), pero exige decisiones que no son de esta tarea:
+
+1. **Contradice una spec ya cerrada**: en `modo-headless-cierre-limpio`, el requirement H10 fija que en modo TUI el orden del `finally` es `web.close, webhook.close, a2a.close, db.close`, una vez cada uno, y el escenario "En modo TUI no se arma ningun presupuesto". Un paso nuevo de drenaje de la TUI enmienda H10 y esa politica.
+2. **Presupuesto y UX sin decidir**: cuanto espera Ctrl+C. Reusar `WEB_CLOSE_TIMEOUT_MS` (5 s) no alcanza para un turno de modelo de 10-50 s; uno mayor bloquea la salida con la TUI ya desmontada y sin aviso. Ademas H-4/R33 ya declara que Ctrl+C con web tarda ~5 s por un `setTimeout` sin limpiar; un temporizador propio repetiria ese defecto salvo que se limpie.
+3. **Alcance**: envolver solo `operacionesTui.onOperaciones` deja sin cubrir `onSubmit` y `/soporte` desde la TUI (la misma clase de ventana); lo coherente es envolver el handler que recibe `startTui` (`onComandoEmpleado`), y eso es una decision de diseno del ciclo de vida de la TUI (extiende el ADR 10), no un ajuste de este change.
+4. **Identidad del handler (4.1(a))**: envolver `onOperaciones` rompe el `toBe` de identidad del test 4.1(a) y la decision de diseno "MISMA instancia"; envolver `onComandoEmpleado` no la toca.
+
+**Recomendacion**: un change propio ("drenaje de turnos de la TUI al cerrar", con enmienda explicita de H10) que decida presupuesto, alcance y aviso al usuario. Mientras tanto queda declarado como limite conocido, preexistente y no introducido por `operaciones-negocio-tui`. Sin cambios en `main.ts` ni `main.test.ts` por 9.1.
