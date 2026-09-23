@@ -19,6 +19,7 @@
 - [x] 6.2 mutación M2 (batch 3)
 - [ ] 6.3 verificación manual en la TUI real (a cargo del humano; esqueleto listo)
 - [x] 7.1 · [x] 7.2 · [x] 7.3 · [ ] 7.4 (reportado, requiere el estado final commiteado)
+- [x] 8.1 W1: mutación M1b (batch 4) · [x] 8.2 W2a/W2b (batch 4) · [x] 8.3 W3a/W3b (batch 4)
 
 ## Batch 1 — Fase 1 (tests rojos, sólo `src/build-on-comando-empleado.test.ts`, +478 líneas, 0 borradas)
 
@@ -87,3 +88,23 @@
 | 5.2 | idem | Integration | N/A (idem) | Excepción declarada: nace verde | 4/4 en el archivo | it 3 (logout) + it 4 (re-login con y sin confirmación fresca) | N/A |
 | 6.1 | mutación M1 | Mutación | suite verde 3252 | Rojo: 7 fallos (incluye los 3 nombrados) | verde tras restaurar, `cmp` idéntico | N/A | N/A |
 | 6.2 | mutación M2 | Mutación | suite verde 3252 | Rojo: 1 fallo (U3-limpieza) | verde tras restaurar, `cmp` idéntico | N/A | N/A |
+
+## Batch 4 — Fase 8: remediación de la revisión (W1-W3; a pedido del humano, `size:exception` vigente, sin cambios de código de producción)
+
+**Safety net**: árbol limpio de cambios rastreados; `sha256` de `build-on-comando-empleado.ts` = `ccb31b01...417df` (el mismo de 6.1), `build-on-submit.ts` = `0c4401bc...bcb1`, `autorizacion-resolucion.ts` = `288bce04...8624`. Respaldos en el scratchpad; toda restauración fue por COPIA (`cmp` idéntico), nunca `git checkout/restore/stash`. Los tests nuevos nacen verdes (describen comportamiento vigente, declarado) y sus dientes se prueban por mutación. Evidencia completa: `docs/progreso/v3.19-operaciones-negocio-tui/remediacion-revision.md`.
+
+**8.1 W1 (sólo evidencia; ningún test ajustado)**: M1b = guarda `operacionesTui !== undefined` + `paraEmpleado(sesionTurno?.empleadoId ?? "ghost")`. `npm test -- build-on-comando-empleado operaciones-negocio-tui-flujo` = 7 failed | 110 passed, **todos `AssertionError`, ninguno `TypeError`**: U1, U2-ruteo, U3-ruteo, integración `it` 1 e `it` 3 (`expected "vi.fn()" to be called 1 times, but got 0 times`, sobre `onSubmit`), más U2-limpieza (orden de llamadas) y U8 (`called 1 times, but got 2 times`). Restaurado; 117/117. Se declara, sin tocarla, la decisión de diseño humana sobre el cast `as SesionEmpleado`.
+
+**8.2 W2 (+35 líneas en `src/build-on-submit.test.ts`; integración +helper +`it` 5)**: (a) un `it` nuevo (líneas 252-277) afirma que el `mcpServers` que llega a `handleTurn` no trae `operaciones` (`not.toHaveProperty(OPERACIONES_MCP_SERVER_NAME)`, `Object.keys` = `["knowledge"]`); antes no existía ninguna aserción sobre `operaciones` en ese archivo. M-a (spread con clave extra) rompe el nuevo y el existente; M-b (`Object.assign` sobre la misma referencia) rompe **sólo** el nuevo. (b) integración `it 5`: `beto` con `ROL_EMPLEADO` hace `/login`, turno 1 (eco, cero auditoría), turno 2 (`No estás autorizado para aprobar esa solicitud: se requiere rol elevado.`, `solicitudes_internas` idéntica, una fila `{aprobar-solicitud, no_autorizado, beto}`). El gate real es `puedeResolverAjeno` dentro de `resolverSolicitudInterna`: el turno 1 no consulta el rol. `armarFlujo` gana `OpcionesFlujo` opcional (defaults = arnés anterior) y `loginComo`. Mutación `return rol === ROL_ADMINISTRADOR || true;` en `autorizacion-resolucion.ts`: 1 failed (`it 5`: `Received "Listo: la solicitud sol-1 quedó aprobada."`). Restaurado por copia; 5/5.
+
+**8.3 W3 (integración `it` 6 e `it` 7)**: (a) dos stores reales (`storeWeb`, `storeTui` inyectado con `armarFlujo({ confirmacionStoreTui })`); ranura de la web marcada para `ana`/`aprobar sol-1`; el texto de confirmación en la TUI se comporta como primer turno (BD idéntica, cero auditoría, ranura de la web intacta) y el turno 2 sí ejecuta. **Hallazgo**: con la ranura marcada ANTES del login, la mutación `storeTui = storeWeb` pasaba (7/7) porque L3/L4 (`limpiarEmpleado` en el login) borraban la ranura compartida; el test se ajustó para marcarla DESPUÉS del login y entonces la mutación falla: 1 failed (`it 6`: `Received "Listo: la solicitud sol-1 quedó aprobada."`). (b) `it 7`: `/login` -> turno 1 -> `/ayuda` (`agentLabel: "sistema"`, tool y `onSubmit` sin llamadas, BD idéntica) -> turno 2 ejecuta con una fila de auditoría de `ana`. Mutación en `build-on-comando-empleado.ts` (antes del paso 5: `if (sesion !== undefined) operacionesTui?.confirmacionStore.limpiarEmpleado(sesion.empleadoId)`): 5 failed | 115 passed: `it 7` (`Received "Vas a aprobar..."`), la guarda unitaria de RD-170 (`to not be called at all, but actually been called 1 times`), U3-limpieza, U8 y L3+L4. Restaurado por copia; 120/120.
+
+**Fase final**: `rm -rf dist`; `npm run typecheck` verde; `npm test` = 162 archivos passed | 2 skipped (164), 3256 passed | 5 skipped (3261) (3252 + 1 + 3); `npm run build` verde; `dist/` borrado. `git diff --stat`: sólo `src/build-on-submit.test.ts` (+35/-0) y `src/test/integration/operaciones-negocio-tui-flujo.integration.test.ts` (+166/-11: imports y encabezado de `armarFlujo`, sin cambio de comportamiento) más los docs de esta fase; `main.ts`, `build-on-submit.ts`, `build-on-operaciones-empleado.ts`, `build-on-comando-empleado.ts`, `src/core`, `src/adapters` y `package.json` sin cambios. Pendiente (humano): 6.3 manual, aprobación del Reviewer, merge y tag.
+
+### TDD Cycle Evidence (Fase 8)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 8.1 | `build-on-comando-empleado.test.ts` + integración (sin cambios) | Mutación | 117/117 | Rojo por M1b: 7 `AssertionError`, 0 `TypeError` | 117/117 tras restaurar | 5 tests con dientes de aserción (U1, U2-r, U3-r, `it` 1, `it` 3) | N/A |
+| 8.2 | `build-on-submit.test.ts`; integración `it` 5 | Unit + Integration | 5/5 y 4/4 | Excepción declarada: nacen verdes; rojo por mutación (M-a: 2, M-b: 1, gate aflojado: 1) | 6/6 y 5/5 | M-a vs M-b (referencia mutada); `it` 5 vs `it` 2 (mismo flujo, rol distinto) | N/A |
+| 8.3 | integración `it` 6, `it` 7 | Integration | 5/5 | Excepción declarada: nacen verdes; rojo por mutación (store compartido: 1; limpieza en slash: 5); `it` 6 ajustado tras un falso verde | 7/7 | `it` 6: turno 2 ejecuta con la confirmación propia; `it` 7 vs guarda unitaria | N/A |

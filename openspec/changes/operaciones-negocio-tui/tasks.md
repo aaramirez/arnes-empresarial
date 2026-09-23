@@ -128,6 +128,17 @@ Commit: `docs(root): agrega la evidencia manual del flujo de operaciones de nego
 - [x] **7.3** `npm run build` en verde.
 - [ ] **7.4** Guarda de alcance: `git diff main --stat` sólo lista `build-on-comando-empleado.ts` (+test), `main.ts` (+test), el test de integración y `docs/progreso/vX.Y-operaciones-negocio-tui/`; `git diff main -- src/build-on-operaciones-empleado.ts src/build-on-submit.ts src/core src/adapters` **vacío**; `git diff main -- package.json` vacío.
 
+## Phase 8: Remediación de la revisión (W1-W3)
+
+> **Origen**: advertencias W1, W2 y W3 del Reviewer, remediadas a pedido del humano (2026-09-23). Sólo tests y evidencia: `build-on-comando-empleado.ts`, `build-on-submit.ts`, `main.ts`, `src/core/**` y `src/adapters/**` **no cambian** (las mutaciones se hacen sobre un respaldo y se restauran por copia). Los tests nuevos nacen verdes (describen comportamiento vigente) y sus dientes se prueban por mutación. Evidencia: `docs/progreso/v3.19-operaciones-negocio-tui/remediacion-revision.md`.
+
+- [x] **8.1** W1 — mutación M1b (guarda sin `sesionVigente` **y** ruta que tolera sesión ausente, sin `TypeError`): U1, U2-ruteo, U3-ruteo e integración `it` 1 e `it` 3 fallan por `AssertionError` sobre `onSubmit`/`onOperaciones`; ningún test necesitó ajuste. Sólo evidencia (sección W1 de `remediacion-revision.md`).
+Commit: `docs(root): registra el check de mutacion M1b que prueba los dientes de asercion de la guarda de sesion sin depender de un TypeError (Hito v3.19, tarea 8.1)`
+- [x] **8.2** W2 — (a) `build-on-submit.test.ts`: el `mcpServers` que llega a `handleTurn` no trae la clave `operaciones`; (b) integración `it` 5: un empleado sin rol `administrador` confirma en dos turnos desde la TUI y la operación lo rechaza por dentro (BD idéntica, una fila de auditoría `no_autorizado`). Mutaciones: dos en `build-on-submit.ts` y aflojar `puedeResolverAjeno` para (b).
+Commit: `test(root): exige que el camino onSubmit no lleve la tool operaciones y que un empleado sin rol sea rechazado dentro de la operacion desde la TUI (Hito v3.19, tarea 8.2)`
+- [x] **8.3** W3 — integración `it` 6 (cero cruce web-TUI con dos stores reales; la ranura de la web se marca **después** del login para que la mutación de store compartido no quede enmascarada por L3/L4) e `it` 7 (RD-170: un `/ayuda` entre los dos turnos conserva la confirmación). Mutaciones: store compartido en el arnes y limpieza de la confirmación en cada slash.
+Commit: `test(root): exige cero cruce de confirmacion entre web y TUI y que un slash entre los dos turnos conserve la confirmacion, con stores y base reales (Hito v3.19, tarea 8.3)`
+
 ---
 
 ## Dependencias entre tareas
