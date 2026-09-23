@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../../adapters/memory/db.js";
 import { hashPassword, verificarPassword } from "../../adapters/crypto/password.js";
-import { crearConfirmacionOperacionesStore } from "../../adapters/web/confirmacion-operaciones-store.js";
+import {
+  crearConfirmacionOperacionesStore,
+  type ConfirmacionOperacionesStore,
+} from "../../adapters/web/confirmacion-operaciones-store.js";
 import { crearConversacionEmpleadoStore } from "../../adapters/web/conversacion-empleado-store.js";
 import { upsertRolEmpleado } from "../../adapters/memory/repository.js";
 import { buildOnComandoEmpleado, createSolicitudStore } from "../../build-on-comando-empleado.js";
@@ -11,12 +14,16 @@ import { altaCredencialEmpleado } from "../../empleados.js";
 import type { SoporteResult } from "../../build-on-soporte.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "../../adapters/tui/tui-port.js";
 import type { AuthConfig } from "../../core/auth/auth-config.js";
-import { ROL_ADMINISTRADOR } from "../../core/auth/rol-contract.js";
+import { ROL_ADMINISTRADOR, ROL_EMPLEADO, type RolEmpleado } from "../../core/auth/rol-contract.js";
 import { CONVERSATIONAL_AGENT_ID } from "../../core/agents/definitions.js";
-import { COMANDO_APROBAR_SOLICITUD } from "../../core/commands/registro-acciones-contract.js";
+import { COMANDO_APROBAR_SOLICITUD, RESULTADO_NO_AUTORIZADO } from "../../core/commands/registro-acciones-contract.js";
 import { createHookEngine } from "../../core/hooks/hook-engine.js";
 import type { LogTurnEventDeps } from "../../core/logging/turn-logger.js";
-import { OPERACIONES_MCP_SERVER_NAME, OPERACIONES_TOOL_NAME } from "../../core/operaciones/operaciones-contract.js";
+import {
+  DOMINIO_SOLICITUD,
+  OPERACIONES_MCP_SERVER_NAME,
+  OPERACIONES_TOOL_NAME,
+} from "../../core/operaciones/operaciones-contract.js";
 import { CASO_ESTADO_PENDIENTE_APROBACION_HUMANA } from "../../core/hitl/hitl-contract.js";
 import { SOLICITUD_TIPO_GASTO } from "../../core/solicitudes/solicitudes-contract.js";
 import type { MemoryPort } from "../../core/turn-selector/handle-turn.js";
@@ -140,16 +147,28 @@ interface Flujo {
   operacionDelTurno: Record<string, unknown>;
 }
 
+/** Variaciones del arnes (remediacion W2b/W3a); sin opciones, el flujo es el de las tareas 5.1 y 5.2. */
+interface OpcionesFlujo {
+  /** Empleado sembrado con credencial y rol; por defecto `ana`. Su password es siempre `PASSWORD_ANA`. */
+  readonly empleadoId?: string;
+  /** Rol sembrado para ese empleado; por defecto `administrador`. */
+  readonly rol?: RolEmpleado;
+  /** Store de confirmacion que se inyecta a la TUI; por defecto, uno propio y nuevo. */
+  readonly confirmacionStoreTui?: ConfirmacionOperacionesStore;
+}
+
 /**
- * Arma el flujo completo con la base sembrada: administradora `ana` (con
- * credencial), una solicitud interna pendiente de otro solicitante (`juan`,
- * para no chocar con la prohibicion de autoaprobacion) y las piezas reales.
+ * Arma el flujo completo con la base sembrada: un empleado con credencial y rol
+ * (por defecto la administradora `ana`), una solicitud interna pendiente de
+ * otro solicitante (`juan`, para no chocar con la prohibicion de
+ * autoaprobacion) y las piezas reales.
  */
-function armarFlujo(): Flujo {
+function armarFlujo(opciones: OpcionesFlujo = {}): Flujo {
+  const { empleadoId = "ana", rol = ROL_ADMINISTRADOR, confirmacionStoreTui = crearConfirmacionOperacionesStore() } = opciones;
   const db = openDatabase(":memory:");
-  const alta = altaCredencialEmpleado(db, { empleadoId: "ana", password: PASSWORD_ANA, ahora: TIMESTAMP });
+  const alta = altaCredencialEmpleado(db, { empleadoId, password: PASSWORD_ANA, ahora: TIMESTAMP });
   expect(alta.ok).toBe(true);
-  upsertRolEmpleado(db, { empleadoId: "ana", rol: ROL_ADMINISTRADOR, ahora: TIMESTAMP });
+  upsertRolEmpleado(db, { empleadoId, rol, ahora: TIMESTAMP });
   createSolicitudStore(db).crearSolicitudConCaso({
     caso: { id: "caso-sol-1", tipo: "solicitud", estado: CASO_ESTADO_PENDIENTE_APROBACION_HUMANA },
     solicitud: {
@@ -191,7 +210,7 @@ function armarFlujo(): Flujo {
     logDeps,
     operacionesTui: {
       onOperaciones,
-      confirmacionStore: crearConfirmacionOperacionesStore(),
+      confirmacionStore: confirmacionStoreTui,
       conversacionStore: crearConversacionEmpleadoStore(),
     },
   });
@@ -212,6 +231,11 @@ function armarFlujo(): Flujo {
 async function loginAna(flujo: Flujo): Promise<void> {
   const resultado = await flujo.handler(`/login ana ${PASSWORD_ANA}`);
   expect(resultado.responseText).toContain("Sesión abierta como ana");
+}
+
+async function loginComo(flujo: Flujo, empleadoId: string): Promise<void> {
+  const resultado = await flujo.handler(`/login ${empleadoId} ${PASSWORD_ANA}`);
+  expect(resultado.responseText).toContain(`Sesión abierta como ${empleadoId}`);
 }
 
 beforeEach(() => {
@@ -318,6 +342,46 @@ describe("operaciones-negocio-tui — flujo de composicion con stores y base rea
       expect(estadoDeSolicitud(flujo.db)).toBe("aprobada");
       expect(filasDeAuditoria(flujo.db)).toHaveLength(1);
       expect(flujo.onSubmit).not.toHaveBeenCalled();
+    } finally {
+      flujo.db.close();
+    }
+  });
+
+  /**
+   * Remediacion W2b (Reviewer): la TUI NO agrega un gate de rol propio (invariante
+   * 8, ADR 297) — el gate vive DENTRO de la operacion (`resolverSolicitudInterna`,
+   * `puedeResolverAjeno`). Hay que ver que un empleado sin el rol requerido, que
+   * llega por el dispatcher de la TUI con sesion vigente y confirma en dos turnos,
+   * es rechazado ahi adentro. Comportamiento real (ejecutar-operacion.ts): el
+   * turno 1 NO consulta el rol (pide confirmar igual); el rechazo ocurre en el
+   * turno 2, tras `consumir`, y deja UNA fila de auditoria `no_autorizado`.
+   */
+  it("it 5 — un empleado sin rol administrador confirma en dos turnos desde la TUI y la operacion lo rechaza por dentro: la BD no cambia y queda una fila de auditoria no_autorizado", async () => {
+    const flujo = armarFlujo({ empleadoId: "beto", rol: ROL_EMPLEADO });
+    try {
+      await loginComo(flujo, "beto");
+      const solicitudesAntes = volcado(flujo.db, "solicitudes_internas");
+
+      const turno1 = await flujo.handler("aprobá la solicitud sol-1");
+
+      // Turno 1: la TUI lo rutea a la tool y la operacion pide confirmar (sin mirar el rol todavia).
+      expect(flujo.onSubmit).not.toHaveBeenCalled();
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
+      expect(turno1.responseText).toContain(`Vas a aprobar la solicitud ${SOLICITUD_ID} (${DETALLE_SOLICITUD})`);
+      expect(filasDeAuditoria(flujo.db)).toEqual([]);
+
+      const turno2 = await flujo.handler("sí, confirmo");
+
+      // Turno 2: la confirmacion es valida, pero el gate de rol de la operacion la rechaza.
+      expect(flujo.onSubmit).not.toHaveBeenCalled();
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(2);
+      expect(turno2.responseText).toBe("No estás autorizado para aprobar esa solicitud: se requiere rol elevado.");
+      expect(turno2.responseText).not.toContain("Listo");
+      expect(volcado(flujo.db, "solicitudes_internas")).toBe(solicitudesAntes);
+      expect(estadoDeSolicitud(flujo.db)).toBe(CASO_ESTADO_PENDIENTE_APROBACION_HUMANA);
+      expect(filasDeAuditoria(flujo.db)).toEqual([
+        { comando: COMANDO_APROBAR_SOLICITUD, resultado: RESULTADO_NO_AUTORIZADO, empleado_id: "beto" },
+      ]);
     } finally {
       flujo.db.close();
     }

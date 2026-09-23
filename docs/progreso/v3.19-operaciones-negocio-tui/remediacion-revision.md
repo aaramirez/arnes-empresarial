@@ -35,3 +35,23 @@ Restaurado por copia: `cmp` identico, `sha256` `ccb31b01...417df`, `git diff --s
 **Resultado**: los cinco tests pedidos (U1, U2-ruteo, U3-ruteo, integracion `it` 1 e `it` 3) tienen dientes de asercion reales sobre `onSubmit`/`onOperaciones`, sin depender de un `TypeError` accidental. **No hizo falta ajustar ningun test.** Ningun archivo de codigo cambia en la tarea 8.1: solo este documento.
 
 Nota de diseno para el humano (no se toco): el `TypeError` de M1 nace del cast `sesionTurno as SesionEmpleado`; eliminarlo (por ejemplo, estrechando el tipo con una guarda sin cast) haria que M1 fallara por tipos en compilacion. Es una decision de diseno del humano, fuera del alcance de esta remediacion.
+
+## W2 (tarea 8.2) — frontera `mcpServers` y rechazo de rol dentro de la operacion
+
+**W2a** — `src/build-on-submit.test.ts` (+35 lineas, 0 borradas; import de `OPERACIONES_MCP_SERVER_NAME` y un `it` nuevo, lineas 252-277). Antes no habia ninguna asercion sobre `operaciones` en ese archivo. El test inyecta un `knowledge` con UNA clave (`knowledge`) y afirma sobre el `mcpServers` que llega a `handleTurn`: sin la clave `operaciones` (`not.toHaveProperty(OPERACIONES_MCP_SERVER_NAME)`), `Object.keys` igual a `["knowledge"]`, y sin `knowledge` no hay `mcpServers`. Verde sin mutacion: `npm test -- build-on-submit` 6/6.
+
+Mutaciones en `src/build-on-submit.ts` (`sha256` original `0c4401bc...bcb1`):
+
+| Mutacion | Resultado | Falla |
+|---|---|---|
+| M-a: `mcpServers: { ...knowledge.mcpServers, operaciones: {} as never }` | 2 failed \| 4 passed | el test nuevo (`expected { …(2) } to not have property "operaciones"`) y tambien el existente "forwards mcpServers…" (igualdad de valor) |
+| M-b: `mcpServers: Object.assign(knowledge.mcpServers, { operaciones: {} as never })` (misma referencia, mutada) | 1 failed \| 5 passed | **solo** el test nuevo; el existente pasa porque compara la misma referencia consigo misma |
+
+M-b muestra que la asercion nueva aporta cobertura que el test vigente no tenia. Restaurado por copia: `cmp` identico, `sha256` `0c4401bc...bcb1`, 6/6 en verde.
+
+**W2b** — integracion `it 5` (`operaciones-negocio-tui-flujo.integration.test.ts`, lineas 359-396). `armarFlujo` gana un parametro opcional `OpcionesFlujo` (`empleadoId`, `rol`, `confirmacionStoreTui`; los defaults reproducen el arnes anterior) y un helper `loginComo`. El empleado `beto` tiene rol `empleado` (`ROL_EMPLEADO`, el unico rol no administrador que existe: `ROLES_EMPLEADO = [empleado, administrador]`), entra por `/login` en el dispatcher de la TUI y confirma en dos turnos. Lo que hace el gate real (`ejecutar-operacion.ts` + `resolver-solicitud-interna.ts`):
+
+- Turno 1: el rol NO se consulta; pide confirmar (`Vas a aprobar la solicitud sol-1 (taxi al cliente)…`), cero filas de auditoria.
+- Turno 2: la confirmacion es valida (se consume) pero `puedeResolverAjeno` devuelve `false` -> `no_autorizado`; el texto es `No estás autorizado para aprobar esa solicitud: se requiere rol elevado.`, la tabla `solicitudes_internas` queda **identica** (volcado completo) y en `pendiente_aprobacion_humana`, y queda **exactamente una** fila de auditoria `{comando: aprobar-solicitud, resultado: no_autorizado, empleado_id: beto}`.
+
+Mutacion (`src/core/auth/autorizacion-resolucion.ts`, `sha256` original `288bce04...8624`): `return rol === ROL_ADMINISTRADOR || true;` (afloja el gate). `npm test -- operaciones-negocio-tui-flujo` -> 1 failed | 4 passed: `it 5` con `expected 'Listo: la solicitud sol-1 quedó aprob…' to be 'No estás autorizado para aprobar esa …'`. Restaurado por copia (`cmp` identico, mismo `sha256`), 5/5 en verde.

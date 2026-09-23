@@ -76,6 +76,7 @@ import { CASO_ESTADO_ACTIVO, handleTurn, type MemoryPort } from "./core/turn-sel
 import { createHookEngine } from "./core/hooks/hook-engine.js";
 import { DEFAULT_AGENT_MODEL, type AgentDefinition } from "./core/agents/definitions.js";
 import type { LogTurnEventDeps } from "./core/logging/turn-logger.js";
+import { OPERACIONES_MCP_SERVER_NAME } from "./core/operaciones/operaciones-contract.js";
 
 /**
  * Same fake `LogTurnEventDeps` shape/reasoning `handle-turn.test.ts`'s own
@@ -238,5 +239,39 @@ describe("buildOnSubmit", () => {
     // two independently-sourced values that could drift apart.
     expect(deps).toHaveProperty("mcpServers", fakeKnowledge.mcpServers);
     expect(deps).toHaveProperty("knowledgeFeedback", fakeKnowledge.feedback);
+  });
+
+  /**
+   * `operaciones-negocio-tui`, remediacion W2a (Reviewer): este es el limite
+   * que garantiza que el camino `onSubmit` (el de los turnos sin sesion de la
+   * TUI) NUNCA lleva la tool de operaciones a `handleTurn`. La frontera
+   * `mcpServers` la decide `buildOnSubmit`, y solo `buildOnOperacionesEmpleado`
+   * registra `operaciones`. El fake de `knowledge` tiene a proposito UNA sola
+   * clave (`knowledge`), asi que "ninguna otra clave" es una afirmacion exacta.
+   */
+  it("never adds an `operaciones` MCP server to handleTurn's mcpServers: only the keys of the injected knowledge adapter cross the boundary", async () => {
+    const memory = fakeMemory();
+    const hooks = createHookEngine();
+    const agents = [makeAgent("agente-uno"), makeAgent("agente-dos")];
+    const fakeMcpServers: NonNullable<Options["mcpServers"]> = {
+      knowledge: { type: "stdio", command: "graphify" },
+    };
+    const fakeKnowledge = {
+      mcpServers: fakeMcpServers,
+      feedback: { saveTurnResult: vi.fn().mockResolvedValue(undefined), discardPendingCitations: vi.fn() },
+    };
+    const onSubmit = buildOnSubmit("caso-1", memory, hooks, agents, fakeLogDeps(), fakeKnowledge);
+
+    await onSubmit("hola", () => {});
+
+    const deps = vi.mocked(handleTurn).mock.calls.at(-1)?.[2];
+    expect(deps).toBeDefined();
+    expect(deps?.mcpServers).toBeDefined();
+    expect(deps?.mcpServers).not.toHaveProperty(OPERACIONES_MCP_SERVER_NAME);
+    expect(Object.keys(deps?.mcpServers ?? {})).toEqual(["knowledge"]);
+    // Y con `knowledge` omitido no hay `mcpServers` en absoluto (por lo tanto, tampoco `operaciones`).
+    const sinKnowledge = buildOnSubmit("caso-1", memory, hooks, agents, fakeLogDeps());
+    await sinKnowledge("hola", () => {});
+    expect(vi.mocked(handleTurn).mock.calls.at(-1)?.[2]).not.toHaveProperty("mcpServers");
   });
 });
