@@ -268,4 +268,58 @@ describe("operaciones-negocio-tui — flujo de composicion con stores y base rea
       flujo.db.close();
     }
   });
+
+  it("it 3 — tras /logout el texto libre vuelve a onSubmit y la tool NO se invoca (invariante 3)", async () => {
+    const flujo = armarFlujo();
+    try {
+      await loginAna(flujo);
+      await flujo.handler("aprobá la solicitud sol-1");
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
+
+      const cierre = await flujo.handler("/logout");
+      expect(cierre.responseText).toBe("Sesión cerrada.");
+
+      const texto3 = "y ahora confirmo";
+      const resultado = await flujo.handler(texto3);
+
+      expect(flujo.onSubmit).toHaveBeenCalledTimes(1);
+      expect(flujo.onSubmit.mock.calls[0]?.[0]).toBe(texto3);
+      expect(resultado).toEqual({ responseText: "camino-onSubmit", agentLabel: "sin-tool" });
+      // La unica invocacion de la tool sigue siendo la de antes del /logout.
+      expect(mockedHandleTurn).toHaveBeenCalledTimes(1);
+      expect(estadoDeSolicitud(flujo.db)).toBe(CASO_ESTADO_PENDIENTE_APROBACION_HUMANA);
+    } finally {
+      flujo.db.close();
+    }
+  });
+
+  it("it 4 — una confirmacion marcada antes del /logout NO confirma tras un nuevo /login (R8, L2/L3); una nueva si", async () => {
+    const flujo = armarFlujo();
+    try {
+      await loginAna(flujo);
+      const marcada = await flujo.handler("aprobá la solicitud sol-1");
+      expect(marcada.responseText).toContain(`Vas a aprobar la solicitud ${SOLICITUD_ID}`);
+
+      await flujo.handler("/logout");
+      await loginAna(flujo);
+
+      // Mismo empleado, misma operacion: la ranura vieja ya no existe, asi que pide confirmar de nuevo.
+      const tras = await flujo.handler("aprobá la solicitud sol-1");
+
+      expect(tras.responseText).toContain(`Vas a aprobar la solicitud ${SOLICITUD_ID}`);
+      expect(tras.responseText).not.toContain("Listo");
+      expect(estadoDeSolicitud(flujo.db)).toBe(CASO_ESTADO_PENDIENTE_APROBACION_HUMANA);
+      expect(filasDeAuditoria(flujo.db)).toEqual([]);
+
+      // Triangulacion: la confirmacion NUEVA (marcada en la sesion actual) si ejecuta.
+      const confirmada = await flujo.handler("sí, confirmo");
+
+      expect(confirmada.responseText).toBe(`Listo: la solicitud ${SOLICITUD_ID} quedó aprobada.`);
+      expect(estadoDeSolicitud(flujo.db)).toBe("aprobada");
+      expect(filasDeAuditoria(flujo.db)).toHaveLength(1);
+      expect(flujo.onSubmit).not.toHaveBeenCalled();
+    } finally {
+      flujo.db.close();
+    }
+  });
 });
