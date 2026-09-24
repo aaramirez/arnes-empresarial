@@ -16,9 +16,10 @@
  * los dos se toca. Devuelve el MISMO tipo `SubmitPromptHandler`: `main.ts`
  * lo monta en `startTui` en el lugar donde hoy monta `onSubmit` (§8).
  *
- * Estado del closure — EXACTAMENTE dos ranuras privadas (ADR 31, 36):
- * `sesion` y `confirmacionPendiente`. Ninguna se persiste (ADR 31 punto 4):
- * mueren con el proceso. El preámbulo (§6.3) corre en este orden fijo para
+ * Estado del closure — EXACTAMENTE tres ranuras privadas (ADR 31, 36, 298):
+ * `sesion`, `confirmacionPendiente` y `claveConversacion` (la clave de la
+ * conversación de operaciones, `operaciones-negocio-tui`). Ninguna se
+ * persiste (ADR 31 punto 4): mueren con el proceso. El preámbulo (§6.3) corre en este orden fijo para
  * TODO texto que entra, sin excepciones: purga de sesión vencida → purga de
  * confirmación vencida (silenciosa) → `parsearComando` → delegación si no
  * matchea `/` → log de recepción → guarda de privilegio → ruteo.
@@ -163,7 +164,9 @@ import {
   type AccionPropuesta,
 } from "./core/propuestas/resolver-propuesta-cambio.js";
 import { type AplicarPatchPort } from "./core/agents/worktree-contract.js";
-import { getSubagentDefinition } from "./core/agents/definitions.js";
+import { CONVERSATIONAL_AGENT_ID, getSubagentDefinition } from "./core/agents/definitions.js";
+import type { ConfirmacionOperacionPort } from "./core/operaciones/operaciones-contract.js";
+import type { ConversacionEmpleadoPort } from "./core/conversacion/conversacion-contract.js";
 import { invokeModel } from "./core/turn-selector/invoke-model.js";
 import type { DespacharDelegacionDeps } from "./core/turn-selector/dispatch-delegation.js";
 import {
@@ -260,6 +263,32 @@ type ConfirmacionPendiente = {
   readonly expiraEn: string;
 };
 
+/**
+ * `operaciones-negocio-tui`, ADR 297/299: una sola dependencia opcional que
+ * agrupa el handler de operaciones y los dos stores EXCLUSIVOS de la TUI.
+ * Tipos estructurales sobre puertos del núcleo: no se importa nada del
+ * builder de operaciones (ciclo, H1) ni del adaptador web (H2).
+ */
+export interface OperacionesTuiDeps {
+  /** El MISMO handler de `buildOnOperacionesEmpleado` que sirve a `POST /operaciones`. */
+  readonly onOperaciones: (input: {
+    readonly consulta: string;
+    readonly sesion: SesionEmpleado;
+    readonly confirmacion: ConfirmacionOperacionPort;
+    readonly conversacion: ConversacionEmpleadoPort;
+  }) => Promise<{ readonly casoId: string; readonly respuesta: string }>;
+  /** Instancia EXCLUSIVA de la TUI (ADR 298), nunca la de la web. */
+  readonly confirmacionStore: {
+    paraEmpleado(empleadoId: string): ConfirmacionOperacionPort;
+    limpiarEmpleado(empleadoId: string): void;
+  };
+  /** Instancia EXCLUSIVA de la TUI; la clave es por login, nunca `empleadoId`. */
+  readonly conversacionStore: {
+    paraSesion(clave: string): ConversacionEmpleadoPort;
+    eliminar(clave: string): void;
+  };
+}
+
 export interface BuildOnComandoEmpleadoDeps {
   /** El `SubmitPromptHandler` que `buildOnSubmit` ya devuelve. Se ENVUELVE, no se toca. */
   readonly onSubmit: SubmitPromptHandler;
@@ -288,6 +317,12 @@ export interface BuildOnComandoEmpleadoDeps {
   readonly newId?: () => string; // default: randomUUID
   readonly now?: () => string; // default: () => new Date().toISOString()
   readonly logDeps?: LogTurnEventDeps;
+  /**
+   * `operaciones-negocio-tui`, ADR 297: sin default. Ausente ⇒ el texto libre
+   * va a `onSubmit` como siempre (camino de rollback). Presente ⇒ el texto
+   * libre con sesión vigente va a `onOperaciones`.
+   */
+  readonly operacionesTui?: OperacionesTuiDeps;
   /* Costuras de test — default: closures sobre `db`. */
   readonly store?: VentaStorePort;
   readonly credenciales?: CredencialesEmpleadoPort;
@@ -616,6 +651,7 @@ const CASO_ESTADO_ACTIVO = "activo";
 export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): SubmitPromptHandler {
   const { onSubmit, onSoporte, db, ventasConfig, authConfig, verificarPassword, dummyPasswordHash, logDeps, hooks } =
     deps;
+  const { operacionesTui } = deps;
   const newId = deps.newId ?? randomUUID;
   const now = deps.now ?? (() => new Date().toISOString());
   const store: VentaStorePort = deps.store ?? createVentaStore(db);
@@ -698,9 +734,55 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
       logEvent,
     };
 
-  // Las DOS ranuras del closure (ADR 31, 36) — privadas, mutables, nunca persistidas.
+  // Las TRES ranuras del closure (ADR 31, 36, 298) — privadas, mutables, nunca persistidas.
   let sesion: SesionEmpleado | undefined;
   let confirmacionPendiente: ConfirmacionPendiente | undefined;
+  // ADR 298: clave de la conversación de operaciones. Perezosa (se crea con el
+  // primer texto libre autenticado, nunca en `/login`) y por login (nunca `empleadoId`).
+  let claveConversacion: string | undefined;
+
+  /**
+   * `operaciones-negocio-tui`, ADR 297/D7: texto libre con sesión vigente y
+   * `operacionesTui` inyectada. `empleadoId` sale SOLO de `sesionTurno` (la
+   * copia del turno, D5), nunca del texto. Sin `try/catch` y sin timeout: los
+   * rechazos (p. ej. `TurnFailedError`) se propagan igual que en `onSubmit`.
+   */
+  async function manejarTextoLibreAutenticado(
+    operaciones: OperacionesTuiDeps,
+    texto: string,
+    sesionTurno: SesionEmpleado,
+    onAgentResolved: Parameters<SubmitPromptHandler>[1],
+  ): Promise<TuiTurnResult> {
+    onAgentResolved?.(CONVERSATIONAL_AGENT_ID);
+    claveConversacion ??= newId();
+    const { respuesta } = await operaciones.onOperaciones({
+      consulta: texto,
+      sesion: sesionTurno,
+      confirmacion: operaciones.confirmacionStore.paraEmpleado(sesionTurno.empleadoId),
+      conversacion: operaciones.conversacionStore.paraSesion(claveConversacion),
+    });
+    return { responseText: respuesta, agentLabel: CONVERSATIONAL_AGENT_ID };
+  }
+
+  /**
+   * `operaciones-negocio-tui`, ADR 298: limpia el estado de operaciones de la
+   * sesión que termina. Idempotente y no-op sin `operacionesTui`. Sus ÚNICOS
+   * cuatro sitios de llamada son L1 (expiración, paso 1), L2 (`manejarLogout`),
+   * L3 (entrada de `manejarLogin`, aunque el login falle, H3) y L4 (login
+   * exitoso). No escribe en `registro_acciones_empleado` ni avisa al usuario (D2).
+   */
+  function cerrarEstadoOperaciones(empleadoId: string | undefined): void {
+    if (operacionesTui === undefined) {
+      return;
+    }
+    if (empleadoId !== undefined) {
+      operacionesTui.confirmacionStore.limpiarEmpleado(empleadoId);
+    }
+    if (claveConversacion !== undefined) {
+      operacionesTui.conversacionStore.eliminar(claveConversacion);
+    }
+    claveConversacion = undefined;
+  }
 
   /**
    * Único punto donde el dispatcher escribe FUERA de una transacción
@@ -728,6 +810,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
   function manejarLogin(comando: Extract<ComandoEmpleado, { tipo: "login" }>, ahora: string): TuiTurnResult {
     // ADR 36: SIEMPRE se limpia, exitoso o no — un intento de login es un cambio de contexto.
     confirmacionPendiente = undefined;
+    // L3 (ADR 298, H3): un login fallido también destruye la sesión vigente.
+    cerrarEstadoOperaciones(sesion?.empleadoId);
 
     const resultado = resolverLogin(
       { empleadoId: comando.empleadoId, password: comando.password },
@@ -749,6 +833,8 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     }
 
     sesion = resultado.sesion;
+    // L4 (ADR 298): defensivo e idempotente — un login arranca con la confirmación vacía.
+    cerrarEstadoOperaciones(resultado.sesion.empleadoId);
     registrar({ comando: COMANDO_LOGIN, resultado: RESULTADO_EXITOSA }, ahora);
     const detalleExpiracion =
       resultado.sesion.expiraEn !== undefined ? ` Vence ${resultado.sesion.expiraEn}.` : " Sin expiración.";
@@ -762,6 +848,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     const empleadoId = sesion.empleadoId;
     sesion = undefined;
     confirmacionPendiente = undefined;
+    cerrarEstadoOperaciones(empleadoId); // L2 (ADR 298)
     logEvent(COMANDO_LOG_CORRELATION_ID, "logout", { empleadoId });
     return sistema("Sesión cerrada.");
   }
@@ -1397,6 +1484,7 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
         const empleadoId = sesion.empleadoId;
         sesion = undefined;
         confirmacionPendiente = undefined;
+        cerrarEstadoOperaciones(empleadoId); // L1 (ADR 298, R8: el store no tiene TTL)
         logEvent(COMANDO_LOG_CORRELATION_ID, "sesion-expirada", { empleadoId });
       } else {
         sesion = renovarSesion(sesion, ahora, authConfig.sesionInactividadMinutos);
@@ -1411,6 +1499,12 @@ export function buildOnComandoEmpleado(deps: BuildOnComandoEmpleadoDeps): Submit
     // 3-4. Parseo — `undefined` ⇒ delegación BYTE POR BYTE a `onSubmit`.
     const comando = parsearComando(texto);
     if (comando === undefined) {
+      // ADR 297: la guarda de sesión es explícita aunque el paso 1 ya garantiza
+      // "vigente o undefined" — es el punto que exige el check de mutación.
+      const sesionTurno = sesion;
+      if (operacionesTui !== undefined && sesionVigente(sesionTurno, ahora)) {
+        return manejarTextoLibreAutenticado(operacionesTui, texto, sesionTurno as SesionEmpleado, onAgentResolved);
+      }
       return onSubmit(texto, onAgentResolved);
     }
 

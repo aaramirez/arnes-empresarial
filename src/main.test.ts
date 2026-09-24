@@ -332,6 +332,54 @@ describe("main.ts -- wiring de reporteStore compartido (operaciones-negocio-conv
     expect(registroDeOperaciones).toBeDefined();
     expect(registroDeComando).toBe(registroDeOperaciones);
   });
+
+  // `operaciones-negocio-tui`, tarea 4.1 (ADR 297/299, RD-170/171): el texto
+  // libre autenticado de la TUI reusa el MISMO handler de operaciones que la
+  // web -- una instancia, dos canales -- pero con stores PROPIOS (R2).
+  it("inyecta operacionesTui con la MISMA instancia de onOperaciones que arma buildOnOperacionesEmpleado (operaciones-negocio-tui, tarea 4.1)", async () => {
+    await import("./main.js");
+
+    const { buildOnComandoEmpleado } = await import("./build-on-comando-empleado.js");
+    const { buildOnOperacionesEmpleado } = await import("./build-on-operaciones-empleado.js");
+
+    const comandoMock = vi.mocked(buildOnComandoEmpleado);
+    const operacionesMock = vi.mocked(buildOnOperacionesEmpleado);
+
+    expect(comandoMock).toHaveBeenCalledTimes(1);
+    expect(operacionesMock).toHaveBeenCalledTimes(1);
+
+    const operacionesTui = comandoMock.mock.calls[0]?.[0].operacionesTui;
+    const handlerDeOperaciones = operacionesMock.mock.results[0]?.value;
+
+    expect(operacionesTui).toBeDefined();
+    expect(handlerDeOperaciones).toBeDefined();
+    expect(operacionesTui?.onOperaciones).toBe(handlerDeOperaciones);
+  });
+
+  it("los stores de operacionesTui son de la TUI y NO son los que recibe startWebServer (cero cruce web-TUI, R2)", async () => {
+    await import("./main.js");
+
+    const { buildOnComandoEmpleado } = await import("./build-on-comando-empleado.js");
+    const { startWebServer } = await import("./adapters/web/index.js");
+
+    const comandoMock = vi.mocked(buildOnComandoEmpleado);
+    const webMock = vi.mocked(startWebServer);
+
+    expect(comandoMock).toHaveBeenCalledTimes(1);
+    expect(webMock).toHaveBeenCalledTimes(1);
+
+    const operacionesTui = comandoMock.mock.calls[0]?.[0].operacionesTui;
+    const depsWeb = webMock.mock.calls[0]?.[0];
+
+    // Los cuatro existen: sin esto, `not.toBe` pasaría trivialmente con `undefined`.
+    expect(operacionesTui?.confirmacionStore).toBeDefined();
+    expect(operacionesTui?.conversacionStore).toBeDefined();
+    expect(depsWeb?.confirmacionOperacionesStore).toBeDefined();
+    expect(depsWeb?.conversacionStore).toBeDefined();
+
+    expect(operacionesTui?.confirmacionStore).not.toBe(depsWeb?.confirmacionOperacionesStore);
+    expect(operacionesTui?.conversacionStore).not.toBe(depsWeb?.conversacionStore);
+  });
 });
 
 describe("main.ts -- wiring de createConsultas local al bloque de A2A entrante (consultas-negocio-a2a-entrante, tarea 10)", () => {
