@@ -117,7 +117,7 @@ Commit: `docs(root): registra el check de mutacion de la guarda sesionVigente co
 *Aceptación*: idéntica a 6.1 para U3-limpieza.
 Commit: `docs(root): registra el check de mutacion de la limpieza en logout con la salida roja y verde (Hito vX.Y, tarea 6.2)`
 
-- [ ] **6.3** Verificación manual end-to-end (excepción TDD, entregable funcional). En la TUI real: sin login "listá las solicitudes para aprobar" ⇒ el mensaje engañoso **sigue igual** (R4, fuera de alcance); `/login` → mismo pedido ⇒ lista y pide confirmar → confirmar ⇒ ejecuta; `/logout` y repetir ⇒ vuelve al camino sin tool. Registrar `docs/progreso/vX.Y-operaciones-negocio-tui/README.md` con capturas o logs, la decisión D6 (los turnos autenticados ya no escriben `graphify-out/memory`) y la asimetría de `consultar_kpi` (R9).
+- [ ] - [x] **6.3** Verificación manual end-to-end (excepción TDD, entregable funcional). En la TUI real: sin login "listá las solicitudes para aprobar" ⇒ el mensaje engañoso **sigue igual** (R4, fuera de alcance); `/login` → mismo pedido ⇒ lista y pide confirmar → confirmar ⇒ ejecuta; `/logout` y repetir ⇒ vuelve al camino sin tool. Registrar `docs/progreso/vX.Y-operaciones-negocio-tui/README.md` con capturas o logs, la decisión D6 (los turnos autenticados ya no escriben `graphify-out/memory`) y la asimetría de `consultar_kpi` (R9).
 *Aceptación*: los cuatro pasos documentados con evidencia.
 Commit: `docs(root): agrega la evidencia manual del flujo de operaciones de negocio desde la TUI (Hito vX.Y, tarea 6.3)` · *No es hito completo hasta el Reviewer, el tag y el cierre.*
 
