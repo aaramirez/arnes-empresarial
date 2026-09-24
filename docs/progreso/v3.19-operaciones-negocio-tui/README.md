@@ -21,6 +21,7 @@ Prerrequisito cumplido: TUI real (`npm run dev`) sobre `data/harness.db`, con `j
 | 2 | `/login <id> <password>`, luego el mismo pedido `listá las solicitudes para aprobar` | Responde con el listado de solicitudes pendientes. El agente puede preguntar antes "¿aprobar o rechazar?". El listado **no** consume confirmacion: la confirmacion aparece al nombrar una solicitud concreta (paso 3). | Ejecutado por el humano el 2026-09-23: funciona. Sin captura adjunta. |
 | 3 | Pedir aprobar una solicitud concreta, ver el eco con el detalle y confirmar en un mensaje aparte (p. ej. `sí, confirmo`) | Ejecuta: la solicitud queda resuelta (`Listo: la solicitud <id> quedó aprobada.`) y aparece la fila de auditoria. | **Base de datos (lectura)**, ver bloque siguiente. |
 | 4 | `/logout` y repetir el pedido | Vuelve al camino **sin tool** (igual que el paso 1); nada se ejecuta. | Ejecutado por el humano el 2026-09-23: funciona. Sin captura adjunta. |
+| 5 (opcional) | Con `jimmy` logueado, aprobar por texto libre un reembolso escalado por otro empleado | La devolucion escalada por `beto` queda aprobada por `jimmy` (rol `administrador`, distinto del vendedor) y la venta pasa a `reembolsada`. | **Base de datos (lectura)**, ver bloque "Evidencia objetiva del paso 5". |
 
 ### Evidencia objetiva del paso 3 (`data/harness.db`, consulta de solo lectura)
 
@@ -54,9 +55,25 @@ Consulta usada (Node + `better-sqlite3`, solo lectura):
 node -e "const db=require('better-sqlite3')('data/harness.db',{readonly:true});console.log(db.prepare(\"SELECT id, solicitante_id, estado, resuelta_por, resuelta_at FROM solicitudes_internas WHERE id='40679afd-2e46-4688-9e6a-012be94d84f9'\").all());console.log(db.prepare(\"SELECT id, empleado_id, comando, resultado, ocurrido_at FROM registro_acciones_empleado WHERE id='b7daf0c1-75ae-4ba8-95bf-c606fc86e484'\").all())"
 ```
 
+### Evidencia objetiva del paso 5 (aprobacion de reembolso, `data/harness.db`, solo lectura)
+
+Este paso responde con evidencia real a la pregunta de si la TUI puede aprobar reembolsos: los comandos slash `/aprobar-reembolso`, `/rechazar-reembolso` y `/reabrir-reembolso` se dieron de baja en `aprobacion-conversacional-hitl` (ADR 210) y hoy se resuelven por conversacion con la operacion `resolver_reembolso`, que la TUI no tenia hasta este hito.
+
+Venta `eba6eea5-191f-4e8e-b8bb-2b7e3c20aa7a` (vendedor `beto`, monto 500): estado final **`reembolsada`**.
+
+Cadena de auditoria de esa venta (`registro_acciones_empleado`), en orden:
+
+| `ocurrido_at` | `empleado_id` | `comando` | `resultado` |
+|---|---|---|---|
+| 2026-09-23T20:21:34.853Z | `beto` | `operacion:registrar_venta` | `creada` |
+| 2026-09-23T23:19:15.467Z | `beto` | `operacion:solicitar_devolucion` | `escalada` |
+| 2026-09-23T23:21:28.396Z | `jimmy` | `/aprobar-reembolso` | `aprobada` |
+
+Lo que esto prueba: quien inicia la devolucion (`beto`, vendedor) y quien la aprueba (`jimmy`, administrador) son personas distintas, como exige el flujo "dos personas"; la aprobacion quedo auditada con el literal `/aprobar-reembolso` que reusa el contrato; y la devolucion iniciada por el empleado (`solicitar_devolucion`) no se cierra sola: queda `escalada` hasta que un administrador distinto la resuelve. El evento `operaciones-caso-creado` del turno aparece en `data/harness.log` segundos antes de la fila de auditoria (23:21:25Z).
+
 ### Alcance de la evidencia
 
-- La base de datos **no distingue el canal** (TUI o chat web): ambos escriben con el mismo handler y el mismo literal de comando. Que el paso 3 se hizo por la TUI es atestacion del humano.
+- La base de datos **no distingue el canal** (TUI o chat web): ambos escriben con el mismo handler y el mismo literal de comando. Que los pasos 3 y 5 se hicieron por la TUI es atestacion del humano (confirmada en la sesion de trabajo del 2026-09-23).
 - Los pasos 1, 2 y 4 no tienen captura ni registro objetivo: son atestacion del humano.
 - Correccion respecto del esqueleto original: el paso 2 decia que el agente "pide confirmar" al listar; en realidad el listado no usa confirmacion, solo la operacion sobre una solicitud concreta (paso 3).
 
