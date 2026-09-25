@@ -165,3 +165,54 @@ Es un cambio puro dentro de `src/core/ventas/reporte.ts`. En el bucle de `:153-1
 5. **B6, clawback real y libro de comisiones pagadas**: queda fuera de alcance. ¿Se abre un change futuro? Recomendado: **registrarlo como deuda en el ADR 301**.
 6. **B7, columna "Reembolsado"**: ¿se muestra aparte el monto reembolsado? Recomendado: **no imprimirla**, pero exponer `montoReembolsado` y `comisionRevertida` en `FilaVendedor` por si se pide después.
 7. **B8, numeración y hito**: ADR 301 / RD-173 tras el ADR 300 / RD-172 del hermano, número de hito y orden de merge frente a `enmascarar-password-en-tui` y `respaldo-y-durabilidad-sqlite`.
+
+---
+
+## Enmienda (post-5.2, pedida por el humano, 2026-09-24)
+
+> Las secciones anteriores no se reescriben: registran el alcance aprobado en el checkpoint original (v3.21, I4 = NO, PR única con `size:exception`). Esta enmienda **extiende** el alcance y vuelve a pasar por el checkpoint humano (AGENTS.md, regla del loop) antes del Implementer.
+
+**Origen**: la verificación manual 5.2 encontró una nota obsoleta y preexistente, anotada como *"Hallazgo fuera de alcance"* en `docs/progreso/v3.21-reembolso-resta-monto-vendido-en-reporte/README.md:182-184`. El humano pidió corregirla **en este mismo change**.
+
+**Qué pasa hoy**: `NOTA_ESCALACION_FUERA_DE_BANDA` (`src/core/ventas/reporte.ts:241-242`) dice que las escalaciones de reembolso *"se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados"*. Esos tres comandos **se dieron de baja en v3.10.0** (`aprobacion-conversacional-hitl`, ADR 210 pto 1, tarea 14, ADR 151 EJECUTADO). Hoy la resolución es conversacional, con la operación `resolver_reembolso` (ADR 206) y un turno de confirmación. Si alguien tipea `/aprobar-reembolso`, recibe *"No conozco…"* y la ayuda (`comando-empleado.test.ts:628-644`). `formatearSeccionReembolsos` (`reporte.ts:314-320`) imprime la nota **siempre**, incluso con *"(sin reembolsos pendientes)"*.
+
+**Causa raíz**: `aprobacion-conversacional-hitl` bajó los comandos, pero no tocó la nota ni su spec. `rg "NOTA_ESCALACION|reporte\.ts" openspec/changes/aprobacion-conversacional-hitl` no devuelve nada. Así se rompió el criterio del **ADR 26** de `tui-canal-empleado` (`proposal.md:198-210`): *"la nota tiene que ser verdadera el día del merge"*.
+
+**Impacto (tres)**:
+
+1. **Reporte financiero que induce al error**: la TUI `/reporte-comisiones` (`build-on-comando-empleado.ts:1374`) y el CLI `npm run reporte:mensual` (`reporte-mensual.ts:100`) le indican al lector un comando muerto.
+2. **El agente conversacional puede repetirlo**: `consultar_reporte_comisiones` (`ejecutar-operacion.ts:794`) le pasa el texto al LLM, que puede sugerirle al empleado `/aprobar-reembolso`.
+3. **Contradicción visible en la demo**: `docs/Guia-Demostracion-Pasantia.md:392` dice que los `/aprobar-*` están retirados y pide *"No usarlos en la demo"*, pero el reporte que se muestra en esa misma demo los recomienda.
+
+El A2A (`consultas-negocio-tool.ts`) **no** está afectado: el agregado `reporte_comisiones` no incluye la sección de reembolsos pendientes.
+
+**Canales verificados**: la resolución conversacional existe en **dos** canales. Uno es el texto libre autenticado de la TUI (`operacionesTui`, ADR 297-299, `main.ts:577-589`). El otro es el chat web (`POST /operaciones`, `server.test.ts:653`). Los dos usan el mismo `onOperacionesEmpleado` y cada canal tiene su propio store de confirmación. El texto nuevo nombra los dos canales.
+
+### Alcance agregado (In Scope)
+
+- Reescribir `NOTA_ESCALACION_FUERA_DE_BANDA` para que apunte a la resolución conversacional en los dos canales. La salvedad del canal (R16) y las prohibiciones del ADR 26 rev. 2 y 3 se conservan. El texto exacto va en `design.md` §11.
+- Actualizar su doc-comment y el doc de `formatearReporteMensual` (`reporte.ts:331-335`, que todavía dice *"este hito no expone camino de producto"*).
+- Tests: editar **a propósito** el test de la nota (`reporte.test.ts:577-600`) y la línea de la nota en los dos golden (`:485`, `:557`). Agregar una guarda anti-deriva: todo `/comando` que imprima el reporte tiene que existir en `COMANDOS`.
+- **ADR 302** (enmienda el ADR 26 de `tui-canal-empleado`) y su nota de reemplazo junto al ADR 26.
+- Delta MODIFIED del requirement de la nota en `specs/reporte-comisiones-mensual`, sobre la base de `tui-canal-empleado`.
+
+### Fuera de alcance (enmienda)
+
+- Renombrar la constante: el spec la nombra, así que renombrarla sólo agrega churn.
+- `docs/Guia-Demostracion-Pasantia.md`, que no está versionado. Su línea `:436` (*"solo en el chat web"*) también quedó desactualizada por ADR 297-299. Queda como residual.
+- A2A, `comando-empleado.ts`, `ejecutar-operacion.ts` y cualquier adapter.
+
+### Affected Areas (agregado por la enmienda)
+
+| Área | Impacto | Descripción |
+|---|---|---|
+| `src/core/ventas/reporte.ts` | Modified | Texto de `NOTA_ESCALACION_FUERA_DE_BANDA`, su doc-comment y el doc de `formatearReporteMensual` |
+| `src/core/ventas/reporte.test.ts` | Modified | Se editan a propósito el test de la nota (`:577-600`) y la línea de la nota en los golden `:485` y `:557`. Se agrega una guarda contra `COMANDOS`, un import de test-only desde `core/commands` |
+| `openspec/changes/tui-canal-empleado/proposal.md` | Modified | Nota de reemplazo junto al ADR 26 rev. 3 (`:210`). No se reescribe |
+| `docs/progreso/v3.21-…/README.md`, `mutaciones.md` | Modified | El hallazgo `:182-184` queda resuelto (se agrega una línea sin borrar nada), más la mutación M6 |
+| `docs/ARC42_Harness_Empresarial.md` | Modified (Fase 7) | ADR 302 y RD-174 |
+| `comando-empleado.ts`, `ejecutar-operacion.ts`, `build-on-comando-empleado.ts`, `reporte-mensual.ts`, `consultas-negocio-tool.ts`, adapters | **Sin cambios** | Los tres consumidores heredan el texto de la función pura |
+
+**Riesgo nuevo**: la nota vuelve a quedar vieja la próxima vez que cambie un canal o se baje un comando. **Mitigación**: la guarda contra `COMANDOS` detecta un comando retirado. Un cambio de canal sigue dependiendo de la disciplina del ADR 302 (ver `design.md` §11).
+
+**Estimación de la enmienda**: ≈ 85-115 líneas (ver `tasks.md`). Mantiene `size:exception`.

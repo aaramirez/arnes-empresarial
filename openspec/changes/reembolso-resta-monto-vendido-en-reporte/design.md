@@ -315,3 +315,67 @@ Documentación a actualizar **en el apply**, no ahora: comentarios de `reporte.t
 - [ ] **Checkpoint**: confirmar el MODIFIED de `herramienta-operaciones-negocio` (§5).
 - [ ] **Checkpoint**: ¿leyenda también en el A2A? Recomendado: no.
 - [ ] **Apply/evidencia**: verificar contra la base real que el desempate Beto/Tom por `vendedorId` da Beto primero y que cada comisión reembolsada es exactamente el 10 % (la propuesta lo dejó pendiente).
+
+---
+
+## 11. Enmienda post-5.2: la nota de escalaciones apunta a la resolución conversacional (ADR 302)
+
+> Fue pedida por el humano después de la tarea 5.2 (ver `proposal.md`, sección *Enmienda*). §1-§10 no se reescriben. Anclajes verificados con `Read`/`Grep` sobre la rama (`9b56836`). Sin shell, así que tampoco hubo `graphify query`.
+
+### 11.1 Hallazgos
+
+| # | Hallazgo | Consecuencia |
+|---|---|---|
+| **H9** | La nota (`reporte.ts:241-242`) nombra tres comandos dados de baja en v3.10.0 (ADR 210 pto 1, tarea 14). `aprobacion-conversacional-hitl` no tiene delta ni tarea sobre la nota | Se viola el ADR 26 (`tui-canal-empleado/proposal.md:198-210`), que pide que la nota sea verdadera el día del merge |
+| **H10** | La resolución conversacional existe en **dos** canales: el texto libre autenticado de la TUI (`operacionesTui`, ADR 297-299, `main.ts:577-589`) y el chat web (`POST /operaciones`, `server.test.ts:653`). Los dos usan el mismo `onOperacionesEmpleado`, cada uno con su propio store de confirmación | La nota nombra los dos canales. `Guia-Demostracion-Pasantia.md:436` (*"solo en el chat web"*) está desactualizada, pero no está versionada: residual |
+| **H11** | Consumidores de la nota: los tres que llaman a `formatearReporteMensual` (`build-on-comando-empleado.ts:1374`, `reporte-mensual.ts:100`, `ejecutar-operacion.ts:794`). El A2A **no**: `reporte_comisiones` no imprime la sección (`consultas-negocio-tool.ts:267-268`) y `reembolsos_pendientes` arma su propio texto sin nota (`:385-389`) | Un único punto de cambio. Ningún consumidor se toca |
+| **H12** | Tests que fijan la nota: sólo `reporte.test.ts` (la línea de la nota en el golden `:485` y en el golden vacío `:557`, y el test `:577-600`). `rg "escalaciones se resuelven" src` no encuentra otros. `build-on-comando-empleado.test.ts:1623` (TUI = funciones puras) y C2 no fijan la nota literal | Tres puntos de test editados a propósito. El resto queda verde sin tocarlo |
+| **H13** | Las prohibiciones del test `:593-599` vienen del ADR 26 rev. 2 y rev. 3. El motivo escrito para *"roles o permisos"* era *"que no existen"*, y quedó viejo: `autorizacion-empleado` los introdujo (`resolver_reembolso` exige rol elevado y prohíbe la autoaprobación, ADR 211) | Se conserva la prohibición y se cambia el motivo (§11.3, A2) |
+| **H14** | El doc de `formatearReporteMensual` (`reporte.ts:331-335`) todavía dice *"este hito no expone camino de producto para cerrarlos"* | Se corrige en el REFACTOR. La parte *"el reporte SOLO lista"* sigue siendo cierta |
+
+### 11.2 Texto nuevo (una sola línea de prosa)
+
+```ts
+const NOTA_ESCALACION_FUERA_DE_BANDA =
+  "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
+```
+
+- **Es prosa, no está atada al ancho de 77**, igual que hoy: F2 sólo mide las líneas de la tabla y de la leyenda. El ADR 26 nunca fijó un ancho para la nota.
+- Conserva *"TUI local"*, *"/login"* y la segunda oración (R16) **al pie de la letra**. El único token `/` es `/login`, que está vigente en `COMANDOS`.
+- **No fija una frase para el LLM**: *"se pide aprobar, rechazar o reabrir"* describe la intención y no un comando. El nombre interno `resolver_reembolso` no aparece, porque es vocabulario del sistema y no del empleado.
+- No contiene ninguna frase prohibida (`SQL manual`, `irreversible`, `configuración`, `auditoría`/`registro_acciones_empleado`, `\brol(es)?\b`, `permisos?`). Se verificó a mano contra las regex de `:595-599`.
+- En `consultar_reporte_comisiones`, el LLM lee *"por conversación con el asistente"* y puede ofrecer la resolución. Es verdad: tiene `resolver_reembolso`, con su gate de rol.
+
+### 11.3 Decisiones
+
+| # | Tema | Opciones y tradeoffs | Veredicto |
+|---|---|---|---|
+| **A1** | Dónde se registra | **ADR 302 nuevo** que enmienda el ADR 26 de `tui-canal-empleado`: una decisión por ADR y revertible por separado. La alternativa, un apéndice al ADR 301, mezcla contabilidad (neto) con un texto de canal que no tiene nada que ver y ensucia el rollback | ★ **ADR 302 + RD-174** |
+| **A2** | Prohibición de *"rol/permisos"* | **Conservarla**. La nota no duplica la política de autorización, que vive en `ejecutar-operacion.ts` y puede cambiar, y el agente ya explica el rechazo (*no_autorizado*, autoaprobación). La alternativa es levantarla y agregar *"requiere rol administrador"*: más informativo, pero contradice el test `:599`, F2 (`reporte.test.ts:532`) y el ADR 26 rev. 3, y vuelve a atar el texto a una política móvil | ★ Conservar y actualizar el **motivo** en el doc-comment (H13) |
+| **A3** | Guarda anti-deriva | **Test**: todo token `/comando` del reporte existe en `COMANDOS` (`comando-empleado.ts:360`). Es un import test-only de `core/ventas` a `core/commands`, sin dependencia de producción. La alternativa, sólo `not.toContain` de los tres comandos, no detecta la próxima baja | ★ Guarda contra `COMANDOS` |
+| **A4** | Nombre de la constante | `FUERA_DE_BANDA` ya es impreciso, pero el spec base y el delta lo nombran. Renombrarlo sólo agrega churn | Se mantiene |
+
+**ADR 302 (para el arc42, Fase 7)**. *Enmienda al ADR 26 (`tui-canal-empleado`)*. La nota de escalaciones del reporte apunta a la resolución conversacional (ADR 206, ADR 210 pto 1) en los dos canales, texto libre de la TUI (ADR 297-299) y chat web, y no nombra comandos retirados. Se conservan la salvedad R16 y las prohibiciones del ADR 26 rev. 2 y 3, esta última con el motivo nuevo de A2. **Regla**: todo change que baje un comando o cambie un canal de resolución revisa `NOTA_ESCALACION_FUERA_DE_BANDA` en el mismo change. La guarda A3 automatiza la mitad de esa regla (los comandos). Los canales siguen dependiendo de la revisión humana. **RD-174**: registra las decisiones A1-A3 del checkpoint de la enmienda.
+
+**Numeración**. Techo reverificado con `Grep` sobre todo el repo (sin `node_modules`): `ADR[ -]?(30[2-9]|3[1-9]\d|[4-9]\d\d)` → **0 coincidencias**. `RD-(17[4-9]|1[89]\d|[2-9]\d\d)` → **0**. Los changes sin mergear (`respaldo-y-durabilidad-sqlite`, `operabilidad-produccion`, etc.) reservan números menores que 300: ADR 246-262, RD-120-135. El 300/RD-172 es de `enmascarar-password-en-tui` y el 301/RD-173 de este change.
+
+### 11.4 Impacto en tests
+
+| Test | Cambio |
+|---|---|
+| `reporte.test.ts:577-600` | **Se edita a propósito**. Cambia de nombre. Los tres `toContain("/aprobar-reembolso"…)` pasan a `not.toMatch(/\/(aprobar\|rechazar\|reabrir)-reembolso/)`. Se agregan anclas positivas: `"por conversación"`, `"TUI local"`, `"/login"`, `"chat web"`, `"aprobar, rechazar o reabrir"`, `"turno aparte"` y `"misma base de datos"`. Las **cinco** prohibiciones quedan intactas |
+| Golden `:485` y golden vacío `:557` | Cambia sólo la línea de la nota |
+| Nuevo (A3) | Guarda contra `COMANDOS` sobre dos reportes, con pendientes y vacío |
+| `build-on-comando-empleado.test.ts:1623`, C2, `ejecutar-operacion.test.ts:1223` | Verdes sin editar (H12) |
+
+**Mutación M6** (5b.4): volver a poner `/aprobar-reembolso` en la nota ⇒ fallan 5b.1 y la guarda A3. **M7**: quitar *"chat web"* ⇒ falla 5b.1.
+
+### 11.5 Riesgos y archivos
+
+| # | Riesgo | Mitigación |
+|---|---|---|
+| R9 | La nota vuelve a envejecer por un cambio de canal | Regla del ADR 302 y guarda A3 (sólo cubre comandos) |
+| R10 | El LLM parafrasea la nota de otra forma | La nota no fija una frase. La resolución real está gateada por `ejecutar-operacion` |
+| R11 | El merge por nombre del requirement falla en `sdd-archive` si alguien lo renombra | El delta conserva el nombre exacto. La nota para el archive está en el spec |
+
+Archivos agregados a §7: `reporte.ts` (+12/−10), `reporte.test.ts` (+30/−12), `tui-canal-empleado/proposal.md` (+1-2, nota de reemplazo junto a `:210`), `docs/progreso/v3.21-…/README.md` y `mutaciones.md` (+15-25), arc42 en la Fase 7 (+12-18). **Sin cambio**: `comando-empleado.ts`, los tres consumidores y los adapters.

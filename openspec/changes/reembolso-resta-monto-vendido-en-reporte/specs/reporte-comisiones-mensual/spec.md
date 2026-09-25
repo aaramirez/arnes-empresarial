@@ -43,6 +43,38 @@
 - WHEN se genera el reporte
 - THEN la fila de `comisiones` sigue en 225.00 y no se escribe ningún registro nuevo
 
+> **Enmienda post-5.2 (pedida por el humano, ADR 302).** El requirement de abajo tiene **otra base**: el ADDED de `tui-canal-empleado/specs/reporte-comisiones-mensual/spec.md:7-15`. Ningún delta posterior lo tocó. `aprobacion-conversacional-hitl` bajó los tres comandos, pero no tiene delta de esta capability (`rg "NOTA_ESCALACION|reporte\.ts" openspec/changes/aprobacion-conversacional-hitl` vacío). `comando-reporte-comisiones` y `consultas-negocio-a2a-entrante` sólo modifican el requirement de disparo. **Para `sdd-archive`**: fusionar este MODIFIED sobre ese ADDED, conservando el nombre del requirement para que el merge por nombre funcione. No hay que fusionarlo sobre la base de hito-1.3.
+
+### Requirement: La nota de escalaciones ya no afirma ausencia de vía de producto ni identidad por configuración
+
+La nota que el reporte imprime en la sección *"Reembolsos pendientes de aprobación"* (`NOTA_ESCALACION_FUERA_DE_BANDA`) SHALL decir que esas escalaciones se resuelven **por conversación con el asistente**, tras iniciar sesión, en el texto libre de la TUI local de empleados o en el chat web. SHALL nombrar las tres acciones posibles: aprobar, rechazar y reabrir. SHALL decir que la acción se confirma en un turno aparte. SHALL NOT nombrar ningún comando de la TUI que no esté vigente. En particular, SHALL NOT nombrar `/aprobar-reembolso`, `/rechazar-reembolso` ni `/reabrir-reembolso`, dados de baja por `aprobacion-conversacional-hitl` (ADR 210 pto 1). Todo token `/comando` del reporte SHALL existir en el registro de comandos vigente. SHALL conservar la salvedad del canal: la contraseña se verifica localmente contra la misma base de datos que el proceso escribe (R16). SHALL NOT afirmar que no existe vía de producto. SHALL NOT decir que la resolución es SQL manual. SHALL NOT describir el rechazo como irreversible. SHALL NOT decir que la identidad se toma de la configuración. SHALL NOT mencionar la tabla de auditoría (`registro_acciones_empleado`) ni roles o permisos. La nota SHALL NOT fijar la frase exacta que el empleado le escribe al asistente. La nota SHALL ser el mismo texto en todos los consumidores de `formatearReporteMensual`.
+(Previously: SHALL mencionar los tres comandos de resolución (`/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`) y la salvedad de que el canal es la TUI local con login por empleado. Esos comandos se dieron de baja en v3.10.0, así que la nota recomendaba un comando muerto.)
+
+#### Scenario: La nota no nombra comandos retirados
+- GIVEN un reporte con al menos un reembolso pendiente, y otro reporte sin reembolsos pendientes ni comisiones
+- WHEN se imprime cada uno con `formatearReporteMensual`
+- THEN ninguno de los dos textos contiene `/aprobar-reembolso`, `/rechazar-reembolso` ni `/reabrir-reembolso`
+- AND todo token con forma `/comando` de los dos textos es el `nombre` de algún descriptor de `COMANDOS`
+
+#### Scenario: La nota apunta a la resolución conversacional en los dos canales
+- GIVEN un reporte con un reembolso pendiente
+- WHEN se imprime la sección de reembolsos pendientes
+- THEN la nota dice que se resuelven por conversación con el asistente
+- AND nombra la TUI local de empleados (con `/login`) y el chat web
+- AND nombra las acciones aprobar, rechazar y reabrir, y que se confirma en un turno aparte
+
+#### Scenario: Salvedad del canal y prohibiciones preservadas
+- GIVEN un reporte con o sin reembolsos pendientes
+- WHEN se imprime
+- THEN la nota dice que la contraseña se verifica localmente contra la misma base de datos
+- AND el texto completo no contiene "SQL manual", ni "irreversible", ni "configuración", ni "auditoría" o `registro_acciones_empleado`, ni "rol", "roles", "permiso" o "permisos"
+
+#### Scenario: Mismo texto en TUI, CLI y consulta conversacional
+- GIVEN una base con un reembolso pendiente
+- WHEN se pide el reporte por `/reporte-comisiones` en la TUI, por `npm run reporte:mensual` y por la operación `consultar_reporte_comisiones`
+- THEN los tres textos contienen la misma nota, porque los tres se obtienen de `formatearReporteMensual` sin post-procesarla
+- AND el agregado A2A `reporte_comisiones` no incluye la sección ni la nota (sin cambio)
+
 ## ADDED Requirements
 
 ### Requirement: Fila TOTAL, orden y leyenda del reporte neto

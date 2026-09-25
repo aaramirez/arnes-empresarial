@@ -16,6 +16,7 @@
 |---|---|
 | Estimated changed lines | **~290-390** (`additions + deletions`): `reporte.ts` +35-50, `reporte.test.ts` +110-150 (incluye ~20 de churn del golden en dos pasos), `consultas-negocio-tool.test.ts` +40-55, `build-on-comando-empleado.test.ts` +35-45, README +2-4, `hito-1.3/design.md` +1-2, evidencia +20-30, arc42 (Fase 7) +25-35. Sin contar `openspec/changes/reembolso-resta-monto-vendido-en-reporte/`. La propuesta estimaba 110-180: no contaba C1, C2 ni la evidencia (I1) |
 | Tamaño real hasta 4.2 (`git diff main --numstat`, código + docs, sin `tasks.md`, sin Fase 5+) | **523** (`additions + deletions`, exacto): `reporte.ts` +67/-13, `reporte.test.ts` +301/-3, `consultas-negocio-tool.test.ts` +77/-0, `build-on-comando-empleado.test.ts` +56/-0, README +4/-0, `hito-1.3/design.md` +2/-0. `tasks.md` (living doc del propio change, fuera del código shippeado) no se cuenta acá. Supera el estimado de 290-390 y el techo de 400: falta Fase 5 (mutación + evidencia manual) y Fase 7 (arc42) |
+| Enmienda Fase 5b (estimado, post-5.2) | **~85-115** (`additions + deletions`): `reporte.ts` +12/-10, `reporte.test.ts` +30/-12 (test `:577-600` editado, golden `:485`/`:557`, guarda A3), `tui-canal-empleado/proposal.md` +1-2, evidencia (`README.md` + `mutaciones.md`) +15-25, arc42 ADR 302/RD-174 (Fase 7) +12-18. Se **suma** al real de 523 más la Fase 5 ya commiteada. Sigue en `size:exception`, sin cambio de estrategia |
 | 400-line budget risk | **Alto — ya superado.** Ver decisión de checkpoint abajo |
 | Chained PRs recommended | No (decidido por el checkpoint: PR única con excepción) |
 | Suggested split | **Una sola PR**. Corte opcional si se acerca a 400: PR #1 = 1.1-2.3 (código + tests de `reporte`) → PR #2 = 3.1-5.2 (consumidores, docs, evidencia) |
@@ -23,7 +24,7 @@
 | Chain strategy | N/A — no aplica, no hay PRs encadenadas |
 
 ```text
-Decision needed before apply: No
+Decision needed before apply: No (checkpoint de la enmienda 5b aprobado 2026-09-24: A1-A3 y texto, ver bloque "Checkpoint needed" abajo; el tamaño ya está en size:exception)
 Chained PRs recommended: No
 Chain strategy: pending
 400-line budget risk: Medium
@@ -41,6 +42,7 @@ Chain strategy: pending
 | 2 | TOTAL con monto y leyenda (2.1-2.3) | PR única | Toca sólo `formatearTablaComparativa` |
 | 3 | Consumidores y docs (3.1-4.2) | PR única | C1/C2 nacen verdes; sin código de producción |
 | 4 | Mutación y evidencia (5.1-5.2) | PR única | Sólo `docs/` |
+| 4b | Nota de escalaciones (5b.1-5b.5, enmienda) | PR única | Una constante, su test y la evidencia. Revert aislado posible (commits propios) |
 | 5 | Cierre post-Reviewer (7.1-7.2) | Commit de cierre | ADR 301 + arc42, sólo tras el Reviewer |
 
 ---
@@ -154,26 +156,59 @@ Commit: `docs(root): registra los checks de mutacion del reporte neto con la sal
 *Aceptación*: los cuatro pasos documentados con evidencia; el reporte de `main` y el de la rama difieren sólo en lo esperado.
 Commit: `docs(root): agrega la evidencia manual del reporte neto de reembolsos con la tabla antes y despues (Hito vX.Y, tarea 5.2)` · *No es hito completo hasta el Reviewer, el tag y el cierre.*
 
+## Phase 5b: Enmienda post-5.2, nota de escalaciones sin comandos retirados (ADR 302)
+
+> La pidió el humano después de 5.2 (ver `proposal.md` *Enmienda* y `design.md` §11). **Gate**: no arranca hasta que el checkpoint humano apruebe esta enmienda (bloque *Checkpoint needed* de abajo). Va **antes** de la Fase 6 y del Reviewer. **Tests existentes editados a propósito**: `reporte.test.ts:577-600` (test de la nota) y la línea de la nota en los golden `:485` y `:557`. Ningún otro.
+
+- [ ] **5b.1** RED — `src/core/ventas/reporte.test.ts`, `describe("formatearReporteMensual")`. (a) **Editar a propósito** el `it` de `:577-600`. Se renombra a *"la nota (ADR 26, enmendado por ADR 302) apunta a la resolución conversacional, sin comandos retirados ni frases prohibidas"*. Sus `toContain` de `/aprobar-reembolso`, `/rechazar-reembolso` y `/reabrir-reembolso` pasan a `expect(texto).not.toMatch(/\/(aprobar|rechazar|reabrir)-reembolso/)`. Se agregan `toContain` de `"por conversación"`, `"chat web"`, `"aprobar, rechazar o reabrir"`, `"turno aparte"` y `"misma base de datos"`. Se **conservan** `"TUI local"`, `"/login"` y las cinco prohibiciones de `:595-599`. (b) En los golden `:485` y `:557`, reemplazar **sólo** la línea de la nota por el texto de `design.md` §11.2. (c) **Nuevo** `it`, la guarda A3: sobre un reporte con un pendiente y sobre otro vacío, todo token que matchee `/(?<![\w/])\/[a-z][a-z-]*/g` pertenece a `COMANDOS.map((c) => c.nombre)`. Import test-only de `../commands/comando-empleado.js`. Spec: `reporte-comisiones-mensual`, MODIFIED de la nota (tres primeros scenarios).
+*Aceptación (rojo)*: (a) y (b) fallan contra el texto vigente. (c) falla porque encuentra `/aprobar-reembolso`, `/rechazar-reembolso` y `/reabrir-reembolso`. F2 (`:507-537`) y el resto siguen verdes. Typecheck verde. `git diff` sólo toca `reporte.test.ts`. Pegar la salida.
+Commit: `test(core): exige que la nota de escalaciones apunte a la resolucion conversacional sin comandos retirados, rojo (Hito v3.21, tarea 5b.1)`
+
+- [ ] **5b.2** GREEN — `src/core/ventas/reporte.ts:241-242`: reemplazar el valor de `NOTA_ESCALACION_FUERA_DE_BANDA` por el texto **exacto** de `design.md` §11.2. No cambian el nombre ni el lugar de impresión (`:320`), y no hay imports nuevos.
+*Aceptación*: 5b.1 en verde. `npm test`, `npm run typecheck` y `npm run build` verdes. `git diff` de `reporte.test.ts` en esta tarea vacío. `rg "aprobar-reembolso|rechazar-reembolso|reabrir-reembolso" src/core/ventas/reporte.ts` sólo matchea en comentarios (si alguno queda, lo limpia 5b.3).
+Commit: `fix(core): la nota de escalaciones del reporte apunta a la resolucion conversacional en vez de comandos dados de baja (Hito v3.21, tarea 5b.2)`
+
+- [ ] **5b.3** REFACTOR — doc-comment de la constante (`:229-240`). Tiene que decir que el ADR 302 enmienda el ADR 26 rev. 3, que la resolución es conversacional (ADR 206, ADR 210 pto 1) en dos canales (ADR 297-299 y chat web) y que la salvedad R16 sigue. Las prohibiciones se conservan y cambia **el motivo** de *"roles o permisos"*: ya no es *"que no existen"*, sino que la nota no duplica la política de autorización, que vive en `ejecutar-operacion.ts` (A2). Agregar la regla del ADR 302: quien baje un comando o cambie un canal revisa esta nota. También corregir el doc de `formatearReporteMensual` (`:331-335`), que dice *"este hito no expone camino de producto"* (H14). Sin cambio de comportamiento.
+*Aceptación*: suite verde sin tocar tests. `rg "no expone camino de producto|que no existen" src/core/ventas/reporte.ts` sin coincidencias.
+Commit: `refactor(core): actualiza el doc de la nota de escalaciones y del reporte al ADR 302 (Hito v3.21, tarea 5b.3)`
+
+- [ ] **5b.4** Mutación y evidencia manual (excepción TDD, sólo `docs/`). **M6**: volver a poner `/aprobar-reembolso` en la nota ⇒ fallan 5b.1 (a) y (c). **M7**: quitar *"chat web"* ⇒ falla 5b.1 (a). Rojo con la mutación, verde revertido, `git diff -- src` vacío. Se agregan a `docs/progreso/v3.21-reembolso-resta-monto-vendido-en-reporte/mutaciones.md`. Evidencia manual sobre una **copia** de la base: la nota nueva en `/reporte-comisiones` (TUI) y en `npm run reporte:mensual`, con `diff` vacío entre las dos; `/aprobar-reembolso` tipeado en la TUI responde *"No conozco…"*; pedirle el reporte al asistente (`consultar_reporte_comisiones`) y registrar si repite algún comando retirado (esperado: no). Hay que registrarlo como observación y no como assert, porque la respuesta del LLM no es determinista. En el `README.md` de la evidencia, **agregar** debajo de `:182-184` una línea *"Resuelto en la Fase 5b (ADR 302)"* sin borrar el hallazgo.
+*Aceptación*: los tests nombrados fallan con su mutación y pasan sin ella. El commit sólo toca `docs/`.
+Commit: `docs(root): registra las mutaciones y la evidencia de la nota de escalaciones conversacional (Hito v3.21, tarea 5b.4)`
+
+- [ ] **5b.5** Nota de reemplazo (no se reescribe) junto al ADR 26 rev. 3 en `openspec/changes/tui-canal-empleado/proposal.md:210`: *"Enmendado por ADR 302 (`reembolso-resta-monto-vendido-en-reporte`): los tres comandos se dieron de baja en v3.10.0 y la nota apunta a la resolución conversacional. Las prohibiciones siguen y el motivo de 'roles o permisos' cambia (autorizacion-empleado)."*
+*Aceptación*: `git diff` de ese archivo = 1-2 líneas agregadas y **ninguna** borrada.
+Commit: `docs(spec): agrega la nota de enmienda del ADR 26 por el ADR 302 (Hito v3.21, tarea 5b.5)`
+
+### Checkpoint needed (enmienda, antes de 5b.1)
+
+**Decidido (2026-09-24)**: las 4 recomendaciones del Spec Author, aprobadas tal cual. `Decision needed before apply` pasa a **No**.
+
+1. **A1, registro**: ¿ADR 302 + RD-174 nuevos, o un apéndice al ADR 301? Recomendado: **ADR 302 + RD-174** (tema distinto y revert aislado). → **Decidido: ADR 302 + RD-174**.
+2. **Texto**: ¿aprobás el texto de `design.md` §11.2, que nombra los dos canales explícitamente? Recomendado: **sí**. La alternativa genérica (*"por conversación con el asistente"*, sin canales) envejece menos, pero orienta peor. → **Decidido: sí**.
+3. **A2, roles**: ¿se mantiene la prohibición de mencionar *"rol/permisos"* (sólo cambia el motivo) o la nota dice que hace falta rol administrador? Recomendado: **mantenerla**. → **Decidido: se mantiene, sólo cambia el motivo en el doc-comment**.
+4. **A3, guarda contra `COMANDOS`** (import test-only desde `core/commands`): recomendado **sí**. → **Decidido: sí**.
+
 ## Phase 6: Verificación final (sin commit)
 
 - [ ] **6.1** `npm run typecheck` en verde.
 - [ ] **6.2** `npm test` en verde (con `dist/` limpio).
 - [ ] **6.3** `npm run build` en verde.
-- [ ] **6.4** Guarda de alcance: `git diff main --stat` sólo lista `reporte.ts` (+test), `consultas-negocio-tool.test.ts`, `build-on-comando-empleado.test.ts`, `README.md`, `hito-1.3-ventas-comisiones/design.md`, `docs/progreso/vX.Y-reembolso-resta-monto-vendido-en-reporte/` y los artefactos del change; `git diff main -- src/adapters src/build-on-comando-empleado.ts src/core/operaciones src/reporte-mensual.ts src/core/agents/consultas-negocio-tool.ts package.json` **vacío** (localizar rutas reales con `Glob`; sin migraciones). Si aparece cualquiera de esos, el change se salió de alcance.
+- [ ] **6.4** Guarda de alcance: `git diff main --stat` sólo lista `reporte.ts` (+test), `consultas-negocio-tool.test.ts`, `build-on-comando-empleado.test.ts`, `README.md`, `hito-1.3-ventas-comisiones/design.md`, `tui-canal-empleado/proposal.md` (enmienda, 5b.5), `docs/progreso/v3.21-reembolso-resta-monto-vendido-en-reporte/` y los artefactos del change; `git diff main -- src/adapters src/build-on-comando-empleado.ts src/core/operaciones src/core/commands src/reporte-mensual.ts src/core/agents/consultas-negocio-tool.ts package.json` **vacío** (5b.1 sólo **importa** `COMANDOS` en un test; `comando-empleado.ts` no cambia) (localizar rutas reales con `Glob`; sin migraciones). Si aparece cualquiera de esos, el change se salió de alcance.
 
 ## Phase 7: Cierre (sólo tras la aprobación del Reviewer; no es tarea del Implementer)
 
-- [ ] **7.1** `docs/ARC42_Harness_Empresarial.md`: agregar el **ADR 301** (texto de `design.md` §2, copiado tal cual, citando *R5 (hito-1.3-ventas-comisiones)* con prefijo), **RD-173** y las deudas **B6** (clawback real / libro de comisiones pagadas) y **B4** (`refunded_at`); anotar el comentario obsoleto de `repository.ts:1233` (I8). Reverificar el techo de ADR/RD (R6, I5).
-*Aceptación*: `rg "ADR 301" docs/ARC42_Harness_Empresarial.md` presente; el ADR dice que la tabla `comisiones` no es un libro de lo pagado y que R5 queda *superseded* sólo para el reporte.
+- [ ] **7.1** `docs/ARC42_Harness_Empresarial.md`: agregar el **ADR 301** (texto de `design.md` §2, copiado tal cual, citando *R5 (hito-1.3-ventas-comisiones)* con prefijo), **RD-173** y las deudas **B6** (clawback real / libro de comisiones pagadas) y **B4** (`refunded_at`); anotar el comentario obsoleto de `repository.ts:1233` (I8). **Enmienda**: agregar además el **ADR 302** (texto de `design.md` §11.3, enmienda al ADR 26 de `tui-canal-empleado`) y la **RD-174** (A1-A3). Reverificar el techo de ADR/RD (R6, I5): no debe haber 302+ ni RD-174+ reclamados por otro change.
+*Aceptación*: `rg "ADR 301|ADR 302" docs/ARC42_Harness_Empresarial.md` presente; el ADR dice que la tabla `comisiones` no es un libro de lo pagado y que R5 queda *superseded* sólo para el reporte.
 Commit: `docs(arc42): registra el ADR 301 y las deudas B4 y B6 tras el reporte neto de reembolsos (Hito vX.Y, tarea 7.1)`
 
-- [ ] **7.2** Checklist de cierre de AGENTS.md (lo ejecuta el humano): Reviewer aprobó (`sdd-verify` + `code-review` sin bloqueantes), entregable demostrado (5.2), `docs/progreso/vX.Y-reembolso-resta-monto-vendido-en-reporte/` creada, tag `vX.Y.Z`. En `sdd-archive`: **fusionar (no pisar)** los cuatro deltas (`openspec/specs/` está vacío): `reporte-comisiones-mensual` sobre la base de hito-1.3 (`:23-30`) sin perder los ADDED de `tui-canal-empleado` (`:17`), `comando-reporte-comisiones` y `consultas-negocio-a2a-entrante`; `reembolso-evaluacion` sobre `hito-1.3-ventas-comisiones/specs/reembolso-evaluacion/spec.md:63-70` (I2); `consultas-negocio-a2a` (ADDED) sobre `consultas-negocio-a2a-entrante`; `herramienta-operaciones-negocio` (MODIFIED, I3) para que `:81` no quede como prohibición permanente. Advertir antes de fusionar deltas destructivos (`config.yaml`).
+- [ ] **7.2** Checklist de cierre de AGENTS.md (lo ejecuta el humano): Reviewer aprobó (`sdd-verify` + `code-review` sin bloqueantes), entregable demostrado (5.2), `docs/progreso/vX.Y-reembolso-resta-monto-vendido-en-reporte/` creada, tag `vX.Y.Z`. En `sdd-archive`: **fusionar (no pisar)** los cuatro deltas (`openspec/specs/` está vacío): `reporte-comisiones-mensual` sobre la base de hito-1.3 (`:23-30`) sin perder los ADDED de `tui-canal-empleado` (`:17`), `comando-reporte-comisiones` y `consultas-negocio-a2a-entrante`; `reembolso-evaluacion` sobre `hito-1.3-ventas-comisiones/specs/reembolso-evaluacion/spec.md:63-70` (I2); `consultas-negocio-a2a` (ADDED) sobre `consultas-negocio-a2a-entrante`; `herramienta-operaciones-negocio` (MODIFIED, I3) para que `:81` no quede como prohibición permanente. **Enmienda**: el segundo MODIFIED de `reporte-comisiones-mensual` (la nota) se fusiona sobre el ADDED de `tui-canal-empleado/specs/reporte-comisiones-mensual/spec.md:7-15`, no sobre hito-1.3, y conserva el nombre del requirement. Advertir antes de fusionar deltas destructivos (`config.yaml`).
 
 ---
 
 ## Dependencias entre tareas
 
-- **Secuencial**: `0.1` (si aplica) → G0 → `1.1 → 1.2 → 1.3 → 1.4 → 1.5` → `2.1 → 2.2 → 2.3` → `3.1`, `3.2` (y `3.3` si aplica) → `3.4` → `5.1` → `5.2` → `6.x` → Reviewer → `7.1 → 7.2`. `1.x` y `2.x` comparten `reporte.ts` y `reporte.test.ts`: no se paralelizan.
+- **Secuencial**: `0.1` (si aplica) → G0 → `1.1 → 1.2 → 1.3 → 1.4 → 1.5` → `2.1 → 2.2 → 2.3` → `3.1`, `3.2` (y `3.3` si aplica) → `3.4` → `5.1` → `5.2` → **checkpoint de la enmienda** → `5b.1 → 5b.2 → 5b.3 → 5b.4` (`5b.5` en cualquier momento tras el checkpoint) → `6.x` → Reviewer → `7.1 → 7.2`. `5b.x` comparte `reporte.ts` y `reporte.test.ts` con `1.x`/`2.x` (ya cerradas): un solo escritor. `1.x` y `2.x` comparten `reporte.ts` y `reporte.test.ts`: no se paralelizan.
 - **Bloqueo**: `2.1` exige `1.4` (el TOTAL final parte del neto). `3.1` exige `1.4`; `3.2` exige `2.2` (afirma la leyenda). `5.1` exige `2.2`, `3.1` y `3.2`. `5.2` exige `2.2` y la rama.
 - **Paralelizables (por archivo, un solo escritor salvo worktrees aislados)**: `3.1` con `2.1-2.3` (sólo depende de `1.4`); `3.1` con `3.2` (archivos distintos). `4.1` y `4.2` sólo dependen de G0 y del texto final de `1.4`; pueden hacerse en cualquier momento antes de `6.4`.
 - **Cuello de botella**: el checkpoint (`vX.Y`, I3-I5, orden de merge) y el Reviewer antes de `7.x`. `5.2` depende de disponer de la base de trabajo con reembolsos reales.
