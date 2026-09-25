@@ -105,15 +105,15 @@ Commit: `refactor(core): actualiza los comentarios de R5 en el reporte al neto d
 
 ## Phase 2: Fila TOTAL y leyenda (`reporte.ts` + `reporte.test.ts`)
 
-- [ ] **2.1** RED — `describe("formatearReporteMensual")`. Golden `:221-238` a su **forma final** (design §6.2: Ana `0.00 0.00`, TOTAL `1000.00 100.00` con `padStart`, línea en blanco y las dos líneas de leyenda). **F1** (sólo `reembolso_pendiente`, y sólo `reembolso_rechazado`: TOTAL = suma bruta). **F2** (con filas: la leyenda aparece y **cada** línea de tabla y de leyenda mide ≤ 77; la salida con filas **no** cumple `/SQL manual|irreversible|configuraci[oó]n|auditor[ií]a|\brol(es)?\b|permisos?/i`, porque el test `:279-301` sólo la mide en periodo vacío; periodo vacío: sin leyenda, golden `:241-264` **intacto**). Spec: *"Fila TOTAL, orden y leyenda del reporte neto"*.
+- [x] **2.1** RED — `describe("formatearReporteMensual")`. Golden `:221-238` a su **forma final** (design §6.2: Ana `0.00 0.00`, TOTAL `1000.00 100.00` con `padStart`, línea en blanco y las dos líneas de leyenda). **F1** (sólo `reembolso_pendiente`, y sólo `reembolso_rechazado`: TOTAL = suma bruta). **F2** (con filas: la leyenda aparece y **cada** línea de tabla y de leyenda mide ≤ 77; la salida con filas **no** cumple `/SQL manual|irreversible|configuraci[oó]n|auditor[ií]a|\brol(es)?\b|permisos?/i`, porque el test `:279-301` sólo la mide en periodo vacío; periodo vacío: sin leyenda, golden `:241-264` **intacto**). Spec: *"Fila TOTAL, orden y leyenda del reporte neto"*.
 *Aceptación (rojo)*: golden final, F1 y F2 fallan (TOTAL sin monto, sin leyenda); `:241-264` y `:279-301` siguen verdes.
 Commit: `test(core): exige el monto neto en la fila TOTAL y la leyenda de neto solo cuando hay filas, rojo (Hito vX.Y, tarea 2.1)`
 
-- [ ] **2.2** GREEN — `reporte.ts`: `formatearTablaComparativa` (`:226`) recibe `totalMontoVendido` (privada, sin impacto externo); `filaTotal` sigue con **4 elementos** (H4) y llena la celda de monto; constante `LEYENDA_NETO` (design §4.2, dos líneas ≤ 77); la tabla devuelve `[encabezado, sep, ...filas, sep, filaTotal, "", ...LEYENDA_NETO]`. Llamada en `:286` con `reporte.totalMontoVendido`. Anchos sin cambios; periodo vacío intacto (H6).
+- [x] **2.2** GREEN — `reporte.ts`: `formatearTablaComparativa` (`:226`) recibe `totalMontoVendido` (privada, sin impacto externo); `filaTotal` sigue con **4 elementos** (H4) y llena la celda de monto; constante `LEYENDA_NETO` (design §4.2, dos líneas ≤ 77); la tabla devuelve `[encabezado, sep, ...filas, sep, filaTotal, "", ...LEYENDA_NETO]`. Llamada en `:286` con `reporte.totalMontoVendido`. Anchos sin cambios; periodo vacío intacto (H6).
 *Aceptación*: 2.1 en verde; `npm test`, `npm run typecheck`, `npm run build` verdes; `git diff` de `reporte.test.ts` en esta tarea = vacío.
 Commit: `feat(core): imprime el monto neto en la fila TOTAL y la leyenda de neto bajo la tabla del reporte (Hito vX.Y, tarea 2.2)`
 
-- [ ] **2.3** REFACTOR — doc-comments de `formatearTablaComparativa` y `LEYENDA_NETO` (cita ADR 301, B2/B3); confirmar que no quedan literales duplicados de ancho. Sin cambio de comportamiento.
+- [x] **2.3** REFACTOR — doc-comments de `formatearTablaComparativa` y `LEYENDA_NETO` (cita ADR 301, B2/B3); confirmar que no quedan literales duplicados de ancho. Sin cambio de comportamiento.
 *Aceptación*: suite verde sin tocar tests; `rg "\.padStart\(" src/core/ventas/reporte.ts` sin anchos mágicos nuevos.
 Commit: `refactor(core): documenta la fila TOTAL neta y la leyenda del reporte (Hito vX.Y, tarea 2.3)`
 

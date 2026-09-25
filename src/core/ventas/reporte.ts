@@ -266,6 +266,13 @@ function filaTabla(nombre: string, ventas: string, monto: string, comision: stri
   ].join(" ");
 }
 
+/**
+ * Fila TOTAL con monto y comisión NETOS ([CP B2], ADR 301 pto 3) y, bajo ella,
+ * `LEYENDA_NETO` ([CP B3]) sólo cuando hay `filas` (H6: el periodo vacío
+ * sigue devolviendo "sin comisiones en el periodo", sin tabla ni leyenda).
+ * `totalMontoVendido` es un parámetro nuevo de esta función privada (sin
+ * impacto externo, ADR 301 §4.1); anchos de columna sin cambios.
+ */
 function formatearTablaComparativa(
   filas: readonly FilaVendedor[],
   totalMontoVendido: number,
