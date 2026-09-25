@@ -475,7 +475,10 @@ describe("formatearReporteMensual", () => {
         "Juan Perez                    1       1000.00            100.00             0",
         "Ana Gomez                     1          0.00              0.00             1",
         "-----------------------------------------------------------------------------",
-        "TOTAL                                                    100.00",
+        "TOTAL                                 1000.00            100.00",
+        "",
+        "Nota: monto y comisión netos de reembolsos aplicados (estado reembolsada).",
+        '"Con reembolso" cuenta también los pendientes, que todavía no restan.',
         "",
         "Reembolsos pendientes de aprobación",
         "",
@@ -484,6 +487,53 @@ describe("formatearReporteMensual", () => {
         "- venta venta-11 | vendedor Juan Perez | cliente cliente-11 | monto 1000.00 | caso caso-11 | confirmada 2024-02-10T10:00:00.000Z",
       ].join("\n"),
     );
+  });
+
+  it.each([
+    ["sólo reembolso_pendiente", VENTA_ESTADO_REEMBOLSO_PENDIENTE],
+    ["sólo reembolso_rechazado", VENTA_ESTADO_REEMBOLSO_RECHAZADO],
+  ])("%s: el TOTAL es la suma bruta, ninguno resta (F1)", (_label, ventaEstado) => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [comision({ ventaEstado, comisionMonto: 100, ventaMonto: 1000 })],
+      reembolsosPendientes: [],
+    });
+
+    const texto = formatearReporteMensual(reporte);
+
+    expect(texto).toContain("TOTAL                                 1000.00            100.00");
+  });
+
+  it("la leyenda de neto aparece sólo cuando hay filas, y cada línea de tabla y leyenda mide ≤ 77 (F2)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [comision({ ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 100, ventaMonto: 1000 })],
+      reembolsosPendientes: [],
+    });
+
+    const texto = formatearReporteMensual(reporte);
+    const lineasTabla = texto.split("\n\n")[1]?.split("\n") ?? [];
+    // La leyenda va tras una línea en blanco, así que cae fuera del bloque de la tabla.
+    const lineasLeyenda = texto
+      .split("\n")
+      .filter((linea) => linea.startsWith("Nota: monto y comisión netos") || linea.startsWith('"Con reembolso"'));
+
+    expect(texto).toContain("Nota: monto y comisión netos de reembolsos aplicados");
+    expect(texto).toContain('"Con reembolso" cuenta también los pendientes');
+    expect(lineasLeyenda).toHaveLength(2);
+    for (const linea of [...lineasTabla, ...lineasLeyenda]) {
+      expect(linea.length).toBeLessThanOrEqual(77);
+    }
+    // Las frases prohibidas por el ADR también se miden con filas, no sólo en el periodo vacío.
+    expect(texto).not.toMatch(/SQL manual/i);
+    expect(texto).not.toMatch(/irreversible/i);
+    expect(texto).not.toMatch(/configuraci[oó]n/i);
+    expect(texto).not.toMatch(/registro_acciones_empleado|auditor[ií]a/i);
+    expect(texto).not.toMatch(/\brol(es)?\b|permisos?/i);
+
+    const reporteVacio = agruparReporteMensual({ periodo: "2020-01", comisiones: [], reembolsosPendientes: [] });
+    const textoVacio = formatearReporteMensual(reporteVacio);
+    expect(textoVacio).not.toContain("Nota: monto y comisión netos");
   });
 
   it("un periodo sin comisiones produce la linea explicita 'sin comisiones en el periodo'", () => {
