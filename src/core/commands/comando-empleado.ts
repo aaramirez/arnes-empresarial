@@ -110,7 +110,7 @@ export interface DescriptorComando {
   readonly ayuda: string;
   /** `true` ⇒ exige sesión vigente (ADR 28, 32). Lo consume el dispatcher, no el parser. */
   readonly privilegiado: boolean;
-  /** `true` SOLO para `/login`: su segundo argumento es un secreto, no un identificador opaco. */
+  /** `true` para `/login` y `/crear-empleado`: su segundo argumento es un secreto, no un identificador opaco; lo consume además la máscara de la TUI (ADR 300). */
   readonly secreto: boolean;
   /**
    * `true` ⇒ exige rol `administrador` (comandos-administracion-empleados,
@@ -646,10 +646,26 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
   return ayudaDesconocido(comandoToken);
 }
 
+/**
+ * Nombres de los comandos con `secreto: true` (hoy `/login` y `/crear-empleado`),
+ * calculado UNA sola vez desde `DESCRIPTORES` — molde de `DESCRIPTOR_POR_TIPO`.
+ * Es lo que hace que la máscara FALLE CERRADO: marcar un comando futuro con
+ * `secreto: true` alcanza para que quede cubierto, sin tocar la TUI (ADR 300).
+ */
 const NOMBRES_SECRETOS: ReadonlySet<string> = new Set(
   DESCRIPTORES.filter((d) => d.secreto).map((d) => d.nombre),
 );
 
+/**
+ * PRIVADA. Índice, dentro de `texto`, donde empieza el tramo secreto (el
+ * primer carácter posterior al espacio que sigue al id), o `undefined` si no
+ * hay un tramo secreto NO vacío. Usa las mismas primitivas que `parsearComando`
+ * (`trimStart`, primer `" "` como único separador, `trimStart` del resto) pero
+ * devuelve POSICIONES sobre el texto original: `splitPrimerEspacio` devuelve
+ * strings recortados y así descartaría los espacios de cola, que la máscara
+ * tiene que tapar. La paridad con el parser la fija el test U4, que recorre
+ * todos los descriptores `secreto: true` con `parsearComando` como oráculo.
+ */
 function inicioTramoSecreto(texto: string): number | undefined {
   const inicio = texto.length - texto.trimStart().length;
   const linea = texto.slice(inicio);
@@ -667,11 +683,28 @@ function inicioTramoSecreto(texto: string): number | undefined {
   return inicioTramo < texto.length ? inicioTramo : undefined;
 }
 
+/**
+ * PURA, sin I/O ni reloj (ADR 300). Devuelve `texto` con el tramo secreto de
+ * un comando `secreto: true` reemplazado por `*`: se conserva todo hasta el
+ * espacio que sigue al id, inclusive, y cada unidad posterior — espacios
+ * internos y de cola incluidos — pasa a `*`. La longitud se cuenta en unidades
+ * UTF-16 (`String.prototype.length`, la misma que borra backspace en la TUI),
+ * así que un emoji se ve como `**`. Devuelve `texto` INTACTO si el primer token
+ * no es un comando secreto (match EXACTO y sensible a mayúsculas, como el
+ * parser: un typo como `/logni` no se enmascara, residual R2) o si todavía no
+ * hay clave. Misma longitud que la entrada; idempotente.
+ */
 export function enmascararSecreto(texto: string): string {
   const inicio = inicioTramoSecreto(texto);
   return inicio === undefined ? texto : texto.slice(0, inicio) + "*".repeat(texto.length - inicio);
 }
 
+/**
+ * PURA (ADR 300). `true` ⇔ `texto` tiene un tramo secreto NO vacío. Es un
+ * predicado ESTRUCTURAL, no `enmascararSecreto(x) !== x`: una clave hecha sólo
+ * de `*` (`/login ana ***`) queda idéntica tras enmascararse y aun así es un
+ * secreto. Lo usa la TUI para no guardar esas líneas en el historial de flechas.
+ */
 export function contieneSecreto(texto: string): boolean {
   return inicioTramoSecreto(texto) !== undefined;
 }
