@@ -2094,6 +2094,8 @@ R1-R10 vienen de la propuesta; **R11-R18 son nuevos, aparecidos en este diseño*
 | **R17** | **`data/harness.log` contiene links de confirmación válidos** cuando el notificador está degradado (`email-omitido`) | Aceptado y **declarado**: es el precio de que la demo y el suite corran sin cuenta externa | `data/` ya está en `.gitignore`; con `EMAIL_API_KEY` configurada el evento no ocurre |
 | **R18** | **`AbortSignal.timeout` y `fetch` global** se asumen presentes y tipados con `@types/node@^20` | Bajo — **ya verificado en producción**: `github-client.ts:131` los usa hoy y el suite está en verde (`engines.node >= 20`, `@types/node ^20.14.0`, ambos verificados en `package.json`) | Ninguna. Este riesgo, que en Hito 3 era R15 sin verificar, quedó cerrado por el propio Hito 3 |
 
+> **Nota de reemplazo (ADR 301, `reembolso-resta-monto-vendido-en-reporte`)**: R5 (hito-1.3-ventas-comisiones) queda **superseded en el reporte** mensual — `agruparReporteMensual` ahora resta el monto y la comisión de las ventas `reembolsada` al calcular `montoVendido`/`totalComisionado`. La tabla `comisiones` sigue intacta.
+
 ---
 
 ## 12. Plan de verificación manual (entregable funcional)

@@ -15,11 +15,12 @@
 | Field | Value |
 |---|---|
 | Estimated changed lines | **~290-390** (`additions + deletions`): `reporte.ts` +35-50, `reporte.test.ts` +110-150 (incluye ~20 de churn del golden en dos pasos), `consultas-negocio-tool.test.ts` +40-55, `build-on-comando-empleado.test.ts` +35-45, README +2-4, `hito-1.3/design.md` +1-2, evidencia +20-30, arc42 (Fase 7) +25-35. Sin contar `openspec/changes/reembolso-resta-monto-vendido-en-reporte/`. La propuesta estimaba 110-180: no contaba C1, C2 ni la evidencia (I1) |
-| 400-line budget risk | **Medium** (el techo roza 400 si los tests salen verbosos; `it.each` en U1 lo contiene) |
-| Chained PRs recommended | No |
+| Tamaño real hasta 4.2 (`git diff main --numstat`, código + docs, sin `tasks.md`, sin Fase 5+) | **523** (`additions + deletions`, exacto): `reporte.ts` +67/-13, `reporte.test.ts` +301/-3, `consultas-negocio-tool.test.ts` +77/-0, `build-on-comando-empleado.test.ts` +56/-0, README +4/-0, `hito-1.3/design.md` +2/-0. `tasks.md` (living doc del propio change, fuera del código shippeado) no se cuenta acá. Supera el estimado de 290-390 y el techo de 400: falta Fase 5 (mutación + evidencia manual) y Fase 7 (arc42) |
+| 400-line budget risk | **Alto — ya superado.** Ver decisión de checkpoint abajo |
+| Chained PRs recommended | No (decidido por el checkpoint: PR única con excepción) |
 | Suggested split | **Una sola PR**. Corte opcional si se acerca a 400: PR #1 = 1.1-2.3 (código + tests de `reporte`) → PR #2 = 3.1-5.2 (consumidores, docs, evidencia) |
-| Delivery strategy | `ask-on-risk` |
-| Chain strategy | pending |
+| Delivery strategy | `ask-on-risk` → **decidido en el checkpoint: PR única con `size:exception`** (ver abajo) |
+| Chain strategy | N/A — no aplica, no hay PRs encadenadas |
 
 ```text
 Decision needed before apply: No
@@ -29,6 +30,8 @@ Chain strategy: pending
 ```
 
 **"No" vale sólo para el presupuesto de review.** Antes de `sdd-apply` sigue el **checkpoint humano** (G0): número de hito, I1-I7 y las preguntas abiertas de `design.md` §10.
+
+**Decisión de checkpoint (post-Fase 3, ratificada antes de la Fase 4)**: el tamaño real (~543-549 líneas hasta 4.2, sin contar Fase 5/7) superó el estimado de 290-390 y el techo de 400 del Review Workload Forecast. El checkpoint decidió **entregar en una sola PR con `size:exception`** — no se corta en PRs encadenadas (el `Suggested split` de arriba queda como opción no tomada). El Reviewer debe tratar el tamaño como excepción explícitamente aceptada, no como un hallazgo nuevo.
 
 ### Suggested Work Units
 
@@ -133,11 +136,11 @@ Commit: `test(root): fija con SQLite real que un reembolso aprobado resta del re
 
 ## Phase 4: Documentación del apply (excepción TDD)
 
-- [ ] **4.1** `README.md`: 1-2 líneas de prosa (el README **no** contiene la tabla ni la cadena "Monto vendido"): junto a `:198` (el agregado A2A informa `totalComisionado` neto de reembolsos aplicados) y a `:246-250` (`/reporte-comisiones` y `npm run reporte:mensual` son netos de reembolsos aplicados; ver ADR 301). Sin reescribir texto existente.
+- [x] **4.1** `README.md`: 1-2 líneas de prosa (el README **no** contiene la tabla ni la cadena "Monto vendido"): junto a `:198` (el agregado A2A informa `totalComisionado` neto de reembolsos aplicados) y a `:246-250` (`/reporte-comisiones` y `npm run reporte:mensual` son netos de reembolsos aplicados; ver ADR 301). Sin reescribir texto existente.
 *Aceptación*: `git diff README.md` = ~2-4 líneas agregadas y **ninguna** borrada.
 Commit: `docs(root): aclara en el README que el reporte de comisiones es neto de reembolsos aplicados (Hito vX.Y, tarea 4.1)`
 
-- [ ] **4.2** Nota de reemplazo (no reescritura) junto a `openspec/changes/hito-1.3-ventas-comisiones/design.md:2082` (fila R5): *"Superseded en el reporte por ADR 301 (`reembolso-resta-monto-vendido-en-reporte`); la tabla `comisiones` sigue intacta"*. Citar *R5 (hito-1.3-ventas-comisiones)* con prefijo (H7). La evidencia histórica `docs/progreso/v3.2-*` y `v3.8-*` **no** se toca.
+- [x] **4.2** Nota de reemplazo (no reescritura) junto a `openspec/changes/hito-1.3-ventas-comisiones/design.md:2082` (fila R5): *"Superseded en el reporte por ADR 301 (`reembolso-resta-monto-vendido-en-reporte`); la tabla `comisiones` sigue intacta"*. Citar *R5 (hito-1.3-ventas-comisiones)* con prefijo (H7). La evidencia histórica `docs/progreso/v3.2-*` y `v3.8-*` **no** se toca.
 *Aceptación*: `git diff` de ese archivo = ~1-2 líneas agregadas y **ninguna** borrada.
 Commit: `docs(spec): agrega la nota de reemplazo de R5 en el reporte por el ADR 301 (Hito vX.Y, tarea 4.2)`
 
