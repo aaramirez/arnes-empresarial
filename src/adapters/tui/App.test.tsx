@@ -1240,5 +1240,88 @@ describe("App", () => {
 
       expect(inputLineText(lastFrame() ?? "")).toBe("> /logni ana secreto");
     });
+
+    it("passes the real, unmasked prompt to onSubmit (T2, born green)", async () => {
+      const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
+      const { stdin } = await renderApp(<App onSubmit={onSubmit} />);
+
+      for (const char of "/login ana secreto") {
+        stdin.write(char);
+      }
+      stdin.write(ENTER);
+
+      expect(onSubmit).toHaveBeenCalledWith("/login ana secreto", expect.any(Function));
+    });
+
+    it("shows the pending turn's echo already masked and never leaks the secret once the turn settles (T3)", async () => {
+      const pending = deferred<TuiTurnResult>();
+      const onSubmit = vi.fn().mockReturnValue(pending.promise);
+      const instance = await renderApp(<App onSubmit={onSubmit} />);
+      const { stdin, lastFrame } = instance;
+
+      for (const char of "/crear-empleado ana secreto-largo-123") {
+        stdin.write(char);
+      }
+      stdin.write(ENTER);
+
+      expect(lastFrame()).toContain("Vos: /crear-empleado ana *****************");
+
+      pending.resolve({ responseText: "ok", agentLabel: "Agente" });
+      await waitFor(() => (lastFrame() ?? "").includes("ok"));
+
+      expect(instance.frames.every((frame) => !frame.includes("secreto-largo-123"))).toBe(true);
+    });
+
+    it("omits a secret-carrying line from arrow-up history and only recalls the earlier plain prompt (T5)", async () => {
+      const onSubmit = buildOnSubmit(2);
+      const instance = await renderApp(<App onSubmit={onSubmit} />);
+      const { stdin, lastFrame } = instance;
+
+      stdin.write("hola");
+      stdin.write(ENTER);
+      await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+      for (const char of "/login ana secreto") {
+        stdin.write(char);
+      }
+      stdin.write(ENTER);
+      await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+      const framesBeforeArrowUp = instance.frames.length;
+      stdin.write(ARROW_UP);
+
+      expect(inputLineText(lastFrame() ?? "")).toBe("> hola");
+
+      // I2: scoped to the prompt line only, not the whole frame — the
+      // settled turn's own echo (rendered inside `<Static>`, out of scope
+      // here) is unaffected by history navigation.
+      for (const frame of instance.frames.slice(framesBeforeArrowUp)) {
+        expect(inputLineText(frame)).not.toContain("/login ana");
+      }
+    });
+
+    it("does not affect plain prompts without a secret payload — draft, echo, and history stay unchanged (T6, born green)", async () => {
+      const onSubmit = buildOnSubmit(3);
+      const instance = await renderApp(<App onSubmit={onSubmit} />);
+      const { stdin, lastFrame } = instance;
+
+      const prompts = ["hola", "/estado-bot-prs", "/login ana"];
+      for (const [i, prompt] of prompts.entries()) {
+        for (const char of prompt) {
+          stdin.write(char);
+        }
+        expect(inputLineText(lastFrame() ?? "")).toBe(`> ${prompt}`);
+        stdin.write(ENTER);
+        await waitFor(() => (lastFrame() ?? "").includes(`respuesta ${i + 1}`));
+        expect(lastFrame()).toContain(`Vos: ${prompt}`);
+      }
+
+      stdin.write(ARROW_UP);
+      expect(inputLineText(lastFrame() ?? "")).toBe("> /login ana");
+      stdin.write(ARROW_UP);
+      expect(inputLineText(lastFrame() ?? "")).toBe("> /estado-bot-prs");
+      stdin.write(ARROW_UP);
+      expect(inputLineText(lastFrame() ?? "")).toBe("> hola");
+    });
   });
 });
