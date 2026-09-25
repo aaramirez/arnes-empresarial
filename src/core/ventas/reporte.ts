@@ -241,6 +241,17 @@ const SEPARADOR_WIDTH = NOMBRE_WIDTH + 1 + VENTAS_WIDTH + 1 + MONTO_WIDTH + 1 + 
 const NOTA_ESCALACION_FUERA_DE_BANDA =
   "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
 
+/**
+ * Leyenda del neto de reembolsos aplicados (ADR 301 pto 2 y 3, [CP B3]). Se
+ * imprime bajo la fila TOTAL, sólo cuando hay filas (H6: el periodo vacío no
+ * cambia). Cada línea mide ≤ `SEPARADOR_WIDTH` (77) para no romper el ancho
+ * fijo de la tabla.
+ */
+const LEYENDA_NETO: readonly string[] = [
+  "Nota: monto y comisión netos de reembolsos aplicados (estado reembolsada).",
+  '"Con reembolso" cuenta también los pendientes, que todavía no restan.',
+];
+
 export function formatMoney(monto: number): string {
   return monto.toFixed(2);
 }
@@ -255,7 +266,11 @@ function filaTabla(nombre: string, ventas: string, monto: string, comision: stri
   ].join(" ");
 }
 
-function formatearTablaComparativa(filas: readonly FilaVendedor[], totalComisionado: number): string {
+function formatearTablaComparativa(
+  filas: readonly FilaVendedor[],
+  totalMontoVendido: number,
+  totalComisionado: number,
+): string {
   if (filas.length === 0) {
     // Spec + §3.5: nunca una tabla vacía sin explicación.
     return "sin comisiones en el periodo";
@@ -275,11 +290,11 @@ function formatearTablaComparativa(filas: readonly FilaVendedor[], totalComision
   const filaTotal = [
     "TOTAL".padEnd(NOMBRE_WIDTH),
     "".padStart(VENTAS_WIDTH),
-    "".padStart(MONTO_WIDTH),
+    formatMoney(totalMontoVendido).padStart(MONTO_WIDTH),
     formatMoney(totalComisionado).padStart(COMISION_WIDTH),
   ].join(" ");
 
-  return [encabezado, separador, ...lineas, separador, filaTotal].join("\n");
+  return [encabezado, separador, ...lineas, separador, filaTotal, "", ...LEYENDA_NETO].join("\n");
 }
 
 function formatearLineaReembolso(v: VentaPendienteReembolso): string {
@@ -315,7 +330,7 @@ function formatearSeccionReembolsos(reembolsosPendientes: readonly VentaPendient
 export function formatearReporteMensual(reporte: ReporteMensual): string {
   return [
     `Reporte de comisiones - periodo ${reporte.periodo}`,
-    formatearTablaComparativa(reporte.filas, reporte.totalComisionado),
+    formatearTablaComparativa(reporte.filas, reporte.totalMontoVendido, reporte.totalComisionado),
     formatearSeccionReembolsos(reporte.reembolsosPendientes),
   ].join("\n\n");
 }
