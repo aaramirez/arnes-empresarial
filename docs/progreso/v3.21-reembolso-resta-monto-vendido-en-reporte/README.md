@@ -183,6 +183,26 @@ data/harness.db          → ventas a6e574b8…: reembolso_pendiente · comision
 
 `src/core/ventas/reporte.ts:242` todavía imprime *"estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI"*, pero esos comandos se dieron de baja en v3.10.0 (ADR 210 pto 1, tarea 14; hoy se resuelven por conversación vía `resolver_reembolso`). Es texto preexistente y no lo toca este change (el alcance de `reporte.ts` es la tabla neta). Queda como deuda para un change aparte.
 
+**Resuelto en la Fase 5b (ADR 302)**.
+
+### Fase 5b — enmienda: nota de escalaciones conversacional (ADR 302)
+
+Tarea `tasks.md` 5b.4. La nota nueva (sin comandos retirados, canales TUI local + chat web) queda fijada por `reporte.test.ts:577-...` y por la guarda A3 (`COMANDOS`) — ver `mutaciones.md`, sección M6/M7, para la evidencia de mutación.
+
+**Evidencia manual (humano, 2026-09-24/25)**
+
+1. **CLI sobre una copia** (`harness-copia-5b.db`, `.backup` de `data/harness.db` con `PRAGMA integrity_check` = `ok`, venta de Hito36 todavía en `reembolso_pendiente`): `HARNESS_DB_PATH=<copia> npm run reporte:mensual -- --periodo 2026-09` imprime en la sección "Reembolsos pendientes de aprobación" la nota nueva, idéntica al texto de `design.md` §11.2, seguida de la venta pendiente de Hito36:
+
+   ```
+   Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.
+
+   - venta a6e574b8-4bed-47a1-9415-ec3b5898c967 | vendedor Vendedor Prueba Hito36 | cliente cliente-prueba-001 | monto 15000.00 | caso 9343de80-a350-476b-83c1-24961e2018dd | confirmada 2026-09-13T12:38:00.995Z
+   ```
+
+2. **TUI**: el humano corrió `/login` y `/reporte-comisiones` (`harness.log`, 03:30Z: `login-exitoso`, `reporte_comisiones` `atendida`) y observó la nota nueva, sin comandos retirados. La TUI y el CLI la imprimen desde la misma constante (`formatearReporteMensual`), y la igualdad byte a byte TUI = CLI del reporte ya quedó demostrada en el paso (b) de la tarea 5.2. **Incidente repetido**: esta sesión también corrió contra `data/harness.db` y no contra la copia (la copia quedó sin tocar, la base real registró la sesión). Como `/reporte-comisiones` es de sólo lectura, sólo se escribieron la sesión de login y la auditoría; la venta de Hito36 sigue en `reembolso_pendiente` y `comisiones` en 11 | 3440.00 (`sqlite3 -readonly`, verificado después). La causa de que `HARNESS_DB_PATH` no se aplique en la TUI no se investigó en este change.
+
+3. **`/aprobar-reembolso` y consulta conversacional del reporte**: el humano declara que los probó y que el comando retirado no volvió a aparecer, ni en la nota ni en la respuesta del asistente. **No hay salida pegada ni rastro en el extracto de `harness.log` revisado**, así que queda como observación declarada del humano, no como evidencia reproducible. La cobertura automatizada de este punto son el test de la nota, la guarda A3 contra `COMANDOS` y las mutaciones M6/M7.
+
 ## Residuales declarados (`design.md` §8)
 
 | # | Residual | Estado |

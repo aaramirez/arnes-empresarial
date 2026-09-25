@@ -228,11 +228,84 @@ C2 falla: `SELECT monto FROM comisiones WHERE id = 'comision-venta-c2-1'` cambia
 
 ---
 
+## M6 — la nota vuelve a nombrar `/aprobar-reembolso` (enmienda 5b, ADR 302)
+
+Tarea `tasks.md` 5b.4. Fecha: 2026-09-24. Cubre M6 del design (§11.4).
+
+**Archivo:línea**: `src/core/ventas/reporte.ts:242` (`NOTA_ESCALACION_FUERA_DE_BANDA`).
+
+**Código mutado**:
+
+```diff
+ const NOTA_ESCALACION_FUERA_DE_BANDA =
+-  "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
++  "Nota: estas escalaciones se resuelven con /aprobar-reembolso, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
+```
+
+**Comando**: `npm test -- reporte`
+
+**Salida roja (extracto)**:
+
+```
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > devuelve el string completo... (golden)
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > un periodo sin comisiones produce la linea explicita... (golden vacío)
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > la nota (ADR 26, enmendado por ADR 302) apunta a la resolución conversacional...
+AssertionError: expected '...' not to match /\/(aprobar|rechazar|reabrir)-reembolso/
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > la nota no menciona ningún comando dado de baja: todo token /comando existe en COMANDOS (guarda A3)
+AssertionError: expected false to be true // Object.is equality
+Test Files  1 failed | 1 passed (2)
+Tests  4 failed | 37 passed (41)
+```
+
+M6 falla el test de 5b.1(a) (el `not.toMatch` de los tres comandos) y la guarda A3 de 5b.1(c) (`/aprobar-reembolso` no está en `COMANDOS`), tal como predijo `design.md` §11.4. También rompe, como efecto colateral esperado, los dos goldens (`:485`/`:557`), porque el texto exacto cambió.
+
+**Restauración**: `cp` del respaldo tomado antes de mutar; `diff` byte a byte contra el respaldo = idéntico; `git diff -- src` vacío; `npm test -- reporte` en verde (41/41) de nuevo.
+
+---
+
+## M7 — la nota deja de mencionar el chat web (enmienda 5b, ADR 302)
+
+Tarea `tasks.md` 5b.4. Fecha: 2026-09-24. Cubre M7 del design (§11.4).
+
+**Archivo:línea**: `src/core/ventas/reporte.ts:242`.
+
+**Código mutado** (quita la mención del canal web):
+
+```diff
+ const NOTA_ESCALACION_FUERA_DE_BANDA =
+-  "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
++  "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
+```
+
+**Comando**: `npm test -- reporte`
+
+**Salida roja (extracto)**:
+
+```
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > devuelve el string completo... (golden)
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > un periodo sin comisiones produce la linea explicita... (golden vacío)
+FAIL src/core/ventas/reporte.test.ts > formatearReporteMensual > la nota (ADR 26, enmendado por ADR 302) apunta a la resolución conversacional...
+AssertionError: expected '...' to contain 'chat web'
+Test Files  1 failed | 1 passed (2)
+Tests  3 failed | 38 passed (41)
+```
+
+M7 falla el `toContain("chat web")` de 5b.1(a), tal como predijo `design.md` §11.4 (y, de nuevo como efecto colateral, los dos goldens). La guarda A3 **no** falla con M7: sin canal web en el texto no aparece ningún token `/comando` inválido, es un caso que A3 no cubre (esperado — A3 sólo automatiza la mitad de la regla del ADR 302, los comandos, no los canales; ver `design.md` §11.3, riesgo R9).
+
+**Restauración**: `cp` del respaldo tomado antes de mutar; `diff` byte a byte contra el respaldo = idéntico; `git diff -- src` vacío; `npm test -- reporte` en verde (41/41) de nuevo.
+
+---
+
 ## Cierre
 
 - Las cinco mutaciones (M1-M5) fueron atrapadas por sus tests nombrados (`tasks.md` 5.1); ninguna otra prueba de `reporte.test.ts`/`consultas-negocio-tool.test.ts`/`build-on-comando-empleado.test.ts` se vio afectada durante la mutación (los `it.each`/tests no filtrados quedaron `skipped`, no rojos).
 - Tras restaurar la última mutación: `git diff -- src` vacío, `npm run typecheck` verde.
 - `npm test` completo (con `dist/` limpio antes de correr, por la duplicación de conteo conocida): **162 archivos, 2 skipped; 3323 tests, 5 skipped** — todo verde. `npm run build` verde.
+
+## Cierre — enmienda Fase 5b (ADR 302)
+
+- M6 y M7 (`tasks.md` 5b.4) fueron atrapadas por los tests nombrados en `design.md` §11.4; ambas revirtieron limpio (`diff` byte a byte contra el respaldo, `git diff -- src` vacío).
+- Tras restaurar la última mutación: `npm test -- reporte` en verde (41/41), `npm run typecheck` verde.
 
 ## Enlaces
 
