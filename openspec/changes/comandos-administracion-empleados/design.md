@@ -255,6 +255,8 @@ Sin `registrar()`: es una lectura, mismo criterio que `/reporte-comisiones`/`/co
 
 Sin migración propia (Success Criterion de `proposal.md`). Consume `0013` de `autorizacion-empleado`. Nota de despliegue: toda credencial creada por `/crear-empleado` queda con contraseña visible en el transcripto de la TUI (RD-81 opción (a), ratificada) — **procedimiento obligatorio**: rotar por CLI (`empleados:crear -- <id> --rotar`) inmediatamente después de comunicar la contraseña inicial fuera de banda.
 
+> **Nota de reemplazo (2026-09-24)**: Reemplazado por ADR 300 (`enmascarar-password-en-tui`): la contraseña ya no se ve en el transcripto; la rotación pasa de obligatoria a recomendada, porque el administrador sigue conociendo la clave inicial (R9). Ver RD-81 (comandos-administracion-empleados).
+
 ## 11. Open Questions
 
 - [ ] No bloqueante: el texto exacto de los mensajes `sistema(...)` (arriba, ilustrativos) puede ajustarse por copy.
