@@ -59,12 +59,15 @@ export interface FilaVendedor {
   readonly totalComisionado: number;
   /** Cuántas de esas ventas están hoy `reembolsada` o `reembolso_pendiente` — la columna que hace medible R5. */
   readonly ventasConReembolso: number;
+  readonly montoReembolsado: number;
+  readonly comisionRevertida: number;
 }
 
 export interface ReporteMensual {
   readonly periodo: string;
   readonly filas: readonly FilaVendedor[];
   readonly totalComisionado: number;
+  readonly totalMontoVendido: number;
   readonly reembolsosPendientes: readonly VentaPendienteReembolso[];
 }
 
@@ -146,6 +149,8 @@ export function agruparReporteMensual(input: {
     montoVendido: number;
     totalComisionado: number;
     ventasConReembolso: number;
+    montoReembolsado: number;
+    comisionRevertida: number;
   }
 
   const porVendedor = new Map<string, Acumulador>();
@@ -157,11 +162,18 @@ export function agruparReporteMensual(input: {
       montoVendido: 0,
       totalComisionado: 0,
       ventasConReembolso: 0,
+      montoReembolsado: 0,
+      comisionRevertida: 0,
     };
 
     acc.ventasConfirmadas += 1;
-    acc.montoVendido += c.ventaMonto;
-    acc.totalComisionado += c.comisionMonto;
+    if (c.ventaEstado === VENTA_ESTADO_REEMBOLSADA) {
+      acc.montoReembolsado += c.ventaMonto;
+      acc.comisionRevertida += c.comisionMonto;
+    } else {
+      acc.montoVendido += c.ventaMonto;
+      acc.totalComisionado += c.comisionMonto;
+    }
     if (c.ventaEstado === VENTA_ESTADO_REEMBOLSADA || c.ventaEstado === VENTA_ESTADO_REEMBOLSO_PENDIENTE) {
       acc.ventasConReembolso += 1;
     }
@@ -177,12 +189,15 @@ export function agruparReporteMensual(input: {
       montoVendido: redondearComoComision(acc.montoVendido),
       totalComisionado: redondearComoComision(acc.totalComisionado),
       ventasConReembolso: acc.ventasConReembolso,
+      montoReembolsado: redondearComoComision(acc.montoReembolsado),
+      comisionRevertida: redondearComoComision(acc.comisionRevertida),
     }))
     .sort((a, b) => b.totalComisionado - a.totalComisionado || a.vendedorId.localeCompare(b.vendedorId));
 
   const totalComisionado = redondearComoComision(filas.reduce((sum, f) => sum + f.totalComisionado, 0));
+  const totalMontoVendido = redondearComoComision(filas.reduce((sum, f) => sum + f.montoVendido, 0));
 
-  return { periodo, filas, totalComisionado, reembolsosPendientes };
+  return { periodo, filas, totalComisionado, totalMontoVendido, reembolsosPendientes };
 }
 
 /* ── formatearReporteMensual: layout de tabla, ver nota de diseño arriba ── */
