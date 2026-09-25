@@ -198,6 +198,8 @@ Un agente externo puede preguntar, en lenguaje natural, por estas **cuatro** ope
 | "¿Cuál fue el total comisionado en el período actual?" | `periodo`, cantidad de vendedores con ventas, sumas agregadas y `totalComisionado`. | La tabla completa por vendedor (`vendedorNombre`, montos individuales) — esa tabla completa sigue siendo exclusiva de `/reporte-comisiones`, con sesión de empleado vigente. |
 | "¿Cuántos reembolsos están pendientes de aprobación?" | Conteo total y monto sumado de reembolsos pendientes. | `vendedorId`, `vendedorNombre`, `clienteId` ni `ventaId` por fila. |
 
+El monto vendido y el `totalComisionado` que devuelve `reporte_comisiones` son netos de reembolsos aplicados (ADR 301, estado `reembolsada`); esta vía no imprime la leyenda de la tabla, sólo las cifras ya netas.
+
 **Qué NO puede hacer un agente externo por esta vía**:
 
 - **Ninguna escritura.** Las cuatro operaciones son de sólo lectura; ningún puerto nuevo tiene un método con efecto, y `reporte.ts`/`repository.ts` no se modificaron.
@@ -248,6 +250,8 @@ Desde v3.2.0 hay dos formas de generar el mismo reporte mensual, y conviven a pr
 Sin argumento, ambas resuelven al mes corriente. Las dos vías reusan exactamente las mismas funciones puras y los mismos lectores del repositorio, así que no pueden divergir.
 
 > **Ancho de terminal**: el reporte usa un layout de 77 columnas fijas; en terminales más angostas Ink lo envuelve línea por línea. Recomendado: terminal ≥80 columnas al usar `/reporte-comisiones`.
+
+Desde ADR 301, ambas vías informan el monto vendido y la comisión netos de reembolsos aplicados (las ventas en estado `reembolsada` no suman); una leyenda de dos líneas bajo la tabla lo explica.
 
 ### Comandos de visibilidad A2A entrante
 
