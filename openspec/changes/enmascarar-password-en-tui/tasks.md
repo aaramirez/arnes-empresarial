@@ -144,10 +144,12 @@ Commit: `docs(root): agrega la nota de reemplazo de la rotacion obligatoria por 
 
 ## Phase 6: Verificación final (sin commit)
 
-- [ ] **6.1** `npm run typecheck` en verde.
-- [ ] **6.2** `npm test` en verde (con `dist/` limpio).
-- [ ] **6.3** `npm run build` en verde.
-- [ ] **6.4** Guarda de alcance: `git diff main --stat` sólo lista `comando-empleado.ts` (+test), `App.tsx` (+test), `docs/progreso/vX.Y-enmascarar-password-en-tui/`, `comandos-administracion-empleados/design.md` y los artefactos del change; `git diff main -- tui-port.ts start-tui.tsx src/build-on-comando-empleado.ts src/main.ts src/adapters/web src/empleados.ts package.json` **vacío** (localizar las rutas reales con `Glob` antes).
+- [x] **6.1** `npm run typecheck` en verde.
+- [x] **6.2** `npm test` en verde (con `dist/` limpio).
+- [x] **6.3** `npm run build` en verde.
+- [x] **6.4** Guarda de alcance: `git diff main --stat` sólo lista `comando-empleado.ts` (+test), `App.tsx` (+test), `docs/progreso/vX.Y-enmascarar-password-en-tui/`, `comandos-administracion-empleados/design.md` y los artefactos del change; `git diff main -- tui-port.ts start-tui.tsx src/build-on-comando-empleado.ts src/main.ts src/adapters/web src/empleados.ts package.json` **vacío** (localizar las rutas reales con `Glob` antes).
+
+> **Progreso (sdd-apply, Phase 6, 2026-09-24)**: **6.1-6.4 hechas, sin commitear** (rama `hito/v3.20-enmascarar-password-en-tui`; el humano commitea). **6.1**: `npm run typecheck` verde (`tsc --noEmit`, sin salida). **6.2**: `dist/` borrado antes; `npm test` → 162 archivos verdes + 2 skip (164), 3307 tests verdes + 5 skip (3312), sin fallas; el flake de `src/main.test.ts` reportado en la nota de 5.1 **no se reprodujo** en esta corrida (no hizo falta aislarlo porque nada falló). **6.3**: `npm run build` verde (`tsc -p tsconfig.build.json`, sin salida); `dist/` borrado de nuevo después. **6.4**: `git merge-base main HEAD` = `git rev-parse main` (`5dfd44f`), `main` no se movió desde el punto de rama. `git diff main --stat` lista exactamente 10 archivos, todos dentro del alcance esperado: `docs/progreso/v3.20-enmascarar-password-en-tui/{README.md,captura-login-enmascarado.png,mutaciones.md}`, `openspec/changes/comandos-administracion-empleados/design.md`, `openspec/changes/enmascarar-password-en-tui/{specs/autenticacion-empleado-tui/spec.md,tasks.md}`, `src/adapters/tui/{App.tsx,App.test.tsx}`, `src/core/commands/comando-empleado.{ts,test.ts}`. Se localizaron con `Glob` las rutas reales de guarda (`src/adapters/tui/tui-port.ts`, `src/adapters/tui/start-tui.tsx`, `src/build-on-comando-empleado.ts`, `src/main.ts`, `src/adapters/web/**`, `src/empleados.ts`, `package.json`) y `git diff main -- <esas rutas>` dio 0 líneas. Ningún archivo fuera de alcance. **Listo para el Reviewer** (falta sólo el checklist humano de 7.2 y, si el Reviewer aprueba, la Fase 7).
 
 ## Phase 7: Cierre (sólo tras la aprobación del Reviewer; no es tarea del Implementer)
 
