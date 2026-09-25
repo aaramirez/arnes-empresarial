@@ -239,7 +239,7 @@ const SEPARADOR_WIDTH = NOMBRE_WIDTH + 1 + VENTAS_WIDTH + 1 + MONTO_WIDTH + 1 + 
  * reporte no lee) y cualquier noción de roles o permisos (que no existen).
  */
 const NOTA_ESCALACION_FUERA_DE_BANDA =
-  "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
+  "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
 
 /**
  * Leyenda del neto de reembolsos aplicados (ADR 301 pto 2 y 3, [CP B3]). Se
