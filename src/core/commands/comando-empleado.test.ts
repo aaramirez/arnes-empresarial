@@ -757,4 +757,118 @@ describe("enmascararSecreto y contieneSecreto (ADR 300, spec comando-empleado-tu
     expect(enmascararSecreto(texto)).toBe(texto);
     expect(contieneSecreto(texto)).toBe(true);
   });
+
+  // U4 — paridad con el parser (R1): `parsearComando` es el ORÁCULO.
+  const variantesDeEspaciado = (cmd: string): readonly string[] => [
+    `${cmd} ana s3cret`, // simple
+    `  ${cmd} ana s3cret`, // espacios al inicio
+    `\t${cmd} ana s3cret`, // tab al inicio (lo recorta el trimStart del parser)
+    `${cmd}  ana  s3cret`, // dobles
+    `${cmd} ana   s3cret`, // varios espacios antes de la clave
+    `${cmd} ana s3cr et`, // espacio interno en la clave
+    `${cmd} ana s3cret  `, // espacios de cola
+    `${cmd} ana \ts3cret`, // tab tras el separador: el trim del parser se lo come
+    `${cmd} ana x`, // clave de 1 carácter
+  ];
+
+  const descriptoresSecretos = COMANDOS.filter((d) => d.secreto);
+
+  it("U4: hay descriptores con secreto:true que recorrer (el bucle de paridad no puede quedar vacío)", () => {
+    expect(descriptoresSecretos.map((d) => d.nombre)).toContain("/login");
+    expect(descriptoresSecretos.map((d) => d.nombre)).toContain("/crear-empleado");
+  });
+
+  it.each(descriptoresSecretos.map((d) => [d.nombre] as const))(
+    "U4: la máscara de %s no diverge de parsearComando en ninguna variante de espaciado (R1)",
+    (cmd) => {
+      const variantes = variantesDeEspaciado(cmd);
+      let verificadas = 0;
+
+      for (const texto of variantes) {
+        const parseado = parsearComando(texto);
+        // Un descriptor secreto cuyo parseo no expone `password` (p. ej. un secreto futuro con otro
+        // nombre de campo) obliga a revisar este test: NO se acepta en silencio.
+        if (parseado === undefined || !("password" in parseado)) {
+          expect.fail(
+            `${cmd} tiene secreto:true pero parsearComando(${JSON.stringify(texto)}) no devuelve un campo "password": ` +
+              "revisar la paridad de enmascararSecreto con el parser (R1, ADR 300)",
+          );
+        }
+        const password = parseado.password;
+        const mascara = enmascararSecreto(texto);
+        const fin = texto.trimEnd().length;
+        const inicioPassword = fin - password.length;
+        const primerAsterisco = mascara.indexOf("*");
+
+        expect(mascara).toHaveLength(texto.length);
+        expect(primerAsterisco).toBeGreaterThan(-1);
+        expect(mascara.slice(0, primerAsterisco)).toBe(texto.slice(0, primerAsterisco));
+        expect(mascara.slice(primerAsterisco)).toMatch(/^\*+$/);
+        // La posición del password que extrajo el parser queda ÍNTEGRA dentro del tramo enmascarado.
+        expect(inicioPassword).toBeGreaterThanOrEqual(primerAsterisco);
+        expect(mascara.slice(inicioPassword, fin)).toBe("*".repeat(password.length));
+        verificadas += 1;
+      }
+
+      expect(verificadas).toBe(variantes.length);
+    },
+  );
+
+  // U5 — tecla a tecla: cada prefijo de lo que se tipea.
+  it.each([
+    ["/login ana ", "/login ana s3cr et"],
+    ["/crear-empleado bob ", "/crear-empleado bob secreto-largo-123"],
+  ])("U5: tecleando %j…, lo que sigue al id es sólo '*' en cada prefijo", (cabecera, completo) => {
+    let conClave = 0;
+
+    for (let largo = 1; largo <= completo.length; largo += 1) {
+      const prefijo = completo.slice(0, largo);
+      const mascara = enmascararSecreto(prefijo);
+
+      if (largo <= cabecera.length) {
+        // Aún no hay clave: nada que ocultar, se ve lo tipeado.
+        expect(mascara).toBe(prefijo);
+      } else {
+        expect(mascara.slice(0, cabecera.length)).toBe(cabecera);
+        expect(mascara.slice(cabecera.length)).toBe("*".repeat(largo - cabecera.length));
+        conClave += 1;
+      }
+    }
+
+    expect(conClave).toBe(completo.length - cabecera.length);
+  });
+
+  // U7 — propiedades: idempotencia, misma longitud y unidad de longitud UTF-16 (ADR 300, pto 4).
+  it("U7: es idempotente y conserva la longitud sobre las entradas de U1-U5", () => {
+    const prefijos = (completo: string): string[] => Array.from({ length: completo.length }, (_, i) => completo.slice(0, i + 1));
+    const entradas = [
+      ...CON_SECRETO.map(([entrada]) => entrada),
+      ...INTACTOS,
+      ...TYPOS,
+      ...descriptoresSecretos.flatMap((d) => variantesDeEspaciado(d.nombre)),
+      ...prefijos("/login ana s3cr et"),
+      ...prefijos("/crear-empleado bob secreto-largo-123"),
+    ];
+    expect(entradas.length).toBeGreaterThan(40);
+
+    for (const entrada of entradas) {
+      const una = enmascararSecreto(entrada);
+      expect(una).toHaveLength(entrada.length);
+      expect(enmascararSecreto(una)).toBe(una);
+    }
+  });
+
+  it("U7: un emoji en la clave produce 2 '*' (unidades UTF-16, la misma que borra el backspace de la TUI)", () => {
+    // "😀" son 2 unidades UTF-16 (`"😀".length === 2`): p (1) + 😀 (2) = 3 '*'.
+    expect("😀".length).toBe(2);
+    expect(enmascararSecreto("/login ana p😀")).toBe("/login ana ***");
+    expect(enmascararSecreto("/crear-empleado bob 😀")).toBe("/crear-empleado bob **");
+    expect(enmascararSecreto("/login ana p😀")).toHaveLength("/login ana p😀".length);
+  });
+
+  it("U7: un surrogate suelto (backspace a mitad de un emoji) también se enmascara: nunca se dibuja roto", () => {
+    const suelto = "/login ana \uD83D";
+    expect(suelto.endsWith("\uD83D")).toBe(true);
+    expect(enmascararSecreto(suelto)).toBe("/login ana *");
+  });
 });
