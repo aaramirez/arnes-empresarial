@@ -207,6 +207,14 @@ import { Box, Static, Text, useInput, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import { useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
+// First import from `src/core/` into `src/adapters/tui/` (ADR 300 —
+// `enmascarar-password-en-tui`). The direction is allowed: `core` never
+// imports back from any adapter (design.md H5). `enmascararSecreto` is a
+// pure function with no I/O — importing it does not pull in anything the
+// dispatcher (`build-on-comando-empleado.ts`) itself needs, and it keeps
+// this adapter from maintaining its own, separately-maintained list of
+// which commands carry a secret.
+import { enmascararSecreto } from "../../core/commands/comando-empleado.js";
 import { Banner, BANNER_LINE_COUNT } from "./Banner.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./tui-port.js";
 
@@ -399,10 +407,17 @@ export function AgentResponse({
 // the terminal's height two rows sooner than before. Out of scope to close
 // here — same as the prior note — just worth naming precisely, since this
 // component is what actually shrank that margin.
+//
+// Secret masking (ADR 300): draws `enmascararSecreto(draft)`, not `draft`
+// itself. The `draft` prop stays the REAL text end to end — this component
+// never receives, holds, or forwards an already-masked value; masking is
+// applied here, at the single point where the draft is actually drawn, so
+// every render of the input line is covered by construction, including any
+// future caller that forgets it exists (fail closed, design.md §4 point 1).
 export function PromptInput({ draft }: { readonly draft: string }): ReactElement {
   return (
     <Box borderStyle="single" borderColor="blue" width="100%">
-      <Text>{`> ${draft}`}</Text>
+      <Text>{`> ${enmascararSecreto(draft)}`}</Text>
     </Box>
   );
 }
