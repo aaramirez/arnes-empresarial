@@ -179,6 +179,90 @@ describe("agruparReporteMensual", () => {
     expect(reporte.filas).toEqual([]);
     expect(reporte.totalComisionado).toBe(0);
   });
+
+  // ADR 301 — el reporte es neto de reembolsos aplicados: sólo el estado
+  // `reembolsada` resta monto y comisión; `reembolso_pendiente` y
+  // `reembolso_rechazado` NO restan (U1).
+  it.each([
+    [VENTA_ESTADO_CONFIRMADA, 1000, 100, 0, 0, 0],
+    [VENTA_ESTADO_REEMBOLSADA, 0, 0, 1, 1000, 100],
+    [VENTA_ESTADO_REEMBOLSO_PENDIENTE, 1000, 100, 1, 0, 0],
+    [VENTA_ESTADO_REEMBOLSO_RECHAZADO, 1000, 100, 0, 0, 0],
+  ])(
+    "estado %s: sólo `reembolsada` resta monto y comisión (U1)",
+    (ventaEstado, montoVendido, totalComisionado, ventasConReembolso, montoReembolsado, comisionRevertida) => {
+      const reporte = agruparReporteMensual({
+        periodo: "2024-02",
+        comisiones: [comision({ ventaEstado, comisionMonto: 100, ventaMonto: 1000 })],
+        reembolsosPendientes: [],
+      });
+
+      expect(reporte.filas).toHaveLength(1);
+      expect(reporte.filas[0]).toMatchObject({
+        montoVendido,
+        totalComisionado,
+        ventasConReembolso,
+        montoReembolsado,
+        comisionRevertida,
+      });
+    },
+  );
+
+  it("mezcla confirmada + reembolsada + reembolso_pendiente: el neto es confirmada + pendiente (U2)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 100, ventaMonto: 1000 }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 50, ventaMonto: 500 }),
+        comision({
+          ventaId: "v3",
+          ventaEstado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+          comisionMonto: 30,
+          ventaMonto: 300,
+        }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas).toHaveLength(1);
+    expect(reporte.filas[0]).toMatchObject({
+      montoVendido: 1300,
+      totalComisionado: 130,
+      ventasConfirmadas: 3,
+      ventasConReembolso: 2,
+    });
+  });
+
+  it("todo reembolsado: la fila queda en 0.00 exacto, sin -0 (U3)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 100, ventaMonto: 1000 }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 50, ventaMonto: 500 }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas).toHaveLength(1);
+    expect(reporte.filas[0]?.montoVendido).toBe(0);
+    expect(reporte.filas[0]?.totalComisionado).toBe(0);
+    expect(reporte.filas[0]).toMatchObject({ ventasConfirmadas: 2, ventasConReembolso: 2 });
+  });
+
+  it("flotantes: confirmada 0.1 + 0.2 y reembolsada 0.3 no contaminan el neto (U4)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 0.1 }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 0.2 }),
+        comision({ ventaId: "v3", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 0.3 }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas[0]?.totalComisionado).toBe(0.3);
+    expect(reporte.filas[0]?.comisionRevertida).toBe(0.3);
+  });
 });
 
 describe("formatearReporteMensual", () => {
