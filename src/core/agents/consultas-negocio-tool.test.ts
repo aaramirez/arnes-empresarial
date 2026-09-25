@@ -314,6 +314,83 @@ describe("handleConsultaNegocio — las 4 operaciones con dobles de los 4 puerto
     expect(texto).toContain("2");
     expect(texto).toContain("500.00");
   });
+
+  // ADR 301 — el agregado A2A hereda el neto de reembolsos aplicados de
+  // `agruparReporteMensual` sin cambiar `consultas-negocio-tool.ts` (C1).
+  it("reporte_comisiones: el agregado hereda el neto de reembolsos aplicados (ADR 301, C1)", async () => {
+    const deps = makeDeps({
+      reporteStore: {
+        listComisionesPorPeriodo: vi.fn().mockReturnValue([
+          {
+            ventaId: "venta-1",
+            vendedorId: "vendedor-1",
+            vendedorNombre: "Juana Pérez",
+            comisionMonto: 100,
+            ventaMonto: 1000,
+            ventaEstado: "confirmada",
+            periodo: "2026-08",
+          },
+          {
+            ventaId: "venta-2",
+            vendedorId: "vendedor-2",
+            vendedorNombre: "Carlos Gómez",
+            comisionMonto: 225,
+            ventaMonto: 1500,
+            ventaEstado: "reembolsada",
+            periodo: "2026-08",
+          },
+        ]),
+        listVentasEnReembolsoPendiente: vi.fn().mockReturnValue([]),
+      },
+    });
+
+    const texto = await handleConsultaNegocio({ operacion: "reporte_comisiones", periodo: "2026-08" }, deps);
+
+    expect(texto).toContain("Monto vendido: 1000.00");
+    expect(texto).toContain("Total comisionado: 100.00");
+    expect(texto).toContain("Ventas confirmadas: 2");
+    expect(texto).toContain("Ventas con reembolso: 1");
+    expect(texto).toContain("Vendedores con ventas: 2");
+    expect(texto).not.toContain("vendedor_nombre");
+    expect(texto).not.toContain("Juana Pérez");
+    expect(texto).not.toContain("Carlos Gómez");
+    // ADR 301 [CP B5]: el checkpoint (I4) decidió NO agregar la leyenda de
+    // neto en el A2A — sólo se recorta a agregados, sin la nota de la TUI/CLI.
+    expect(texto).not.toContain("Nota: monto y comisión netos");
+  });
+
+  it("reporte_comisiones: reembolso_pendiente y reembolso_rechazado NO restan del agregado (ADR 301, C1)", async () => {
+    const deps = makeDeps({
+      reporteStore: {
+        listComisionesPorPeriodo: vi.fn().mockReturnValue([
+          {
+            ventaId: "venta-3",
+            vendedorId: "vendedor-3",
+            vendedorNombre: "Ana Ruiz",
+            comisionMonto: 1500,
+            ventaMonto: 15000,
+            ventaEstado: "reembolso_pendiente",
+            periodo: "2026-08",
+          },
+          {
+            ventaId: "venta-4",
+            vendedorId: "vendedor-4",
+            vendedorNombre: "Beto Soto",
+            comisionMonto: 100,
+            ventaMonto: 1000,
+            ventaEstado: "reembolso_rechazado",
+            periodo: "2026-08",
+          },
+        ]),
+        listVentasEnReembolsoPendiente: vi.fn().mockReturnValue([]),
+      },
+    });
+
+    const texto = await handleConsultaNegocio({ operacion: "reporte_comisiones", periodo: "2026-08" }, deps);
+
+    expect(texto).toContain("Monto vendido: 16000.00");
+    expect(texto).toContain("Total comisionado: 1600.00");
+  });
 });
 
 describe("handleConsultaNegocio — Punto obligatorio 2 (ADR 180 pto 4, negativo): recorte de datos personales, ni siquiera truncados", () => {
