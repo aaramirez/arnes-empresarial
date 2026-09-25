@@ -1300,6 +1300,31 @@ describe("App", () => {
       }
     });
 
+    it("also omits a password made only of asterisks from arrow-up history (T5b)", async () => {
+      const onSubmit = buildOnSubmit(2);
+      const instance = await renderApp(<App onSubmit={onSubmit} />);
+      const { stdin, lastFrame } = instance;
+
+      stdin.write("hola");
+      stdin.write(ENTER);
+      await waitFor(() => (lastFrame() ?? "").includes("respuesta 1"));
+
+      for (const char of "/login ana ***") {
+        stdin.write(char);
+      }
+      stdin.write(ENTER);
+      await waitFor(() => (lastFrame() ?? "").includes("respuesta 2"));
+
+      const framesBeforeArrowUp = instance.frames.length;
+      stdin.write(ARROW_UP);
+
+      expect(inputLineText(lastFrame() ?? "")).toBe("> hola");
+
+      for (const frame of instance.frames.slice(framesBeforeArrowUp)) {
+        expect(inputLineText(frame)).not.toContain("/login ana");
+      }
+    });
+
     it("does not affect plain prompts without a secret payload — draft, echo, and history stay unchanged (T6, born green)", async () => {
       const onSubmit = buildOnSubmit(3);
       const instance = await renderApp(<App onSubmit={onSubmit} />);
