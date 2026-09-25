@@ -263,6 +263,170 @@ describe("agruparReporteMensual", () => {
     expect(reporte.filas[0]?.totalComisionado).toBe(0.3);
     expect(reporte.filas[0]?.comisionRevertida).toBe(0.3);
   });
+
+  it("regresión con datos reales: el orden y los netos por vendedor (U5)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({
+          ventaId: "ana-1",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 1200,
+          comisionMonto: 120,
+        }),
+        comision({
+          ventaId: "ana-2",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 1000,
+          comisionMonto: 100,
+        }),
+        comision({
+          ventaId: "ana-3",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 800,
+          comisionMonto: 80,
+        }),
+        comision({
+          ventaId: "ana-4",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 700,
+          comisionMonto: 70,
+        }),
+        comision({
+          ventaId: "beto-1",
+          vendedorId: "beto",
+          vendedorNombre: "Beto",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 3000,
+          comisionMonto: 300,
+        }),
+        comision({
+          ventaId: "beto-2",
+          vendedorId: "beto",
+          vendedorNombre: "Beto",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 400,
+          comisionMonto: 40,
+        }),
+        comision({
+          ventaId: "beto-3",
+          vendedorId: "beto",
+          vendedorNombre: "Beto",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 300,
+          comisionMonto: 30,
+        }),
+        comision({
+          ventaId: "hito36-1",
+          vendedorId: "hito36",
+          vendedorNombre: "Hito36",
+          ventaEstado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+          ventaMonto: 15000,
+          comisionMonto: 1500,
+        }),
+        comision({
+          ventaId: "v39-1",
+          vendedorId: "v39",
+          vendedorNombre: "V39",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 5000,
+          comisionMonto: 500,
+        }),
+        comision({
+          ventaId: "rick-1",
+          vendedorId: "rick",
+          vendedorNombre: "Rick",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 4000,
+          comisionMonto: 400,
+        }),
+        comision({
+          ventaId: "tom-1",
+          vendedorId: "tom",
+          vendedorNombre: "Tom",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 3000,
+          comisionMonto: 300,
+        }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas.map((f) => f.vendedorId)).toEqual(["hito36", "v39", "rick", "beto", "tom", "ana"]);
+    expect(reporte.filas.find((f) => f.vendedorId === "ana")).toMatchObject({
+      montoVendido: 1200,
+      totalComisionado: 120,
+      ventasConfirmadas: 4,
+      ventasConReembolso: 3,
+    });
+    expect(reporte.filas.find((f) => f.vendedorId === "beto")).toMatchObject({
+      montoVendido: 3000,
+      totalComisionado: 300,
+      ventasConfirmadas: 3,
+      ventasConReembolso: 2,
+    });
+    expect(reporte.filas.find((f) => f.vendedorId === "hito36")).toMatchObject({
+      montoVendido: 15000,
+      totalComisionado: 1500,
+      ventasConfirmadas: 1,
+      ventasConReembolso: 1,
+    });
+    expect(reporte.totalMontoVendido).toBe(31200);
+    expect(reporte.totalComisionado).toBe(3120);
+  });
+
+  it("ordena por comisión neta, no bruta (U6)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({
+          ventaId: "a-1",
+          vendedorId: "vend-a",
+          vendedorNombre: "A",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 100,
+          comisionMonto: 10,
+        }),
+        comision({
+          ventaId: "a-2",
+          vendedorId: "vend-a",
+          vendedorNombre: "A",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 400,
+          comisionMonto: 40,
+        }),
+        comision({
+          ventaId: "b-1",
+          vendedorId: "vend-b",
+          vendedorNombre: "B",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 200,
+          comisionMonto: 20,
+        }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas.map((f) => f.vendedorId)).toEqual(["vend-b", "vend-a"]);
+  });
+
+  it("totalMontoVendido es 0 en un periodo vacío (U7)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2020-01",
+      comisiones: [comision({ periodo: "2024-02" })],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.totalMontoVendido).toBe(0);
+  });
 });
 
 describe("formatearReporteMensual", () => {
