@@ -180,13 +180,26 @@
  * every keystroke, which is both more code and a different (unrequested)
  * UX.
  *
- * `submitDraft` always appends the sent prompt to `promptHistoryRef` and
- * resets `historyIndexRef` to `null` — sending a prompt (whether freshly
- * typed or recalled from history) always returns the user to the present,
- * and the just-sent prompt becomes the newest entry for the next
- * arrow-up, same as `bash`. No deduplication against the previous entry:
- * out of scope for this hito, same reasoning as the rest of this module's
- * deliberately-simple choices.
+ * `submitDraft` appends the sent prompt to `promptHistoryRef` except lines
+ * with a secret (ADR 300 — `enmascarar-password-en-tui`; see the "Secret
+ * masking" note below), and always resets `historyIndexRef` to `null` —
+ * sending a prompt (whether freshly typed or recalled from history) always
+ * returns the user to the present, and (when it was not a secret) the
+ * just-sent prompt becomes the newest entry for the next arrow-up, same as
+ * `bash`. No deduplication against the previous entry: out of scope for this
+ * hito, same reasoning as the rest of this module's deliberately-simple
+ * choices.
+ *
+ * Secret masking (ADR 300 — `enmascarar-password-en-tui`): `submitDraft`
+ * computes `enmascararSecreto(prompt)` once, over the already-trimmed
+ * `prompt` (not the raw `draftRef` value), and stores that masked string as
+ * the `TurnRecord.prompt` the pending/settled turn renders — the real text
+ * never enters `history` state. `promptHistoryRef` (arrow-up/down) also
+ * never receives a line carrying a secret, guarded by `contieneSecreto`,
+ * so a recalled draft can never resurface a password either. `onSubmit`
+ * still receives the real, unmasked `prompt` — masking only ever affects
+ * what gets rendered or replayed via history, never what the command
+ * dispatcher (`build-on-comando-empleado.ts`) actually sees.
  *
  * The `key.upArrow`/`key.downArrow` branches only fire when none of
  * `key.ctrl`/`key.meta`/`key.shift` is set — a modified arrow (Ctrl+Up,
@@ -207,6 +220,14 @@ import { Box, Static, Text, useInput, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import { useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
+// First import from `src/core/` into `src/adapters/tui/` (ADR 300 —
+// `enmascarar-password-en-tui`). The direction is allowed: `core` never
+// imports back from any adapter (design.md H5). `enmascararSecreto` is a
+// pure function with no I/O — importing it does not pull in anything the
+// dispatcher (`build-on-comando-empleado.ts`) itself needs, and it keeps
+// this adapter from maintaining its own, separately-maintained list of
+// which commands carry a secret.
+import { contieneSecreto, enmascararSecreto } from "../../core/commands/comando-empleado.js";
 import { Banner, BANNER_LINE_COUNT } from "./Banner.js";
 import type { SubmitPromptHandler, TuiTurnResult } from "./tui-port.js";
 
@@ -281,6 +302,10 @@ type TurnStatus = "pending" | "done" | "error";
 
 interface TurnRecord {
   readonly id: number;
+  // Already masked (ADR 300 — `enmascarar-password-en-tui`) by `submitDraft`
+  // at creation time via `enmascararSecreto`, never the real typed text —
+  // see the module doc's "Secret masking" note above. `onSubmit` is the only
+  // place downstream of `submitDraft` that ever sees the real prompt.
   readonly prompt: string;
   // Fixed once, by `submitDraft`, at the moment this record is created — not
   // recomputed on later renders (e.g. once the turn settles and moves into
@@ -399,10 +424,17 @@ export function AgentResponse({
 // the terminal's height two rows sooner than before. Out of scope to close
 // here — same as the prior note — just worth naming precisely, since this
 // component is what actually shrank that margin.
+//
+// Secret masking (ADR 300): draws `enmascararSecreto(draft)`, not `draft`
+// itself. The `draft` prop stays the REAL text end to end — this component
+// never receives, holds, or forwards an already-masked value; masking is
+// applied here, at the single point where the draft is actually drawn, so
+// every render of the input line is covered by construction, including any
+// future caller that forgets it exists (fail closed, design.md §4 point 1).
 export function PromptInput({ draft }: { readonly draft: string }): ReactElement {
   return (
     <Box borderStyle="single" borderColor="blue" width="100%">
-      <Text>{`> ${draft}`}</Text>
+      <Text>{`> ${enmascararSecreto(draft)}`}</Text>
     </Box>
   );
 }
@@ -582,8 +614,12 @@ export function App({ onSubmit, now = () => new Date() }: AppProps): ReactElemen
     }
 
     // Sending always returns to the present — see the module doc's
-    // "Command history navigation" note.
-    promptHistoryRef.current.push(prompt);
+    // "Command history navigation" note. A line carrying a secret never
+    // joins `promptHistoryRef` (ADR 300 — module doc's "Secret masking"
+    // note), but `historyIndexRef` is still reset to `null` unconditionally.
+    if (!contieneSecreto(prompt)) {
+      promptHistoryRef.current.push(prompt);
+    }
     historyIndexRef.current = null;
 
     const id = nextTurnId.current;
@@ -592,8 +628,11 @@ export function App({ onSubmit, now = () => new Date() }: AppProps): ReactElemen
     // this must not be recomputed on a later render (e.g. once the turn
     // settles).
     const timestamp = formatTimestamp(now());
+    // Masked once, here, at creation — see `TurnRecord.prompt`'s own comment
+    // (ADR 300) for why. `onSubmit` below still receives the real `prompt`.
+    const visible = enmascararSecreto(prompt);
 
-    setHistory((previous) => [...previous, { id, prompt, status: "pending", timestamp }]);
+    setHistory((previous) => [...previous, { id, prompt: visible, status: "pending", timestamp }]);
     draftRef.current = "";
     setDraft("");
     pendingRef.current = true;
