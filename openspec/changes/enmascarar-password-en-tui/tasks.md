@@ -3,6 +3,8 @@
 > **Formato de commit**: `<tipo>(<scope>): <descripcion> (Hito vX.Y, tarea N)`. Scopes: `core` (helper), `adapters/tui` (App), `root` (evidencia y docs), `spec` (deltas). `N` es el id jerárquico. Ningún agente crea la rama, commitea, pushea ni tagea (AGENTS.md).
 >
 > **Por qué `vX.Y` queda sin resolver**: **no es un hito del Plan** y `v3.20` ya lo reserva `respaldo-y-durabilidad-sqlite` (`proposal.md:5`). El número lo fija el checkpoint (recomendado: el próximo minor libre al mergear, `v3.21` **sólo si** respaldo conserva `v3.20`). Rama prevista: `hito/vX.Y-enmascarar-password-en-tui` (`vX.Y` a definir en el checkpoint), creada por el humano **después** del checkpoint. Se reemplaza el placeholder en los commits, en la rama y en `docs/progreso/vX.Y-enmascarar-password-en-tui/`.
+>
+> **Resuelto en el checkpoint humano (ratificado 2026-09-24, tras el REJECT de `verify-report.md`)**: el número es **`v3.20`** (rama `hito/v3.20-enmascarar-password-en-tui`, tag `v3.20.0`, `docs/progreso/v3.20-enmascarar-password-en-tui/`). La reserva de respaldo era **tentativa, no fijada** (`respaldo-y-durabilidad-sqlite/proposal.md:5`), ese change nunca se commiteó ni tiene rama ni tag, y el último tag es `v3.19.0`: `v3.20` es el próximo minor libre. `respaldo-y-durabilidad-sqlite` pasa a `v3.21` tentativo (nota en su `proposal.md`); su renumeración completa la hace su propio Spec Author en su checkpoint.
 
 # Tasks: `enmascarar-password-en-tui` — la clave de `/login` y `/crear-empleado` deja de verse en la TUI
 
