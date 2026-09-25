@@ -227,16 +227,24 @@ const REEMBOLSO_WIDTH = 13;
 const SEPARADOR_WIDTH = NOMBRE_WIDTH + 1 + VENTAS_WIDTH + 1 + MONTO_WIDTH + 1 + COMISION_WIDTH + 1 + REEMBOLSO_WIDTH;
 
 /**
- * Actualizada por `tui-canal-empleado` (ADR 26, enmiendas rev. 2 y 3): ya
- * NO es cierto que no exista una vía de producto para estas escalaciones
- * (`/aprobar-reembolso`/`/rechazar-reembolso`/`/reabrir-reembolso` desde la
- * TUI, ADR 21), ni que el rechazo sea irreversible (ADR 29 lo hizo
- * reabrible). Lo que sigue siendo cierto, y esta nota lo dice, es la
- * salvedad del canal: es una TUI LOCAL con login por empleado, no un portal
- * autenticado — la contraseña se verifica localmente contra la misma base
- * que este proceso escribe (R16). Lo que esta nota NO menciona, a
- * propósito: la tabla de auditoría (`registro_acciones_empleado`, que este
- * reporte no lee) y cualquier noción de roles o permisos (que no existen).
+ * Enmendada por el ADR 302 (`reembolso-resta-monto-vendido-en-reporte`), que
+ * corrige el ADR 26 de `tui-canal-empleado` rev. 3: los tres comandos que
+ * nombraba (`/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`)
+ * se dieron de baja en v3.10.0 (ADR 210 pto 1). La resolución es
+ * conversacional (ADR 206, ADR 210 pto 1) en dos canales — el texto libre de
+ * la TUI local de empleados (ADR 297-299) y el chat web —, ambos sobre el
+ * mismo flujo `onOperacionesEmpleado`. Lo que sigue siendo cierto, y esta
+ * nota lo dice, es la salvedad del canal: es una TUI LOCAL con login por
+ * empleado, no un portal autenticado — la contraseña se verifica localmente
+ * contra la misma base que este proceso escribe (R16). Lo que esta nota NO
+ * menciona, a propósito: la tabla de auditoría (`registro_acciones_empleado`,
+ * que este reporte no lee) y cualquier noción de roles o permisos — no
+ * porque no existan (`autorizacion-empleado` los introdujo), sino porque la
+ * nota no duplica la política de autorización, que vive en
+ * `ejecutar-operacion.ts` y puede cambiar sin tocar este reporte (ADR 302,
+ * decisión A2). **Regla del ADR 302**: quien baja un comando o cambia un
+ * canal de resolución revisa esta nota en el mismo change (la guarda A3 de
+ * `reporte.test.ts` automatiza la mitad — los comandos — no los canales).
  */
 const NOTA_ESCALACION_FUERA_DE_BANDA =
   "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
@@ -328,11 +336,12 @@ function formatearSeccionReembolsos(reembolsosPendientes: readonly VentaPendient
  *  1. Encabezado con el `periodo`.
  *  2. Tabla comparativa por vendedor, o "sin comisiones en el periodo" si
  *     `filas` está vacío.
- *  3. Reembolsos pendientes de aprobación — con la nota literal de que este
- *     hito no expone camino de producto para cerrarlos (ADR 11 punto 5, R3):
- *     el reporte SOLO lista, no ofrece ninguna acción de aprobación/rechazo.
- *     Esta sección aparece SIEMPRE, incluso sin comisiones en el periodo,
- *     porque `reembolsosPendientes` no depende del `periodo` (§3.5).
+ *  3. Reembolsos pendientes de aprobación — con la nota de que se resuelven
+ *     por conversación con el asistente (ADR 302, enmienda al ADR 26): el
+ *     reporte en sí SOLO lista, no ofrece ninguna acción de aprobación/
+ *     rechazo/reapertura (ADR 11 punto 5, R3). Esta sección aparece SIEMPRE,
+ *     incluso sin comisiones en el periodo, porque `reembolsosPendientes`
+ *     no depende del `periodo` (§3.5).
  */
 export function formatearReporteMensual(reporte: ReporteMensual): string {
   return [
