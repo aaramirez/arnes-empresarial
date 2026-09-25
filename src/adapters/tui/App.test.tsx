@@ -1172,4 +1172,73 @@ describe("App", () => {
       }
     });
   });
+
+  /**
+   * ADR 300 (`enmascarar-password-en-tui`) — the TUI masks the typed value
+   * of `secreto: true` commands (today `/login` and `/crear-empleado`)
+   * instead of showing it in the clear. This `describe` is task 2.1
+   * (`sdd-apply`, Phase 2) — RED, written before `PromptInput` calls
+   * `enmascararSecreto` (task 2.2). Per `tasks.md`'s Inconsistencia I2, T1
+   * and T4 assert ONLY on the prompt line's own text (`inputLineText`, the
+   * `"> …"` content), not on the whole rendered frame — the frame also
+   * carries the banner and any settled turns, which are out of scope here.
+   */
+  describe("secret masking (ADR 300)", () => {
+    it("PromptInput draws the draft already masked when it carries a secreto command's password (T8)", () => {
+      const element = PromptInput({ draft: "/login ana pw" });
+
+      expect(element.props.children.props.children).toBe("> /login ana **");
+    });
+
+    it("masks the password on every frame while /login is typed character by character, never leaking a prefix of it (T1)", async () => {
+      const onSubmit = vi.fn();
+      const instance = await renderApp(<App onSubmit={onSubmit} />);
+      const { stdin, lastFrame } = instance;
+
+      for (const char of "/login ana secreto") {
+        stdin.write(char);
+      }
+
+      expect(inputLineText(lastFrame() ?? "")).toBe("> /login ana *******");
+
+      // No frame accumulated along the way ever shows a character of the
+      // password itself once the command + id + separator ("/login ana ")
+      // have been typed — only `*` may follow that prefix on the prompt
+      // line (I2: scoped to the prompt line, not the whole frame).
+      const prefix = "> /login ana ";
+      for (const frame of instance.frames) {
+        const line = inputLineText(frame);
+        if (line.startsWith(prefix)) {
+          expect(line.slice(prefix.length)).toMatch(/^\*+$/);
+        }
+      }
+    });
+
+    it("keeps the length feedback after backspace and still submits the real, unmasked password (T4)", async () => {
+      const onSubmit = vi.fn().mockResolvedValue({ responseText: "ok", agentLabel: "Agente" });
+      const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+      for (const char of "/login ana secreto") {
+        stdin.write(char);
+      }
+      stdin.write(BACKSPACE);
+
+      expect(inputLineText(lastFrame() ?? "")).toBe("> /login ana ******");
+
+      stdin.write(ENTER);
+
+      expect(onSubmit).toHaveBeenCalledWith("/login ana secret", expect.any(Function));
+    });
+
+    it("does not mask a mistyped command name — accepted residual (R2, T7, born green)", async () => {
+      const onSubmit = vi.fn();
+      const { stdin, lastFrame } = await renderApp(<App onSubmit={onSubmit} />);
+
+      for (const char of "/logni ana secreto") {
+        stdin.write(char);
+      }
+
+      expect(inputLineText(lastFrame() ?? "")).toBe("> /logni ana secreto");
+    });
+  });
 });
