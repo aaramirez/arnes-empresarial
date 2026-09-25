@@ -37,12 +37,12 @@
 
 ### Requirement: La contraseña tipeada no aparece en ningún frame de la TUI
 
-Para todo texto que la función de enmascarado de `comando-empleado-tui` transforme (`/login` y `/crear-empleado` con clave), la TUI SHALL: (1) dibujar en el borrador la versión enmascarada mientras se tipea, sin alterar el borrador real; (2) entregar a `onSubmit` el texto REAL, sin enmascarar; (3) guardar `TurnRecord.prompt` YA enmascarado al crearlo, de modo que el eco del turno pendiente y el de `<Static>` nunca muestren la clave; (4) NO guardar esa línea en el historial de flechas ↑/↓ (mínimo privilegio, D4 recomendada); (5) mostrar tantos `*` como caracteres tiene la clave real tras cada tecla, incluido backspace (D3 recomendada). Los demás prompts SHALL comportarse exactamente como hoy. El alcance es sólo la TUI.
+Para todo texto que tenga tramo secreto no vacío (`contieneSecreto`) (`/login` y `/crear-empleado` con clave), la TUI SHALL: (1) dibujar en el borrador la versión enmascarada mientras se tipea, sin alterar el borrador real; (2) entregar a `onSubmit` el texto REAL, sin enmascarar; (3) guardar `TurnRecord.prompt` YA enmascarado al crearlo, de modo que el eco del turno pendiente y el de `<Static>` nunca muestren la clave; (4) NO guardar esa línea en el historial de flechas ↑/↓ (mínimo privilegio, D4 recomendada), condicionado a `contieneSecreto`; (5) mostrar tantos `*` como caracteres tiene la clave real tras cada tecla, incluido backspace (D3 recomendada). Los demás prompts SHALL comportarse exactamente como hoy. El alcance es sólo la TUI.
 
 #### Scenario: Borrador enmascarado mientras se tipea
 - GIVEN una TUI con el prompt vacío
 - WHEN se tipea `/login ana secreto` tecla a tecla
-- THEN el último frame muestra `> /login ana *******` y ningún frame intermedio contiene `secreto` ni un prefijo suyo
+- THEN el último frame muestra `> /login ana *******` y en ningún frame intermedio la línea del prompt (`> …`) contiene `secreto` ni un prefijo suyo
 
 #### Scenario: `onSubmit` recibe el texto real y el login funciona
 - GIVEN el borrador `/login ana secreto`
@@ -63,7 +63,14 @@ Para todo texto que la función de enmascarado de `comando-empleado-tui` transfo
 #### Scenario: Las líneas con clave no entran al historial de flechas
 - GIVEN el envío previo de `hola` y luego de `/login ana secreto`
 - WHEN se presiona ↑ con el prompt vacío
-- THEN se recupera `hola` y en ningún momento se muestra `/login ana secreto` ni su versión enmascarada
+- THEN se recupera `hola` y en ningún momento la línea del prompt (`> …`) muestra `/login ana secreto` ni su versión enmascarada
+- AND el eco `Vos: /login ana *******` en `<Static>` es esperado y no cuenta como incumplimiento (queda fuera de este scenario)
+
+#### Scenario: Clave hecha sólo de asteriscos igual queda fuera del historial
+- GIVEN el envío de `/login ana ***`
+- WHEN se evalúa `contieneSecreto("/login ana ***")`
+- THEN el resultado es `true` porque el tramo tiene longitud no vacía, aunque el enmascarado no cambie visualmente esa línea
+- AND al presionar ↑ con el prompt vacío, `/login ana ***` NO se recupera
 
 #### Scenario: Texto libre y comandos sin secreto no cambian
 - GIVEN los envíos `hola`, `/estado-bot-prs` y `/login ana` (sin clave todavía)

@@ -62,9 +62,11 @@ No se resolvieron aquí. La tarea 0.1 queda **condicionada** a la decisión.
 
 ## Phase 0: Alinear spec con design (condicionada a I1/I2)
 
-- [ ] **0.1** *Sólo si el checkpoint mantiene `contieneSecreto`.* Editar `specs/autenticacion-empleado-tui/spec.md`: (a) en el requirement *"La contraseña tipeada no aparece en ningún frame de la TUI"*, cambiar *"que la función de enmascarado … transforme"* por *"que tenga tramo secreto no vacío (`contieneSecreto`)"*; (b) acotar los scenarios de borrador e historial a **la línea del prompt**; (c) agregar un scenario para `/login ana ***`. Si el checkpoint elige el predicado `!==`, se invierte: se ajusta el design (§3.1, §4 #3) y U6/T5.
+- [x] **0.1** *Sólo si el checkpoint mantiene `contieneSecreto`.* Editar `specs/autenticacion-empleado-tui/spec.md`: (a) en el requirement *"La contraseña tipeada no aparece en ningún frame de la TUI"*, cambiar *"que la función de enmascarado … transforme"* por *"que tenga tramo secreto no vacío (`contieneSecreto`)"*; (b) acotar los scenarios de borrador e historial a **la línea del prompt**; (c) agregar un scenario para `/login ana ***`. Si el checkpoint elige el predicado `!==`, se invierte: se ajusta el design (§3.1, §4 #3) y U6/T5.
 *Aceptación*: `rg "transforme" openspec/changes/enmascarar-password-en-tui/specs` sin coincidencias; `git diff` sólo toca ese archivo.
 Commit: `docs(spec): alinea el requirement de historial con contieneSecreto y acota los frames a la linea del prompt (Hito vX.Y, tarea 0.1)`
+
+> **Progreso (Spec Author, tarea 0.1, 2026-09-24)**: checkpoint humano confirmó I1 = `contieneSecreto` (estructural, ya implementado en `App.tsx` commit `bbd6491`). Se editó sólo `specs/autenticacion-empleado-tui/spec.md`: (a) requirement reescrito con "que tenga tramo secreto no vacío (`contieneSecreto`)"; (b) scenarios "Borrador enmascarado mientras se tipea" y "Las líneas con clave no entran al historial de flechas" acotados a la línea del prompt (`> …`), aclarando que el eco `Vos: /login ana *******` en `<Static>` queda fuera y no cuenta (I2); (c) nuevo scenario "Clave hecha sólo de asteriscos igual queda fuera del historial" para `/login ana ***`. `rg "transforme" openspec/changes/enmascarar-password-en-tui/specs` sin coincidencias; `git diff --stat` sólo toca este archivo (más este registro en `tasks.md`).
 
 ---
 
