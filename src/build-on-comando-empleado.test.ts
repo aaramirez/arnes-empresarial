@@ -84,6 +84,7 @@ import {
   createVentaConCaso,
   confirmarVentaConComision,
   escalarReembolso,
+  aprobarReembolso,
   listComisionesPorPeriodo,
   listVentasEnReembolsoPendiente,
   insertSolicitudA2AEntrante,
@@ -1667,6 +1668,61 @@ describe("buildOnComandoEmpleado — /reporte-comisiones (comando-reporte-comisi
       const salidaB = formatearReporteMensual(reporte);
 
       expect(salidaA).toBe(salidaB);
+    } finally {
+      db.close();
+    }
+  });
+
+  // ADR 301 — un reembolso aprobado por el camino REAL (`aprobarReembolso`)
+  // resta del reporte sin alterar la tabla `comisiones` (C2).
+  it("un reembolso aprobado resta del reporte neto sin tocar la tabla comisiones (ADR 301, C2)", async () => {
+    const db = openDatabase(":memory:");
+    try {
+      seedComisionConfirmada(db, {
+        ventaId: "venta-c2-1",
+        vendedorId: "vend-c2-1",
+        vendedorNombre: "Ana C2",
+        clienteId: "cliente-c2-1",
+        monto: 1000,
+        comisionMonto: 100,
+        periodo: "2026-08",
+        casoId: "caso-c2-1",
+      });
+      seedComisionConfirmada(db, {
+        ventaId: "venta-c2-2",
+        vendedorId: "vend-c2-2",
+        vendedorNombre: "Beto C2",
+        clienteId: "cliente-c2-2",
+        monto: 500,
+        comisionMonto: 50,
+        periodo: "2026-08",
+        casoId: "caso-c2-2",
+      });
+
+      const antes = db
+        .prepare("SELECT monto FROM comisiones WHERE id = ?")
+        .get("comision-venta-c2-1") as { monto: number } | undefined;
+      const conteoAntes = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+
+      aprobarReembolso(db, { ventaId: "venta-c2-1", ahora: TIMESTAMP });
+
+      const reloj: Reloj = { ahora: TIMESTAMP };
+      const deps = makeKpiDeps(db, reloj, {});
+      const handler = buildOnComandoEmpleado(deps);
+      await login(handler);
+
+      const resultado = await handler("/reporte-comisiones 2026-08");
+
+      expect(resultado.responseText).toContain("TOTAL                                  500.00             50.00");
+      expect(resultado.responseText).toContain("Nota: monto y comisión netos de reembolsos aplicados");
+
+      const despues = db
+        .prepare("SELECT monto FROM comisiones WHERE id = ?")
+        .get("comision-venta-c2-1") as { monto: number } | undefined;
+      const conteoDespues = db.prepare("SELECT count(*) as total FROM comisiones").get() as { total: number };
+
+      expect(despues?.monto).toBe(antes?.monto);
+      expect(conteoDespues.total).toBe(conteoAntes.total);
     } finally {
       db.close();
     }
