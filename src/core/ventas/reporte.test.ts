@@ -16,6 +16,10 @@ import {
 // de `reporte-mensual.ts` — este import existe únicamente para el test de
 // equivalencia (R6) de más abajo.
 import { parsePeriodo } from "../../reporte-mensual.js";
+// Import SOLO de test (ADR 302, guarda A3): `reporte.ts` nunca importa de
+// `core/commands` — este import existe únicamente para que la nota de
+// escalaciones no derive hacia un comando dado de baja.
+import { COMANDOS } from "../commands/comando-empleado.js";
 
 function comision(overrides: Partial<ComisionConVenta> = {}): ComisionConVenta {
   return {
@@ -482,7 +486,7 @@ describe("formatearReporteMensual", () => {
         "",
         "Reembolsos pendientes de aprobación",
         "",
-        "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
+        "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
         "",
         "- venta venta-11 | vendedor Juan Perez | cliente cliente-11 | monto 1000.00 | caso caso-11 | confirmada 2024-02-10T10:00:00.000Z",
       ].join("\n"),
@@ -554,7 +558,7 @@ describe("formatearReporteMensual", () => {
         "",
         "Reembolsos pendientes de aprobación",
         "",
-        "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
+        "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
         "",
         "(sin reembolsos pendientes)",
       ].join("\n"),
@@ -574,7 +578,7 @@ describe("formatearReporteMensual", () => {
     expect(texto).toContain("venta venta-9");
   });
 
-  it("la nota nueva (ADR 26, enmienda rev. 3) menciona los tres comandos de resolucion y la TUI local, sin las frases prohibidas", () => {
+  it("la nota (ADR 26, enmendado por ADR 302) apunta a la resolución conversacional, sin comandos retirados ni frases prohibidas", () => {
     const reporte = agruparReporteMensual({
       periodo: "2020-01",
       comisiones: [],
@@ -583,10 +587,14 @@ describe("formatearReporteMensual", () => {
 
     const texto = formatearReporteMensual(reporte);
 
-    // Menciona qué comando cierra estas escalaciones (ya no hay que resolverlas "fuera de banda").
-    expect(texto).toContain("/aprobar-reembolso");
-    expect(texto).toContain("/rechazar-reembolso");
-    expect(texto).toContain("/reabrir-reembolso");
+    // Los tres comandos se dieron de baja en v3.10.0 (ADR 210 pto 1): la nota ya no los nombra.
+    expect(texto).not.toMatch(/\/(aprobar|rechazar|reabrir)-reembolso/);
+    // Apunta a la resolución conversacional, en los dos canales (ADR 302).
+    expect(texto).toContain("por conversación");
+    expect(texto).toContain("chat web");
+    expect(texto).toContain("aprobar, rechazar o reabrir");
+    expect(texto).toContain("turno aparte");
+    expect(texto).toContain("misma base de datos");
     // Salvedad del canal: TUI local con login por empleado (no un portal autenticado).
     expect(texto).toContain("TUI local");
     expect(texto).toContain("/login");
@@ -597,6 +605,23 @@ describe("formatearReporteMensual", () => {
     expect(texto).not.toMatch(/configuraci[oó]n/i);
     expect(texto).not.toMatch(/registro_acciones_empleado|auditor[ií]a/i);
     expect(texto).not.toMatch(/\brol(es)?\b|permisos?/i);
+  });
+
+  it("la nota no menciona ningún comando dado de baja: todo token /comando existe en COMANDOS (guarda A3)", () => {
+    const reporteConPendiente = agruparReporteMensual({
+      periodo: "2020-01",
+      comisiones: [],
+      reembolsosPendientes: [pendiente()],
+    });
+    const reporteVacio = agruparReporteMensual({ periodo: "2020-01", comisiones: [], reembolsosPendientes: [] });
+    const nombresValidos = new Set(COMANDOS.map((c) => c.nombre));
+
+    for (const texto of [formatearReporteMensual(reporteConPendiente), formatearReporteMensual(reporteVacio)]) {
+      const tokens = texto.match(/(?<![\w/])\/[a-z][a-z-]*/g) ?? [];
+      for (const token of tokens) {
+        expect(nombresValidos.has(token)).toBe(true);
+      }
+    }
   });
 });
 
