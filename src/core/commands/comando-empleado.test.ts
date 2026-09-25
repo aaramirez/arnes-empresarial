@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { COMANDOS, esComandoPrivilegiado, formatearAyuda, parsearComando, requiereAdministrador } from "./comando-empleado.js";
+import { contieneSecreto, enmascararSecreto } from "./comando-empleado.js";
 
 /**
  * Spec `comando-empleado-tui`, requirements "Texto sin prefijo `/` se
@@ -704,5 +705,56 @@ describe("comando-empleado.ts source", () => {
     const source = readFileSync(sourcePath, "utf-8");
 
     expect(source).not.toMatch(/\bDate\b/);
+  });
+});
+
+/**
+ * `enmascar-password-en-tui` (ADR 300, RD-172), spec `comando-empleado-tui`,
+ * requirement "El enmascarado de secretos es una función pura derivada del
+ * parser y del flag `secreto`". Las dos funciones son PURAS y viven junto al
+ * parser: la TUI las consume, no mantiene ninguna lista propia de comandos.
+ */
+describe("enmascararSecreto y contieneSecreto (ADR 300, spec comando-empleado-tui)", () => {
+  // U1 — scenarios literales del spec: [entrada, salida esperada].
+  const CON_SECRETO: readonly (readonly [string, string])[] = [
+    ["/login ana s3cret", "/login ana ******"],
+    ["/login ana s3cr et", "/login ana *******"],
+    ["/crear-empleado bob abc", "/crear-empleado bob ***"],
+    ["  /login  ana  pw", "  /login  ana ***"],
+  ];
+  // U2 — todavía no hay clave (tramo secreto vacío) o el comando no es secreto: texto intacto.
+  const SIN_CLAVE_TODAVIA = ["/login", "/login ana", "/login ana ", "/crear-empleado bob", "/crear-empleado bob "];
+  const NO_SECRETOS = ["/estado-bot-prs", "/soporte ayuda con mi clave", "hola /login x y", ""];
+  const INTACTOS = [...SIN_CLAVE_TODAVIA, ...NO_SECRETOS];
+  // U3 — residual R2 fijado: mismo match EXACTO y separador U+0020 que `parsearComando`.
+  const TYPOS = ["/logni ana secreto", "/Login ana secreto", "/login\tana secreto"];
+
+  it.each(CON_SECRETO)("U1: enmascara todo lo posterior al id, espacios internos y de cola incluidos (%j → %j)", (entrada, esperado) => {
+    expect(enmascararSecreto(entrada)).toBe(esperado);
+  });
+
+  it.each(INTACTOS)("U2: sin clave todavía o sin comando secreto, el texto queda intacto (%j)", (texto) => {
+    expect(enmascararSecreto(texto)).toBe(texto);
+  });
+
+  it.each(TYPOS)("U3: un typo, las mayúsculas o un tab como separador NO se enmascaran (residual R2, %j)", (texto) => {
+    expect(enmascararSecreto(texto)).toBe(texto);
+  });
+
+  it.each([...CON_SECRETO.map(([entrada]) => entrada), "/login ana ***"])(
+    "U6: contieneSecreto es true si hay un tramo secreto no vacío (%j)",
+    (texto) => {
+      expect(contieneSecreto(texto)).toBe(true);
+    },
+  );
+
+  it.each([...INTACTOS, ...TYPOS])("U6: contieneSecreto es false sin tramo secreto (%j)", (texto) => {
+    expect(contieneSecreto(texto)).toBe(false);
+  });
+
+  it("U6: una clave hecha sólo de '*' deja el texto intacto y aun así cuenta como secreto (por eso el predicado es estructural, no `!==`)", () => {
+    const texto = "/login ana ***";
+    expect(enmascararSecreto(texto)).toBe(texto);
+    expect(contieneSecreto(texto)).toBe(true);
   });
 });
