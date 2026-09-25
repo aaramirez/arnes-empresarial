@@ -627,6 +627,47 @@ Hasta v3.11 la única credencial que autorizaba una devolución era el `token_co
 
 **Addendum v3.16 (`consulta-kpi-a2a-chat`)**: la herramienta `operaciones` llega a **trece** operaciones — la nueva es `consultar_kpi { consultaId }`, que despacha por el camino A2A saliente del núcleo una consulta de KPI (clave de un catálogo cerrado) al destino `kpi-incidente`. Es la **única operación con efecto fuera del arnés** (manda contexto de la empresa a un tercero) y por eso exige rol `administrador`. Los conteos de "diez", "once" y "doce" de esta sección describen el estado de v3.12, v3.14 y v3.15; el estado vigente desde `v3.16.0` es trece.
 
+## Concepto 12: Enmascarado de la clave en la TUI (v3.20, `enmascarar-password-en-tui`)
+
+Desde v3.7 (Concepto 8, ADR 174) la TUI puede crear credenciales, y con eso la clave de otra persona quedaba visible en el transcripto (Riesgo 5, R1). `enmascarar-password-en-tui` cumple la condición de disparo que ese riesgo dejó escrita: la clave de `/login` y `/crear-empleado` deja de verse en el borrador, en el eco del turno y en el historial de flechas, sin cambiar lo que recibe el dispatcher.
+
+### ADR 300: La TUI enmascara el secreto de los comandos `secreto: true`
+
+**Reemplaza a**: el **pto 4 del ADR 21 (tui-canal-empleado)**, *sólo* en lo que respecta a `App.tsx` (*"Cero cambios en `tui-port.ts`, `App.tsx` y `start-tui.tsx`"*, `tui-canal-empleado/proposal.md:107`), y a la **opción (a) de RD-81 (comandos-administracion-empleados)** (contraseña de alta visible en el transcripto). El resto del ADR 21 (dispatcher por prefijo, parser puro en `src/core/commands/`, contrato I1 intacto) **sigue vigente**.
+
+**Contexto**: El ADR 21 dejó a `App.tsx` intocable. La consecuencia fue R14 (la clave de `/login` visible en el transcripto propio) y, desde v3.7, el Riesgo 5 (R1) del arc42: la clave de **otra** persona visible tras `/crear-empleado`, aceptada con rotación obligatoria por CLI. Ambos documentos dejaron escrita la condición de disparo, *"que exista enmascarado de entrada en la TUI"* (arc42, `tui-canal-empleado/proposal.md:63`). Este change la cumple.
+
+**Decisión**:
+
+1. `App.tsx` puede cambiar para enmascarar. `tui-port.ts` y `start-tui.tsx` **no** cambian.
+2. Qué se enmascara lo decide una función pura del núcleo, `enmascararSecreto`. Se deriva del flag `secreto` de `DESCRIPTORES` y de la misma normalización que `parsearComando`. La TUI no mantiene ninguna lista propia de comandos: un comando nuevo con `secreto: true` queda cubierto sin tocar la TUI (**falla cerrado**).
+3. **Forma**: se conserva el texto hasta el espacio separador posterior al id, inclusive. Cada unidad posterior, incluidos los espacios internos y de cola, pasa a `*`. Ejemplo: `/login ana s3cr et` → `/login ana *******`.
+4. **Longitud**: se cuenta en unidades UTF-16 (`String.prototype.length`), la misma unidad que borra backspace.
+5. **Superficies**:
+   - El borrador se dibuja enmascarado.
+   - `TurnRecord.prompt` se guarda ya enmascarado al crearse.
+   - La línea con secreto **no entra** al historial ↑/↓.
+   - `onSubmit` sigue recibiendo el texto real.
+6. **Alcance**: sólo la TUI. El CLI `empleados:crear` queda fuera (R14, ADR 33) y la web ya usa `type="password"`.
+7. El Riesgo 5 (R1) del arc42 se reescribe. Deja de ser *"contraseña visible en el transcripto"* y queda como residual reducido: el administrador conoce la clave inicial (R9), un comando mal tipeado no se enmascara (R2) y existe el eco durante un turno pendiente (R10). La rotación por CLI pasa de **obligatoria** a **recomendada**.
+
+| Opción | Tradeoff | Veredicto |
+|---|---|---|
+| **Máscara en el núcleo, derivada de `secreto`, aplicada por `App.tsx`** | Primer import `core` → `adapters/tui` (permitido) | ★ **Elegida** |
+| Mantener el ADR 21 (no enmascarar) | La condición de disparo escrita ya se cumplió | Rechazada |
+| Lista fija de comandos en el adapter | Se desalinea del parser en silencio (R1) | Rechazada |
+| Inyectar la función por props desde `main.ts` | Si se olvida el cableado, **falla abierto**: sin error y con la clave visible | Rechazada |
+| Prompt de contraseña en dos pasos (`/login ana` y después una entrada oculta, estilo `sudo`) | No filtra ni la longitud, pero agrega un modo con estado a `App.tsx` y un protocolo nuevo sobre I1 | Rechazada: es mucho más grande que el problema |
+
+**Consecuencias**:
+
+- `src/adapters/tui/App.tsx` importa de `src/core/` por primera vez. La dirección está permitida; `core` → `adapters` sigue prohibido.
+- Se reescribe el Riesgo 5 (R1) del arc42 y se agrega una nota de reemplazo en `comandos-administracion-empleados/design.md:256`.
+- Residuales declarados: R2, R7, R9 y R10.
+- **Reversible**: revertir los commits devuelve exactamente el comportamiento previo. No hay migraciones.
+
+**Deuda declarada por este change**: ninguna nueva — los residuales R2, R9 y R10 quedan declarados en el Riesgo 5 (R1), más abajo; R7 (eco del CLI) sigue fuera de alcance.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
@@ -789,15 +830,21 @@ Mitigación en este change: `POST /logout` (ADR 195/202) limpia sesión, convers
 
 Cierre: no aplica en este change — queda **declarada, no arrastrada en silencio**. Condición de disparo: un change propio que agregue evicción periódica (timer o barrido en el acceso) a los `Map`s de proceso del adaptador web, y una revisión del crecimiento sin límite de `casos`/`sesiones_agente`.
 
-**Riesgo 5 (R1): `/crear-empleado` deja la contraseña de OTRA persona visible en el transcripto de la TUI — ACEPTADA por checkpoint, con procedimiento de mitigación obligatorio (v3.7, `comandos-administracion-empleados`)**
+**Riesgo 5 (R1): `/crear-empleado` deja a la vista quién conoce la contraseña inicial de OTRA persona — ACEPTADA por checkpoint, con rotación recomendada (v3.7 `comandos-administracion-empleados` → cerrada parcialmente en v3.20 por ADR 300)**
 
-Descripción: `/crear-empleado <empleadoId> <password>` tipea la contraseña como argumento de la línea de comandos de la TUI, sin enmascarar (`tui-port.ts`/`App.tsx`/`start-tui.tsx` no se tocan, ADR 21 de `tui-canal-empleado` sin modificar). El residual que `tui-canal-empleado` ya había aceptado para `/login` (**R14**: la propia contraseña del empleado, visible en su propio transcripto) se extiende acá a un caso más delicado: la contraseña visible es la de **otra** persona, tipeada por un `administrador`.
+Descripción original (v3.7): `/crear-empleado <empleadoId> <password>` tipeaba la contraseña como argumento de la línea de comandos de la TUI, sin enmascarar (`tui-port.ts`/`App.tsx`/`start-tui.tsx` sin tocar, ADR 21 de `tui-canal-empleado` sin modificar). El residual que `tui-canal-empleado` ya había aceptado para `/login` (**R14**: la propia contraseña del empleado, visible en su propio transcripto) se extendía a un caso más delicado: la contraseña visible era la de **otra** persona, tipeada por un `administrador`.
 
-Lo que NO se relaja pese a este residual (ADR 174 pto 2): la contraseña sigue sin persistirse en claro (mismo hash `scrypt` que el CLI), sigue sin aparecer en ninguna fila de `registro_acciones_empleado`, y sigue sin aparecer en ningún evento de `logTurnEvent` — invariante ya testeado para `/login` (`build-on-comando-empleado.test.ts:524`) y extendido a `/crear-empleado`. El residual se acota a UNA sola superficie: el transcripto de la sesión de TUI de quien ejecuta el comando.
+Cierre parcial (v3.20, ADR 300): la TUI enmascara el borrador, el eco del turno y el historial de flechas de `/login` y `/crear-empleado`. La contraseña **ya no aparece visible en el transcripto**. El residual queda acotado a lo que ADR 300 declara explícitamente:
 
-Mitigación, obligatoria — **procedimiento de rotación por CLI**: inmediatamente después de comunicar la contraseña inicial al empleado nuevo por un canal fuera de banda (no por el mismo transcripto), el `administrador` rota esa contraseña con `npm run empleados:crear -- <empleadoId> --rotar` (contraseña nueva por `stdin`, nunca por `argv` — ADR 33 pto 2). Tras la rotación, la contraseña que quedó visible en el transcripto deja de ser válida.
+1. El `administrador` que tipea `/crear-empleado` sigue conociendo la contraseña inicial de la otra persona (R9) — es inherente a que alguien tenga que comunicarla.
+2. Un comando mal tipeado (`/logni`, `/Login`, un tab como separador) no dispara el enmascarado y deja la clave visible (R2).
+3. Mientras un turno está pendiente ("Pensando..."), el raw mode de la TUI está apagado y la tty puede hacer eco de lo que se tipea (R10, fuera de alcance de este change, verificado a mano).
 
-Condición de disparo para levantar el residual, no para mitigarlo más: que exista enmascarado de entrada en la TUI (RD-81 de `proposal.md`, que reabre ADR 21 de `tui-canal-empleado` — `tui-port.ts`/`App.tsx`/`start-tui.tsx`, explícitamente fuera de alcance de este change).
+Lo que NO se relaja pese a estos residuales (invariante intacto desde ADR 174 pto 2, ahora extendido por ADR 300): la contraseña sigue sin persistirse en claro (mismo hash `scrypt` que el CLI), sigue sin aparecer en ninguna fila de `registro_acciones_empleado`, y sigue sin aparecer en ningún evento de `logTurnEvent` — invariante ya testeado para `/login` (`build-on-comando-empleado.test.ts:524`) y extendido a `/crear-empleado`.
+
+Mitigación — **procedimiento de rotación por CLI, recomendado, ya no obligatorio** (ADR 300 pto 7): porque el `administrador` sigue conociendo la clave inicial (R9) pese al enmascarado, sigue siendo buena práctica que, tras comunicar la contraseña inicial al empleado nuevo por un canal fuera de banda, el `administrador` la rote con `npm run empleados:crear -- <empleadoId> --rotar` (contraseña nueva por `stdin`, nunca por `argv` — ADR 33 pto 2). Ya no es obligatoria porque la condición de disparo que la exigía (contraseña visible en el transcripto) dejó de darse.
+
+Condición de disparo — **cumplida por ADR 300**: la condición que este riesgo dejó escrita en v3.7 (*"que exista enmascarado de entrada en la TUI"*) ya se cumplió. Lo que queda abierto, sin condición de disparo nueva todavía, son los tres residuales enumerados arriba (R9, R2, R10).
 
 **Riesgo 8 (R11): Falso positivo por colisión improbable entre `vendedorId` y `empleadoId` en la prohibición de autoaprobación de reembolso — DECLARADA, residual aceptado, falla cerrado (v3.10, `aprobacion-conversacional-hitl`)**
 
