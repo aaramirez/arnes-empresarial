@@ -668,6 +668,49 @@ Desde v3.7 (Concepto 8, ADR 174) la TUI puede crear credenciales, y con eso la c
 
 **Deuda declarada por este change**: ninguna nueva — los residuales R2, R9 y R10 quedan declarados en el Riesgo 5 (R1), más abajo; R7 (eco del CLI) sigue fuera de alcance.
 
+## Concepto 13: Reporte de comisiones neto de reembolsos aplicados (v3.21, `reembolso-resta-monto-vendido-en-reporte`)
+
+Desde Hito 1.3 el reporte mensual de comisiones sumaba monto y comisión de toda venta del periodo sin importar si terminó reembolsada — la inconsistencia quedaba **visible** (columna "Con reembolso"), no corregida. `reembolso-resta-monto-vendido-en-reporte` resta del reporte lo que corresponde a una venta `reembolsada`, sin tocar la tabla `comisiones`. Una enmienda posterior del mismo change (Fase 5b) corrige además la nota de escalaciones del reporte, que todavía nombraba tres comandos de TUI dados de baja en v3.10.0.
+
+### ADR 301: El reporte mensual de comisiones es neto de reembolsos aplicados
+
+**Reemplaza a**: *R5 (hito-1.3-ventas-comisiones)* — *"un reembolso deja viva la comisión ya pagada"* (`hito-1.3-ventas-comisiones/proposal.md:34,194,232`, `design.md:1944,2082`) — **sólo en lo que respecta al reporte mensual**. En la tabla `comisiones`, R5 **sigue vigente**: el reembolso no la toca (spec `reembolso-evaluacion`, SHALL NOT de `:65`, intacto).
+
+**Contexto**: Hito 1.3 difirió la reversión de la comisión hasta *"decidir el modelo contable"* y, mientras tanto, hizo la inconsistencia **visible** en el reporte (`ventaEstado`, columna "Con reembolso"). El reporte sumaba monto y comisión de toda venta del periodo, reembolsada o no. El usuario pidió que un reembolso aplicado reste el monto vendido; el humano decidió el 2026-09-24 (B1 = (ii)) que reste **monto y comisión**.
+
+**Decisión**:
+
+1. En el reporte mensual (`agruparReporteMensual`), "Monto vendido" y "Total comisionado" son **netos**: suman sólo las ventas cuyo estado actual ≠ `reembolsada`. `reembolso_pendiente` y `reembolso_rechazado` **no restan**.
+2. "Ventas" y "Con reembolso" conservan el conteo **bruto** (`reembolsada` + `reembolso_pendiente`, sin `reembolso_rechazado`). Una leyenda bajo la tabla lo explica.
+3. La fila TOTAL imprime monto neto y comisión neta. El orden usa la comisión **neta**.
+4. El cálculo es **derivado al leer**. La tabla `comisiones` conserva la comisión **originalmente generada** y **no es un libro de lo efectivamente pagado**. Ningún consumidor debe leer `comisiones.monto` como "lo que se le debe/pagó al vendedor".
+5. Un reembolso aprobado tarde cambia el reporte del mes de `confirmed_at` de la venta, aunque ese mes ya se haya "cerrado". No existe `refunded_at`.
+
+| Opción | Tradeoff | Veredicto |
+|---|---|---|
+| **(ii) Neto de monto y comisión, derivado al leer** | Diverge de la tabla `comisiones` (R1); cero migración | ★ **Elegida por el humano** |
+| (i) Sólo restar el monto | La comisión deja de ser el % del neto; fila con 0.00 vendido y comisión > 0 | Rechazada por el humano |
+| (iii) Columnas bruto / reembolsado / neto | Ancho 77 → ~91, cambian todos los golden; más de lo pedido | Rechazada por el humano |
+| Clawback persistido (fila de ajuste negativo o anulación en `comisiones`) | Libro contable real, pero exige migración y decidir el modelo contable | Fuera de alcance, **deuda B6** (Deuda 12) |
+
+**Consecuencias**:
+
+- TUI, conversacional, CLI y A2A pasan a mostrar netos con las mismas etiquetas, sin cambiar su código.
+- Los reportes ya exportados (salidas del CLI, respuestas A2A) no se recalculan: un reembolso posterior hace que el mismo periodo dé otro número.
+- **Deuda declarada**: B6 (clawback real / libro de comisiones pagadas, Deuda 12) y B4 (`refunded_at`, Deuda 13) — ver Deudas Técnicas, más abajo.
+- El comentario de `src/adapters/memory/repository.ts:1232-1234` (*"hace visible R5"*) queda **deliberadamente sin tocar** por este change: sigue describiendo el estado ACTUAL de la venta que esa consulta SQL expone, que es exactamente lo que este ADR sigue leyendo para derivar el neto — vocabulario más viejo que el del reporte, no un error.
+- **Reversible**: `git revert`, sin migración ni datos.
+
+### ADR 302: Enmienda al ADR 26 (`tui-canal-empleado`) — la nota de escalaciones apunta a la resolución conversacional
+
+**Enmienda**, pedida por el humano tras el cierre de la Fase 5 de este change (Fase 5b, v3.21). *Enmienda al ADR 26 (`tui-canal-empleado`)*: la nota de escalaciones del reporte (`NOTA_ESCALACION_FUERA_DE_BANDA`, `src/core/ventas/reporte.ts`) apunta a la resolución conversacional (ADR 206, ADR 210 pto 1) en los dos canales — texto libre de la TUI (ADR 297-299) y chat web — y deja de nombrar los tres comandos que se dieron de baja en v3.10.0 (`/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`). Se conservan la salvedad R16 y las prohibiciones del ADR 26 rev. 2 y 3, esta última con el motivo nuevo: la nota no duplica la política de autorización, que vive en `ejecutar-operacion.ts` y puede cambiar por su cuenta.
+
+**Regla**: todo change que baje un comando o cambie un canal de resolución revisa `NOTA_ESCALACION_FUERA_DE_BANDA` en el mismo change. Una guarda de test automatiza la mitad de esa regla (todo token `/comando` de la nota tiene que existir en `COMANDOS`); los canales siguen dependiendo de la revisión humana.
+
+**RD-174** registra las decisiones del checkpoint de esta enmienda: un ADR propio en vez de un apéndice al ADR 301 (tema distinto, revert aislado); conservar la prohibición de "rol/permisos" con el motivo actualizado en vez de levantarla; y sumar la guarda de test contra `COMANDOS`.
+
+**Reversible**: `git revert`, sin migración ni datos.
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
@@ -945,6 +988,18 @@ Descripción: el rango ADR 174-187 quedó asignado **tres veces** a decisiones d
 Recomendación para el change futuro que la resuelva (`chat-web-empleado/design.md` §11): **no renumerar** — hay ADRs citados en doc-comments de código vivo (`ejecutar-operacion.ts:92,160,...`, `build-on-comando-empleado.ts:378`) y renumerar rompería esas citas verificables. En su lugar, **prefijar por change en las citas nuevas** (`ADR 180 (consultas-negocio-a2a-entrante)`) y agregar una tabla de equivalencias a este arc42 que liste los tres usos de cada número colisionado.
 
 Cierre: no aplica en v3.9 — este change **abrió su propia numeración en ADR 189**, por encima del máximo absoluto verificado, precisamente para no agregar una cuarta capa a la colisión. La colisión existente queda declarada, no resuelta.
+
+**Deuda 12 (RD-173, ADR 301): Clawback real / libro de comisiones pagadas — DIFERIDA (v3.21, `reembolso-resta-monto-vendido-en-reporte`)**
+
+Descripción: el ADR 301 resuelve el reporte neto de reembolsos **derivado al leer** — la tabla `comisiones` sigue guardando el monto originalmente generado, nunca lo que efectivamente se pagó, y no existe ninguna fila de ajuste ni de anulación cuando una venta pasa a `reembolsada`. Es la opción (ii) del ADR 301; la alternativa evaluada, un clawback persistido (fila de ajuste negativo o anulación en `comisiones`), se descartó por exigir migración y decidir el modelo contable, fuera de alcance de este change.
+
+Condición de disparo: que exista una necesidad real de un libro contable de comisiones efectivamente pagadas (por ejemplo, para conciliar con nómina o un sistema externo) que el reporte derivado, por sí solo, no pueda cubrir.
+
+**Deuda 13 (RD-173, ADR 301): Sin columna `refunded_at` — un reembolso tardío cambia el reporte de un mes ya "cerrado" — DIFERIDA (v3.21, `reembolso-resta-monto-vendido-en-reporte`)**
+
+Descripción: el ADR 301 pto 5 decide que un reembolso aprobado tarde recalcula el reporte del mes de `confirmed_at` de la venta, no del mes en que se aprobó el reembolso, porque el esquema no tiene `refunded_at`. Un reporte ya exportado (salida del CLI, respuesta A2A) de un mes "cerrado" puede dar otro número si se vuelve a consultar el mismo periodo después de un reembolso posterior.
+
+Condición de disparo: que se necesite fijar el reporte de un periodo cerrado sin que lo alteren reembolsos futuros — exigiría agregar `refunded_at` y decidir si el reporte agrupa por mes de venta o por mes de reembolso.
 
 # Glosario
 
