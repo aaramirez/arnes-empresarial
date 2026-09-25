@@ -645,3 +645,33 @@ export function parsearComando(texto: string): ComandoEmpleado | undefined {
   // (los cinco de forma "id_mas_resto" tienen rama explícita arriba).
   return ayudaDesconocido(comandoToken);
 }
+
+const NOMBRES_SECRETOS: ReadonlySet<string> = new Set(
+  DESCRIPTORES.filter((d) => d.secreto).map((d) => d.nombre),
+);
+
+function inicioTramoSecreto(texto: string): number | undefined {
+  const inicio = texto.length - texto.trimStart().length;
+  const linea = texto.slice(inicio);
+  const finComando = linea.indexOf(" ");
+  if (finComando === -1 || !NOMBRES_SECRETOS.has(linea.slice(0, finComando))) {
+    return undefined;
+  }
+  const resto = linea.slice(finComando + 1);
+  const inicioId = resto.length - resto.trimStart().length;
+  const finId = resto.indexOf(" ", inicioId);
+  if (finId === -1) {
+    return undefined;
+  }
+  const inicioTramo = inicio + finComando + 1 + finId + 1;
+  return inicioTramo < texto.length ? inicioTramo : undefined;
+}
+
+export function enmascararSecreto(texto: string): string {
+  const inicio = inicioTramoSecreto(texto);
+  return inicio === undefined ? texto : texto.slice(0, inicio) + "*".repeat(texto.length - inicio);
+}
+
+export function contieneSecreto(texto: string): boolean {
+  return inicioTramoSecreto(texto) !== undefined;
+}
