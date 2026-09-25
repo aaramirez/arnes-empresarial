@@ -146,7 +146,7 @@ Commit: `docs(spec): agrega la nota de reemplazo de R5 en el reporte por el ADR 
 
 ## Phase 5: Mutación y evidencia manual (excepciones TDD)
 
-- [ ] **5.1** Checks de mutación (sobre un respaldo, restaurado por copia). **M1** restar también `reembolso_pendiente` ⇒ U1/U5/C1 fallan. **M2** restar también `reembolso_rechazado` ⇒ U1/F1/C1 fallan. **M3** ordenar por comisión bruta ⇒ U5/U6 fallan. **M4** TOTAL sin monto o leyenda siempre visible ⇒ 2.1 (golden, F2) falla. **M5** que `aprobarReembolso` haga `UPDATE comisiones` ⇒ C2 falla. Cada uno: rojo con la mutación, verde revertido (`git diff -- src` vacío). Evidencia en `docs/progreso/vX.Y-reembolso-resta-monto-vendido-en-reporte/mutaciones.md`.
+- [x] **5.1** Checks de mutación (sobre un respaldo, restaurado por copia). **M1** restar también `reembolso_pendiente` ⇒ U1/U5/C1 fallan. **M2** restar también `reembolso_rechazado` ⇒ U1/F1/C1 fallan. **M3** ordenar por comisión bruta ⇒ U5/U6 fallan. **M4** TOTAL sin monto o leyenda siempre visible ⇒ 2.1 (golden, F2) falla. **M5** que `aprobarReembolso` haga `UPDATE comisiones` ⇒ C2 falla. Cada uno: rojo con la mutación, verde revertido (`git diff -- src` vacío). Evidencia en `docs/progreso/vX.Y-reembolso-resta-monto-vendido-en-reporte/mutaciones.md`.
 *Aceptación*: los tests nombrados fallan con su mutación y pasan sin ella; el commit toca sólo `docs/`.
 Commit: `docs(root): registra los checks de mutacion del reporte neto con la salida roja y verde (Hito vX.Y, tarea 5.1)`
 
