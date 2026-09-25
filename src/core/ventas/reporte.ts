@@ -36,7 +36,7 @@ export interface ComisionConVenta {
   readonly vendedorNombre: string;
   readonly comisionMonto: number;
   readonly ventaMonto: number;
-  /** Estado ACTUAL de la venta — hace visible R5 (comisión viva sobre una venta reembolsada) en vez de esconderla. */
+  /** Estado ACTUAL de la venta — decide qué resta del reporte: sólo `reembolsada` se excluye del neto (ADR 301). */
   readonly ventaEstado: string;
   readonly periodo: string;
 }
@@ -54,17 +54,27 @@ export interface VentaPendienteReembolso {
 export interface FilaVendedor {
   readonly vendedorId: string;
   readonly vendedorNombre: string;
+  /** Conteo BRUTO: todas las comisiones del periodo del vendedor (ADR 301 pto 2). */
   readonly ventasConfirmadas: number;
+  /** NETO de reembolsos aplicados: Σ `ventaMonto` de ventas con estado ≠ `reembolsada` (ADR 301). */
   readonly montoVendido: number;
+  /** NETO: Σ `comisionMonto` de ventas con estado ≠ `reembolsada`. Criterio de orden (ADR 301 pto 3). */
   readonly totalComisionado: number;
-  /** Cuántas de esas ventas están hoy `reembolsada` o `reembolso_pendiente` — la columna que hace medible R5. */
+  /** Conteo BRUTO: `reembolsada` + `reembolso_pendiente` (sin `reembolso_rechazado`, ADR 23 de `tui-canal-empleado`). */
   readonly ventasConReembolso: number;
+  /** Σ `ventaMonto` de ventas `reembolsada`. NO se imprime (ADR 301 pto 2). */
+  readonly montoReembolsado: number;
+  /** Σ `comisionMonto` de ventas `reembolsada`. NO se imprime; la tabla `comisiones` no cambia (ADR 301 pto 4). */
+  readonly comisionRevertida: number;
 }
 
 export interface ReporteMensual {
   readonly periodo: string;
   readonly filas: readonly FilaVendedor[];
+  /** NETO: `redondearComoComision(Σ filas.totalComisionado)` (ADR 301). */
   readonly totalComisionado: number;
+  /** NETO: `redondearComoComision(Σ filas.montoVendido)` (ADR 301 pto 3). */
+  readonly totalMontoVendido: number;
   readonly reembolsosPendientes: readonly VentaPendienteReembolso[];
 }
 
@@ -122,11 +132,21 @@ function redondearComoComision(monto: number): number {
  * Agrupa por `vendedor_id` dentro de un `periodo`. PURA (spec
  * `reporte-comisiones-mensual`, "testeable sin base de datos ni red").
  *
- * Reglas (§3.5):
+ * Reglas (ADR 301, reemplaza en el reporte a *R5 (hito-1.3-ventas-comisiones)*
+ * — la tabla `comisiones` sigue intacta, ver `comisionRevertida`):
  *  - Solo entran comisiones cuyo `periodo` coincide con el pedido.
- *  - `totalComisionado` (por fila y total general) se redondea a 2 decimales
- *    con el mismo criterio de `calcularComision` (ADR 16).
- *  - Orden: `totalComisionado` DESC, desempate por `vendedorId` ASC —
+ *  - `montoVendido`/`totalComisionado` son NETOS: sólo suman ventas con
+ *    estado ACTUAL ≠ `reembolsada`. `reembolso_pendiente` y
+ *    `reembolso_rechazado` NO restan (ADR 301 pto 1).
+ *  - Lo revertido por ventas `reembolsada` se acumula aparte
+ *    (`montoReembolsado`/`comisionRevertida`, derivado al leer, no se
+ *    imprime): sumar sólo lo no reembolsado evita restas de flotantes.
+ *  - `ventasConfirmadas` y `ventasConReembolso` conservan el conteo BRUTO
+ *    (ADR 301 pto 2).
+ *  - `totalComisionado`/`totalMontoVendido` (por fila y total general) se
+ *    redondean a 2 decimales con el mismo criterio de `calcularComision`
+ *    (ADR 16).
+ *  - Orden: `totalComisionado` NETO DESC, desempate por `vendedorId` ASC —
  *    determinista, para que el string completo sea afirmable en un test.
  *  - `reembolsosPendientes` pasa TAL CUAL, sin filtrar por `periodo`: el spec
  *    lo pide explícitamente.
@@ -146,6 +166,8 @@ export function agruparReporteMensual(input: {
     montoVendido: number;
     totalComisionado: number;
     ventasConReembolso: number;
+    montoReembolsado: number;
+    comisionRevertida: number;
   }
 
   const porVendedor = new Map<string, Acumulador>();
@@ -157,11 +179,18 @@ export function agruparReporteMensual(input: {
       montoVendido: 0,
       totalComisionado: 0,
       ventasConReembolso: 0,
+      montoReembolsado: 0,
+      comisionRevertida: 0,
     };
 
     acc.ventasConfirmadas += 1;
-    acc.montoVendido += c.ventaMonto;
-    acc.totalComisionado += c.comisionMonto;
+    if (c.ventaEstado === VENTA_ESTADO_REEMBOLSADA) {
+      acc.montoReembolsado += c.ventaMonto;
+      acc.comisionRevertida += c.comisionMonto;
+    } else {
+      acc.montoVendido += c.ventaMonto;
+      acc.totalComisionado += c.comisionMonto;
+    }
     if (c.ventaEstado === VENTA_ESTADO_REEMBOLSADA || c.ventaEstado === VENTA_ESTADO_REEMBOLSO_PENDIENTE) {
       acc.ventasConReembolso += 1;
     }
@@ -177,12 +206,15 @@ export function agruparReporteMensual(input: {
       montoVendido: redondearComoComision(acc.montoVendido),
       totalComisionado: redondearComoComision(acc.totalComisionado),
       ventasConReembolso: acc.ventasConReembolso,
+      montoReembolsado: redondearComoComision(acc.montoReembolsado),
+      comisionRevertida: redondearComoComision(acc.comisionRevertida),
     }))
     .sort((a, b) => b.totalComisionado - a.totalComisionado || a.vendedorId.localeCompare(b.vendedorId));
 
   const totalComisionado = redondearComoComision(filas.reduce((sum, f) => sum + f.totalComisionado, 0));
+  const totalMontoVendido = redondearComoComision(filas.reduce((sum, f) => sum + f.montoVendido, 0));
 
-  return { periodo, filas, totalComisionado, reembolsosPendientes };
+  return { periodo, filas, totalComisionado, totalMontoVendido, reembolsosPendientes };
 }
 
 /* ── formatearReporteMensual: layout de tabla, ver nota de diseño arriba ── */
@@ -195,19 +227,38 @@ const REEMBOLSO_WIDTH = 13;
 const SEPARADOR_WIDTH = NOMBRE_WIDTH + 1 + VENTAS_WIDTH + 1 + MONTO_WIDTH + 1 + COMISION_WIDTH + 1 + REEMBOLSO_WIDTH;
 
 /**
- * Actualizada por `tui-canal-empleado` (ADR 26, enmiendas rev. 2 y 3): ya
- * NO es cierto que no exista una vía de producto para estas escalaciones
- * (`/aprobar-reembolso`/`/rechazar-reembolso`/`/reabrir-reembolso` desde la
- * TUI, ADR 21), ni que el rechazo sea irreversible (ADR 29 lo hizo
- * reabrible). Lo que sigue siendo cierto, y esta nota lo dice, es la
- * salvedad del canal: es una TUI LOCAL con login por empleado, no un portal
- * autenticado — la contraseña se verifica localmente contra la misma base
- * que este proceso escribe (R16). Lo que esta nota NO menciona, a
- * propósito: la tabla de auditoría (`registro_acciones_empleado`, que este
- * reporte no lee) y cualquier noción de roles o permisos (que no existen).
+ * Enmendada por el ADR 302 (`reembolso-resta-monto-vendido-en-reporte`), que
+ * corrige el ADR 26 de `tui-canal-empleado` rev. 3: los tres comandos que
+ * nombraba (`/aprobar-reembolso`, `/rechazar-reembolso`, `/reabrir-reembolso`)
+ * se dieron de baja en v3.10.0 (ADR 210 pto 1). La resolución es
+ * conversacional (ADR 206, ADR 210 pto 1) en dos canales — el texto libre de
+ * la TUI local de empleados (ADR 297-299) y el chat web —, ambos sobre el
+ * mismo flujo `onOperacionesEmpleado`. Lo que sigue siendo cierto, y esta
+ * nota lo dice, es la salvedad del canal: es una TUI LOCAL con login por
+ * empleado, no un portal autenticado — la contraseña se verifica localmente
+ * contra la misma base que este proceso escribe (R16). Lo que esta nota NO
+ * menciona, a propósito: la tabla de auditoría (`registro_acciones_empleado`,
+ * que este reporte no lee) y cualquier noción de roles o permisos — no
+ * porque no existan (`autorizacion-empleado` los introdujo), sino porque la
+ * nota no duplica la política de autorización, que vive en
+ * `ejecutar-operacion.ts` y puede cambiar sin tocar este reporte (ADR 302,
+ * decisión A2). **Regla del ADR 302**: quien baja un comando o cambia un
+ * canal de resolución revisa esta nota en el mismo change (la guarda A3 de
+ * `reporte.test.ts` automatiza la mitad — los comandos — no los canales).
  */
 const NOTA_ESCALACION_FUERA_DE_BANDA =
-  "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
+  "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.";
+
+/**
+ * Leyenda del neto de reembolsos aplicados (ADR 301 pto 2 y 3, [CP B3]). Se
+ * imprime bajo la fila TOTAL, sólo cuando hay filas (H6: el periodo vacío no
+ * cambia). Cada línea mide ≤ `SEPARADOR_WIDTH` (77) para no romper el ancho
+ * fijo de la tabla.
+ */
+const LEYENDA_NETO: readonly string[] = [
+  "Nota: monto y comisión netos de reembolsos aplicados (estado reembolsada).",
+  '"Con reembolso" cuenta también los pendientes, que todavía no restan.',
+];
 
 export function formatMoney(monto: number): string {
   return monto.toFixed(2);
@@ -223,7 +274,18 @@ function filaTabla(nombre: string, ventas: string, monto: string, comision: stri
   ].join(" ");
 }
 
-function formatearTablaComparativa(filas: readonly FilaVendedor[], totalComisionado: number): string {
+/**
+ * Fila TOTAL con monto y comisión NETOS ([CP B2], ADR 301 pto 3) y, bajo ella,
+ * `LEYENDA_NETO` ([CP B3]) sólo cuando hay `filas` (H6: el periodo vacío
+ * sigue devolviendo "sin comisiones en el periodo", sin tabla ni leyenda).
+ * `totalMontoVendido` es un parámetro nuevo de esta función privada (sin
+ * impacto externo, ADR 301 §4.1); anchos de columna sin cambios.
+ */
+function formatearTablaComparativa(
+  filas: readonly FilaVendedor[],
+  totalMontoVendido: number,
+  totalComisionado: number,
+): string {
   if (filas.length === 0) {
     // Spec + §3.5: nunca una tabla vacía sin explicación.
     return "sin comisiones en el periodo";
@@ -243,11 +305,11 @@ function formatearTablaComparativa(filas: readonly FilaVendedor[], totalComision
   const filaTotal = [
     "TOTAL".padEnd(NOMBRE_WIDTH),
     "".padStart(VENTAS_WIDTH),
-    "".padStart(MONTO_WIDTH),
+    formatMoney(totalMontoVendido).padStart(MONTO_WIDTH),
     formatMoney(totalComisionado).padStart(COMISION_WIDTH),
   ].join(" ");
 
-  return [encabezado, separador, ...lineas, separador, filaTotal].join("\n");
+  return [encabezado, separador, ...lineas, separador, filaTotal, "", ...LEYENDA_NETO].join("\n");
 }
 
 function formatearLineaReembolso(v: VentaPendienteReembolso): string {
@@ -274,16 +336,17 @@ function formatearSeccionReembolsos(reembolsosPendientes: readonly VentaPendient
  *  1. Encabezado con el `periodo`.
  *  2. Tabla comparativa por vendedor, o "sin comisiones en el periodo" si
  *     `filas` está vacío.
- *  3. Reembolsos pendientes de aprobación — con la nota literal de que este
- *     hito no expone camino de producto para cerrarlos (ADR 11 punto 5, R3):
- *     el reporte SOLO lista, no ofrece ninguna acción de aprobación/rechazo.
- *     Esta sección aparece SIEMPRE, incluso sin comisiones en el periodo,
- *     porque `reembolsosPendientes` no depende del `periodo` (§3.5).
+ *  3. Reembolsos pendientes de aprobación — con la nota de que se resuelven
+ *     por conversación con el asistente (ADR 302, enmienda al ADR 26): el
+ *     reporte en sí SOLO lista, no ofrece ninguna acción de aprobación/
+ *     rechazo/reapertura (ADR 11 punto 5, R3). Esta sección aparece SIEMPRE,
+ *     incluso sin comisiones en el periodo, porque `reembolsosPendientes`
+ *     no depende del `periodo` (§3.5).
  */
 export function formatearReporteMensual(reporte: ReporteMensual): string {
   return [
     `Reporte de comisiones - periodo ${reporte.periodo}`,
-    formatearTablaComparativa(reporte.filas, reporte.totalComisionado),
+    formatearTablaComparativa(reporte.filas, reporte.totalMontoVendido, reporte.totalComisionado),
     formatearSeccionReembolsos(reporte.reembolsosPendientes),
   ].join("\n\n");
 }

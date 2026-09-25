@@ -209,6 +209,8 @@ El texto nuevo dice qué comando cierra estas escalaciones y **arrastra la salve
 
 **Enmienda (revisión 3)**. La salvedad del canal **cambia de contenido, y este ADR obliga a cambiarla**: la redacción que la revisión 1 pedía —*"la identidad del resolvedor se toma de la configuración"*— pasa a ser **falsa** con el ADR 32, exactamente igual que el párrafo original pasó a ser falso con `/aprobar-reembolso`. Es el mismo criterio aplicándose a sí mismo, y por eso no se difiere. La nota nueva debe decir que el canal es la **TUI local con login por empleado**, y **no** debe insinuar que eso equivale a un portal autenticado: la salvedad honesta es que la contraseña se verifica localmente contra la misma base que el proceso escribe (R16). Lo que este ADR sigue prohibiendo: mencionar la tabla de auditoría, que el reporte no lee, y mencionar roles o permisos, que no existen.
 
+**Enmendado por ADR 302** (`reembolso-resta-monto-vendido-en-reporte`): los tres comandos se dieron de baja en v3.10.0 y la nota apunta a la resolución conversacional. Las prohibiciones siguen y el motivo de "roles o permisos" cambia (autorizacion-empleado).
+
 ### ADR 27: La auditoría es una **tabla dedicada y append-only** que cubre todos los comandos — las columnas `resuelto_por`/`resuelto_at` en `ventas` se descartan, no se conservan como atajo
 
 **Contexto**. La revisión 1 auditaba **una sola** de las acciones que la TUI habilita (la resolución de la escalación) y lo hacía con dos columnas en `ventas`. El checkpoint pidió ampliarlo a todos los comandos. Hoy `/soporte` y `/devolucion` no capturan identidad de empleado en ningún lado — de hecho el concepto "empleado" solo existe en comentarios (`main.ts:244,300`).

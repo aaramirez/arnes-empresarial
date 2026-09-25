@@ -16,6 +16,10 @@ import {
 // de `reporte-mensual.ts` — este import existe únicamente para el test de
 // equivalencia (R6) de más abajo.
 import { parsePeriodo } from "../../reporte-mensual.js";
+// Import SOLO de test (ADR 302, guarda A3): `reporte.ts` nunca importa de
+// `core/commands` — este import existe únicamente para que la nota de
+// escalaciones no derive hacia un comando dado de baja.
+import { COMANDOS } from "../commands/comando-empleado.js";
 
 function comision(overrides: Partial<ComisionConVenta> = {}): ComisionConVenta {
   return {
@@ -179,10 +183,258 @@ describe("agruparReporteMensual", () => {
     expect(reporte.filas).toEqual([]);
     expect(reporte.totalComisionado).toBe(0);
   });
+
+  // ADR 301 — el reporte es neto de reembolsos aplicados: sólo el estado
+  // `reembolsada` resta monto y comisión; `reembolso_pendiente` y
+  // `reembolso_rechazado` NO restan (U1).
+  it.each([
+    [VENTA_ESTADO_CONFIRMADA, 1000, 100, 0, 0, 0],
+    [VENTA_ESTADO_REEMBOLSADA, 0, 0, 1, 1000, 100],
+    [VENTA_ESTADO_REEMBOLSO_PENDIENTE, 1000, 100, 1, 0, 0],
+    [VENTA_ESTADO_REEMBOLSO_RECHAZADO, 1000, 100, 0, 0, 0],
+  ])(
+    "estado %s: sólo `reembolsada` resta monto y comisión (U1)",
+    (ventaEstado, montoVendido, totalComisionado, ventasConReembolso, montoReembolsado, comisionRevertida) => {
+      const reporte = agruparReporteMensual({
+        periodo: "2024-02",
+        comisiones: [comision({ ventaEstado, comisionMonto: 100, ventaMonto: 1000 })],
+        reembolsosPendientes: [],
+      });
+
+      expect(reporte.filas).toHaveLength(1);
+      expect(reporte.filas[0]).toMatchObject({
+        montoVendido,
+        totalComisionado,
+        ventasConReembolso,
+        montoReembolsado,
+        comisionRevertida,
+      });
+    },
+  );
+
+  it("mezcla confirmada + reembolsada + reembolso_pendiente: el neto es confirmada + pendiente (U2)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 100, ventaMonto: 1000 }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 50, ventaMonto: 500 }),
+        comision({
+          ventaId: "v3",
+          ventaEstado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+          comisionMonto: 30,
+          ventaMonto: 300,
+        }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas).toHaveLength(1);
+    expect(reporte.filas[0]).toMatchObject({
+      montoVendido: 1300,
+      totalComisionado: 130,
+      ventasConfirmadas: 3,
+      ventasConReembolso: 2,
+    });
+  });
+
+  it("todo reembolsado: la fila queda en 0.00 exacto, sin -0 (U3)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 100, ventaMonto: 1000 }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 50, ventaMonto: 500 }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas).toHaveLength(1);
+    expect(reporte.filas[0]?.montoVendido).toBe(0);
+    expect(reporte.filas[0]?.totalComisionado).toBe(0);
+    expect(reporte.filas[0]).toMatchObject({ ventasConfirmadas: 2, ventasConReembolso: 2 });
+  });
+
+  it("flotantes: confirmada 0.1 + 0.2 y reembolsada 0.3 no contaminan el neto (U4)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({ ventaId: "v1", ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 0.1 }),
+        comision({ ventaId: "v2", ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 0.2 }),
+        comision({ ventaId: "v3", ventaEstado: VENTA_ESTADO_REEMBOLSADA, comisionMonto: 0.3 }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas[0]?.totalComisionado).toBe(0.3);
+    expect(reporte.filas[0]?.comisionRevertida).toBe(0.3);
+  });
+
+  it("regresión con datos reales: el orden y los netos por vendedor (U5)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({
+          ventaId: "ana-1",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 1200,
+          comisionMonto: 120,
+        }),
+        comision({
+          ventaId: "ana-2",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 1000,
+          comisionMonto: 100,
+        }),
+        comision({
+          ventaId: "ana-3",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 800,
+          comisionMonto: 80,
+        }),
+        comision({
+          ventaId: "ana-4",
+          vendedorId: "ana",
+          vendedorNombre: "Ana",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 700,
+          comisionMonto: 70,
+        }),
+        comision({
+          ventaId: "beto-1",
+          vendedorId: "beto",
+          vendedorNombre: "Beto",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 3000,
+          comisionMonto: 300,
+        }),
+        comision({
+          ventaId: "beto-2",
+          vendedorId: "beto",
+          vendedorNombre: "Beto",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 400,
+          comisionMonto: 40,
+        }),
+        comision({
+          ventaId: "beto-3",
+          vendedorId: "beto",
+          vendedorNombre: "Beto",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 300,
+          comisionMonto: 30,
+        }),
+        comision({
+          ventaId: "hito36-1",
+          vendedorId: "hito36",
+          vendedorNombre: "Hito36",
+          ventaEstado: VENTA_ESTADO_REEMBOLSO_PENDIENTE,
+          ventaMonto: 15000,
+          comisionMonto: 1500,
+        }),
+        comision({
+          ventaId: "v39-1",
+          vendedorId: "v39",
+          vendedorNombre: "V39",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 5000,
+          comisionMonto: 500,
+        }),
+        comision({
+          ventaId: "rick-1",
+          vendedorId: "rick",
+          vendedorNombre: "Rick",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 4000,
+          comisionMonto: 400,
+        }),
+        comision({
+          ventaId: "tom-1",
+          vendedorId: "tom",
+          vendedorNombre: "Tom",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 3000,
+          comisionMonto: 300,
+        }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas.map((f) => f.vendedorId)).toEqual(["hito36", "v39", "rick", "beto", "tom", "ana"]);
+    expect(reporte.filas.find((f) => f.vendedorId === "ana")).toMatchObject({
+      montoVendido: 1200,
+      totalComisionado: 120,
+      ventasConfirmadas: 4,
+      ventasConReembolso: 3,
+    });
+    expect(reporte.filas.find((f) => f.vendedorId === "beto")).toMatchObject({
+      montoVendido: 3000,
+      totalComisionado: 300,
+      ventasConfirmadas: 3,
+      ventasConReembolso: 2,
+    });
+    expect(reporte.filas.find((f) => f.vendedorId === "hito36")).toMatchObject({
+      montoVendido: 15000,
+      totalComisionado: 1500,
+      ventasConfirmadas: 1,
+      ventasConReembolso: 1,
+    });
+    expect(reporte.totalMontoVendido).toBe(31200);
+    expect(reporte.totalComisionado).toBe(3120);
+  });
+
+  it("ordena por comisión neta, no bruta (U6)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [
+        comision({
+          ventaId: "a-1",
+          vendedorId: "vend-a",
+          vendedorNombre: "A",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 100,
+          comisionMonto: 10,
+        }),
+        comision({
+          ventaId: "a-2",
+          vendedorId: "vend-a",
+          vendedorNombre: "A",
+          ventaEstado: VENTA_ESTADO_REEMBOLSADA,
+          ventaMonto: 400,
+          comisionMonto: 40,
+        }),
+        comision({
+          ventaId: "b-1",
+          vendedorId: "vend-b",
+          vendedorNombre: "B",
+          ventaEstado: VENTA_ESTADO_CONFIRMADA,
+          ventaMonto: 200,
+          comisionMonto: 20,
+        }),
+      ],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.filas.map((f) => f.vendedorId)).toEqual(["vend-b", "vend-a"]);
+  });
+
+  it("totalMontoVendido es 0 en un periodo vacío (U7)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2020-01",
+      comisiones: [comision({ periodo: "2024-02" })],
+      reembolsosPendientes: [],
+    });
+
+    expect(reporte.totalMontoVendido).toBe(0);
+  });
 });
 
 describe("formatearReporteMensual", () => {
-  it("devuelve el string completo y determinista para un periodo con comisiones y reembolsos pendientes", () => {
+  it("devuelve el string completo y determinista para un periodo con comisiones y reembolsos pendientes (neto)", () => {
     const reporte = agruparReporteMensual({
       periodo: "2024-02",
       comisiones: [
@@ -224,18 +476,68 @@ describe("formatearReporteMensual", () => {
         "",
         "Vendedor                 Ventas Monto vendido Total comisionado Con reembolso",
         "-----------------------------------------------------------------------------",
-        "Ana Gomez                     1       1500.00            225.00             1",
         "Juan Perez                    1       1000.00            100.00             0",
+        "Ana Gomez                     1          0.00              0.00             1",
         "-----------------------------------------------------------------------------",
-        "TOTAL                                                    325.00",
+        "TOTAL                                 1000.00            100.00",
+        "",
+        "Nota: monto y comisión netos de reembolsos aplicados (estado reembolsada).",
+        '"Con reembolso" cuenta también los pendientes, que todavía no restan.',
         "",
         "Reembolsos pendientes de aprobación",
         "",
-        "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
+        "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
         "",
         "- venta venta-11 | vendedor Juan Perez | cliente cliente-11 | monto 1000.00 | caso caso-11 | confirmada 2024-02-10T10:00:00.000Z",
       ].join("\n"),
     );
+  });
+
+  it.each([
+    ["sólo reembolso_pendiente", VENTA_ESTADO_REEMBOLSO_PENDIENTE],
+    ["sólo reembolso_rechazado", VENTA_ESTADO_REEMBOLSO_RECHAZADO],
+  ])("%s: el TOTAL es la suma bruta, ninguno resta (F1)", (_label, ventaEstado) => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [comision({ ventaEstado, comisionMonto: 100, ventaMonto: 1000 })],
+      reembolsosPendientes: [],
+    });
+
+    const texto = formatearReporteMensual(reporte);
+
+    expect(texto).toContain("TOTAL                                 1000.00            100.00");
+  });
+
+  it("la leyenda de neto aparece sólo cuando hay filas, y cada línea de tabla y leyenda mide ≤ 77 (F2)", () => {
+    const reporte = agruparReporteMensual({
+      periodo: "2024-02",
+      comisiones: [comision({ ventaEstado: VENTA_ESTADO_CONFIRMADA, comisionMonto: 100, ventaMonto: 1000 })],
+      reembolsosPendientes: [],
+    });
+
+    const texto = formatearReporteMensual(reporte);
+    const lineasTabla = texto.split("\n\n")[1]?.split("\n") ?? [];
+    // La leyenda va tras una línea en blanco, así que cae fuera del bloque de la tabla.
+    const lineasLeyenda = texto
+      .split("\n")
+      .filter((linea) => linea.startsWith("Nota: monto y comisión netos") || linea.startsWith('"Con reembolso"'));
+
+    expect(texto).toContain("Nota: monto y comisión netos de reembolsos aplicados");
+    expect(texto).toContain('"Con reembolso" cuenta también los pendientes');
+    expect(lineasLeyenda).toHaveLength(2);
+    for (const linea of [...lineasTabla, ...lineasLeyenda]) {
+      expect(linea.length).toBeLessThanOrEqual(77);
+    }
+    // Las frases prohibidas por el ADR también se miden con filas, no sólo en el periodo vacío.
+    expect(texto).not.toMatch(/SQL manual/i);
+    expect(texto).not.toMatch(/irreversible/i);
+    expect(texto).not.toMatch(/configuraci[oó]n/i);
+    expect(texto).not.toMatch(/registro_acciones_empleado|auditor[ií]a/i);
+    expect(texto).not.toMatch(/\brol(es)?\b|permisos?/i);
+
+    const reporteVacio = agruparReporteMensual({ periodo: "2020-01", comisiones: [], reembolsosPendientes: [] });
+    const textoVacio = formatearReporteMensual(reporteVacio);
+    expect(textoVacio).not.toContain("Nota: monto y comisión netos");
   });
 
   it("un periodo sin comisiones produce la linea explicita 'sin comisiones en el periodo'", () => {
@@ -256,7 +558,7 @@ describe("formatearReporteMensual", () => {
         "",
         "Reembolsos pendientes de aprobación",
         "",
-        "Nota: estas escalaciones se resuelven con /aprobar-reembolso, /rechazar-reembolso y /reabrir-reembolso desde la TUI local de empleados, tras iniciar sesión con /login. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
+        "Nota: estas escalaciones se resuelven por conversación con el asistente, en el texto libre de la TUI local de empleados (tras /login) o en el chat web (tras iniciar sesión): se pide aprobar, rechazar o reabrir el reembolso y se confirma en un turno aparte. La contraseña se verifica localmente contra la misma base de datos que este proceso escribe.",
         "",
         "(sin reembolsos pendientes)",
       ].join("\n"),
@@ -276,7 +578,7 @@ describe("formatearReporteMensual", () => {
     expect(texto).toContain("venta venta-9");
   });
 
-  it("la nota nueva (ADR 26, enmienda rev. 3) menciona los tres comandos de resolucion y la TUI local, sin las frases prohibidas", () => {
+  it("la nota (ADR 26, enmendado por ADR 302) apunta a la resolución conversacional, sin comandos retirados ni frases prohibidas", () => {
     const reporte = agruparReporteMensual({
       periodo: "2020-01",
       comisiones: [],
@@ -285,10 +587,14 @@ describe("formatearReporteMensual", () => {
 
     const texto = formatearReporteMensual(reporte);
 
-    // Menciona qué comando cierra estas escalaciones (ya no hay que resolverlas "fuera de banda").
-    expect(texto).toContain("/aprobar-reembolso");
-    expect(texto).toContain("/rechazar-reembolso");
-    expect(texto).toContain("/reabrir-reembolso");
+    // Los tres comandos se dieron de baja en v3.10.0 (ADR 210 pto 1): la nota ya no los nombra.
+    expect(texto).not.toMatch(/\/(aprobar|rechazar|reabrir)-reembolso/);
+    // Apunta a la resolución conversacional, en los dos canales (ADR 302).
+    expect(texto).toContain("por conversación");
+    expect(texto).toContain("chat web");
+    expect(texto).toContain("aprobar, rechazar o reabrir");
+    expect(texto).toContain("turno aparte");
+    expect(texto).toContain("misma base de datos");
     // Salvedad del canal: TUI local con login por empleado (no un portal autenticado).
     expect(texto).toContain("TUI local");
     expect(texto).toContain("/login");
@@ -299,6 +605,23 @@ describe("formatearReporteMensual", () => {
     expect(texto).not.toMatch(/configuraci[oó]n/i);
     expect(texto).not.toMatch(/registro_acciones_empleado|auditor[ií]a/i);
     expect(texto).not.toMatch(/\brol(es)?\b|permisos?/i);
+  });
+
+  it("la nota no menciona ningún comando dado de baja: todo token /comando existe en COMANDOS (guarda A3)", () => {
+    const reporteConPendiente = agruparReporteMensual({
+      periodo: "2020-01",
+      comisiones: [],
+      reembolsosPendientes: [pendiente()],
+    });
+    const reporteVacio = agruparReporteMensual({ periodo: "2020-01", comisiones: [], reembolsosPendientes: [] });
+    const nombresValidos = new Set(COMANDOS.map((c) => c.nombre));
+
+    for (const texto of [formatearReporteMensual(reporteConPendiente), formatearReporteMensual(reporteVacio)]) {
+      const tokens = texto.match(/(?<![\w/])\/[a-z][a-z-]*/g) ?? [];
+      for (const token of tokens) {
+        expect(nombresValidos.has(token)).toBe(true);
+      }
+    }
   });
 });
 
