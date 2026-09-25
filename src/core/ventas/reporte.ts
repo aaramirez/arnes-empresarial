@@ -36,7 +36,7 @@ export interface ComisionConVenta {
   readonly vendedorNombre: string;
   readonly comisionMonto: number;
   readonly ventaMonto: number;
-  /** Estado ACTUAL de la venta — hace visible R5 (comisión viva sobre una venta reembolsada) en vez de esconderla. */
+  /** Estado ACTUAL de la venta — decide qué resta del reporte: sólo `reembolsada` se excluye del neto (ADR 301). */
   readonly ventaEstado: string;
   readonly periodo: string;
 }
@@ -54,19 +54,26 @@ export interface VentaPendienteReembolso {
 export interface FilaVendedor {
   readonly vendedorId: string;
   readonly vendedorNombre: string;
+  /** Conteo BRUTO: todas las comisiones del periodo del vendedor (ADR 301 pto 2). */
   readonly ventasConfirmadas: number;
+  /** NETO de reembolsos aplicados: Σ `ventaMonto` de ventas con estado ≠ `reembolsada` (ADR 301). */
   readonly montoVendido: number;
+  /** NETO: Σ `comisionMonto` de ventas con estado ≠ `reembolsada`. Criterio de orden (ADR 301 pto 3). */
   readonly totalComisionado: number;
-  /** Cuántas de esas ventas están hoy `reembolsada` o `reembolso_pendiente` — la columna que hace medible R5. */
+  /** Conteo BRUTO: `reembolsada` + `reembolso_pendiente` (sin `reembolso_rechazado`, ADR 23 de `tui-canal-empleado`). */
   readonly ventasConReembolso: number;
+  /** Σ `ventaMonto` de ventas `reembolsada`. NO se imprime (ADR 301 pto 2). */
   readonly montoReembolsado: number;
+  /** Σ `comisionMonto` de ventas `reembolsada`. NO se imprime; la tabla `comisiones` no cambia (ADR 301 pto 4). */
   readonly comisionRevertida: number;
 }
 
 export interface ReporteMensual {
   readonly periodo: string;
   readonly filas: readonly FilaVendedor[];
+  /** NETO: `redondearComoComision(Σ filas.totalComisionado)` (ADR 301). */
   readonly totalComisionado: number;
+  /** NETO: `redondearComoComision(Σ filas.montoVendido)` (ADR 301 pto 3). */
   readonly totalMontoVendido: number;
   readonly reembolsosPendientes: readonly VentaPendienteReembolso[];
 }
@@ -125,11 +132,21 @@ function redondearComoComision(monto: number): number {
  * Agrupa por `vendedor_id` dentro de un `periodo`. PURA (spec
  * `reporte-comisiones-mensual`, "testeable sin base de datos ni red").
  *
- * Reglas (§3.5):
+ * Reglas (ADR 301, reemplaza en el reporte a *R5 (hito-1.3-ventas-comisiones)*
+ * — la tabla `comisiones` sigue intacta, ver `comisionRevertida`):
  *  - Solo entran comisiones cuyo `periodo` coincide con el pedido.
- *  - `totalComisionado` (por fila y total general) se redondea a 2 decimales
- *    con el mismo criterio de `calcularComision` (ADR 16).
- *  - Orden: `totalComisionado` DESC, desempate por `vendedorId` ASC —
+ *  - `montoVendido`/`totalComisionado` son NETOS: sólo suman ventas con
+ *    estado ACTUAL ≠ `reembolsada`. `reembolso_pendiente` y
+ *    `reembolso_rechazado` NO restan (ADR 301 pto 1).
+ *  - Lo revertido por ventas `reembolsada` se acumula aparte
+ *    (`montoReembolsado`/`comisionRevertida`, derivado al leer, no se
+ *    imprime): sumar sólo lo no reembolsado evita restas de flotantes.
+ *  - `ventasConfirmadas` y `ventasConReembolso` conservan el conteo BRUTO
+ *    (ADR 301 pto 2).
+ *  - `totalComisionado`/`totalMontoVendido` (por fila y total general) se
+ *    redondean a 2 decimales con el mismo criterio de `calcularComision`
+ *    (ADR 16).
+ *  - Orden: `totalComisionado` NETO DESC, desempate por `vendedorId` ASC —
  *    determinista, para que el string completo sea afirmable en un test.
  *  - `reembolsosPendientes` pasa TAL CUAL, sin filtrar por `periodo`: el spec
  *    lo pide explícitamente.
