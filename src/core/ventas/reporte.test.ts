@@ -430,7 +430,7 @@ describe("agruparReporteMensual", () => {
 });
 
 describe("formatearReporteMensual", () => {
-  it("devuelve el string completo y determinista para un periodo con comisiones y reembolsos pendientes", () => {
+  it("devuelve el string completo y determinista para un periodo con comisiones y reembolsos pendientes (neto)", () => {
     const reporte = agruparReporteMensual({
       periodo: "2024-02",
       comisiones: [
@@ -472,10 +472,10 @@ describe("formatearReporteMensual", () => {
         "",
         "Vendedor                 Ventas Monto vendido Total comisionado Con reembolso",
         "-----------------------------------------------------------------------------",
-        "Ana Gomez                     1       1500.00            225.00             1",
         "Juan Perez                    1       1000.00            100.00             0",
+        "Ana Gomez                     1          0.00              0.00             1",
         "-----------------------------------------------------------------------------",
-        "TOTAL                                                    325.00",
+        "TOTAL                                                    100.00",
         "",
         "Reembolsos pendientes de aprobación",
         "",
