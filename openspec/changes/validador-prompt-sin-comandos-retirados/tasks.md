@@ -44,6 +44,8 @@ Chain strategy: N/A
 
 Decisiones que toma el humano antes de 1.1. Todas con recomendación del Spec Author.
 
+**Decidido (2026-09-26)**: C1-C6 aprobadas tal cual las recomendó el Spec Author. `Decision needed before apply` pasa a **No**.
+
 1. **C1, quién decide**: ¿el prompt dice *"persona autorizada, distinta de quien la pidió"* o *"administrador"*? Recomendado: **"persona autorizada"**. No duplica la política de `autorizacion-resolucion.ts` y sobrevive a `permisos-granulares`.
 2. **C2, instrucción de delegación**: ¿se alinea también `crear-solicitud-interna.ts:133` (hoy *"un empleado autenticado"*, falso desde `autorizacion-empleado`)? Recomendado: **sí**; son 2 líneas y evita que el modelo reciba dos versiones de quién decide.
 3. **C3, alcance de la guarda**: ¿las diez fuentes de `design.md` §4.2 (siete agentes + soporte + operaciones-empleado + A2A), dejando skills, descripciones de tools y `buildActivityPrompt` en la Deuda 14? Recomendado: **sí**.
@@ -55,18 +57,18 @@ Decisiones que toma el humano antes de 1.1. Todas con recomendación del Spec Au
 
 ## Gate G0 — Precondiciones (sin commit)
 
-- [ ] **G0.1** Checkpoint aprobado (bloque de arriba), con la respuesta registrada en este archivo.
-- [ ] **G0.2** El humano crea la rama `hito/v3.22-validador-prompt-sin-comandos-retirados` desde `main`.
-- [ ] **G0.3** Re-verificar anclajes con `rg`/`Read`: `definitions.ts:320-334` (validador), `crear-solicitud-interna.ts:127-141`, `dispatch-delegation.ts:216,234`, `reporte.test.ts:610-625`, `comando-empleado.ts:360` (`COMANDOS`), `tsconfig.build.json:3`. Re-verificar el techo con los dos comandos de `design.md` §2 (ambos deben dar 0).
-- [ ] **G0.4** Línea base: `npm test` y `npm run typecheck` verdes con `dist/` limpio (si hay `dist/` viejo, vitest duplica el conteo). Anotar el conteo de archivos y tests.
+- [x] **G0.1** Checkpoint aprobado (bloque de arriba), con la respuesta registrada en este archivo. *(2026-09-26)*
+- [ ] **G0.2** El humano crea la rama `hito/v3.22-validador-prompt-sin-comandos-retirados` desde `main`. *(Pendiente: la Fase 1 se escribió en el working tree de `main` sin commit; `git switch -c` se lleva los cambios.)*
+- [x] **G0.3** *(2026-09-26, anclajes y techo re-verificados en la fase design de la misma sesión)* Re-verificar anclajes con `rg`/`Read`: `definitions.ts:320-334` (validador), `crear-solicitud-interna.ts:127-141`, `dispatch-delegation.ts:216,234`, `reporte.test.ts:610-625`, `comando-empleado.ts:360` (`COMANDOS`), `tsconfig.build.json:3`. Re-verificar el techo con los dos comandos de `design.md` §2 (ambos deben dar 0).
+- [x] **G0.4** *(2026-09-26: 162 archivos pasan, 2 skipped; 3324 tests pasan, 5 skipped; typecheck verde)* Línea base: `npm test` y `npm run typecheck` verdes con `dist/` limpio (si hay `dist/` viejo, vitest duplica el conteo). Anotar el conteo de archivos y tests.
 
 ## Phase 1: Helper del token (`src/test/comandos-en-texto.ts`)
 
-- [ ] **1.1** RED — `src/test/comandos-en-texto.test.ts` (nuevo). Tabla de `design.md` §5 T3: (a) `src/core/agents`, `./activity-contract.js`, `../commands`, `https://example.com/aprobar`, `y/o`, `` `Write`/`Edit` ``, `~/datos`, `año/mes` → `[]`; (b) `usá /ver-solicitudes-a2a para verlas` → `["/ver-solicitudes-a2a"]`; (c) `(/login)`, `«/ayuda»`, `"\n/soporte"` reconocidos; (d) dos llamadas seguidas sobre el mismo texto dan el mismo resultado; (e) `tokensComandoInexistentes("usá /aprobar-solicitud o /login", new Set(["/login"]))` → `["/aprobar-solicitud"]`. Spec: `delegacion-subagentes`, scenarios 4 y 5.
+- [x] **1.1** *(2026-09-26: rojo por `Cannot find module './comandos-en-texto.js'` en vitest y en typecheck, TS2307)* RED — `src/test/comandos-en-texto.test.ts` (nuevo). Tabla de `design.md` §5 T3: (a) `src/core/agents`, `./activity-contract.js`, `../commands`, `https://example.com/aprobar`, `y/o`, `` `Write`/`Edit` ``, `~/datos`, `año/mes` → `[]`; (b) `usá /ver-solicitudes-a2a para verlas` → `["/ver-solicitudes-a2a"]`; (c) `(/login)`, `«/ayuda»`, `"\n/soporte"` reconocidos; (d) dos llamadas seguidas sobre el mismo texto dan el mismo resultado; (e) `tokensComandoInexistentes("usá /aprobar-solicitud o /login", new Set(["/login"]))` → `["/aprobar-solicitud"]`. Spec: `delegacion-subagentes`, scenarios 4 y 5.
 *Aceptación (rojo)*: falla por import inexistente. Typecheck rojo por el mismo motivo. `git diff` sólo toca el archivo nuevo.
 Commit: `test(test): define la tabla de tokens con forma de comando que distingue rutas y urls, rojo (Hito v3.22, tarea 1.1)`
 
-- [ ] **1.2** GREEN — `src/test/comandos-en-texto.ts` (nuevo): `PATRON_TOKEN_COMANDO`, `extraerTokensComando`, `tokensComandoInexistentes`, exactamente como `design.md` §4.1. Doc-comment con la regex pieza por pieza y los límites conocidos (mayúsculas, tilde, guion final: se reformula el texto, no se afloja la regex).
+- [x] **1.2** *(2026-09-26: 14/14 verdes; suite 163 archivos, 3338 tests, 5 skipped; typecheck y build verdes; `dist/test/` no existe)* GREEN — `src/test/comandos-en-texto.ts` (nuevo): `PATRON_TOKEN_COMANDO`, `extraerTokensComando`, `tokensComandoInexistentes`, exactamente como `design.md` §4.1. Doc-comment con la regex pieza por pieza y los límites conocidos (mayúsculas, tilde, guion final: se reformula el texto, no se afloja la regex).
 *Aceptación*: 1.1 verde; `npm test`, `npm run typecheck` verdes; `npm run build` verde y `dist/` **no** contiene `test/comandos-en-texto.js`.
 Commit: `feat(test): agrega el extractor compartido de tokens de comando para las guardas de texto al modelo (Hito v3.22, tarea 1.2)`
 
