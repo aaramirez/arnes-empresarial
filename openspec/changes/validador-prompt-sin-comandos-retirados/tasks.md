@@ -20,6 +20,7 @@
 | Suggested split | Una sola PR |
 | Delivery strategy | `ask-on-risk` → no dispara (riesgo bajo) |
 | Chain strategy | N/A |
+| Tamaño real hasta 6.4 (`git diff bd34360 HEAD --stat -- . ":(exclude)openspec"`) | **427** (420 inserciones + 7 borrados): `src` ≈ 239 (producción ≈ 21: dos literales y doc-comments; el resto tests), `docs/progreso/` 188 (`mutaciones.md` 123, más detallado que lo estimado). Supera el estimado (230-345) y el umbral de 400, sin contar el arc42 de 7.1 (≈ 20-30). WARNING del Reviewer (6.5): no se re-evaluó la estrategia al cruzar el umbral. Decisión pendiente del humano (ver 6.5) |
 
 ```text
 Decision needed before apply: Yes (checkpoint humano: C1-C6, ver "Checkpoint needed")
@@ -120,11 +121,11 @@ Commit: `docs(root): registra las mutaciones y la evidencia del prompt del valid
 
 ## Phase 6: Verificación final (sin commit)
 
-- [ ] **6.1** `npm run typecheck` verde.
-- [ ] **6.2** `npm test` verde con `dist/` limpio; conteo = línea base + nuevos.
-- [ ] **6.3** `npm run build` verde.
-- [ ] **6.4** Guarda de alcance: `git diff main --stat` sólo lista `definitions.ts` (+test), `crear-solicitud-interna.ts` (+test), `src/test/comandos-en-texto.ts` (+test), `textos-modelo-sin-comandos.test.ts`, `reporte.test.ts`, `docs/progreso/v3.22-…/` y los artefactos del change. `git diff main --` sobre la lista *"Fuera del diff de código"* de arriba, **vacío**.
-- [ ] **6.5** Revisión fresca (Reviewer). Sin su aprobación no arranca la Fase 7.
+- [x] **6.1** *(2026-09-26)* `npm run typecheck` verde.
+- [x] **6.2** *(2026-09-26: dos corridas, 164 archivos / 3342 tests / 5 skipped; el intermitente de 3.1 no reapareció)* `npm test` verde con `dist/` limpio; conteo = línea base + nuevos.
+- [x] **6.3** *(2026-09-26)* `npm run build` verde.
+- [x] **6.4** *(2026-09-26, contra merge-base bd34360: sólo los archivos listados; fuera de alcance vacío. origin/main avanzó a ed494de (PR #36, sólo evaluacion/): merge-tree limpio, techo ADR/RD intacto)* Guarda de alcance: `git diff main --stat` sólo lista `definitions.ts` (+test), `crear-solicitud-interna.ts` (+test), `src/test/comandos-en-texto.ts` (+test), `textos-modelo-sin-comandos.test.ts`, `reporte.test.ts`, `docs/progreso/v3.22-…/` y los artefactos del change. `git diff main --` sobre la lista *"Fuera del diff de código"* de arriba, **vacío**.
+- [x] **6.5** *(2026-09-26, Reviewer fresco (sdd-verify): VEREDICTO aprobado. 0 CRITICAL, 1 WARNING (tamaño real 427 > 400 sin re-evaluar la estrategia; ver forecast), 0 SUGGESTION. Textos exactos a design §3.1/§3.2, cada scenario con test, inventario 10/17 confirmado sin constructores faltantes, alcance limpio, suite 164/3342 dos veces)* Revisión fresca (Reviewer). Sin su aprobación no arranca la Fase 7.
 
 ## Phase 7: Cierre (sólo tras la aprobación del Reviewer; no es tarea del Implementer)
 
