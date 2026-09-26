@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Cierre ordenado en modo headless (v3.17 + v3.18)",
+    "output": "secuencia-cierre-headless.html",
+    "viewBox": [
+      1080,
+      655
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "senal",
+        "label": "Señal y readiness",
+        "focus": [
+          "os",
+          "cierre",
+          "ops"
+        ],
+        "note": "SIGTERM arma el watchdog y la readiness pasa a 503 en el mismo tick."
+      },
+      {
+        "id": "drenaje",
+        "label": "Drenaje",
+        "focus": [
+          "main",
+          "listeners",
+          "ops",
+          "db"
+        ],
+        "note": "Los listeners de negocio drenan antes que ops, así el 503 sigue visible; la base se cierra al final."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "os",
+      "type": "external",
+      "label": "Supervisor / OS",
+      "sublabel": "señales + sondas"
+    },
+    {
+      "id": "main",
+      "type": "backend",
+      "label": "main.ts",
+      "sublabel": "HARNESS_HEADLESS=1"
+    },
+    {
+      "id": "cierre",
+      "type": "security",
+      "label": "proceso-cierre",
+      "sublabel": "watchdog + fase"
+    },
+    {
+      "id": "ops",
+      "type": "backend",
+      "label": "adapters/ops",
+      "sublabel": "/salud/listo"
+    },
+    {
+      "id": "listeners",
+      "type": "frontend",
+      "label": "Listeners de negocio",
+      "sublabel": "web · webhooks · a2a"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "adapters/memory"
+    }
+  ],
+  "segments": [
+    {
+      "from": 157,
+      "to": 189,
+      "label": "Arranque"
+    },
+    {
+      "from": 207,
+      "to": 379,
+      "label": "Señal"
+    },
+    {
+      "from": 397,
+      "to": 569,
+      "label": "Drenaje y salida"
+    }
+  ],
+  "messages": [
+    {
+      "id": "esperar",
+      "from": "main",
+      "to": "cierre",
+      "y": 175,
+      "label": "esperarSenalDeCierre()",
+      "note": "registra SIGTERM, SIGINT y errores no capturados"
+    },
+    {
+      "id": "sigterm",
+      "from": "os",
+      "to": "cierre",
+      "y": 225,
+      "label": "SIGTERM",
+      "variant": "security"
+    },
+    {
+      "id": "resolve",
+      "from": "cierre",
+      "to": "main",
+      "y": 253,
+      "label": "fase = cerrando",
+      "variant": "return",
+      "note": "arma watchdog: HARNESS_SHUTDOWN_TIMEOUT_MS (70 s)"
+    },
+    {
+      "id": "sonda",
+      "from": "os",
+      "to": "ops",
+      "y": 281,
+      "label": "GET /salud/listo",
+      "variant": "dashed"
+    },
+    {
+      "id": "cerrando",
+      "from": "ops",
+      "to": "cierre",
+      "y": 309,
+      "label": "estaCerrando()"
+    },
+    {
+      "id": "cerrando-true",
+      "from": "cierre",
+      "to": "ops",
+      "y": 337,
+      "label": "true",
+      "variant": "return"
+    },
+    {
+      "id": "r503",
+      "from": "ops",
+      "to": "os",
+      "y": 365,
+      "label": "503 cerrando",
+      "variant": "return"
+    },
+    {
+      "id": "close-neg",
+      "from": "main",
+      "to": "listeners",
+      "y": 415,
+      "label": "close(): closeIdleConnections + drenar",
+      "variant": "emphasis",
+      "note": "tope 5 s por listener"
+    },
+    {
+      "id": "neg-ok",
+      "from": "listeners",
+      "to": "main",
+      "y": 443,
+      "label": "cerrados",
+      "variant": "return"
+    },
+    {
+      "id": "close-ops",
+      "from": "main",
+      "to": "ops",
+      "y": 471,
+      "label": "close()"
+    },
+    {
+      "id": "close-db",
+      "from": "main",
+      "to": "db",
+      "y": 499,
+      "label": "db.close()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "finalizar",
+      "from": "main",
+      "to": "cierre",
+      "y": 527,
+      "label": "finalizarCierreHeadless()"
+    },
+    {
+      "id": "exit",
+      "from": "cierre",
+      "to": "os",
+      "y": 555,
+      "label": "exit 0",
+      "variant": "return",
+      "note": "desarma watchdog; log cierre-completado"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "cierre",
+      "from": 220,
+      "to": 343,
+      "type": "security"
+    },
+    {
+      "participant": "main",
+      "from": 410,
+      "to": 533,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Salidas con error",
+      "items": [
+        "Watchdog vencido → exit 1",
+        "Error no capturado → exit 1"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Gap conocido (v3.19, 9.1)",
+      "items": [
+        "Los turnos de la TUI no se drenan",
+        "Ctrl+C puede cerrar la base con un turno en vuelo"
+      ]
+    }
+  ]
+}

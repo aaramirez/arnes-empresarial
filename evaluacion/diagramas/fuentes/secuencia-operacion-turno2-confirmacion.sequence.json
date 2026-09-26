@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Operación en dos turnos (2/2) — la confirmación y el gate de rol",
+    "output": "secuencia-operacion-turno2-confirmacion.html",
+    "viewBox": [
+      1080,
+      555
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "confirmacion",
+        "label": "Confirmación",
+        "focus": [
+          "mcp",
+          "store"
+        ],
+        "note": "Solo un casoId distinto confirma; la ranura se consume antes de ejecutar."
+      },
+      {
+        "id": "persistencia",
+        "label": "Gate y persistencia",
+        "focus": [
+          "mcp",
+          "db"
+        ],
+        "note": "Gate de rol, CAS y auditoría en una sola transacción."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "nav",
+      "type": "frontend",
+      "label": "Navegador",
+      "sublabel": "chat web"
+    },
+    {
+      "id": "web",
+      "type": "backend",
+      "label": "adapters/web",
+      "sublabel": "POST /operaciones"
+    },
+    {
+      "id": "build",
+      "type": "backend",
+      "label": "Orquestador",
+      "sublabel": "build-on-operaciones"
+    },
+    {
+      "id": "turno",
+      "type": "backend",
+      "label": "turn-selector",
+      "sublabel": "handleTurn"
+    },
+    {
+      "id": "sdk",
+      "type": "cloud",
+      "label": "Agent SDK",
+      "sublabel": "query()"
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "MCP operaciones",
+      "sublabel": "+ core/operaciones"
+    },
+    {
+      "id": "store",
+      "type": "security",
+      "label": "Confirmaciones",
+      "sublabel": "Map en memoria"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "adapters/memory"
+    }
+  ],
+  "segments": [
+    {
+      "from": 157,
+      "to": 469,
+      "label": "Turno 2 — confirmación"
+    }
+  ],
+  "messages": [
+    {
+      "id": "t2-post",
+      "from": "nav",
+      "to": "web",
+      "y": 175,
+      "label": "“sí, aprobala”",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t2-handler",
+      "from": "web",
+      "to": "build",
+      "y": 203,
+      "label": "onOperacionesEmpleado",
+      "note": "casoId nuevo"
+    },
+    {
+      "id": "t2-turno",
+      "from": "build",
+      "to": "turno",
+      "y": 231,
+      "label": "handleTurn"
+    },
+    {
+      "id": "t2-query",
+      "from": "turno",
+      "to": "sdk",
+      "y": 259,
+      "label": "query()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t2-tool",
+      "from": "sdk",
+      "to": "mcp",
+      "y": 287,
+      "label": "misma operación y acción",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t2-check",
+      "from": "mcp",
+      "to": "store",
+      "y": 315,
+      "label": "estaConfirmada → true",
+      "variant": "security",
+      "note": "origenCasoId distinto del actual"
+    },
+    {
+      "id": "t2-consumir",
+      "from": "mcp",
+      "to": "store",
+      "y": 343,
+      "label": "consumir(llave)",
+      "variant": "dashed"
+    },
+    {
+      "id": "t2-cas",
+      "from": "mcp",
+      "to": "db",
+      "y": 371,
+      "label": "gate de rol + CAS + auditoría",
+      "variant": "security",
+      "note": "una sola db.transaction"
+    },
+    {
+      "id": "t2-ok",
+      "from": "db",
+      "to": "mcp",
+      "y": 399,
+      "label": "aprobada",
+      "variant": "return"
+    },
+    {
+      "id": "t2-listo",
+      "from": "mcp",
+      "to": "sdk",
+      "y": 427,
+      "label": "“Listo: quedó aprobada”",
+      "variant": "return"
+    },
+    {
+      "id": "t2-200",
+      "from": "web",
+      "to": "nav",
+      "y": 455,
+      "label": "200 respuesta",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "web",
+      "from": 170,
+      "to": 461,
+      "type": "backend"
+    },
+    {
+      "participant": "mcp",
+      "from": 282,
+      "to": 433,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Gate",
+      "items": [
+        "Resolver lo ajeno exige administrador",
+        "Autoaprobación prohibida y auditada"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Garantías",
+      "items": [
+        "Nunca se autoconfirma en el mismo turno",
+        "También desde la TUI (v3.19)"
+      ]
+    }
+  ]
+}

@@ -86,3 +86,32 @@ Todas las transiciones son CAS vía `UPDATE ... WHERE estado = ...`. Piezas nota
 3. **Toda concurrencia de estado se resuelve en el store vía CAS**; el único mecanismo de concurrencia explícito del núcleo (`KeyedQueue`) sirve para serializar I/O, no transiciones de negocio.
 4. **Distinción consistente de puertos** "nunca rechaza" (tablero, notificador, feedback de conocimiento, cliente A2A) vs. "falla ruidosamente" (los `*StorePort`) — documentada en cada contrato, refleja qué efectos son cosméticos vs. canónicos.
 5. **Trazabilidad de decisiones**: casi todos los archivos citan un ADR o un hallazgo de code-review concreto para justificar una decisión no obvia — señal de un proceso de revisión activo con bugs reales corregidos, no solo comentarios aspiracionales.
+
+
+## Actualización 2026-09-25
+
+*(Lo anterior describe `v3.4.0`. Detalle completo en [`09-actualizacion-2026-09-25.md`](09-actualizacion-2026-09-25.md).)*
+
+`src/core/` pasó de **20 291 líneas / 108 archivos / 17 módulos** a **32 297 / 152 / 20** (+12 006 líneas). Dónde creció:
+
+| Módulo | v3.4.0 | v3.21.0 | Δ | Por qué |
+| --- | ---: | ---: | ---: | --- |
+| `operaciones/` | — | 5 899 | **+5 899** | Nuevo (v3.6). Contrato, validador y `ejecutar-operacion.ts`, que despacha las 13 operaciones |
+| `agents/` | 1 994 | 4 081 | +2 087 | Tool de consultas de negocio (v3.8), catálogo de KPIs (v3.16), textos A2A y marco de texto externo (v3.15), prompts extendidos |
+| `ventas/` | 4 232 | 6 050 | +1 818 | Devolución sin token con dos personas (v3.12), consulta de venta propia, reporte neto de reembolsos (v3.21) |
+| `solicitudes/` | 1 507 | 2 165 | +658 | Consulta de solicitud propia (v3.14), puerto de consulta para A2A |
+| `commands/` | 1 349 | 1 875 | +526 | Gate `requiereAdministrador` (v3.7), enmascarado de secretos (v3.20) |
+| `auth/` | 615 | 1 115 | +500 | Roles y política de autorización (v3.5) |
+| `hooks/` | 223 | 457 | +234 | Handlers reales PRE_TURN/POST_TURN (`ce5d7b8`, fuera del ciclo SDD) |
+| `turn-selector/` | 4 098 | 4 167 | +69 | Prácticamente estable: la tubería del turno no cambió de forma |
+
+**Lectura:** el crecimiento no está en el motor de orquestación (`turn-selector/` queda casi igual), sino en el **dominio y la política**: qué puede hacer cada empleado, con qué confirmación y con qué auditoría. Es la señal de que la tubería diseñada en v1/v2 soportó 17 hitos de funcionalidad sin cambiar de forma.
+
+**Alerta nueva:** `core/agents` ya no es solo el registro de agentes. También aloja lógica de consultas de negocio (`consultas-negocio-tool.ts`, que importa de `ventas/`, `solicitudes/` y `actividad/`), y `core/operaciones` importa 6 archivos de `agents/`. El resultado son **dependencias circulares a nivel módulo** que no existían en v3.4.0 (`agents ↔ operaciones`, `agents ↔ solicitudes`). Ver la actualización de `07-mapa-modulos.md`.
+
+**Reglas de negocio nuevas destacables:**
+
+- Autoaprobación prohibida, incluso para un administrador (v3.5; en reembolsos, desde v3.10).
+- Separación de funciones en las devoluciones sin token: el vendedor inicia y otro administrador cierra (v3.12).
+- Gate de propiedad en el núcleo para las consultas propias (v3.14).
+- Reporte de comisiones neto de reembolsos, derivado al leer y sin tocar la tabla `comisiones` (v3.21).

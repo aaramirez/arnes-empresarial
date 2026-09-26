@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Máquina de estados — solicitud interna",
+    "output": "estados-solicitud-interna.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "resolucion",
+        "label": "Resolución",
+        "focus": [
+          "pendiente",
+          "aprobada",
+          "rechazada"
+        ],
+        "note": "Solo un administrador que no sea el solicitante aprueba o rechaza."
+      },
+      {
+        "id": "autoservicio",
+        "label": "Cancelación",
+        "focus": [
+          "pendiente",
+          "cancelada"
+        ],
+        "note": "El autor cancela la propia sin gate de rol."
+      }
+    ],
+    "viewBox": [
+      1060,
+      630
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Estados"
+    },
+    {
+      "id": "autor",
+      "label": "Autoservicio"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "empleado",
+      "type": "external",
+      "label": "Empleado",
+      "sublabel": "chat o TUI",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "pendiente",
+      "type": "waiting",
+      "label": "Pendiente",
+      "sublabel": "…_aprobacion_humana",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "tag": "HITL"
+    },
+    {
+      "id": "aprobada",
+      "type": "success",
+      "label": "aprobada",
+      "sublabel": "admin ≠ solicitante",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "terminal"
+    },
+    {
+      "id": "rechazada",
+      "type": "failure",
+      "label": "rechazada",
+      "sublabel": "admin ≠ solicitante",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal"
+    },
+    {
+      "id": "cancelada",
+      "type": "neutral",
+      "label": "cancelada",
+      "sublabel": "solo el autor",
+      "lane": "autor",
+      "col": 0,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "rechazar",
+      "from": "pendiente",
+      "to": "rechazada",
+      "label": "rechazar",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "cancelar",
+      "from": "pendiente",
+      "to": "cancelada",
+      "label": "cancelar",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Una transacción",
+      "items": [
+        "CAS + caso resuelto + registro",
+        "Tipos: vacaciones y gasto"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Sin vuelta atrás",
+      "items": [
+        "No hay reapertura",
+        "Resolver pide dos turnos"
+      ]
+    }
+  ]
+}

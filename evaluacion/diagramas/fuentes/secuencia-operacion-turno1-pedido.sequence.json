@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Operación en dos turnos (1/2) — el pedido: resolver_solicitud desde el chat web",
+    "output": "secuencia-operacion-turno1-pedido.html",
+    "viewBox": [
+      1080,
+      527
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "reserva",
+        "label": "Reserva de la ranura",
+        "focus": [
+          "mcp",
+          "store"
+        ],
+        "note": "Sin confirmación previa: se reserva la ranura y se pide confirmar."
+      },
+      {
+        "id": "ida-vuelta",
+        "label": "Ida y vuelta",
+        "focus": [
+          "nav",
+          "web",
+          "build",
+          "turno",
+          "sdk",
+          "mcp"
+        ],
+        "note": "El pedido recorre la tubería de turno completa."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "nav",
+      "type": "frontend",
+      "label": "Navegador",
+      "sublabel": "chat web"
+    },
+    {
+      "id": "web",
+      "type": "backend",
+      "label": "adapters/web",
+      "sublabel": "POST /operaciones"
+    },
+    {
+      "id": "build",
+      "type": "backend",
+      "label": "Orquestador",
+      "sublabel": "build-on-operaciones"
+    },
+    {
+      "id": "turno",
+      "type": "backend",
+      "label": "turn-selector",
+      "sublabel": "handleTurn"
+    },
+    {
+      "id": "sdk",
+      "type": "cloud",
+      "label": "Agent SDK",
+      "sublabel": "query()"
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "MCP operaciones",
+      "sublabel": "+ core/operaciones"
+    },
+    {
+      "id": "store",
+      "type": "security",
+      "label": "Confirmaciones",
+      "sublabel": "Map en memoria"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "adapters/memory"
+    }
+  ],
+  "segments": [
+    {
+      "from": 157,
+      "to": 441,
+      "label": "Turno 1 — pedido"
+    }
+  ],
+  "messages": [
+    {
+      "id": "t1-post",
+      "from": "nav",
+      "to": "web",
+      "y": 175,
+      "label": "POST /operaciones (Bearer)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t1-handler",
+      "from": "web",
+      "to": "build",
+      "y": 203,
+      "label": "onOperacionesEmpleado",
+      "note": "sesión válida; si no, 401"
+    },
+    {
+      "id": "t1-caso",
+      "from": "build",
+      "to": "db",
+      "y": 231,
+      "label": "createCaso(operaciones)"
+    },
+    {
+      "id": "t1-turno",
+      "from": "build",
+      "to": "turno",
+      "y": 259,
+      "label": "handleTurn + mcpServers"
+    },
+    {
+      "id": "t1-query",
+      "from": "turno",
+      "to": "sdk",
+      "y": 287,
+      "label": "query()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t1-tool",
+      "from": "sdk",
+      "to": "mcp",
+      "y": 315,
+      "label": "resolver_solicitud aprobar",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t1-check",
+      "from": "mcp",
+      "to": "store",
+      "y": 343,
+      "label": "estaConfirmada → false",
+      "variant": "security"
+    },
+    {
+      "id": "t1-reserva",
+      "from": "mcp",
+      "to": "store",
+      "y": 371,
+      "label": "marcarPendiente(dominio:itemId)",
+      "variant": "dashed"
+    },
+    {
+      "id": "t1-eco",
+      "from": "mcp",
+      "to": "sdk",
+      "y": 399,
+      "label": "requiere_confirmacion",
+      "variant": "return"
+    },
+    {
+      "id": "t1-200",
+      "from": "web",
+      "to": "nav",
+      "y": 427,
+      "label": "200 “Confirmá…”",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "web",
+      "from": 170,
+      "to": 433,
+      "type": "backend"
+    },
+    {
+      "participant": "mcp",
+      "from": 310,
+      "to": 405,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Qué queda reservado",
+      "items": [
+        "Llave: dominio, itemId, acción y empleado",
+        "Máximo 8 ranuras por empleado"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Alcance",
+      "items": [
+        "4 operaciones usan este flujo",
+        "registrar_venta va en un solo turno"
+      ]
+    }
+  ]
+}

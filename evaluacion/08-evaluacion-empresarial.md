@@ -78,3 +78,25 @@ Esta es, probablemente, la parte más valiosa y más genuinamente "de harness" d
 ## Conclusión
 
 La palabra "empresarial" en el nombre del proyecto se sostiene en el sentido de **patrón**: un arnés de agentes con arquitectura hexagonal disciplinada, dominio de negocio real (ventas, solicitudes, revisión de PRs) y comunicación A2A verificada contra agentes externos — todo eso es una base genuinamente reutilizable para construir sobre ella. No se sostiene todavía en el sentido de **plataforma operable**: un solo proceso, un solo archivo SQLite, sin CI/CD, sin RBAC más allá de un booleano, sin story de escalamiento. Y esto último no es un hallazgo oculto de esta auditoría — es exactamente lo que el propio arc42 declara como fuera de alcance de una "pasantía corta". La pregunta que vale la pena hacerle al pasante no es "¿por qué no resolviste esto?", sino **"¿cuál de estas cinco brechas (persistencia, multi-tenencia, seguridad de plataforma, observabilidad, despliegue) elegirías atacar primero si este arnés tuviera que sostener una segunda empresa real mañana?"** — la arquitectura de puertos y adaptadores que ya existe está, de hecho, diseñada para que esa siguiente etapa sea una extensión y no una reescritura.
+
+
+## Actualización 2026-09-25 — el veredicto, revisado
+
+*(Lo anterior es el veredicto sobre `v3.4.0` y se conserva completo. Detalle y evidencia en [`09-actualizacion-2026-09-25.md`](09-actualizacion-2026-09-25.md), §6.)*
+
+| Dimensión | 2026-09-12 | 2026-09-25 | Qué la movió |
+| --- | --- | --- | --- |
+| Extensibilidad arquitectónica | 🟢 Fuerte | 🟢 Fuerte *(con alerta)* | Se sostienen las 0 aristas `core→adapters`; la alerta son los ciclos nuevos entre módulos del núcleo y el fan-in 16 de `core/agents` |
+| Corrección del dominio | 🟢 Fuerte | 🟢 Fuerte | Separación de funciones, autoaprobación prohibida, reporte neto de reembolsos con ADR propio |
+| Persistencia y escala | 🔴 Débil | 🔴 Débil | Sin cambios de fondo; solo se volvió configurable la ruta (`HARNESS_DB_PATH`) |
+| Multi-tenencia / gobernanza | 🔴 Débil | **🟡 Parcial** | Roles `empleado`/`administrador`, gate de administrador, auditoría de rechazos. Sigue sin haber multi-tenencia (por diseño) |
+| Seguridad | 🟡 Parcial | 🟡 Parcial *(mejor)* | A favor: CSP en el chat, sesión con TTL e inactividad, clave enmascarada, marco contra inyección de prompt en texto externo. En contra: sigue sin rate-limiting (`login.ts:38`), los tokens siguen compartidos y el endpoint `ops` no tiene autenticación |
+| Observabilidad | 🟡 Parcial | 🟡 Parcial | A favor: liveness/readiness y hooks de log PRE/POST_TURN. En contra: sin métricas, tracing ni rotación |
+| Confiabilidad operacional | 🟡 Parcial | 🟡 Parcial *(mejor)* | A favor: cierre ordenado con presupuesto y watchdog, readiness. En contra: la Deuda 1 sigue abierta y los turnos de la TUI quedan fuera del drenaje (hallazgo 9.1 de v3.19) |
+| Calidad de ingeniería | 🟢 Fuerte | 🟢 Fuerte *(reforzada)* | +1 037 tests, pruebas de mutación, commits RED separados, CI |
+| Despliegue y operación | 🔴 Débil | **🟡 Parcial** | CI (typecheck + test + build), build de producción, `npm start`, modo headless, healthchecks. Faltan contenedor, supervisor de proceso y backup |
+| Madurez multi-agente | 🟢 Fuerte | 🟢 Fuerte | A2A saliente desde el chat con catálogo cerrado; A2A entrante con consultas de negocio de solo lectura |
+
+**Conclusión, actualizada.** De tres dimensiones en rojo se pasó a una. La pregunta que cerraba este documento (*"¿cuál de estas cinco brechas elegirías atacar primero?"*) ya tiene una respuesta en los hechos: el pasante atacó **gobernanza** (v3.5, v3.7, v3.10, v3.12) y **despliegue/operación** (CI, v3.17, v3.18), y dejó **persistencia** para un change que por ahora solo existe como referencia (`respaldo-y-durabilidad-sqlite`). La etiqueta "empresarial" se sostiene hoy un poco mejor también en el sentido de *plataforma*: el arnés puede correr sin terminal, reportar su salud y apagarse limpio. El techo real sigue siendo el mismo: **un archivo SQLite dentro de un proceso, sin backup**.
+
+La nueva pregunta para el pasante es de proceso más que de arquitectura: *¿cómo se reconstruye, dentro de seis meses, por qué v3.17 y v3.18 se diseñaron como se diseñaron, si sus `design.md` no están en el repo y el plan maestro no los menciona?*

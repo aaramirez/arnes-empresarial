@@ -1,0 +1,281 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Composition roots — quién cablea qué (v3.21.0)",
+    "output": "composition-roots.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/aaramirez/arnes-empresarial",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "49602b47ccf60c9da5b1bef051ef03bce1c9db04"
+    },
+    "views": [
+      {
+        "id": "empleado",
+        "label": "Canal del empleado",
+        "focus": [
+          "comando",
+          "operaciones",
+          "venta",
+          "soporte",
+          "activity"
+        ],
+        "note": "build-on-comando-empleado y build-on-operaciones-empleado concentran el cableado del empleado."
+      },
+      {
+        "id": "cruces",
+        "label": "Imports cruzados",
+        "focus": [
+          "comando",
+          "activity"
+        ],
+        "note": "Dos composition roots se importan entre sí para compartir factories de stores."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "submit",
+      "type": "backend",
+      "label": "build-on-submit",
+      "sublabel": "TUI sin sesión · 5",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/build-on-submit.ts"
+        }
+      ]
+    },
+    {
+      "id": "soporte",
+      "type": "backend",
+      "label": "build-on-soporte",
+      "sublabel": "/soporte web · 6",
+      "pos": [
+        400,
+        60
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/build-on-soporte.ts"
+        }
+      ]
+    },
+    {
+      "id": "venta",
+      "type": "backend",
+      "label": "build-on-venta",
+      "sublabel": "stores de venta · 5",
+      "pos": [
+        760,
+        60
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/build-on-venta.ts"
+        }
+      ]
+    },
+    {
+      "id": "login",
+      "type": "security",
+      "label": "build-on-login-http",
+      "sublabel": "POST /login · 3",
+      "pos": [
+        40,
+        230
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "tag": "v3.6",
+      "sources": [
+        {
+          "path": "src/build-on-login-http.ts"
+        }
+      ]
+    },
+    {
+      "id": "comando",
+      "type": "backend",
+      "label": "build-on-comando-empleado",
+      "sublabel": "comandos TUI · 21",
+      "pos": [
+        400,
+        230
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "tag": "fan-out máx.",
+      "sources": [
+        {
+          "path": "src/build-on-comando-empleado.ts"
+        }
+      ]
+    },
+    {
+      "id": "activity",
+      "type": "backend",
+      "label": "build-on-activity",
+      "sublabel": "bot de PRs · 11",
+      "pos": [
+        760,
+        230
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/build-on-activity.ts"
+        }
+      ]
+    },
+    {
+      "id": "a2a",
+      "type": "backend",
+      "label": "build-on-a2a-entrante",
+      "sublabel": "turno A2A · 8",
+      "pos": [
+        40,
+        400
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/build-on-a2a-entrante.ts"
+        }
+      ]
+    },
+    {
+      "id": "operaciones",
+      "type": "backend",
+      "label": "build-on-operaciones-empleado",
+      "sublabel": "chat + TUI · 15",
+      "pos": [
+        400,
+        400
+      ],
+      "size": [
+        230,
+        64
+      ],
+      "tag": "v3.6",
+      "sources": [
+        {
+          "path": "src/build-on-operaciones-empleado.ts"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "main.ts instancia los 8 (31 aristas de salida, fan-in 0)",
+      "wraps": [
+        "submit",
+        "soporte",
+        "venta",
+        "login",
+        "comando",
+        "activity",
+        "a2a",
+        "operaciones"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "comando-activity",
+      "from": "comando",
+      "to": "activity",
+      "label": "createDelegacionStore",
+      "variant": "security",
+      "labelAt": [
+        695,
+        283
+      ]
+    },
+    {
+      "id": "activity-comando",
+      "from": "activity",
+      "to": "comando",
+      "label": "createPropuestaStore",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "bottom"
+    },
+    {
+      "id": "comando-soporte",
+      "from": "comando",
+      "to": "soporte",
+      "label": "tipo",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "operaciones-comando",
+      "from": "operaciones",
+      "to": "comando",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "comando-venta",
+      "from": "comando",
+      "to": "venta",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "operaciones-venta",
+      "from": "operaciones",
+      "to": "venta",
+      "fromSide": "right",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Cómo leer los números",
+      "items": [
+        "El número en cada caja es su fan-out (módulos que importa)",
+        "Son los únicos archivos que ven core/ y adapters/ a la vez"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Hallazgo",
+      "items": [
+        "comando ↔ activity se importan entre sí",
+        "Las factories compartidas podrían vivir en un módulo propio"
+      ]
+    }
+  ]
+}

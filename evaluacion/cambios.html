@@ -1,0 +1,655 @@
+<!doctype html>
+<title>Qué Cambió en el Arnés</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --page:       #f2f3f1;
+  --surface:    #fcfcfb;
+  --surface-2:  #ffffff;
+  --ink:        #12181f;
+  --ink-2:      #52514e;
+  --ink-muted:  #898781;
+  --line:       #e1e0d9;
+  --line-strong:#c3c2b7;
+  --accent:     #2a78d6;   /* core / categorical slot 1 */
+  --accent-2:   #eb6834;   /* adapters / categorical slot 2 */
+  --accent-3:   #1baf7a;   /* aqua, tests */
+  --accent-4:   #eda100;   /* yellow */
+  --accent-5:   #e87ba4;   /* magenta */
+  --accent-6:   #008300;   /* green */
+  --good:       #0ca30c;
+  --warning:    #fab219;
+  --critical:   #d03b3b;
+  --shadow:     0 1px 2px rgba(18,24,31,.04), 0 8px 24px -12px rgba(18,24,31,.12);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page:       #0d0d0d;
+    --surface:    #1a1a19;
+    --surface-2:  #17181a;
+    --ink:        #ffffff;
+    --ink-2:      #c3c2b7;
+    --ink-muted:  #898781;
+    --line:       #2c2c2a;
+    --line-strong:#3a3a37;
+    --accent:     #3987e5;
+    --accent-2:   #d95926;
+    --accent-3:   #199e70;
+    --accent-4:   #c98500;
+    --accent-5:   #d55181;
+    --accent-6:   #3fbf3f;
+    --shadow:     0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page:       #0d0d0d;
+  --surface:    #1a1a19;
+  --surface-2:  #17181a;
+  --ink:        #ffffff;
+  --ink-2:      #c3c2b7;
+  --ink-muted:  #898781;
+  --line:       #2c2c2a;
+  --line-strong:#3a3a37;
+  --accent:     #3987e5;
+  --accent-2:   #d95926;
+  --accent-3:   #199e70;
+  --accent-4:   #c98500;
+  --accent-5:   #d55181;
+  --accent-6:   #3fbf3f;
+  --shadow:     0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+h1, h2, h3, .mono, .tag, .kpi-value, .num, nav a, .section-label {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+h1 { text-wrap: balance; }
+h2 { text-wrap: balance; }
+
+a { color: var(--accent); }
+
+.shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  max-width: 1280px;
+  margin: 0 auto;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail { position: static !important; border-right: none !important; border-bottom: 1px solid var(--line); }
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 28px 20px;
+  border-right: 1px solid var(--line);
+}
+.rail .brand {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.rail h1 {
+  font-size: 20px;
+  margin: 0 0 22px;
+  line-height: 1.25;
+}
+.rail nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rail nav a {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  text-decoration: none;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+.rail nav a:hover { background: var(--surface); color: var(--ink); }
+.rail nav a .n { color: var(--ink-muted); font-size: 11px; min-width: 16px; }
+.rail .meta {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+.rail .meta div { margin-bottom: 5px; }
+.rail .meta a.other-doc {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+main { padding: 40px 44px 100px; min-width: 0; }
+section { margin-bottom: 68px; scroll-margin-top: 20px; }
+.section-label {
+  font-size: 11.5px;
+  color: var(--accent);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+section h2 { font-size: 23px; margin: 0 0 10px; }
+section > .lede { color: var(--ink-2); max-width: 66ch; margin: 0 0 26px; font-size: 14.5px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.pad { padding: 22px 24px; }
+
+/* KPI row */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.kpi {
+  background: var(--surface);
+  padding: 18px 18px 16px;
+}
+.kpi-value {
+  font-size: 27px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+.kpi-label {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  margin-top: 4px;
+}
+
+/* Architecture diagram */
+.arch-wrap { overflow-x: auto; }
+.arch-wrap svg { display: block; margin: 0 auto; }
+.hex-core rect { fill: var(--accent); }
+.hex-core text { fill: #fff; }
+.node-box rect { fill: var(--surface-2); stroke: var(--line-strong); }
+.node-box text.title { fill: var(--ink); font-weight: 600; }
+.node-box text.sub { fill: var(--ink-muted); }
+.edge { stroke: var(--line-strong); stroke-width: 1.4; fill: none; }
+.edge-label { fill: var(--ink-muted); font-size: 10px; }
+
+/* bars */
+.barlist { display: flex; flex-direction: column; gap: 9px; }
+.barrow { display: grid; grid-template-columns: 148px 1fr 92px; align-items: center; gap: 12px; }
+.barrow .name { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barrow .track { position: relative; height: 16px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.barrow .fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+.barrow .val { font-size: 12px; color: var(--ink-muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+.col-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 14px; display:flex; align-items:center; gap:8px;}
+.col-title .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* timeline chart */
+.tl-wrap { overflow-x: auto; }
+#timeline { display: block; min-width: 720px; }
+.tl-bar { fill: var(--accent); }
+.tl-axis-label { fill: var(--ink-muted); font-size: 10px; font-family: "IBM Plex Mono", monospace; }
+.tl-tag-line { stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.tl-tag-label { fill: var(--ink-2); font-size: 9.5px; font-family: "IBM Plex Mono", monospace; }
+.tl-tooltip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+  background: var(--ink); color: var(--page); font-size: 11.5px; padding: 6px 9px;
+  border-radius: 6px; white-space: nowrap; z-index: 5; font-family: "IBM Plex Mono", monospace;
+}
+.chart-relative { position: relative; }
+
+/* milestone bars (between tags) */
+#milestones { display: block; }
+.ms-bar { fill: var(--accent); cursor: pointer; }
+.ms-bar.gap { fill: var(--line-strong); }
+.ms-label { fill: var(--ink-2); font-size: 10.5px; font-family: "IBM Plex Mono", monospace; }
+.ms-val { fill: var(--ink-muted); font-size: 10px; font-family: "IBM Plex Mono", monospace; }
+
+/* hour rhythm */
+#hours { display: block; }
+.hr-bar { fill: var(--accent); }
+.hr-axis { fill: var(--ink-muted); font-size: 9px; font-family: "IBM Plex Mono", monospace; }
+
+/* commit type bars */
+.type-row { display: grid; grid-template-columns: 90px 1fr 50px; align-items: center; gap: 10px; margin-bottom: 8px; }
+.type-row .name { font-size: 12.5px; font-family: "IBM Plex Mono", monospace; }
+.type-row .track { height: 14px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.type-row .fill { height: 100%; border-radius: 3px; }
+.type-row .val { font-size: 12px; color: var(--ink-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-2); margin-top: 12px; }
+.legend .item { display: flex; align-items: center; gap: 6px; }
+.legend .sw { width: 9px; height: 9px; border-radius: 2px; }
+
+.callout {
+  border-left: 3px solid var(--warning);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  padding: 16px 18px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.callout b { color: var(--ink); }
+
+footer.page-footer {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  margin-top: 60px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+footer.page-footer a { color: var(--ink-2); }
+
+/* ---- cambios.html: estilos propios ---- */
+.delta { font-size: 12px; font-family: "IBM Plex Mono", monospace; margin-top: 6px; color: var(--good); font-weight: 600; }
+.delta.flat { color: var(--ink-muted); }
+.delta.bad { color: var(--critical); }
+.kpi-before { font-size: 11.5px; color: var(--ink-muted); font-family: "IBM Plex Mono", monospace; margin-top: 2px; }
+.banner {
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 14px 18px; font-size: 13.5px; color: var(--ink-2); margin-bottom: 30px;
+}
+.banner b { color: var(--ink); }
+.pair { display: grid; grid-template-columns: 130px 1fr 110px; align-items: center; gap: 10px; margin-bottom: 9px; }
+.pair .name { font-size: 12.5px; font-family: "IBM Plex Mono", monospace; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pair .tracks { display: flex; flex-direction: column; gap: 3px; }
+.pair .t { height: 7px; border-radius: 2px; background: var(--line); position: relative; overflow: hidden; }
+.pair .t > i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; }
+.pair .val { font-size: 11.5px; color: var(--ink-muted); text-align: right; font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", monospace; white-space: nowrap; }
+table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.grid th, table.grid td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.grid th { font-family: "IBM Plex Mono", monospace; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-muted); font-weight: 600; }
+table.grid td.mono { font-size: 12px; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+.pill { display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 600; white-space: nowrap; }
+.pill.g { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+.pill.y { background: color-mix(in srgb, var(--warning) 22%, transparent); color: color-mix(in srgb, var(--warning) 60%, var(--ink)); }
+.pill.r { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical); }
+.pill.n { background: var(--line); color: var(--ink-2); }
+.arrow { color: var(--ink-muted); padding: 0 4px; }
+.cols3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; }
+@media (max-width: 900px) { .cols3 { grid-template-columns: 1fr; } }
+.col-card h3 { font-size: 13px; margin: 0 0 12px; display: flex; gap: 8px; align-items: center; }
+.col-card ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
+.col-card li { margin-bottom: 8px; }
+.col-card li b { color: var(--ink); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+#timeline2, #milestones2 { display: block; }
+@media (max-width: 700px) {
+  main { padding: 28px 16px 80px; }
+  .pair { grid-template-columns: 96px 1fr 88px; }
+}
+</style>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">Arnés Empresarial · pasantía</div>
+    <h1>Qué cambió · 12 → 25 sep</h1>
+    <nav>
+      <a href="#resumen"><span class="n">—</span> Antes y ahora</a>
+      <a href="#linea"><span class="n">—</span> Línea de tiempo completa</a>
+      <a href="#hitos"><span class="n">—</span> Los 17 hitos nuevos</a>
+      <a href="#modulos"><span class="n">—</span> Dónde creció el código</a>
+      <a href="#hallazgos"><span class="n">—</span> Conclusiones que cambiaron</a>
+      <a href="#proceso"><span class="n">—</span> Proceso SDD</a>
+      <a href="#scorecard"><span class="n">—</span> Scorecard empresarial</a>
+      <a href="#diagramas"><span class="n">—</span> Diagramas (Archify)</a>
+    </nav>
+    <div class="meta">
+      <div>Generado 2026‑09‑25 con <span class="mono">HEAD</span> = <span class="mono">49602b4</span> (<span class="mono">v3.21.0</span>), con el mismo método que la pasada del 12/09.</div>
+      <div>Las páginas anteriores se conservan intactas como foto de <span class="mono">v3.4.0</span>.</div>
+      <a class="other-doc" href="dashboard.html">← Bitácora del Arnés (foto v3.4)</a>
+      <a class="other-doc" href="proceso.html">← Cadena de Revisión (foto v3.4)</a>
+      <a class="other-doc" href="mapa-modulos.html">← Mapa de Módulos (foto v3.4)</a>
+    </div>
+  </aside>
+
+  <main>
+
+    <section id="resumen">
+      <div class="section-label">00 · Antes y ahora</div>
+      <h2>En 13 días, el doble de commits y 17 hitos más</h2>
+      <p class="lede">La primera evaluación retrató el repo en <span class="mono">v3.4.0</span> (12/09). Esta página muestra solo lo que se movió hasta <span class="mono">v3.21.0</span> (25/09). El proyecto giró de <i>construir el motor</i> a <i>operar el negocio por conversación</i> y a <i>preparar el despliegue</i>. La regla hexagonal sigue intacta.</p>
+
+      <div class="banner"><b>Cómo leer los números:</b> la línea base de v3.4.0 se recalculó con el mismo script que la de hoy, para que cada Δ sea homogéneo. Por eso algunos valores de "antes" difieren un poco de los publicados el 12/09 (por ejemplo, 1 691 bloques de test contra 1 618). Detalle en <span class="mono">09-actualizacion-2026-09-25.md</span>.</div>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-value">755</div><div class="kpi-before">antes 351</div><div class="delta">+404 commits</div></div>
+        <div class="kpi"><div class="kpi-value">29</div><div class="kpi-before">antes 12</div><div class="delta">+17 tags</div></div>
+        <div class="kpi"><div class="kpi-value">91 345</div><div class="kpi-before">antes 60 112</div><div class="delta">+52 % líneas en src/</div></div>
+        <div class="kpi"><div class="kpi-value">2 728</div><div class="kpi-before">antes 1 691</div><div class="delta">+1 037 tests</div></div>
+        <div class="kpi"><div class="kpi-value">167 / 164</div><div class="kpi-before">antes 126 / 116</div><div class="delta">archivos prod. / test</div></div>
+        <div class="kpi"><div class="kpi-value">0</div><div class="kpi-before">antes 0</div><div class="delta flat">aristas core → adapters</div></div>
+        <div class="kpi"><div class="kpi-value">14</div><div class="kpi-before">antes 1</div><div class="delta">skills</div></div>
+        <div class="kpi"><div class="kpi-value">419</div><div class="kpi-before">antes 419</div><div class="delta bad">líneas del plan: sin cambios</div></div>
+      </div>
+    </section>
+
+    <section id="linea">
+      <div class="section-label">01 · Línea de tiempo completa</div>
+      <h2>31 días de commits: el período nuevo, resaltado</h2>
+      <p class="lede">Barras grises: lo que ya cubría la primera evaluación. Barras azules: el período nuevo. El 13/09 se cerraron tres hitos en un día (v3.5–v3.7), y el pico del 21/09 coincide con v3.16 y v3.17, el hito más grande del período. Pasá el cursor sobre una barra para ver el detalle.</p>
+      <div class="card pad tl-wrap chart-relative">
+        <svg id="timeline2" viewBox="0 0 1180 360" width="1180" height="360" role="img" aria-label="Commits por día del 26 de agosto al 25 de septiembre de 2026"></svg>
+        <div class="tl-tooltip" id="tl-tooltip"></div>
+      </div>
+      <div class="legend">
+        <div class="item"><span class="sw" style="background:var(--line-strong)"></span> 26/08 – 11/09 (primera evaluación)</div>
+        <div class="item"><span class="sw" style="background:var(--accent)"></span> 12/09 – 25/09 (este delta)</div>
+      </div>
+    </section>
+
+    <section id="hitos">
+      <div class="section-label">02 · Los 17 hitos nuevos</div>
+      <h2>Commits entre cada tag, de v1.0 a v3.21</h2>
+      <p class="lede">Los hitos nuevos son, en promedio, más chicos que los de v1/v2 (24 commits de media, contra 29), salvo los dos de infraestructura: <span class="mono">v3.17</span> modo headless (45) y <span class="mono">v3.18</span> salud operativa (35). Son los primeros hitos cuyo objetivo es <i>operar</i> el arnés y no agregarle funcionalidad.</p>
+      <div class="card pad tl-wrap">
+        <svg id="milestones2" viewBox="0 0 1180 780" width="1180" height="780" role="img" aria-label="Commits por hito para los 29 tags"></svg>
+      </div>
+    </section>
+
+    <section id="modulos">
+      <div class="section-label">03 · Dónde creció el código</div>
+      <h2>El dominio creció; el motor, casi nada</h2>
+      <p class="lede">El módulo nuevo <span class="mono">core/operaciones/</span> (0 → 5 899 líneas) es hoy el más grande del núcleo: es la tool única de operaciones de negocio que reemplazó a los comandos slash. <span class="mono">turn-selector/</span>, el motor del turno, solo creció 69 líneas en 17 hitos: la tubería diseñada en v1/v2 aguantó sin cambiar de forma.</p>
+      <div class="two-col">
+        <div class="card pad">
+          <div class="col-title"><span class="swatch" style="background:var(--accent)"></span> src/core/ — 20 291 → 32 297 líneas</div>
+          <div id="core-pairs"></div>
+        </div>
+        <div class="card pad">
+          <div class="col-title"><span class="swatch" style="background:var(--accent-2)"></span> src/adapters/ — 28 566 → 38 034 líneas</div>
+          <div id="adapter-pairs"></div>
+        </div>
+      </div>
+      <div class="legend">
+        <div class="item"><span class="sw" style="background:var(--line-strong)"></span> v3.4.0</div>
+        <div class="item"><span class="sw" style="background:var(--accent)"></span> v3.21.0 (core)</div>
+        <div class="item"><span class="sw" style="background:var(--accent-2)"></span> v3.21.0 (adapters)</div>
+      </div>
+      <div class="callout" style="margin-top:20px"><b>Alerta nueva en el grafo:</b> aparecieron ciclos a nivel módulo dentro del núcleo que no existían en v3.4 (<span class="mono">agents ↔ operaciones</span>, <span class="mono">agents ↔ solicitudes</span>). Además, <span class="mono">core/agents</span> pasó de fan-in 11 a <b>16</b> y ahora también aloja lógica de consultas de negocio. No rompen la carga de módulos, pero el cuello de botella que marcaba el Mapa de Módulos creció.</div>
+    </section>
+
+    <section id="hallazgos">
+      <div class="section-label">04 · Conclusiones que cambiaron</div>
+      <h2>Qué dijo la primera evaluación y qué dice el repo hoy</h2>
+      <p class="lede">Tres columnas: lo que se corrigió desde el 12/09, lo que se sostiene igual y lo que empeoró o es nuevo.</p>
+      <div class="cols3">
+        <div class="card pad col-card">
+          <h3><span class="dot" style="background:var(--good)"></span> Corregido o mejorado</h3>
+          <ul>
+            <li><b>CI</b>: typecheck + test + build en cada push/PR (<span class="mono">ci.yml</span>, 15/09).</li>
+            <li><b>Build de producción</b> y <span class="mono">npm start</span> sobre <span class="mono">dist/</span> (v3.17).</li>
+            <li><b>Healthchecks</b>: liveness y readiness (v3.18).</li>
+            <li><b>Roles</b>: empleado y administrador, gate de administrador, autoaprobación prohibida (v3.5).</li>
+            <li><b>Separación de funciones</b> en devoluciones (v3.12).</li>
+            <li><b>Primera captura de pantalla</b> como evidencia (v3.20).</li>
+            <li><b>Pruebas de mutación</b> y matrices criterio→evidencia.</li>
+          </ul>
+        </div>
+        <div class="card pad col-card">
+          <h3><span class="dot" style="background:var(--ink-muted)"></span> Se sostiene</h3>
+          <ul>
+            <li><b>Hexagonal real</b>: 0 aristas <span class="mono">core→adapters</span> en 166 archivos.</li>
+            <li><b>Un archivo SQLite, un proceso</b>, sin backup.</li>
+            <li><b>Sin rate-limiting</b> (lo documenta el propio <span class="mono">login.ts:38</span>).</li>
+            <li><b>Sin métricas, tracing ni rotación</b> de logs.</li>
+            <li><b>Sin contenedor ni supervisor</b> de proceso.</li>
+            <li><b>Tokens compartidos</b> por integración.</li>
+          </ul>
+        </div>
+        <div class="card pad col-card">
+          <h3><span class="dot" style="background:var(--critical)"></span> Empeoró o es nuevo</h3>
+          <ul>
+            <li><b>v3.17 y v3.18 sin <span class="mono">openspec/</span></b>: su diseño no está en el repo.</li>
+            <li><b>Changes fantasma</b> citados que nunca se versionaron.</li>
+            <li><b>Plan maestro congelado</b> desde el 11/09.</li>
+            <li><b>Colisiones de numeración de ADRs</b> (174, 180–187, 227–228).</li>
+            <li><b><span class="mono">openspec/specs/</span> vacío</b>: nunca se corrió <span class="mono">sdd-archive</span>.</li>
+            <li><b>Código del núcleo fuera del ciclo</b> (<span class="mono">ce5d7b8</span>).</li>
+            <li><b>Bug 9.1 confirmado y sin aplicar</b>: Ctrl+C con un turno de la TUI en vuelo.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="proceso">
+      <div class="section-label">05 · Proceso SDD</div>
+      <h2>Más rigor para verificar, menos para documentar</h2>
+      <p class="lede">Solo 5 de los 17 hitos nuevos tienen un reporte formal del Reviewer versionado (antes eran 10 de 12). Aun así, el gate frenó cosas con evidencia en al menos 6 hitos, y los commits RED separados pasaron de 12 a 89.</p>
+      <div class="kpi-grid" style="margin-bottom:22px">
+        <div class="kpi"><div class="kpi-value">5 / 17</div><div class="kpi-before">antes 10 / 12</div><div class="delta bad">reportes formales del Reviewer</div></div>
+        <div class="kpi"><div class="kpi-value">6</div><div class="kpi-before">antes 3</div><div class="delta">hitos con rechazo o re-trabajo real</div></div>
+        <div class="kpi"><div class="kpi-value">89</div><div class="kpi-before">antes 12</div><div class="delta">commits test() (RED separado)</div></div>
+        <div class="kpi"><div class="kpi-value">2</div><div class="kpi-before">antes 0</div><div class="delta bad">hitos sin openspec/</div></div>
+        <div class="kpi"><div class="kpi-value">257 / 404</div><div class="kpi-before">formato (Hito X.Y, tarea N)</div><div class="delta bad">commits fuera de la convención</div></div>
+      </div>
+      <div class="card pad table-wrap">
+        <table class="grid">
+          <thead><tr><th>Hito</th><th>Qué frenó el gate</th><th>Quién</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">v3.8</td><td>3 bloqueantes (truncado a 20, validación de longitud, estado de actividad); aprobado en la 2.ª pasada</td><td>code-review</td></tr>
+            <tr><td class="mono">v3.9</td><td><span class="pill r">RECHAZA</span> en la 2.ª pasada: el logout invalidaba la confirmación de otra sesión</td><td>Reviewer</td></tr>
+            <tr><td class="mono">v3.12</td><td>Rechazó el mecanismo del ADR 223 (token del cliente) → "escala siempre"</td><td>Checkpoint humano</td></tr>
+            <tr><td class="mono">v3.17</td><td>H-1: sin listeners, el proceso salía con código 13 a los 0,84 s; 3 tareas de re-trabajo</td><td>Verificación manual → Reviewer</td></tr>
+            <tr><td class="mono">v3.19</td><td>W1–W3 remediados; <b>9.1 confirmado y no aplicado</b></td><td>Reviewer</td></tr>
+            <tr><td class="mono">v3.20</td><td><span class="pill r">REJECT</span> ronda 1 por colisión de número de versión; <span class="pill g">APROBADO</span> ronda 2</td><td>Reviewer + checkpoint</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="scorecard">
+      <div class="section-label">06 · Scorecard empresarial</div>
+      <h2>De tres dimensiones en rojo a una</h2>
+      <p class="lede">Las dos dimensiones que salieron del rojo, gobernanza y despliegue, son dos de las cinco brechas sobre las que la primera evaluación proponía preguntarle al pasante <i>"cuál atacarías primero"</i>. Persistencia y escala queda como la brecha más visible.</p>
+      <div class="card pad table-wrap">
+        <table class="grid" id="score"></table>
+      </div>
+    </section>
+
+    <section id="diagramas">
+      <div class="section-label">07 · Diagramas</div>
+      <h2>Arquitectura, estados, flujos y secuencias, trazados desde el código</h2>
+      <p class="lede">Quince diagramas interactivos generados con Archify (14 pasan el chequeo en navegador; el delta usa su propia plantilla de revisión, que desborda en alto). Tienen pan/zoom, vistas guiadas, tema claro/oscuro y exportación. En el de arquitectura, cada componente enlaza a su archivo en GitHub en la revisión <span class="mono">49602b4</span>.</p>
+      <div class="card pad table-wrap">
+        <table class="grid">
+          <thead><tr><th>Diagrama</th><th>Qué muestra</th></tr></thead>
+          <tbody>
+            <tr><td><a href="diagramas/arquitectura-runtime.html">Arquitectura de runtime</a></td><td>12 bloques dentro de un único proceso: canales de entrada, núcleo, SDK, tools MCP, SQLite y ops</td></tr>
+            <tr><td><a href="diagramas/secuencia-operacion-turno1-pedido.html">Operación en dos turnos · 1/2</a></td><td>El pedido: se reserva la ranura de confirmación</td></tr>
+            <tr><td><a href="diagramas/secuencia-operacion-turno2-confirmacion.html">Operación en dos turnos · 2/2</a></td><td>La confirmación desde otro casoId: gate de rol, CAS y auditoría en una transacción</td></tr>
+            <tr><td><a href="diagramas/secuencia-a2a-1-envio-y-estado.html">A2A entrante · 1/2</a></td><td>SendMessage devuelve SUBMITTED; GetTask lee el estado persistido</td></tr>
+            <tr><td><a href="diagramas/secuencia-a2a-2-turno-asincrono.html">A2A entrante · 2/2</a></td><td>El turno asíncrono de solo lectura</td></tr>
+            <tr><td><a href="diagramas/secuencia-cierre-headless.html">Cierre ordenado headless</a></td><td>SIGTERM → readiness 503 → drenaje → cierre de la base → exit 0, con el gap 9.1 de la TUI</td></tr>
+            <tr><td><a href="diagramas/mapa-modulos-nucleo.html">Mapa de módulos del núcleo</a></td><td>Dependencias reales entre módulos de core/: los ciclos nuevos y el hub core/agents</td></tr>
+            <tr><td><a href="diagramas/composition-roots.html">Composition roots</a></td><td>Los 8 build-on-*.ts, su fan-out y los imports cruzados entre ellos</td></tr>
+            <tr><td><a href="diagramas/delta-v3.4-a-v3.21.html">Delta v3.4 → v3.21</a></td><td>Comparación antes/después generada por archify compare: 3 agregados, 7 cambios</td></tr>
+            <tr><td><a href="diagramas/estados-venta.html">Estados de la venta</a></td><td>Confirmación, escalación de reembolso en dos personas y reapertura</td></tr>
+            <tr><td><a href="diagramas/estados-solicitud-interna.html">Estados de la solicitud interna</a></td><td>Aprobar o rechazar (administrador ≠ solicitante); cancelar (solo el autor)</td></tr>
+            <tr><td><a href="diagramas/estados-tarea-a2a.html">Estados de la tarea A2A</a></td><td>SUBMITTED → WORKING → COMPLETED, con FAILED, CANCELED y REJECTED</td></tr>
+            <tr><td><a href="diagramas/flujo-venta-comision-reporte.html">Flujo venta → comisión → reporte</a></td><td>La comisión nace al confirmar; el reporte sale neto de reembolsos; A2A recibe solo agregados</td></tr>
+            <tr><td><a href="diagramas/cadena-revision-prs.html">Cadena de revisión de PRs</a></td><td>Webhook → Planner → Developer (worktree) → Reviewer → labels, con aprobación humana del patch</td></tr>
+            <tr><td><a href="diagramas/proceso-sdd.html">Proceso SDD</a></td><td>Spec Author → checkpoint humano → Implementer → Reviewer, con los loops de rechazo</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="page-footer">
+      <div>Arnés Empresarial: actualización del 2026‑09‑25 del estudio independiente, carpeta <span class="mono">evaluacion/</span></div>
+      <div><a href="dashboard.html">Bitácora</a> · <a href="proceso.html">Cadena de Revisión</a> · <a href="mapa-modulos.html">Mapa de Módulos</a></div>
+    </footer>
+  </main>
+</div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+/* ---------- Timeline 31 días ---------- */
+(function () {
+  const days = [["08-26",5],["08-27",6],["08-28",4],["08-29",2],["08-30",11],["08-31",17],["09-01",12],["09-02",16],["09-03",6],["09-04",26],["09-05",28],["09-06",18],["09-07",57],["09-08",30],["09-09",42],["09-10",24],["09-11",47],["09-12",2],["09-13",69],["09-14",17],["09-15",18],["09-16",24],["09-17",37],["09-18",1],["09-19",34],["09-20",56],["09-21",60],["09-22",22],["09-23",23],["09-24",38],["09-25",3]];
+  const tags = {"09-13":["v3.5","v3.6","v3.7"],"09-14":["v3.8"],"09-15":["v3.9"],"09-16":["v3.10"],"09-17":["v3.11"],"09-19":["v3.12","v3.13"],"09-20":["v3.14","v3.15"],"09-21":["v3.16","v3.17"],"09-22":["v3.18"],"09-23":["v3.19"],"09-24":["v3.20"],"09-25":["v3.21"],"09-11":["v3.4"]};
+  const svg = document.getElementById('timeline2');
+  const W = 1180, H = 360, padL = 40, padR = 16, padT = 50, padB = 36;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = 70;
+  const bw = plotW / days.length;
+  [0, 0.5, 1].forEach(f => {
+    const y = padT + plotH * (1 - f);
+    el('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: 'var(--line)', 'stroke-width': 1 }, svg);
+    el('text', { x: padL - 8, y: y + 3, 'text-anchor': 'end', class: 'tl-axis-label' }, svg).textContent = Math.round(max * f);
+  });
+  const tooltip = document.getElementById('tl-tooltip');
+  const wrap = svg.closest('.chart-relative');
+  days.forEach(([label, val], i) => {
+    const x = padL + i * bw, h = (val / max) * plotH, y = padT + plotH - h;
+    const isNew = label >= "09-12";
+    const r = el('rect', { x: x + bw * 0.15, y, width: bw * 0.7, height: Math.max(h, 1), rx: 2, fill: isNew ? 'var(--accent)' : 'var(--line-strong)' }, svg);
+    r.addEventListener('mousemove', e => {
+      const b = wrap.getBoundingClientRect();
+      tooltip.style.left = (e.clientX - b.left + 12) + 'px';
+      tooltip.style.top = (e.clientY - b.top - 10) + 'px';
+      tooltip.style.opacity = 1;
+      tooltip.textContent = `2026-${label} · ${val} commits` + (tags[label] ? ' · ' + tags[label].join(', ') : '');
+    });
+    r.addEventListener('mouseleave', () => tooltip.style.opacity = 0);
+    if (i % 2 === 0) el('text', { x: x + bw / 2, y: H - padB + 16, 'text-anchor': 'middle', class: 'tl-axis-label' }, svg).textContent = label;
+    if (tags[label]) {
+      const cx = x + bw / 2;
+      el('line', { class: 'tl-tag-line', x1: cx, x2: cx, y1: padT - 4, y2: padT + plotH }, svg);
+      tags[label].forEach((t, ti) => el('text', { class: 'tl-tag-label', x: cx, y: padT - 8 - ti * 11, 'text-anchor': 'middle' }, svg).textContent = t);
+    }
+  });
+})();
+
+/* ---------- Commits por hito, 29 tags ---------- */
+(function () {
+  const data = [
+    ["v1.0.0",31,"Esqueleto conversacional",0],["v1.1.0",16,"Consulta de conocimiento",0],["v1.2.0",32,"Bot de revisión de PRs",0],
+    ["v1.4.0",59,"TUI + ventas/comisiones",0],["v2.0.0",26,"Delegación a subagentes",0],["v2.1.0",56,"Escritura delegada",0],
+    ["v2.2.0",39,"A2A saliente",0],["v3.0.0",22,"A2A entrante",0],["v3.1.0",17,"Definición de skills",0],
+    ["v3.2.0",12,"/reporte-comisiones",0],["v3.3.0",23,"/cancelar-solicitud",0],["v3.4.0",18,"/ver-solicitudes-a2a",0],
+    ["v3.5.0",18,"Autorización de empleado (roles)",1],["v3.6.0",21,"Operaciones conversacionales",1],["v3.7.0",16,"Administración de empleados",1],
+    ["v3.8.0",18,"Consultas de negocio A2A entrante",1],["v3.9.0",19,"Chat web del empleado",1],["v3.10.0",38,"Aprobación conversacional HITL",1],
+    ["v3.11.0",6,"Ergonomía del canal",1],["v3.12.0",33,"Devolución sin token, dos personas",1],["v3.13.0",12,"Conocimiento en el chat",1],
+    ["v3.14.0",23,"Consulta de solicitud propia",1],["v3.15.0",29,"Visibilidad A2A entrante en el chat",1],["v3.16.0",27,"Consulta de KPIs A2A desde el chat",1],
+    ["v3.17.0",45,"Modo headless y cierre limpio",2],["v3.18.0",35,"Salud operativa",2],["v3.19.0",23,"Operaciones de negocio en la TUI",1],
+    ["v3.20.0",19,"Enmascarar clave en la TUI",1],["v3.21.0",22,"Reembolso neto en reporte",1],
+  ];
+  const fill = ['var(--line-strong)','var(--accent)','var(--accent-2)'];
+  const svg = document.getElementById('milestones2');
+  const W = 1180, H = 780, padL = 70, padT = 6, padB = 6;
+  const rowH = (H - padT - padB) / data.length;
+  const plotW = 560, max = 60;
+  data.forEach(([tag, val, name, kind], i) => {
+    const y = padT + i * rowH, bh = rowH * 0.6, w = (val / max) * plotW;
+    el('text', { x: padL - 8, y: y + bh * 0.8, 'text-anchor': 'end', class: 'ms-label' }, svg).textContent = tag;
+    el('rect', { x: padL, y, width: Math.max(w, 2), height: bh, rx: 3, fill: fill[kind] }, svg);
+    el('text', { class: 'ms-val', x: padL + w + 8, y: y + bh * 0.8 }, svg).textContent = val;
+    const d = el('text', { x: padL + plotW + 70, y: y + bh * 0.8, class: 'ms-label' }, svg);
+    d.setAttribute('fill', kind ? 'var(--ink)' : 'var(--ink-muted)');
+    d.textContent = name;
+  });
+  if (data.length) {
+    const sepY = padT + 12 * rowH - rowH * 0.2;
+    el('line', { x1: 0, x2: W, y1: sepY, y2: sepY, stroke: 'var(--line-strong)', 'stroke-dasharray': '3 4' }, svg);
+  }
+})();
+
+/* ---------- Pares antes/después por módulo ---------- */
+function renderPairs(id, rows, color) {
+  const max = Math.max(...rows.map(r => Math.max(r[1], r[2])));
+  const c = document.getElementById(id);
+  rows.forEach(([name, a, b]) => {
+    const d = b - a;
+    const row = document.createElement('div');
+    row.className = 'pair';
+    row.innerHTML = `<div class="name">${name}</div>
+      <div class="tracks"><div class="t"><i style="width:${(a/max*100).toFixed(1)}%;background:var(--line-strong)"></i></div>
+      <div class="t"><i style="width:${(b/max*100).toFixed(1)}%;background:${color}"></i></div></div>
+      <div class="val">${b.toLocaleString('es')} ${d > 0 ? '<span style="color:var(--good)">+' + d.toLocaleString('es') + '</span>' : '<span>=</span>'}</div>`;
+    c.appendChild(row);
+  });
+}
+renderPairs('core-pairs', [
+  ["ventas/",4232,6050],["operaciones/",0,5899],["turn-selector/",4098,4167],["agents/",1994,4081],
+  ["activity/",2610,2610],["solicitudes/",1507,2165],["commands/",1349,1875],["propuestas/",1573,1573],
+  ["auth/",615,1115],["skills/",615,615],["hooks/",223,457],["startup/",312,355],
+  ["actividad/",0,103],["conversacion/",0,69],
+], 'var(--accent)');
+renderPairs('adapter-pairs', [
+  ["memory/",7869,9104],["web/",2890,7356],["a2a/",5760,6176],["tui/",2308,2541],["webhooks/",2180,2473],
+  ["git/",1962,1962],["ops/",0,1618],["knowledge/",1587,1587],["board/",1483,1483],["test-runner/",1363,1363],
+  ["operaciones/",0,937],["notificaciones/",809,809],["consultas/",0,270],
+], 'var(--accent-2)');
+
+/* ---------- Scorecard ---------- */
+(function () {
+  const P = { g: ['g','Fuerte'], y: ['y','Parcial'], r: ['r','Débil'] };
+  const rows = [
+    ["Extensibilidad arquitectónica","g","g","Se sostienen las 0 aristas core→adapters; alerta por los ciclos nuevos entre módulos del núcleo"],
+    ["Corrección del dominio","g","g","Separación de funciones, autoaprobación prohibida, reporte neto de reembolsos"],
+    ["Persistencia y escala","r","r","Sin cambios de fondo: un archivo SQLite, sin backup"],
+    ["Multi-tenencia / gobernanza","r","y","Roles, gate de administrador, auditoría de rechazos; sin multi-tenencia (por diseño)"],
+    ["Seguridad","y","y","A favor: CSP, sesión con inactividad, marco contra inyección de prompt. En contra: sin rate-limiting, ops sin autenticación"],
+    ["Observabilidad","y","y","Liveness/readiness y hooks de log; sin métricas ni tracing"],
+    ["Confiabilidad operacional","y","y","Cierre ordenado con watchdog; la TUI queda fuera del drenaje (9.1)"],
+    ["Calidad de ingeniería","g","g","+1 037 tests, mutación, RED separado, CI"],
+    ["Despliegue y operación","r","y","CI, build de producción, headless, healthchecks; sin contenedor ni backup"],
+    ["Madurez multi-agente","g","g","A2A saliente desde el chat con catálogo cerrado"],
+  ];
+  const t = document.getElementById('score');
+  t.innerHTML = '<thead><tr><th>Dimensión</th><th>12/09</th><th></th><th>25/09</th><th>Qué la movió</th></tr></thead>';
+  const tb = document.createElement('tbody');
+  rows.forEach(([n, a, b, why]) => {
+    const tr = document.createElement('tr');
+    const moved = a !== b;
+    tr.innerHTML = `<td><b>${n}</b></td><td><span class="pill ${P[a][0]}">${P[a][1]}</span></td><td class="arrow">${moved ? '→' : '='}</td><td><span class="pill ${P[b][0]}">${P[b][1]}</span></td><td style="color:var(--ink-2)">${why}</td>`;
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+})();
+</script>

@@ -105,3 +105,44 @@ El commit `ed3eba6` (*"docs: corrige registro de cierre de v1.3/v2.0 y actualiza
 - La cobertura del plan original se desvió sustancialmente (4 hitos enteros no contemplados, un hito descartado, dos renumeraciones en cadena) sin que el plan se actualizara hasta el día anterior al cierre del último hito — la trazabilidad plan-vs-ejecución fue reconstruida retroactivamente, no mantenida en paralelo.
 
 **Lectura para el tutor**: el proceso de tres roles + checkpoint no fue teatro — hay al menos tres episodios verificables donde efectivamente cambió el resultado (un hito completo descartado, una tarea rehecha por TDD falso, un bug de diseño real corregido con su propio ADR). Al mismo tiempo, el rigor documental se relaja visiblemente en la fase final (v3.1–v3.4), justo cuando los hitos se vuelven más chicos y frecuentes — vale la pena preguntarle al pasante si esa relajación fue una decisión consciente de "menor ceremonia para cambios chicos" o simple presión de tiempo hacia el final de la pasantía.
+
+
+## Actualización 2026-09-25 — el proceso en v3.5 → v3.21
+
+*(Lo anterior audita hasta `v3.4.0`. Detalle completo en [`09-actualizacion-2026-09-25.md`](09-actualizacion-2026-09-25.md), §4 y §5.)*
+
+**Resultado de cada hito nuevo:**
+
+| Hito | Reporte formal del Reviewer | Detalle |
+| --- | --- | --- |
+| v3.5 autorización | No (en commits + README) | 2 hallazgos del Reviewer corregidos; 2 021/2 021 tests |
+| v3.6 operaciones conversacionales | No | 5 enmiendas de diseño con re-decisiones del checkpoint; un hallazgo del Reviewer dio origen al ADR 188 |
+| v3.7 administración | **`verify-report.md`: APROBADO** | 0 bloqueantes, 1 WARNING (`ID_REGEX`) |
+| v3.8 consultas A2A entrante | No (README) | `sdd-verify` aprobó, pero el **code-review encontró 3 bloqueantes**; la 2.ª pasada aprobó |
+| v3.9 chat web | No (README) | **3 pasadas; `sdd-verify` RECHAZÓ la 2.ª** (el logout invalidaba la confirmación de otra sesión) |
+| v3.10 aprobación HITL | No | 5 unidades con merges internos; verificación **sin turno LLM real** (faltaba `ANTHROPIC_API_KEY`) |
+| v3.11 ergonomía | No | 1 hallazgo de code-review |
+| v3.12 devolución dos personas | No | **El checkpoint humano rechazó el ADR 223 original**; 5 commits de hallazgos |
+| v3.13 conocimiento en el chat | No | Primera **prueba de mutación** versionada |
+| v3.14 consulta propia | No | Las 30 casillas de `tasks.md` quedaron sin marcar, con el trabajo commiteado |
+| v3.15 visibilidad A2A en el chat | **`verify-report.md`: APROBADO** | 0 CRITICAL, 3 WARNING, 2 SUGGESTION |
+| v3.16 KPI desde el chat | No | El checkpoint aprobó las decisiones D1–D9 |
+| v3.17 headless | **`reporte-verificacion-reviewer.md`: APROBADO** | Loop de rechazo por H-1 (salida con código 13 a los 0,84 s); matriz criterio→evidencia; **sin `openspec/` versionado** |
+| v3.18 salud operativa | **`reporte-verificacion-reviewer.md`: APROBADO CON OBSERVACIONES** | 8 hallazgos de code-review, 6 corregidos; **sin `openspec/` versionado** |
+| v3.19 operaciones en la TUI | No (`apply-progress.md`) | W1–W3 remediados; **9.1 confirmado y no aplicado** |
+| v3.20 enmascarar clave | **`verify-report.md`: REJECT → APROBADO** | Ronda 1 rechazada por colisión de número de versión; primera captura de pantalla |
+| v3.21 reembolso neto | No | Enmienda 5b pedida por el humano, con su propio checkpoint; `size:exception` |
+
+**Balance del período:** solo **5 de 17 hitos** tienen reporte formal, contra 10 de 12 en la primera pasada: la trazabilidad del veredicto empeoró en proporción. En cambio, **el gate siguió frenando cosas**, con evidencia, en al menos 6 hitos (v3.8, v3.9, v3.12, v3.17, v3.19, v3.20). Además aparecieron dos prácticas nuevas que llevan el rigor por encima de todo lo visto hasta v3.4: **pruebas de mutación** y **matrices criterio→evidencia**.
+
+**Hallazgos de proceso nuevos** (§4 del documento 09):
+
+- Dos hitos sin artefactos `openspec/`.
+- Changes citados que no existen en el repo.
+- Plan maestro congelado.
+- Colisiones de numeración de ADRs, registradas como Deuda 11.
+- `sdd-archive` nunca se ejecutó (`openspec/specs/` está vacío).
+- 257 de 404 commits fuera del formato `(Hito X.Y, tarea N)`.
+- Código de producción del núcleo commiteado fuera del ciclo (`ce5d7b8`).
+
+**Sobre la "relajación" que señalaba la primera evaluación:** no se sostuvo como tendencia. v3.17 y v3.18 tienen la mejor evidencia de verificación de todo el repo y, a la vez, son los dos únicos hitos sin diseño versionado. El proceso se volvió **más riguroso para verificar** y **más irregular para documentar**.

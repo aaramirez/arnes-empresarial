@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Solicitud A2A entrante (2/2) — el turno asíncrono de solo lectura",
+    "output": "secuencia-a2a-2-turno-asincrono.html",
+    "viewBox": [
+      1080,
+      480
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "turno",
+        "label": "Turno",
+        "focus": [
+          "build",
+          "turno",
+          "sdk",
+          "consultas"
+        ],
+        "note": "El turno solo tiene tools de lectura: consultas de negocio y conocimiento."
+      },
+      {
+        "id": "persistencia",
+        "label": "Estado persistido",
+        "focus": [
+          "build",
+          "db"
+        ],
+        "note": "WORKING al empezar, COMPLETED o FAILED al terminar."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "build",
+      "type": "backend",
+      "label": "Orquestador A2A",
+      "sublabel": "build-on-a2a-entrante"
+    },
+    {
+      "id": "turno",
+      "type": "backend",
+      "label": "turn-selector",
+      "sublabel": "handleTurn"
+    },
+    {
+      "id": "sdk",
+      "type": "cloud",
+      "label": "Claude Agent SDK",
+      "sublabel": "query()"
+    },
+    {
+      "id": "consultas",
+      "type": "backend",
+      "label": "MCP consultas",
+      "sublabel": "consultar_negocio"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "solicitudes_a2a_entrantes"
+    }
+  ],
+  "segments": [
+    {
+      "from": 157,
+      "to": 385,
+      "label": "Turno asíncrono"
+    }
+  ],
+  "messages": [
+    {
+      "id": "working",
+      "from": "build",
+      "to": "db",
+      "y": 175,
+      "label": "WORKING",
+      "variant": "dashed",
+      "note": "si CancelTask ganó la carrera, se descarta"
+    },
+    {
+      "id": "handle",
+      "from": "build",
+      "to": "turno",
+      "y": 203,
+      "label": "handleTurn + consultas",
+      "variant": "emphasis"
+    },
+    {
+      "id": "query",
+      "from": "turno",
+      "to": "sdk",
+      "y": 231,
+      "label": "query()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tool",
+      "from": "sdk",
+      "to": "consultas",
+      "y": 259,
+      "label": "consultar_negocio",
+      "variant": "emphasis"
+    },
+    {
+      "id": "leer",
+      "from": "consultas",
+      "to": "db",
+      "y": 287,
+      "label": "lectura (solo lectura)"
+    },
+    {
+      "id": "filas",
+      "from": "db",
+      "to": "consultas",
+      "y": 315,
+      "label": "filas",
+      "variant": "return"
+    },
+    {
+      "id": "recorte",
+      "from": "consultas",
+      "to": "sdk",
+      "y": 343,
+      "label": "resultado sin datos personales",
+      "variant": "return"
+    },
+    {
+      "id": "completed",
+      "from": "build",
+      "to": "db",
+      "y": 371,
+      "label": "COMPLETED + resultado",
+      "variant": "emphasis"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "build",
+      "from": 170,
+      "to": 377,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Solo lectura",
+      "items": [
+        "4 consultas de negocio",
+        "Salida sin datos personales"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Carreras",
+      "items": [
+        "Si CancelTask gana, el resultado se descarta",
+        "Error del turno → FAILED"
+      ]
+    }
+  ]
+}

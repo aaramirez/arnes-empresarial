@@ -93,3 +93,28 @@ Sin `EMAIL_API_KEY`, degrada a un notificador no-op que **loguea el link complet
 3. **Servidores HTTP con drenaje al cerrar** (`web`, `webhooks`, `a2a` entrante): `Set` de promesas en vuelo, `close()` en carrera contra un timeout fijo, nunca rechaza.
 4. **Nunca lanzar en la frontera de un puerto** — `board`, `notificaciones`, `knowledge`, `test-runner` traducen toda I/O externa fallida a un resultado degradado.
 5. **Hallazgos de integración real, no solo unitarios**: al menos tres bugs documentados en el código fueron encontrados únicamente corriendo contra binarios/servicios reales — separadores de ruta de `git` en Windows, el reporter `"basic"` inexistente en Vitest 4.x, el `--` que rompe `graphify query` — evidencia de una capa de tests de integración real, además de los unitarios con dobles.
+
+
+## Actualización 2026-09-25
+
+*(Lo anterior describe `v3.4.0`. Detalle completo en [`09-actualizacion-2026-09-25.md`](09-actualizacion-2026-09-25.md).)*
+
+`src/adapters/` pasó de **28 566 líneas / 109 archivos** (recalculado con el mismo script) a **38 034 / 137** (+9 468).
+
+| Adaptador | v3.4.0 | v3.21.0 | Δ | Qué cambió |
+| --- | ---: | ---: | ---: | --- |
+| `web/` | 2 890 | 7 356 | **+4 466** | Chat del empleado (JS vanilla, CSP, sin `innerHTML`), login/logout HTTP, stores de sesión, conversación y confirmación |
+| `ops/` | — | 1 618 | +1 618 | **Nuevo** (v3.18): liveness/readiness, con test de arquitectura que prohíbe importar de otro adaptador |
+| `memory/` | 7 869 | 9 104 | +1 235 | Migraciones `0013_roles_empleado` y `0014_justificaciones_devolucion`, y lecturas nuevas del repositorio |
+| `operaciones/` | — | 937 | +937 | **Nuevo** (v3.6): tool MCP `operacion_negocio` |
+| `a2a/` | 5 760 | 6 176 | +416 | Configuración con timeouts acotados para el canal conversacional (v3.16), host configurable (v3.17) |
+| `webhooks/` | 2 180 | 2 473 | +293 | Host configurable y `closeIdleConnections` en el cierre (v3.17) |
+| `consultas/` | — | 270 | +270 | **Nuevo** (v3.8): tool MCP de lecturas para A2A entrante |
+| `tui/` | 2 308 | 2 541 | +233 | Enmascarado de la clave (v3.20); primera importación de `core/` (`core/commands`) |
+| `board/`, `git/`, `knowledge/`, `test-runner/`, `notificaciones/`, `crypto/`, `shared/` | — | — | 0 | Sin cambios de tamaño |
+
+**Patrones transversales nuevos:**
+
+- **Todos los listeners HTTP** (web, webhooks, A2A entrante y ops) aceptan host configurable (`WEB_HOST`, `WEBHOOK_HOST`, `HARNESS_A2A_ENTRANTE_HOST`, `OPS_HOST`) y se cierran de forma ordenada dentro de un presupuesto (`HARNESS_SHUTDOWN_TIMEOUT_MS`, 70 s por defecto).
+- **Test de arquitectura como candado**: `adapters/ops/arquitectura.test.ts` verifica por estructura que el adaptador no importe de otro adaptador ni haga I/O externa. Es la primera vez que la regla hexagonal se *ejecuta* como test en lugar de solo auditarse por grep.
+- **Superficie HTTP nueva sin autenticación**: el endpoint `ops` no tiene autenticación por diseño (es de salud). Viene apagado por defecto, pero si se activa conviene exponerlo solo en red interna.

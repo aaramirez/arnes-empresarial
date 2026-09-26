@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "compare",
+  "type": "architecture",
+  "comparatorVersion": 1,
+  "canonicalVersion": 1,
+  "completeness": "complete",
+  "proofLevel": "authored",
+  "base": {
+    "title": "Arnés Empresarial — v3.4.0",
+    "rawSha256": "9ffae722df431dc598c5b3eace8a667994b2ed95d060536ca5c10bc8ff824bce",
+    "semanticSha256": "e6d3d617e3f115a429f7354e58457a00ece9f8a56f6febfc7e155d9188865651",
+    "bytes": 4557
+  },
+  "head": {
+    "title": "Arnés Empresarial — v3.21.0",
+    "rawSha256": "44c26ced9d23d90bccee72e96638bdb264a5a4d69fe5b2c42defcbc6cc4984a0",
+    "semanticSha256": "ba873224cb1741519e2dc445e134fcf0781e98e7a9239bb97a6c6cecb998b531",
+    "bytes": 5311
+  },
+  "summary": {
+    "components": {
+      "added": 1,
+      "changed": 4,
+      "evidenceChanged": 0,
+      "removed": 0,
+      "moved": 0
+    },
+    "connections": {
+      "added": 2,
+      "changed": 2,
+      "removed": 0,
+      "rerouted": 0
+    },
+    "boundaries": {
+      "added": 0,
+      "changed": 1,
+      "removed": 0,
+      "geometryChanged": 0
+    },
+    "presentationChanged": true,
+    "provenanceChanged": false
+  },
+  "changes": {
+    "components": [
+      {
+        "id": "mcp",
+        "baseLabel": "Tools MCP in-process",
+        "headLabel": "Tools MCP in-process",
+        "status": "changed",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": [
+          "/sublabel"
+        ]
+      },
+      {
+        "id": "memoria",
+        "baseLabel": "adapters/memory",
+        "headLabel": "adapters/memory",
+        "status": "changed",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": [
+          "/sublabel"
+        ]
+      },
+      {
+        "id": "ops",
+        "headLabel": "adapters/ops",
+        "status": "added",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": []
+      },
+      {
+        "id": "tui",
+        "baseLabel": "adapters/tui",
+        "headLabel": "adapters/tui",
+        "status": "changed",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": [
+          "/sublabel"
+        ]
+      },
+      {
+        "id": "web",
+        "baseLabel": "adapters/web",
+        "headLabel": "adapters/web",
+        "status": "changed",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": [
+          "/sublabel"
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "id": "empleado-tui",
+        "base": {
+          "from": "empleado",
+          "to": "tui",
+          "label": "comandos slash"
+        },
+        "head": {
+          "from": "empleado",
+          "to": "tui",
+          "label": "texto libre"
+        },
+        "status": "changed",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": [
+          "/label"
+        ]
+      },
+      {
+        "id": "empleado-web",
+        "base": {
+          "from": "empleado",
+          "to": "web",
+          "label": "link + soporte"
+        },
+        "head": {
+          "from": "empleado",
+          "to": "web",
+          "label": "chat Bearer"
+        },
+        "status": "changed",
+        "classifications": [
+          "semantic"
+        ],
+        "changedFields": [
+          "/label",
+          "/variant"
+        ]
+      },
+      {
+        "id": "mcp-memoria",
+        "head": {
+          "from": "mcp",
+          "to": "memoria",
+          "label": "CAS + auditoría"
+        },
+        "status": "added",
+        "classifications": [
+          "topology"
+        ],
+        "changedFields": []
+      },
+      {
+        "id": "ops-memoria",
+        "head": {
+          "from": "ops",
+          "to": "memoria",
+          "label": "sonda"
+        },
+        "status": "added",
+        "classifications": [
+          "topology"
+        ],
+        "changedFields": []
+      }
+    ],
+    "boundaries": [
+      {
+        "key": "region:Un proceso Node.js — main.ts",
+        "kind": "region",
+        "label": "Un proceso Node.js — main.ts",
+        "status": "changed",
+        "classifications": [
+          "scope"
+        ],
+        "changedFields": [
+          "/wraps"
+        ]
+      }
+    ]
+  },
+  "identity": {
+    "components": "components[].id",
+    "connections": "connections[].id (required)",
+    "boundaries": "boundaries[].kind + boundaries[].label (derived)"
+  },
+  "view": {
+    "visualPreset": "classic"
+  },
+  "limitations": [
+    "Authored Architecture IR only; no runtime impact, causality, risk, or mergeability is inferred.",
+    "Boundary identity is conservatively derived from kind + label."
+  ],
+  "artifact": {
+    "sha256": "887124f31f10ab3e0d078234bc28afa7f55ebd15628c6e478d4993b350a3dcf4",
+    "bytes": 2240449
+  },
+  "validation": {
+    "checksPassed": 28,
+    "checkCount": 28,
+    "baseComposition": "pass",
+    "headComposition": "pass"
+  }
+}
