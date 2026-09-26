@@ -20,7 +20,7 @@
 | Suggested split | Una sola PR |
 | Delivery strategy | `ask-on-risk` → no dispara (riesgo bajo) |
 | Chain strategy | N/A |
-| Tamaño real hasta 6.4 (`git diff bd34360 HEAD --stat -- . ":(exclude)openspec"`) | **427** (420 inserciones + 7 borrados): `src` ≈ 239 (producción ≈ 21: dos literales y doc-comments; el resto tests), `docs/progreso/` 188 (`mutaciones.md` 123, más detallado que lo estimado). Supera el estimado (230-345) y el umbral de 400, sin contar el arc42 de 7.1 (≈ 20-30). WARNING del Reviewer (6.5): no se re-evaluó la estrategia al cruzar el umbral. Decisión pendiente del humano (ver 6.5) |
+| Tamaño real hasta 6.4 (`git diff bd34360 HEAD --stat -- . ":(exclude)openspec"`) | **427** (420 inserciones + 7 borrados): `src` ≈ 239 (producción ≈ 21: dos literales y doc-comments; el resto tests), `docs/progreso/` 188 (`mutaciones.md` 123, más detallado que lo estimado). Supera el estimado (230-345) y el umbral de 400, sin contar el arc42 de 7.1 (≈ 20-30). WARNING del Reviewer (6.5): no se re-evaluó la estrategia al cruzar el umbral. **Decidido (2026-09-26): PR única con `size:exception`** (registrado en RD-175) |
 
 ```text
 Decision needed before apply: Yes (checkpoint humano: C1-C6, ver "Checkpoint needed")
@@ -129,10 +129,10 @@ Commit: `docs(root): registra las mutaciones y la evidencia del prompt del valid
 
 ## Phase 7: Cierre (sólo tras la aprobación del Reviewer; no es tarea del Implementer)
 
-- [ ] **7.1** `docs/ARC42_Harness_Empresarial.md`: Concepto 14 (v3.22), **ADR 303** con el texto de `design.md` §10, **RD-175** (C1-C6 como se decidieron), **Deuda 14** (`design.md` §8). Bajo el ADR 302, una línea *"Generalizado por ADR 303 (v3.22)"* sin reescribirlo. Reverificar el techo antes de escribir (otro change pudo tomar el 303 mientras tanto).
+- [x] **7.1** *(2026-09-26: +40/-0 en el arc42: nota bajo ADR 302, Concepto 14, ADR 303, RD-175 (con la decisión size:exception), Deuda 14; techo re-verificado en origin/main; suite 3342 verde)* `docs/ARC42_Harness_Empresarial.md`: Concepto 14 (v3.22), **ADR 303** con el texto de `design.md` §10, **RD-175** (C1-C6 como se decidieron), **Deuda 14** (`design.md` §8). Bajo el ADR 302, una línea *"Generalizado por ADR 303 (v3.22)"* sin reescribirlo. Reverificar el techo antes de escribir (otro change pudo tomar el 303 mientras tanto).
 Commit: `docs(arc42): registra el ADR 303, la RD-175 y la deuda 14 tras la guarda de comandos en textos de agente (Hito v3.22, tarea 7.1)`
-- [ ] **7.2** `sdd-archive`: fusionar `solicitud-interna-hitl` (MODIFIED) sobre `hito-2.0-delegacion-subagentes/specs/solicitud-interna-hitl/spec.md:28-41`, por nombre exacto del requirement y sin perder los MODIFIED de `aprobacion-conversacional-hitl`; y `delegacion-subagentes` (ADDED) sobre hito-2.0 + el MODIFIED de `hito-2.1-escritura-delegada`. Ver las notas de base al inicio de cada delta.
-- [ ] **7.3** Engram / memoria: estado de v3.22 cerrado.
+- [ ] **7.2** *(BLOQUEADA: requiere el checklist de cierre de AGENTS.md, en particular el entregable demostrado = 5.2. Precedente: el v3.21 tampoco corrió sdd-archive y `openspec/specs/` sigue vacío)* `sdd-archive`: fusionar `solicitud-interna-hitl` (MODIFIED) sobre `hito-2.0-delegacion-subagentes/specs/solicitud-interna-hitl/spec.md:28-41`, por nombre exacto del requirement y sin perder los MODIFIED de `aprobacion-conversacional-hitl`; y `delegacion-subagentes` (ADDED) sobre hito-2.0 + el MODIFIED de `hito-2.1-escritura-delegada`. Ver las notas de base al inicio de cada delta.
+- [x] **7.3** *(2026-09-26, memoria del proyecto actualizada)* Engram / memoria: estado de v3.22 cerrado.
 
 ## Dependencias entre tareas
 

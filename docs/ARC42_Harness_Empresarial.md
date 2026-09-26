@@ -711,6 +711,40 @@ Desde Hito 1.3 el reporte mensual de comisiones sumaba monto y comisión de toda
 
 **Reversible**: `git revert`, sin migración ni datos.
 
+*Generalizado por ADR 303 (v3.22, `validador-prompt-sin-comandos-retirados`): la guarda contra `COMANDOS` cubre ahora todos los textos de agente del núcleo, y la de esta nota usa el mismo extractor compartido.*
+
+## Concepto 14: Textos de agente sin comandos retirados (v3.22, `validador-prompt-sin-comandos-retirados`)
+
+El `systemPrompt` del validador de solicitudes seguía diciendo que la decisión la toma *"un empleado autenticado mediante `/aprobar-solicitud` o `/rechazar-solicitud`"*, dos comandos dados de baja en v3.10.0 (ADR 210 pto 1). Ningún test fijaba ese texto. El validador corre en cada alta de solicitud y su dictamen se muestra tal cual al solicitante (*"Solicitud X creada … Dictamen: …"*) y al administrador que la resuelve, así que el modelo podía repetir un comando que responde *"No conozco…"*. Es la misma deriva que el ADR 302 corrigió en la nota del reporte, esta vez en un prompt.
+
+### ADR 303: Ningún texto fijo de agente del núcleo nombra un comando que no existe (generaliza el ADR 302)
+
+**Contexto**: el ADR 302 cerró esta deriva sólo para `NOTA_ESCALACION_FUERA_DE_BANDA`. La baja de un comando no obliga a revisar los prompts, y `aprobacion-conversacional-hitl` tocó `INSTRUCCION_OPERACIONES_EMPLEADO` pero no el prompt del validador.
+
+**Decisión**:
+
+1. El `systemPrompt` del validador (`src/core/agents/definitions.ts`) dice que no aprueba ni rechaza, que la decisión la toma después *"una persona autorizada, distinta de quien la pidió"*, y que el dictamen no indique comandos, herramientas ni pasos, porque se muestra tal cual al solicitante y a quien decide. No nombra comandos, canales ni la operación `resolver_solicitud`, y no duplica la política de autorización, que vive en `autorizacion-resolucion.ts`. La instrucción de delegación (`crear-solicitud-interna.ts`) dice lo mismo; antes decía *"un empleado autenticado"*, falso desde `autorizacion-empleado`.
+2. Una guarda de test (`src/core/agents/textos-modelo-sin-comandos.test.ts`) recorre diez fuentes y diecisiete textos: `description` y `systemPrompt` de `listAgentDefinitions()`, `listSubagentDefinitions()`, `construirAgenteEmpleadoOperaciones()` y `construirDeveloperConEscritura(...)`, más la salida de `buildSoportePrompt`, `buildOperacionesEmpleadoPrompt` y `buildSolicitudA2APrompt`. Todo token con forma `/comando` tiene que ser el `nombre` de un descriptor de `COMANDOS`. El conteo del inventario es exacto, para que un agente nuevo obligue a actualizarlo a conciencia.
+3. Una sola definición del token, en el helper test-only `src/test/comandos-en-texto.ts`: `/(?<![\p{L}\p{N}_./~])\/[a-z][a-z0-9-]*/gu`. Excluye rutas, URLs y `y/o`, y reconoce completo `/ver-solicitudes-a2a` (la regex inline del ADR 302 lo cortaba). La guarda del ADR 302 pasa a usarlo.
+4. Ante un falso positivo se reformula el texto; el patrón no se afloja.
+
+| Opción | Tradeoff | Veredicto |
+|---|---|---|
+| **ADR 303 nuevo + guarda transversal** | Un ADR más; revert aislado del 302 | ★ Elegida (RD-175) |
+| Extender el ADR 302 | Mezcla una enmienda del ADR 26 con una regla transversal | Rechazada |
+| Sólo corregir el texto, sin guarda | La próxima baja de un comando repite la deriva | Rechazada |
+| Nombrar el canal (*"un administrador por conversación"*) | Orienta más, pero duplica política y envejece con cada canal nuevo | Rechazada: el dictamen no es una instrucción para nadie |
+
+**Consecuencias**:
+
+- Quien baje un comando y lo deje nombrado en un texto de agente del núcleo ve la guarda en rojo en el mismo PR.
+- Los dictámenes ya persistidos en `solicitudes_internas.dictamen` no se reescriben: son registro histórico de la salida del modelo.
+- La salida del modelo no es determinista: el prompt reduce el riesgo, no lo elimina. La evidencia manual lo registra como observación (`docs/progreso/v3.22-validador-prompt-sin-comandos-retirados/`).
+- **Deuda declarada**: Deuda 14 (textos al modelo fuera de la guarda), más abajo.
+- **Reversible**: `git revert`, sin migración ni datos.
+
+**RD-175** registra las decisiones del checkpoint (2026-09-26, recomendaciones aprobadas tal cual): C1 *"persona autorizada"* en vez de *"administrador"*; C2 alinear también la instrucción de delegación; C3 alcance de la guarda en las diez fuentes, con el resto a la Deuda 14; C4 ADR propio en vez de extender el 302; C5 migrar la guarda del ADR 302 al helper; C6 no reescribir dictámenes persistidos. Tras la verificación, el humano aceptó entregar en una sola PR con `size:exception` (diff real ≈ 427 líneas, ≈ 21 de producción).
+
 # Decisiones de Diseño
 
 ## ADR 1: Estrategia de entrega incremental (v1 lineal → v2 swarm → v3 grafo)
@@ -1000,6 +1034,12 @@ Condición de disparo: que exista una necesidad real de un libro contable de com
 Descripción: el ADR 301 pto 5 decide que un reembolso aprobado tarde recalcula el reporte del mes de `confirmed_at` de la venta, no del mes en que se aprobó el reembolso, porque el esquema no tiene `refunded_at`. Un reporte ya exportado (salida del CLI, respuesta A2A) de un mes "cerrado" puede dar otro número si se vuelve a consultar el mismo periodo después de un reembolso posterior.
 
 Condición de disparo: que se necesite fijar el reporte de un periodo cerrado sin que lo alteren reembolsos futuros — exigiría agregar `refunded_at` y decidir si el reporte agrupa por mes de venta o por mes de reembolso.
+
+**Deuda 14 (RD-175, ADR 303): Textos al modelo fuera de la guarda automática de comandos — DIFERIDA (v3.22, `validador-prompt-sin-comandos-retirados`)**
+
+Descripción: la guarda del ADR 303 recorre las definiciones de agente y tres constructores de prompt de `src/core`. Quedan fuera: (1) `.claude/skills/*/SKILL.md`, porque su prosa en markdown da falsos positivos; `devolucion-conversacional/SKILL.md:8` nombra `/devolucion`, aunque lo presenta como reemplazado; (2) las descripciones de tools en `src/adapters/operaciones/index.ts` y `src/adapters/consultas/index.ts`, hoy limpias, porque una guarda desde `core` tendría que importar `adapters`; (3) `buildActivityPrompt`, que embebe rutas y diffs de PR; (4) los dictámenes ya persistidos con comandos retirados; (5) comentarios de código que describen los comandos viejos como vigentes (p. ej. `resolver-solicitud-interna.ts:198`, `build-on-comando-empleado.ts:39-40`). Regla manual mientras tanto: quien baje un comando busca su nombre en las skills y en los adapters (en Git Bash, con `MSYS_NO_PATHCONV=1`, porque un patrón que empieza con `/` se reescribe como ruta y devuelve cero coincidencias).
+
+Condición de disparo: que una skill o una descripción de tool nombre un comando dado de baja, o que se agregue un canal que lea textos desde `adapters`.
 
 # Glosario
 
