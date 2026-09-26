@@ -102,14 +102,14 @@ Commit: `refactor(core): la guarda de la nota del reporte usa el extractor compa
 
 ## Phase 5: Mutación y evidencia manual (excepciones TDD, sólo `docs/`)
 
-- [ ] **5.1** Mutaciones en `docs/progreso/v3.22-validador-prompt-sin-comandos-retirados/mutaciones.md`. Cada una: rojo con la mutación, verde revertida, `git diff -- src` vacío tras el revert.
+- [x] **5.1** *(2026-09-26: M1-M6 rojas con la mutación, verdes revertidas, sha igual, `git status --short src` vacío; ver `mutaciones.md`)* Mutaciones en `docs/progreso/v3.22-validador-prompt-sin-comandos-retirados/mutaciones.md`. Cada una: rojo con la mutación, verde revertida, `git diff -- src` vacío tras el revert.
   - **M1**: volver a poner `` `/aprobar-solicitud` `` en el prompt del validador ⇒ fallan 2.1 (a) y 2.2.
   - **M2**: quitar *"distinta de quien la pidió"* del prompt ⇒ falla 2.2.
   - **M3**: volver a poner *"un empleado autenticado"* en la `instruccion` ⇒ falla 2.3.
   - **M4**: regex del helper con `[a-z][a-z-]*` ⇒ falla 1.1 (b).
   - **M5**: quitar `.` del lookbehind ⇒ falla 1.1 (a) (`./activity-contract.js`).
   - **M6**: sacar `buildSolicitudA2APrompt` del inventario ⇒ falla 2.1 (b).
-- [ ] **5.2** Evidencia manual en `docs/progreso/v3.22-validador-prompt-sin-comandos-retirados/README.md`. **Nunca sobre `data/harness.db`**; la ejecuta el humano (un agente no lee la base real):
+- [ ] **5.2** *(PARCIAL 2026-09-26: README con pasos, comandos y tablas `_pendiente_`, más los conteos automáticos. Faltan los pasos 2-4, que ejecuta el humano sobre la copia)* Evidencia manual en `docs/progreso/v3.22-validador-prompt-sin-comandos-retirados/README.md`. **Nunca sobre `data/harness.db`**; la ejecuta el humano (un agente no lee la base real):
   1. Copia: `cp data/harness.db "$TMP/harness-v3.22.db"` y exportar `HARNESS_DB_PATH` a esa copia en la terminal que arranca el arnés.
   2. Conteo previo de dictámenes viejos (C6), sobre la copia: `sqlite3 -readonly "$TMP/harness-v3.22.db" "SELECT COUNT(*), SUM(dictamen LIKE '%aprobar-solicitud%' OR dictamen LIKE '%rechazar-solicitud%') FROM solicitudes_internas;"`. Registrar los dos números.
   3. Arrancar el chat web como indica `docs/Guia-Demostracion-Pasantia.md`, con `HARNESS_DB_PATH` apuntando a la copia; iniciar sesión como un empleado no administrador y crear **tres** solicitudes (vacaciones completa, gasto sin monto, otro trámite ambiguo).
