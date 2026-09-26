@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { tokensComandoInexistentes } from "../../test/comandos-en-texto.js";
 import { VALIDADOR_SOLICITUDES_AGENT_ID, getSubagentDefinition } from "../agents/definitions.js";
+import { COMANDOS } from "../commands/comando-empleado.js";
 import type { InvocacionSubagenteResult, InvocarSubagente } from "../agents/subagents.js";
 import type {
   DelegacionStorePort,
@@ -119,6 +121,27 @@ describe("crearSolicitudInterna", () => {
     const ordenCrear = vi.mocked(store.crearSolicitudConCaso).mock.invocationCallOrder[0]!;
     const ordenInvocar = vi.mocked(invocar).mock.invocationCallOrder[0]!;
     expect(ordenCrear).toBeLessThan(ordenInvocar);
+  });
+
+  it("lo que recibe el validador dice que decide una persona autorizada distinta del solicitante y no nombra comandos inexistentes (ADR 303)", async () => {
+    const invocar = vi.fn(async (_input: Parameters<InvocarSubagente>[0]) => ({
+      responseText: "dictamen ok",
+      sdkSessionId: "sdk-1",
+    }));
+
+    await crearSolicitudInterna(
+      { tipo: "vacaciones", detalle: "una semana en marzo", solicitanteId: "empleado-1" },
+      { store: makeSolicitudStore(), despacharDeps: makeDespacharDeps({ invocar }) },
+    );
+
+    const { agent, tareaDelegada } = vi.mocked(invocar).mock.calls[0]![0];
+    const nombresValidos = new Set(COMANDOS.map((c) => c.nombre));
+    expect(agent.id).toBe(VALIDADOR_SOLICITUDES_AGENT_ID);
+    expect(tareaDelegada).toContain("persona autorizada");
+    expect(tareaDelegada).toContain("distinta de quien la pidió");
+    expect(tareaDelegada).not.toContain("empleado autenticado");
+    expect(tokensComandoInexistentes(tareaDelegada, nombresValidos)).toEqual([]);
+    expect(tokensComandoInexistentes(agent.systemPrompt, nombresValidos)).toEqual([]);
   });
 
   it("adjunta el dictamen del validador vía adjuntarDictamen SIN transicionar el estado", async () => {

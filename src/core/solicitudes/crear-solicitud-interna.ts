@@ -129,8 +129,10 @@ export async function crearSolicitudInterna(
         casoId,
         agentId: VALIDADOR_SOLICITUDES_AGENT_ID,
         insumo: {
+          // Alineada con el systemPrompt del validador (ADR 303): quién decide
+          // sin nombrar comandos ni canales, y sin pasos de resolución.
           instruccion:
-            "Evaluá si esta solicitud interna está completa y cumple las reglas conocidas, y emití tu dictamen. No apruebes ni rechaces la solicitud — esa decisión la toma un empleado autenticado.",
+            "Evaluá si esta solicitud interna está completa y cumple las reglas conocidas, y emití tu dictamen. No apruebes ni rechaces la solicitud: esa decisión la toma después una persona autorizada, distinta de quien la pidió. No indiques comandos, herramientas ni pasos para resolverla.",
           // EXCLUSIVAMENTE tipo + detalle — jamás el solicitanteId ni ningún
           // historial de sesión u otras solicitudes (spec, escenario "El
           // subagente validador no ve el historial de otras solicitudes").
