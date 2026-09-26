@@ -317,6 +317,17 @@ const REVIEWER_AGENT: AgentDefinition = {
   model: DEFAULT_AGENT_MODEL,
 };
 
+/**
+ * Validador de solicitudes internas (ADR 303, v3.22). Su dictamen se muestra
+ * tal cual al solicitante ("Solicitud X creada … Dictamen: …") y al
+ * administrador que la resuelve, así que el prompt NO nombra comandos, canales
+ * ni la operación `resolver_solicitud`: dice sólo que decide una persona
+ * autorizada distinta de quien la pidió (la política vive en
+ * `autorizacion-resolucion.ts`, no se duplica acá) y le prohíbe dar pasos.
+ * Hasta v3.22 nombraba `/aprobar-solicitud` y `/rechazar-solicitud`, dados de
+ * baja en v3.10.0 (ADR 210 pto 1). Quien baje un comando corre la guarda de
+ * `textos-modelo-sin-comandos.test.ts`.
+ */
 const VALIDADOR_SOLICITUDES_AGENT: AgentDefinition = {
   id: VALIDADOR_SOLICITUDES_AGENT_ID,
   description:
