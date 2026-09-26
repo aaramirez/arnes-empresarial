@@ -92,11 +92,11 @@ Commit: `fix(core): la instruccion de delegacion al validador dice que decide un
 
 ## Phase 4: Refactor (sin cambio de comportamiento)
 
-- [ ] **4.1** REFACTOR — doc-comment de `VALIDADOR_SOLICITUDES_AGENT` en `definitions.ts` (agregar si no hay): por qué el texto no nombra comandos, canales ni `resolver_solicitud` (el dictamen se muestra tal cual al solicitante y al administrador), cita ADR 303 y la regla *"quien baje un comando corre la guarda de `textos-modelo-sin-comandos.test.ts`"*. Comentario junto a la `instruccion` de `crear-solicitud-interna.ts` apuntando al mismo ADR.
+- [x] **4.1** *(2026-09-26: +13 líneas, sólo comentarios; suite 164 archivos / 3342 tests verde)* REFACTOR — doc-comment de `VALIDADOR_SOLICITUDES_AGENT` en `definitions.ts` (agregar si no hay): por qué el texto no nombra comandos, canales ni `resolver_solicitud` (el dictamen se muestra tal cual al solicitante y al administrador), cita ADR 303 y la regla *"quien baje un comando corre la guarda de `textos-modelo-sin-comandos.test.ts`"*. Comentario junto a la `instruccion` de `crear-solicitud-interna.ts` apuntando al mismo ADR.
 *Aceptación*: suite verde sin tocar tests; `git diff` de esta tarea sólo en comentarios.
 Commit: `refactor(agents): documenta por que el validador no nombra comandos ni canales (Hito v3.22, tarea 4.1)`
 
-- [ ] **4.2** REFACTOR — `src/core/ventas/reporte.test.ts:617-622`: la guarda A3 usa `tokensComandoInexistentes` en vez de su regex inline. Mismo nombre del `it`, misma intención (condicionada a C5).
+- [x] **4.2** *(2026-09-26: `reporte.test.ts` 36/36; suite 164 archivos / 3342 tests verde; `rg` de la regex vieja sin coincidencias)* REFACTOR — `src/core/ventas/reporte.test.ts:617-622`: la guarda A3 usa `tokensComandoInexistentes` en vez de su regex inline. Mismo nombre del `it`, misma intención (condicionada a C5).
 *Aceptación*: suite verde antes y después; `rg -n 'a-z\]\[a-z-\]' src/core/ventas/reporte.test.ts` sin coincidencias.
 Commit: `refactor(core): la guarda de la nota del reporte usa el extractor compartido de tokens de comando (Hito v3.22, tarea 4.2)`
 

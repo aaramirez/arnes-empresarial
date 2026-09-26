@@ -20,6 +20,9 @@ import { parsePeriodo } from "../../reporte-mensual.js";
 // `core/commands` — este import existe únicamente para que la nota de
 // escalaciones no derive hacia un comando dado de baja.
 import { COMANDOS } from "../commands/comando-empleado.js";
+// Extractor compartido del token `/comando` (ADR 303): una sola definición en
+// todo el repo; reconoce completo `/ver-solicitudes-a2a`.
+import { tokensComandoInexistentes } from "../../test/comandos-en-texto.js";
 
 function comision(overrides: Partial<ComisionConVenta> = {}): ComisionConVenta {
   return {
@@ -617,10 +620,7 @@ describe("formatearReporteMensual", () => {
     const nombresValidos = new Set(COMANDOS.map((c) => c.nombre));
 
     for (const texto of [formatearReporteMensual(reporteConPendiente), formatearReporteMensual(reporteVacio)]) {
-      const tokens = texto.match(/(?<![\w/])\/[a-z][a-z-]*/g) ?? [];
-      for (const token of tokens) {
-        expect(nombresValidos.has(token)).toBe(true);
-      }
+      expect(tokensComandoInexistentes(texto, nombresValidos)).toEqual([]);
     }
   });
 });
