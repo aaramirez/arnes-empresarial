@@ -86,3 +86,30 @@ El arc42 mantiene una sección viva de riesgos/deuda, actualizada hito a hito (n
 - **Deuda 2 (cerrada en v3.0)**: adaptador A2A implementado desde temprano pero sin ejercitar en un flujo real hasta el servidor entrante.
 - **Deuda 3 (abierta)**: la meta de usabilidad de la TUI se mide de forma cualitativa, sin validación con usuarios reales todavía.
 - **Deuda 4 (cerrada en v3.1)**: "Definición de Skills" del objetivo específico 6 quedó sin implementar hasta `definicion-skills` — el propio arc42 registra que se detectó por auditoría de grep (`Options.skills` nunca se leía en `src/core`), no por diseño anticipado.
+
+
+## Actualización 2026-09-25
+
+*(Lo anterior describe `v3.4.0`. Detalle completo en [`09-actualizacion-2026-09-25.md`](09-actualizacion-2026-09-25.md).)*
+
+**Bloques nuevos** (mismo patrón puerto/adaptador; la regla `core ↛ adapters` sigue en 0 aristas sobre 166 archivos de producción):
+
+| Bloque | Responsabilidad | Ubicación | Hito |
+| --- | --- | --- | --- |
+| Núcleo de Operaciones | Contrato cerrado de 13 operaciones de negocio (venta, devolución, solicitudes, reembolsos, consultas, KPI…), validación con whitelist y ejecución determinista | `src/core/operaciones/` (5 899 líneas, el módulo más grande del núcleo) | v3.6 → v3.16 |
+| Adaptador de Operaciones | Expone ese contrato como tool MCP `operacion_negocio` al turno del empleado (web y TUI) | `src/adapters/operaciones/` | v3.6 |
+| Adaptador de Consultas | Tool MCP `consultar_negocio`, de solo lectura, para agentes A2A externos | `src/adapters/consultas/` | v3.8 |
+| Adaptador Ops | Cuarto listener HTTP: liveness y readiness (política pura `evaluarReadiness`), apagado por defecto | `src/adapters/ops/` | v3.18 |
+| Chat web del empleado | `GET /chat`, `POST /login`, `/logout`, `/operaciones`, con CSP y memoria conversacional | `src/adapters/web/` (2 890 → 7 356 líneas) | v3.6, v3.9 |
+| Conversación / Actividad | Puertos angostos: memoria del chat (`conversacion`) y consulta de actividad de solo lectura (`actividad`) | `src/core/conversacion/`, `src/core/actividad/` | v3.8, v3.9 |
+| Proceso y cierre | Modo headless, cierre ordenado con presupuesto y watchdog | `src/proceso-cierre.ts` (raíz, composition root) | v3.17 |
+
+**Cambio de forma del canal del empleado:** los comandos slash de negocio de la TUI (`/devolucion`, `/solicitar`, `/cancelar-solicitud`, `/aprobar-*`…) se dieron de baja en v3.6 y v3.10. Hoy el empleado opera en **texto libre**: el modelo elige una operación del contrato cerrado. Las cuatro operaciones que resuelven o retiran algo (`resolver_solicitud`, `resolver_reembolso`, `cancelar_solicitud_interna`, `solicitar_devolucion`) exigen además una confirmación en dos turnos distintos antes de ejecutarse (`adapters/web/confirmacion-operaciones-store.ts`). Es el mismo flujo en la web (v3.6) y en la TUI (v3.19). Los comandos slash quedan solo para sesión y administración (`/login`, `/logout`, `/crear-empleado`, `/asignar-rol`, `/estado-bot-prs`).
+
+**Interfaces nuevas, además de I1–I5:** HTTP del empleado (`POST /login` devuelve un token que el chat guarda en memoria de JS y envía como `Authorization: Bearer`; la cookie HttpOnly figura como Deuda 9) e HTTP ops (salud). El protocolo A2A se usa ahora también **desde el chat** (consulta de KPIs, con un catálogo cerrado de 4 consultas, v3.16).
+
+**Riesgos y deudas del arc42, actualizados:**
+
+- **Riesgos 1–9.** Nuevos: 6 (`resume` de sesión del SDK), 7 (`Map`s sin evicción), 8 (colisión vendedor/empleado) y 9 (flujo de dos personas). El Riesgo 3 se cerró en v3.5 y el 5 se reescribió en v3.20.
+- **Deudas 1–13.** Se cerró la **Deuda 5** (autoaprobación de reembolso, v3.10) y se abrieron de la 6 a la 13. Entre ellas, la **Deuda 11** (colisión de numeración de los ADRs 174–187) y las 12/13, de clawback de comisiones (B6/B4, v3.21).
+- **ADRs.** El conteo pasó de ~144 a **302**, pero solo los ADR 300–302 tienen encabezado propio en el arc42. El resto vive en los `design.md` de cada change.

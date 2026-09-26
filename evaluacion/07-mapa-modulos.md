@@ -70,3 +70,42 @@ Que `core/config` y `core/logging` tengan fan-out **cero** y fan-in de 2 dígito
 2. **Hay un único cuello de botella arquitectónico real**: `core/agents`, con fan-in 11. Cualquier cambio de forma en `AgentDefinition` o en el registro tiene el radio de impacto más amplio de todo el sistema — es también, no por casualidad, el módulo donde vive el control de seguridad (`allowedTools`).
 3. **El "núcleo" tiene, dentro de sí, su propia mini-jerarquía de dependencia** (`ventas`/`solicitudes`/`propuestas`/`activity` → `auth`/`hitl`/`agents`/`turn-selector` → `config`/`logging`), no es un bolsón plano de 17 carpetas sin relación.
 4. **El patrón de composition root está aplicado con disciplina real**: 7 archivos concentran el 100% del acoplamiento cruzado core↔adaptadores del repo; ninguna lógica de dominio vive ahí (son, en esencia, listas de `const x = createXAdapter(...)` y el registro de handlers).
+
+
+## Actualización 2026-09-25 — el grafo en `v3.21.0`
+
+*(Lo anterior es el grafo de `v3.4.0`. Se regeneró con un script equivalente, basado en imports relativos de los archivos de producción y agrupado por carpeta de segundo nivel, sobre ambos snapshots. Para `v3.4.0` reproduce los fan-in del documento original: `core/agents` 11, `core/turn-selector` 9, `core/logging` 9, `core/ventas` 8, `adapters/memory` 8.)*
+
+**Resultado central, sostenido:** **0 aristas `core/* → adapters/*`** sobre 166 archivos de producción, contra 126 en v3.4. El único acoplamiento adaptador↔adaptador sigue siendo el mismo: `git`, `knowledge` y `test-runner` → `shared`. El grafo pasó de **112 a 168 aristas**.
+
+### Hubs, antes y después
+
+| Módulo | Fan-in v3.4.0 | Fan-in v3.21.0 | Fan-out v3.4.0 → v3.21.0 |
+| --- | ---: | ---: | --- |
+| `core/agents` | 11 | **16** | 1 → **5** |
+| `core/logging` | 9 | 13 | 0 → 0 |
+| `core/turn-selector` | 9 | 11 | 5 → 5 |
+| `core/ventas` | 8 | 11 | 2 → 2 |
+| `core/auth` | 5 | **11** | 1 → 1 |
+| `adapters/memory` | 8 | 9 | 0 → 0 |
+| `core/operaciones` | — | 5 | — → **7** |
+| `core/solicitudes` | 1 | 5 | 4 → 4 |
+| `core/commands` | 1 | 5 | 0 → 0 |
+
+`core/auth` casi triplica su fan-in, algo coherente con que la autorización por roles (v3.5) se consulta desde operaciones, solicitudes, ventas, web y el composition root. `core/logging` sigue con fan-out 0, la firma de una utilidad transversal sana.
+
+### Lo que el grafo nuevo revela
+
+1. **Aparecen ciclos a nivel módulo dentro del núcleo**, que no existían en v3.4.0:
+   - `core/agents ↔ core/operaciones`: `definitions.ts` importa `OPERACIONES_TOOL_QUALIFIED_NAME`, y `ejecutar-operacion.ts` importa 6 archivos de `agents/` (contratos A2A, textos, catálogo de KPIs, marco de texto externo).
+   - `core/agents ↔ core/solicitudes`: `consultas-negocio-tool.ts` importa el puerto de consulta, y `crear-solicitud-interna.ts` importa `VALIDADOR_SOLICITUDES_AGENT_ID`.
+   - `core/agents → core/actividad → core/activity → core/agents`.
+
+   No son ciclos entre archivos (no rompen la carga de módulos ES), pero sí rompen la mini-jerarquía que describía la observación 3 de arriba. `core/agents` dejó de ser solo "registro de agentes" y pasó a alojar textos y lógica de consulta de negocio. **El cuello de botella del punto 2 creció**: fan-in 16 y, ahora, también fan-out 5.
+2. **Los composition roots se importan entre sí.** `build-on-activity` importa `createPropuestaStore` de `build-on-comando-empleado`, y este importa `createDelegacionStore` de `build-on-activity`. Además, `build-on-operaciones-empleado` (nuevo, 15 aristas de salida) importa de `build-on-comando-empleado` y de `build-on-venta`. El patrón "7 archivos que ven todo" pasó a ser **9 archivos** (se suman `build-on-operaciones-empleado` y `build-on-login-http`; `proceso-cierre.ts`, también nuevo en la raíz, solo importa `core/logging`), con dependencias cruzadas entre ellos. Los CLIs `empleados.ts` y `reporte-mensual.ts` también importan de ambos lados, igual que en v3.4.
+3. **`main.ts` pasó de 22-23 a 31 aristas de salida**, con fan-in 0: sigue siendo una hoja terminal.
+4. **`adapters/tui` dejó de tener fan-out 0**: ahora importa `core/commands` (v3.20, para saber qué comando es secreto). Está permitido por la regla, pero ya no es "I/O puro".
+5. **Adaptadores nuevos bien contenidos**: `ops` tiene fan-out 0 (y un test que lo garantiza), `consultas` depende solo de `core/agents` y `operaciones` de `core/agents`, `core/auth` y `core/operaciones`.
+6. **`adapters/web` es ahora el adaptador más acoplado al núcleo**: 4 módulos (`ventas` con 7 imports, `auth`, `conversacion`, `operaciones`), contra 1 en v3.4.
+
+**Recomendación que se desprende:** mover los textos y catálogos que `core/operaciones` consume de `core/agents` (`a2a-*-textos.ts`, `texto-externo.ts`, `consultas-kpi-catalogo.ts`) a un módulo propio o a `core/text`, y sacar `consultas-negocio-tool.ts` de `agents/`. Eso devolvería a `core/agents` su rol de registro y eliminaría los ciclos.

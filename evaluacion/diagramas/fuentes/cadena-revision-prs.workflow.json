@@ -1,0 +1,262 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Cadena de revisión de PRs",
+    "output": "cadena-revision-prs.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "cadena",
+        "label": "Cadena de roles",
+        "focus": [
+          "evento",
+          "firma",
+          "actividad",
+          "planner",
+          "developer",
+          "reviewer"
+        ],
+        "note": "Una pasada lineal por evento: Planner → Developer → Reviewer, con profundidad de delegación 1."
+      },
+      {
+        "id": "escritura",
+        "label": "Escritura y HITL",
+        "focus": [
+          "developer",
+          "worktree",
+          "propuesta",
+          "aplicar"
+        ],
+        "note": "El Developer escribe en un worktree aislado; el patch solo se aplica si un humano lo aprueba, y nunca se pushea."
+      },
+      {
+        "id": "salida",
+        "label": "Veredicto y tablero",
+        "focus": [
+          "reviewer",
+          "veredicto",
+          "tablero"
+        ],
+        "note": "La última línea VEREDICTO: fija el estado; sin veredicto válido queda observado, nunca aprobado."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "github",
+      "label": "GitHub"
+    },
+    {
+      "id": "orquestador",
+      "label": "Webhook + orquestador"
+    },
+    {
+      "id": "roles",
+      "label": "Subagentes"
+    },
+    {
+      "id": "aislado",
+      "label": "Worktree + aprobación humana",
+      "variant": "exception"
+    }
+  ],
+  "mainPath": [
+    "firma",
+    "actividad",
+    "planner",
+    "developer",
+    "reviewer",
+    "veredicto"
+  ],
+  "nodes": [
+    {
+      "id": "evento",
+      "lane": "github",
+      "col": 0,
+      "type": "external",
+      "label": "Evento de PR",
+      "sublabel": "opened · comentario",
+      "width": 132
+    },
+    {
+      "id": "tablero",
+      "lane": "github",
+      "col": 5,
+      "type": "external",
+      "label": "Comentario + labels",
+      "sublabel": "board (Issues API)",
+      "width": 150
+    },
+    {
+      "id": "firma",
+      "lane": "orquestador",
+      "col": 0,
+      "type": "security",
+      "label": "Webhook",
+      "sublabel": "HMAC + anti-loop",
+      "tag": "202 y sigue",
+      "width": 132
+    },
+    {
+      "id": "actividad",
+      "lane": "orquestador",
+      "col": 1,
+      "type": "backend",
+      "label": "runActivityTurn",
+      "sublabel": "crea o reusa",
+      "width": 132
+    },
+    {
+      "id": "veredicto",
+      "lane": "orquestador",
+      "col": 5,
+      "type": "backend",
+      "label": "parseVeredicto",
+      "sublabel": "estado de actividad",
+      "width": 150
+    },
+    {
+      "id": "planner",
+      "lane": "roles",
+      "col": 2,
+      "type": "backend",
+      "label": "Planner",
+      "sublabel": "Read · Glob"
+    },
+    {
+      "id": "developer",
+      "lane": "roles",
+      "col": 3,
+      "type": "backend",
+      "label": "Developer",
+      "sublabel": "+ Write · Edit"
+    },
+    {
+      "id": "reviewer",
+      "lane": "roles",
+      "col": 4,
+      "type": "security",
+      "label": "Reviewer",
+      "sublabel": "Read"
+    },
+    {
+      "id": "worktree",
+      "lane": "aislado",
+      "col": 3,
+      "type": "database",
+      "label": "Worktree",
+      "sublabel": "run_tests (vitest)",
+      "width": 132
+    },
+    {
+      "id": "propuesta",
+      "lane": "aislado",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Propuesta",
+      "sublabel": "patch ≤ 64 KB",
+      "width": 132
+    },
+    {
+      "id": "aplicar",
+      "lane": "aislado",
+      "col": 5,
+      "type": "security",
+      "label": "/aplicar-propuesta",
+      "sublabel": "git apply local",
+      "tag": "sin push",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "id": "evento-firma",
+      "from": "evento",
+      "to": "firma",
+      "label": "webhook",
+      "variant": "emphasis"
+    },
+    {
+      "id": "firma-actividad",
+      "from": "firma",
+      "to": "actividad",
+      "label": "cola por repo",
+      "variant": "emphasis"
+    },
+    {
+      "id": "actividad-planner",
+      "from": "actividad",
+      "to": "planner",
+      "label": "delegar",
+      "variant": "emphasis"
+    },
+    {
+      "id": "planner-developer",
+      "from": "planner",
+      "to": "developer",
+      "label": "plan",
+      "variant": "emphasis"
+    },
+    {
+      "id": "developer-worktree",
+      "from": "developer",
+      "to": "worktree",
+      "label": "cwd",
+      "variant": "dashed"
+    },
+    {
+      "id": "worktree-propuesta",
+      "from": "worktree",
+      "to": "propuesta",
+      "label": "diff"
+    },
+    {
+      "id": "propuesta-aplicar",
+      "from": "propuesta",
+      "to": "aplicar",
+      "label": "HITL",
+      "variant": "security"
+    },
+    {
+      "id": "developer-reviewer",
+      "from": "developer",
+      "to": "reviewer",
+      "label": "patch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "reviewer-veredicto",
+      "from": "reviewer",
+      "to": "veredicto",
+      "label": "VEREDICTO:",
+      "variant": "emphasis"
+    },
+    {
+      "id": "veredicto-tablero",
+      "from": "veredicto",
+      "to": "tablero",
+      "label": "espejo",
+      "variant": "dashed",
+      "role": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Estados → labels",
+      "items": [
+        "observado → observaciones-pendientes",
+        "resuelto solo desde observado"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Lo que no hace",
+      "items": [
+        "Sin loop Reviewer → Developer",
+        "Sin GITHUB_TOKEN no hay anti-loop"
+      ]
+    }
+  ]
+}

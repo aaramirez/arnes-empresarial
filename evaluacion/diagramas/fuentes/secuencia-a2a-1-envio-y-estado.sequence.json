@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Solicitud A2A entrante (1/2) — envío y consulta de estado",
+    "output": "secuencia-a2a-1-envio-y-estado.html",
+    "viewBox": [
+      1080,
+      493
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "envio",
+        "label": "Envío",
+        "focus": [
+          "agente",
+          "a2a",
+          "build",
+          "db"
+        ],
+        "note": "SendMessage responde enseguida con la tarea SUBMITTED; el turno corre aparte (diagrama 2/2)."
+      },
+      {
+        "id": "estado",
+        "label": "Consulta de estado",
+        "focus": [
+          "agente",
+          "a2a",
+          "build"
+        ],
+        "note": "GetTask es síncrono y lee el estado persistido."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "agente",
+      "type": "external",
+      "label": "Agente externo",
+      "sublabel": "cliente A2A"
+    },
+    {
+      "id": "a2a",
+      "type": "security",
+      "label": "adapters/a2a",
+      "sublabel": "JSON-RPC + Bearer"
+    },
+    {
+      "id": "build",
+      "type": "backend",
+      "label": "Orquestador A2A",
+      "sublabel": "build-on-a2a-entrante"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "solicitudes_a2a_entrantes"
+    }
+  ],
+  "segments": [
+    {
+      "from": 157,
+      "to": 273,
+      "label": "SendMessage"
+    },
+    {
+      "from": 291,
+      "to": 407,
+      "label": "GetTask"
+    }
+  ],
+  "messages": [
+    {
+      "id": "send",
+      "from": "agente",
+      "to": "a2a",
+      "y": 175,
+      "label": "SendMessage (Bearer)",
+      "variant": "emphasis",
+      "note": "timingSafeEqual; 401 si falla"
+    },
+    {
+      "id": "onsolicitud",
+      "from": "a2a",
+      "to": "build",
+      "y": 203,
+      "label": "onSolicitud (hay cupo)"
+    },
+    {
+      "id": "submitted",
+      "from": "build",
+      "to": "db",
+      "y": 231,
+      "label": "caso + SUBMITTED (1 tx)"
+    },
+    {
+      "id": "task",
+      "from": "a2a",
+      "to": "agente",
+      "y": 259,
+      "label": "task SUBMITTED",
+      "variant": "return"
+    },
+    {
+      "id": "gettask",
+      "from": "agente",
+      "to": "a2a",
+      "y": 309,
+      "label": "GetTask"
+    },
+    {
+      "id": "consultar",
+      "from": "a2a",
+      "to": "build",
+      "y": 337,
+      "label": "onConsultarTarea",
+      "note": "lee solicitudes_a2a_entrantes por a2aTaskId"
+    },
+    {
+      "id": "construir",
+      "from": "build",
+      "to": "a2a",
+      "y": 365,
+      "label": "construirTask",
+      "variant": "return"
+    },
+    {
+      "id": "artifacts",
+      "from": "a2a",
+      "to": "agente",
+      "y": 393,
+      "label": "COMPLETED + artifacts",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "a2a",
+      "from": 170,
+      "to": 265,
+      "type": "security"
+    },
+    {
+      "participant": "a2a",
+      "from": 304,
+      "to": 399,
+      "type": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Estados",
+      "items": [
+        "SUBMITTED → WORKING → COMPLETED | FAILED | CANCELED",
+        "REJECTED directo si no hay cupo"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Protocolo",
+      "items": [
+        "SendMessage, GetTask, CancelTask",
+        "Otro método → -32601"
+      ]
+    }
+  ]
+}

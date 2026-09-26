@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Arnés Empresarial — v3.21.0",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "empleado",
+      "type": "external",
+      "label": "Personas",
+      "sublabel": "empleado · cliente",
+      "pos": [
+        40,
+        100
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "agente",
+      "type": "external",
+      "label": "Agente A2A externo",
+      "sublabel": "JSON-RPC",
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "PRs e Issues",
+      "pos": [
+        40,
+        345
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "adapters/web",
+      "sublabel": "chat · /login · /operaciones",
+      "pos": [
+        290,
+        50
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "tui",
+      "type": "frontend",
+      "label": "adapters/tui",
+      "sublabel": "Ink, sin headless",
+      "pos": [
+        290,
+        150
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "a2a",
+      "type": "backend",
+      "label": "adapters/a2a",
+      "sublabel": "servidor + cliente",
+      "pos": [
+        290,
+        250
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "webhooks",
+      "type": "backend",
+      "label": "adapters/webhooks",
+      "sublabel": "firma HMAC",
+      "pos": [
+        290,
+        345
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "nucleo",
+      "type": "backend",
+      "label": "Núcleo — turn-selector",
+      "sublabel": "resolve → assemble → invoke → close",
+      "pos": [
+        560,
+        170
+      ],
+      "size": [
+        200,
+        84
+      ],
+      "tag": "src/core"
+    },
+    {
+      "id": "sdk",
+      "type": "cloud",
+      "label": "Claude Agent SDK",
+      "sublabel": "Anthropic API",
+      "pos": [
+        860,
+        50
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "Tools MCP in-process",
+      "sublabel": "operaciones · consultas · knowledge",
+      "pos": [
+        860,
+        200
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "memoria",
+      "type": "database",
+      "label": "adapters/memory",
+      "sublabel": "SQLite · 14 migraciones",
+      "pos": [
+        860,
+        330
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "ops",
+      "type": "security",
+      "label": "adapters/ops",
+      "sublabel": "/salud/vivo · /salud/listo",
+      "pos": [
+        560,
+        345
+      ],
+      "size": [
+        200,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Un proceso Node.js — main.ts",
+      "wraps": [
+        "web",
+        "tui",
+        "a2a",
+        "webhooks",
+        "nucleo",
+        "mcp",
+        "memoria",
+        "ops"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "empleado-web",
+      "from": "empleado",
+      "to": "web",
+      "label": "chat Bearer",
+      "variant": "emphasis"
+    },
+    {
+      "id": "empleado-tui",
+      "from": "empleado",
+      "to": "tui",
+      "label": "texto libre"
+    },
+    {
+      "id": "agente-a2a",
+      "from": "agente",
+      "to": "a2a",
+      "label": "SendMessage"
+    },
+    {
+      "id": "github-webhooks",
+      "from": "github",
+      "to": "webhooks",
+      "label": "evento PR",
+      "variant": "security"
+    },
+    {
+      "id": "web-nucleo",
+      "from": "web",
+      "to": "nucleo",
+      "label": "turno",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tui-nucleo",
+      "from": "tui",
+      "to": "nucleo"
+    },
+    {
+      "id": "a2a-nucleo",
+      "from": "a2a",
+      "to": "nucleo"
+    },
+    {
+      "id": "webhooks-nucleo",
+      "from": "webhooks",
+      "to": "nucleo"
+    },
+    {
+      "id": "nucleo-sdk",
+      "from": "nucleo",
+      "to": "sdk",
+      "label": "query()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sdk-mcp",
+      "from": "sdk",
+      "to": "mcp",
+      "label": "tool call",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        955,
+        157
+      ]
+    },
+    {
+      "id": "mcp-memoria",
+      "from": "mcp",
+      "to": "memoria",
+      "label": "CAS + auditoría",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        955,
+        297
+      ]
+    },
+    {
+      "id": "nucleo-memoria",
+      "from": "nucleo",
+      "to": "memoria",
+      "label": "casos"
+    },
+    {
+      "id": "ops-memoria",
+      "from": "ops",
+      "to": "memoria",
+      "label": "sonda",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "v3.21.0",
+      "items": [
+        "Tool única de operaciones (web y TUI)",
+        "Salud operativa y cierre ordenado"
+      ]
+    }
+  ]
+}

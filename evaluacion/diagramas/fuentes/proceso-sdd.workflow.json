@@ -1,0 +1,234 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Proceso SDD por hito (AGENTS.md)",
+    "output": "proceso-sdd.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "camino-feliz",
+        "label": "Camino feliz",
+        "focus": [
+          "hito",
+          "spec",
+          "checkpoint",
+          "impl",
+          "reviewer",
+          "cierre"
+        ],
+        "note": "Diseño antes que código: nada llega al Implementer sin la aprobación explícita del humano."
+      },
+      {
+        "id": "rechazos",
+        "label": "Loops de rechazo",
+        "focus": [
+          "checkpoint",
+          "reviewer",
+          "ajustar",
+          "rehacer"
+        ],
+        "note": "El checkpoint devuelve al Spec Author; el Reviewer devuelve al Implementer (código) o al Spec Author (diseño)."
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "diseno",
+      "label": "Diseño: Spec Author + checkpoint humano"
+    },
+    {
+      "id": "construccion",
+      "label": "Construcción: Implementer + Reviewer"
+    },
+    {
+      "id": "rechazo",
+      "label": "Rechazos",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "diseno",
+      "label": "Diseño",
+      "fromCol": 0,
+      "toCol": 2
+    },
+    {
+      "id": "construccion",
+      "label": "Construcción",
+      "fromCol": 3,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "verificacion",
+      "label": "Verificación y cierre",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "hito",
+    "spec",
+    "checkpoint",
+    "impl",
+    "reviewer",
+    "cierre"
+  ],
+  "nodes": [
+    {
+      "id": "hito",
+      "lane": "diseno",
+      "col": 0,
+      "type": "external",
+      "label": "Hito del plan",
+      "sublabel": "arc42 + plan"
+    },
+    {
+      "id": "spec",
+      "lane": "diseno",
+      "col": 1,
+      "type": "backend",
+      "label": "sdd-new / sdd-ff",
+      "sublabel": "openspec/changes/",
+      "tag": "spec · design · tasks",
+      "width": 132
+    },
+    {
+      "id": "checkpoint",
+      "lane": "diseno",
+      "col": 2,
+      "type": "security",
+      "label": "Checkpoint",
+      "sublabel": "aprueba o rechaza",
+      "tag": "persona, no agente"
+    },
+    {
+      "id": "impl",
+      "lane": "construccion",
+      "col": 3,
+      "type": "backend",
+      "label": "sdd-apply",
+      "sublabel": "rama hito/vX.Y",
+      "tag": "TDD · commit por tarea"
+    },
+    {
+      "id": "reviewer",
+      "lane": "construccion",
+      "col": 4,
+      "type": "security",
+      "label": "sdd-verify + code-review",
+      "sublabel": "gate duro",
+      "width": 176
+    },
+    {
+      "id": "cierre",
+      "lane": "construccion",
+      "col": 5,
+      "type": "database",
+      "label": "Merge + tag",
+      "sublabel": "docs/progreso/vX.Y"
+    },
+    {
+      "id": "ajustar",
+      "lane": "rechazo",
+      "col": 2,
+      "type": "messagebus",
+      "label": "Ajustar spec",
+      "sublabel": "vuelve a checkpoint"
+    },
+    {
+      "id": "rehacer",
+      "lane": "rechazo",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Rehacer",
+      "sublabel": "hallazgo de código"
+    }
+  ],
+  "edges": [
+    {
+      "id": "hito-spec",
+      "from": "hito",
+      "to": "spec"
+    },
+    {
+      "id": "spec-checkpoint",
+      "from": "spec",
+      "to": "checkpoint",
+      "label": "propuesta",
+      "variant": "emphasis"
+    },
+    {
+      "id": "checkpoint-impl",
+      "from": "checkpoint",
+      "to": "impl",
+      "label": "aprueba",
+      "variant": "emphasis"
+    },
+    {
+      "id": "impl-reviewer",
+      "from": "impl",
+      "to": "reviewer",
+      "label": "commits",
+      "variant": "emphasis"
+    },
+    {
+      "id": "reviewer-cierre",
+      "from": "reviewer",
+      "to": "cierre",
+      "label": "aprueba",
+      "variant": "emphasis"
+    },
+    {
+      "id": "checkpoint-ajustar",
+      "from": "checkpoint",
+      "to": "ajustar",
+      "label": "rechaza",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "ajustar-spec",
+      "from": "ajustar",
+      "to": "spec",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "reviewer-rehacer",
+      "from": "reviewer",
+      "to": "rehacer",
+      "label": "rechaza",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "rehacer-impl",
+      "from": "rehacer",
+      "to": "impl",
+      "variant": "dashed",
+      "role": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Lo que el gate frenó",
+      "items": [
+        "v1.3 sin tag; v2.0 TDD simulado; v3.3 → ADR 144",
+        "v3.9 y v3.20 rechazados; v3.12 rechazó el ADR 223"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Dónde se rompe el rastro",
+      "items": [
+        "v3.17 y v3.18 sin openspec/",
+        "5 de 17 hitos con reporte formal"
+      ]
+    }
+  ]
+}

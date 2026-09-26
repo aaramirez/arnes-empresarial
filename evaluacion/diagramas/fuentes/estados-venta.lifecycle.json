@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Máquina de estados — venta y escalación de reembolso",
+    "output": "estados-venta.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "camino",
+        "label": "Confirmación",
+        "focus": [
+          "pendiente",
+          "confirmada",
+          "rechazada"
+        ],
+        "note": "El cliente (link) o un empleado con el token decide. Confirmar inserta la comisión en la misma transacción."
+      },
+      {
+        "id": "reembolso",
+        "label": "Reembolso en dos personas",
+        "focus": [
+          "confirmada",
+          "escalada",
+          "reembolsada",
+          "rechazado"
+        ],
+        "note": "Bajo el umbral se reembolsa directo; si no, escala y lo resuelve un administrador que no es el vendedor."
+      }
+    ],
+    "viewBox": [
+      1060,
+      630
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Estados de la venta"
+    },
+    {
+      "id": "recuperable",
+      "label": "Recuperable"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "pendiente",
+      "type": "start",
+      "label": "Pendiente",
+      "sublabel": "pendiente_confirmacion",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "tag": "TTL 72 h"
+    },
+    {
+      "id": "confirmada",
+      "type": "active",
+      "label": "confirmada",
+      "sublabel": "+ comisión (1 tx)",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "tag": "CAS"
+    },
+    {
+      "id": "escalada",
+      "type": "waiting",
+      "label": "Escalada",
+      "sublabel": "reembolso_pendiente",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "admin ≠ vendedor"
+    },
+    {
+      "id": "reembolsada",
+      "type": "success",
+      "label": "reembolsada",
+      "sublabel": "resta del reporte",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "tag": "terminal"
+    },
+    {
+      "id": "rechazado",
+      "type": "failure",
+      "label": "reembolso_rechazado",
+      "sublabel": "reabrible",
+      "lane": "recuperable",
+      "col": 0,
+      "tag": "sin límite"
+    },
+    {
+      "id": "rechazada",
+      "type": "failure",
+      "label": "rechazada",
+      "sublabel": "decisión del cliente",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "rechazar-reembolso",
+      "from": "escalada",
+      "to": "rechazado",
+      "label": "rechazar",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        358,
+        233
+      ]
+    },
+    {
+      "id": "reabrir",
+      "from": "rechazado",
+      "to": "escalada",
+      "label": "reabrir",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        452,
+        233
+      ]
+    },
+    {
+      "id": "rechazar-venta",
+      "from": "pendiente",
+      "to": "rechazada",
+      "label": "rechazar",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Todo es CAS",
+      "items": [
+        "WHERE estado = origen; si no, no_aplicable",
+        "Confirmar exige expires_at vigente"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Atajos y bordes",
+      "items": [
+        "Con token y bajo 500: directo a reembolsada",
+        "Vencida sin decisión: queda congelada"
+      ]
+    }
+  ]
+}

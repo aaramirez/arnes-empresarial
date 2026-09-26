@@ -1,0 +1,285 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Mapa de módulos del núcleo — dependencias reales (v3.21.0)",
+    "output": "mapa-modulos-nucleo.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/aaramirez/arnes-empresarial",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "49602b47ccf60c9da5b1bef051ef03bce1c9db04"
+    },
+    "views": [
+      {
+        "id": "ciclos",
+        "label": "Ciclos nuevos",
+        "focus": [
+          "operaciones",
+          "agents",
+          "solicitudes"
+        ],
+        "note": "agents ↔ operaciones y agents ↔ solicitudes: no existían en v3.4.0."
+      },
+      {
+        "id": "hub",
+        "label": "El hub core/agents",
+        "focus": [
+          "agents",
+          "turn",
+          "operaciones",
+          "solicitudes"
+        ],
+        "note": "Fan-in 16 (antes 11) y fan-out 5 (antes 1)."
+      },
+      {
+        "id": "politica",
+        "label": "Autorización",
+        "focus": [
+          "auth",
+          "ventas",
+          "solicitudes",
+          "hitl"
+        ],
+        "note": "core/auth pasó de fan-in 5 a 11 con los roles de v3.5."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "turn",
+      "type": "backend",
+      "label": "turn-selector",
+      "sublabel": "4 167 líneas · fan-in 11",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/core/turn-selector/handle-turn.ts"
+        }
+      ]
+    },
+    {
+      "id": "operaciones",
+      "type": "backend",
+      "label": "operaciones",
+      "sublabel": "5 899 líneas · fan-out 7",
+      "pos": [
+        320,
+        60
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "tag": "nuevo v3.6",
+      "sources": [
+        {
+          "path": "src/core/operaciones/ejecutar-operacion.ts"
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "type": "security",
+      "label": "agents",
+      "sublabel": "4 081 líneas · fan-in 16",
+      "pos": [
+        320,
+        200
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "tag": "hub",
+      "sources": [
+        {
+          "path": "src/core/agents/definitions.ts"
+        },
+        {
+          "path": "src/core/agents/consultas-negocio-tool.ts"
+        }
+      ]
+    },
+    {
+      "id": "ventas",
+      "type": "backend",
+      "label": "ventas",
+      "sublabel": "6 050 líneas · fan-in 11",
+      "pos": [
+        640,
+        200
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/core/ventas/reporte.ts"
+        }
+      ]
+    },
+    {
+      "id": "solicitudes",
+      "type": "backend",
+      "label": "solicitudes",
+      "sublabel": "2 165 líneas · fan-in 5",
+      "pos": [
+        320,
+        340
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/core/solicitudes/crear-solicitud-interna.ts"
+        }
+      ]
+    },
+    {
+      "id": "hitl",
+      "type": "backend",
+      "label": "hitl",
+      "sublabel": "vocabulario HITL",
+      "pos": [
+        40,
+        340
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/core/hitl/hitl-contract.ts"
+        }
+      ]
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "auth",
+      "sublabel": "roles · fan-in 11",
+      "pos": [
+        640,
+        340
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/core/auth/autorizacion-resolucion.ts"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "operaciones-agents",
+      "from": "operaciones",
+      "to": "agents",
+      "label": "6 archivos",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        420,
+        162
+      ]
+    },
+    {
+      "id": "turn-agents",
+      "from": "turn",
+      "to": "agents",
+      "label": "12 imports",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "agents-operaciones",
+      "from": "agents",
+      "to": "operaciones",
+      "label": "ciclo",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "right"
+    },
+    {
+      "id": "operaciones-ventas",
+      "from": "operaciones",
+      "to": "ventas",
+      "label": "12 imports",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "agents-solicitudes",
+      "from": "agents",
+      "to": "solicitudes",
+      "label": "ciclo",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        420,
+        302
+      ]
+    },
+    {
+      "id": "solicitudes-hitl",
+      "from": "solicitudes",
+      "to": "hitl"
+    },
+    {
+      "id": "solicitudes-auth",
+      "from": "solicitudes",
+      "to": "auth"
+    },
+    {
+      "id": "ventas-auth",
+      "from": "ventas",
+      "to": "auth",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Sigue en 0",
+      "items": [
+        "Aristas core → adapters (166 archivos)",
+        "logging y config con fan-out 0"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Ciclos a nivel módulo",
+      "items": [
+        "No rompen la carga: no hay ciclo entre archivos",
+        "Sí rompen la jerarquía que había en v3.4"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Recomendación",
+      "items": [
+        "Sacar textos y catálogos de agents/",
+        "Mover consultas-negocio-tool.ts fuera de agents/"
+      ]
+    }
+  ]
+}

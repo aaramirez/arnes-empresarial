@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Arnés Empresarial — arquitectura de runtime (v3.21.0)",
+    "output": "arquitectura-runtime.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/aaramirez/arnes-empresarial",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "49602b47ccf60c9da5b1bef051ef03bce1c9db04"
+    },
+    "views": [
+      {
+        "id": "canal-empleado",
+        "label": "Canal del empleado",
+        "focus": [
+          "empleado",
+          "web",
+          "tui",
+          "nucleo",
+          "sdk",
+          "mcp",
+          "memoria"
+        ],
+        "note": "Chat web y TUI llegan al mismo núcleo; el modelo opera el negocio por la tool MCP de operaciones."
+      },
+      {
+        "id": "integraciones",
+        "label": "Integraciones entrantes",
+        "focus": [
+          "agente",
+          "a2a",
+          "github",
+          "webhooks",
+          "nucleo"
+        ],
+        "note": "Agentes A2A externos y webhooks de GitHub recorren la misma tubería de turno."
+      },
+      {
+        "id": "operacion",
+        "label": "Operación del proceso",
+        "focus": [
+          "ops",
+          "memoria",
+          "nucleo"
+        ],
+        "note": "Liveness y readiness (v3.18): la readiness responde 503 durante el cierre ordenado."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "empleado",
+      "type": "external",
+      "label": "Empleado",
+      "sublabel": "navegador / terminal",
+      "pos": [
+        40,
+        100
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "agente",
+      "type": "external",
+      "label": "Agente A2A externo",
+      "sublabel": "JSON-RPC",
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "PRs e Issues",
+      "pos": [
+        40,
+        345
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "adapters/web",
+      "sublabel": "chat · /login · /operaciones",
+      "pos": [
+        290,
+        50
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/web/server.ts"
+        }
+      ]
+    },
+    {
+      "id": "tui",
+      "type": "frontend",
+      "label": "adapters/tui",
+      "sublabel": "Ink, sin headless",
+      "pos": [
+        290,
+        150
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/tui/App.tsx"
+        }
+      ]
+    },
+    {
+      "id": "a2a",
+      "type": "backend",
+      "label": "adapters/a2a",
+      "sublabel": "servidor + cliente",
+      "pos": [
+        290,
+        250
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/a2a/server.ts"
+        }
+      ]
+    },
+    {
+      "id": "webhooks",
+      "type": "backend",
+      "label": "adapters/webhooks",
+      "sublabel": "firma HMAC",
+      "pos": [
+        290,
+        345
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/webhooks/server.ts"
+        }
+      ]
+    },
+    {
+      "id": "nucleo",
+      "type": "backend",
+      "label": "Núcleo — turn-selector",
+      "sublabel": "resolve → assemble → invoke → close",
+      "pos": [
+        560,
+        170
+      ],
+      "size": [
+        200,
+        84
+      ],
+      "tag": "src/core",
+      "sources": [
+        {
+          "path": "src/core/turn-selector/handle-turn.ts"
+        }
+      ]
+    },
+    {
+      "id": "sdk",
+      "type": "cloud",
+      "label": "Claude Agent SDK",
+      "sublabel": "Anthropic API",
+      "pos": [
+        860,
+        50
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/core/turn-selector/invoke-model.ts"
+        }
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "Tools MCP in-process",
+      "sublabel": "operaciones · consultas · knowledge",
+      "pos": [
+        860,
+        200
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/operaciones/index.ts"
+        },
+        {
+          "path": "src/core/operaciones/ejecutar-operacion.ts"
+        }
+      ]
+    },
+    {
+      "id": "memoria",
+      "type": "database",
+      "label": "adapters/memory",
+      "sublabel": "SQLite · 14 migraciones",
+      "pos": [
+        860,
+        330
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/memory/repository.ts"
+        }
+      ]
+    },
+    {
+      "id": "ops",
+      "type": "security",
+      "label": "adapters/ops",
+      "sublabel": "/salud/vivo · /salud/listo",
+      "pos": [
+        560,
+        345
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/adapters/ops/readiness.ts"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Un proceso Node.js — main.ts",
+      "wraps": [
+        "web",
+        "tui",
+        "a2a",
+        "webhooks",
+        "nucleo",
+        "mcp",
+        "memoria",
+        "ops"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "empleado-web",
+      "from": "empleado",
+      "to": "web",
+      "label": "HTTP Bearer",
+      "variant": "emphasis"
+    },
+    {
+      "id": "empleado-tui",
+      "from": "empleado",
+      "to": "tui",
+      "label": "texto libre"
+    },
+    {
+      "id": "agente-a2a",
+      "from": "agente",
+      "to": "a2a",
+      "label": "SendMessage"
+    },
+    {
+      "id": "github-webhooks",
+      "from": "github",
+      "to": "webhooks",
+      "label": "evento PR",
+      "variant": "security"
+    },
+    {
+      "id": "web-nucleo",
+      "from": "web",
+      "to": "nucleo",
+      "label": "turno",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tui-nucleo",
+      "from": "tui",
+      "to": "nucleo"
+    },
+    {
+      "id": "a2a-nucleo",
+      "from": "a2a",
+      "to": "nucleo"
+    },
+    {
+      "id": "webhooks-nucleo",
+      "from": "webhooks",
+      "to": "nucleo"
+    },
+    {
+      "id": "nucleo-sdk",
+      "from": "nucleo",
+      "to": "sdk",
+      "label": "query()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sdk-mcp",
+      "from": "sdk",
+      "to": "mcp",
+      "label": "tool call",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        955,
+        157
+      ]
+    },
+    {
+      "id": "mcp-memoria",
+      "from": "mcp",
+      "to": "memoria",
+      "label": "CAS + auditoría",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        955,
+        297
+      ]
+    },
+    {
+      "id": "nucleo-memoria",
+      "from": "nucleo",
+      "to": "memoria",
+      "label": "casos"
+    },
+    {
+      "id": "ops-memoria",
+      "from": "ops",
+      "to": "memoria",
+      "label": "sonda",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Regla hexagonal",
+      "items": [
+        "0 imports core → adapters (166 archivos)",
+        "main.ts + 8 build-on-*.ts: composition root"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Operación por conversación",
+      "items": [
+        "13 operaciones en contrato cerrado",
+        "Roles y autoaprobación prohibida"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Fuera del diagrama",
+      "items": [
+        "board, git, test-runner, notificaciones",
+        "A2A saliente (KPIs) y Graphify CLI"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Límites",
+      "items": [
+        "Un SQLite sin backup; sin rate-limiting",
+        "ops sin auth; TUI fuera del drenaje"
+      ]
+    }
+  ]
+}

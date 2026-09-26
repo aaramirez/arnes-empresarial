@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Flujo de datos — de la venta a la comisión y al reporte neto",
+    "output": "flujo-venta-comision-reporte.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "alta",
+        "label": "Alta y confirmación",
+        "focus": [
+          "operacion",
+          "api",
+          "registrar",
+          "email",
+          "confirmar",
+          "sqlite"
+        ],
+        "note": "La comisión solo existe si el cliente confirma, y se escribe en la misma transacción que la confirmación."
+      },
+      {
+        "id": "reporte",
+        "label": "Reporte y consumidores",
+        "focus": [
+          "sqlite",
+          "reporte",
+          "chat",
+          "a2a",
+          "cli"
+        ],
+        "note": "El reporte se deriva al leer, neto de ventas reembolsadas (ADR 301); A2A recibe solo agregados."
+      }
+    ],
+    "viewBox": [
+      1080,
+      520
+    ]
+  },
+  "stages": [
+    {
+      "label": "Entrada"
+    },
+    {
+      "label": "Alta"
+    },
+    {
+      "label": "Confirmación y SQLite"
+    },
+    {
+      "label": "Agregación"
+    },
+    {
+      "label": "Consumo"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "operacion",
+      "type": "frontend",
+      "label": "registrar_venta",
+      "sublabel": "chat / TUI",
+      "stage": 0,
+      "row": 0
+    },
+    {
+      "id": "api",
+      "type": "external",
+      "label": "POST /ventas",
+      "sublabel": "Bearer token",
+      "stage": 0,
+      "row": 2
+    },
+    {
+      "id": "registrar",
+      "type": "backend",
+      "label": "registrarVenta",
+      "sublabel": "venta pendiente",
+      "stage": 1,
+      "row": 1,
+      "tag": "1 tx"
+    },
+    {
+      "id": "email",
+      "type": "cloud",
+      "label": "Email al cliente",
+      "sublabel": "link /confirmar",
+      "stage": 1,
+      "row": 2,
+      "tag": "best-effort"
+    },
+    {
+      "id": "confirmar",
+      "type": "security",
+      "label": "Confirmar",
+      "sublabel": "CAS + comisión",
+      "stage": 2,
+      "row": 2,
+      "tag": "10 %"
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "ventas · comisiones",
+      "sublabel": "adapters/memory",
+      "stage": 2,
+      "row": 1
+    },
+    {
+      "id": "reporte",
+      "type": "backend",
+      "label": "agruparReporteMensual",
+      "sublabel": "neto de reembolsos",
+      "stage": 3,
+      "row": 1,
+      "tag": "puro",
+      "width": 150
+    },
+    {
+      "id": "chat",
+      "type": "frontend",
+      "label": "Chat / TUI",
+      "sublabel": "reporte completo",
+      "stage": 4,
+      "row": 0
+    },
+    {
+      "id": "a2a",
+      "type": "security",
+      "label": "A2A",
+      "sublabel": "consultar_negocio",
+      "stage": 4,
+      "row": 1,
+      "tag": "solo agregados"
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "CLI",
+      "sublabel": "reporte-mensual.ts",
+      "stage": 4,
+      "row": 2
+    }
+  ],
+  "flows": [
+    {
+      "id": "op-alta",
+      "from": "operacion",
+      "to": "registrar",
+      "label": "venta",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-alta",
+      "from": "api",
+      "to": "registrar",
+      "label": "venta"
+    },
+    {
+      "id": "alta-email",
+      "from": "registrar",
+      "to": "email",
+      "label": "token",
+      "classification": "email no se guarda",
+      "variant": "dashed",
+      "labelAt": [
+        315,
+        340
+      ]
+    },
+    {
+      "id": "email-confirmar",
+      "from": "email",
+      "to": "confirmar",
+      "label": "decisión",
+      "variant": "security"
+    },
+    {
+      "id": "alta-db",
+      "from": "registrar",
+      "to": "sqlite",
+      "label": "pendiente",
+      "variant": "emphasis"
+    },
+    {
+      "id": "confirmar-db",
+      "from": "confirmar",
+      "to": "sqlite",
+      "label": "comisión",
+      "variant": "security"
+    },
+    {
+      "id": "db-reporte",
+      "from": "sqlite",
+      "to": "reporte",
+      "label": "JOIN",
+      "variant": "emphasis"
+    },
+    {
+      "id": "reporte-chat",
+      "from": "reporte",
+      "to": "chat",
+      "label": "detalle",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          745,
+          157
+        ]
+      ],
+      "labelAt": [
+        830,
+        145
+      ]
+    },
+    {
+      "id": "reporte-a2a",
+      "from": "reporte",
+      "to": "a2a",
+      "label": "agregado",
+      "variant": "security"
+    },
+    {
+      "id": "reporte-cli",
+      "from": "reporte",
+      "to": "cli",
+      "label": "texto",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          745,
+          385
+        ]
+      ],
+      "labelAt": [
+        830,
+        373
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "La comisión nace al confirmar",
+      "items": [
+        "monto × 0,10 redondeado a centavos; período = mes de confirmed_at",
+        "Un reembolso nunca toca la tabla comisiones"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Reporte neto (v3.21)",
+      "items": [
+        "reembolsada resta de monto vendido y comisionado",
+        "Clawback real y refunded_at quedan como Deudas 12 y 13"
+      ]
+    }
+  ]
+}

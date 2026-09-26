@@ -59,3 +59,47 @@ Agrupados por el hito que los cierra (`docs/Plan_Implementacion_Harness_Empresar
 - **Hito 7 (A2A entrante)**: agente externo (ej. Compras) consultando el arnés.
 
 Los cuatro hitos "extra" de la fase v3 (skills, reporte de comisiones, cancelar solicitud, visibilidad A2A) no estaban en esta lista original — son extensiones reales del alcance que el plan reconoce como pendientes de formalizar con su propio caso de uso.
+
+
+## Actualización 2026-09-25 — hitos 13 a 29
+
+*(La tabla de arriba cubre hasta `v3.4.0`. El detalle de lo que agregó cada hito está en [`09-actualizacion-2026-09-25.md`](09-actualizacion-2026-09-25.md), §3.)*
+
+| # | Tag | Fecha | Nombre del hito | Commits desde el tag anterior |
+| --- | --- | --- | --- | ---: |
+| 13 | `v3.5.0` | 2026-09-13 | Autorización de empleado (roles) | 18 |
+| 14 | `v3.6.0` | 2026-09-13 | Operaciones de negocio conversacionales | 21 |
+| 15 | `v3.7.0` | 2026-09-13 | Comandos de administración de empleados | 16 |
+| 16 | `v3.8.0` | 2026-09-14 | Consultas de negocio por A2A entrante | 18 |
+| 17 | `v3.9.0` | 2026-09-15 | Chat web del empleado | 19 |
+| 18 | `v3.10.0` | 2026-09-16 | Aprobación conversacional (HITL) | 38 |
+| 19 | `v3.11.0` | 2026-09-17 | Ergonomía del canal del empleado | 6 |
+| 20 | `v3.12.0` | 2026-09-19 | Devolución sin token, dos personas | 33 |
+| 21 | `v3.13.0` | 2026-09-19 | Conocimiento en el chat del empleado | 12 |
+| 22 | `v3.14.0` | 2026-09-20 | Consulta de solicitud propia | 23 |
+| 23 | `v3.15.0` | 2026-09-20 | Visibilidad A2A entrante en el chat | 29 |
+| 24 | `v3.16.0` | 2026-09-21 | Consulta de KPIs A2A desde el chat | 27 |
+| 25 | `v3.17.0` | 2026-09-21 | Modo headless y cierre limpio | 45 |
+| 26 | `v3.18.0` | 2026-09-22 | Salud operativa | 35 |
+| 27 | `v3.19.0` | 2026-09-23 | Operaciones de negocio en la TUI | 23 |
+| 28 | `v3.20.0` | 2026-09-24 | Enmascarar clave en la TUI | 19 |
+| 29 | `v3.21.0` | 2026-09-25 | Reembolso neto en el reporte de comisiones | 22 |
+
+Total acumulado: **755 commits, 29 tags, 31 días de calendario** (26/08 → 25/09).
+
+**Desvíos frente al plan, actualizados:** los 17 hitos nuevos **no figuran** en `docs/Plan_Implementacion_Harness_Empresarial.md`, que no cambia desde `ed3eba6` (2026-09-11). En la primera pasada el plan documentaba activamente sus propios desvíos; en este período dejó de hacerlo. Ninguno de los 17 hitos tiene un caso de uso formal propio en la lista de "Casos de Uso Empresariales". Varios profundizan casos de uso que ya existían (aprobación de solicitud interna, devolución/reembolso, consolidado de KPIs, agente externo consultando el arnés); v3.17 y v3.18 son infraestructura sin caso de uso asociado.
+
+**Ritmo de commits por día, 12/09 → 25/09:**
+
+```
+2026-09-12   2     2026-09-19  34
+2026-09-13  69  ← 3 tags (v3.5–v3.7)
+2026-09-14  17     2026-09-20  56
+2026-09-15  18     2026-09-21  60  ← pico (v3.16 + v3.17)
+2026-09-16  24     2026-09-22  22
+2026-09-17  37     2026-09-23  23
+2026-09-18   1     2026-09-24  38
+                   2026-09-25   3
+```
+
+Por semana ISO: W35 28 · W36 123 · W37 271 · W38 187 · W39 146 (parcial). Después del pico de W37 el ritmo baja un poco, pero casi todos los días sigue por encima de 20 commits. El único día prácticamente sin actividad es el 18/09.

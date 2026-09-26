@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Máquina de estados — tarea A2A entrante",
+    "output": "estados-tarea-a2a.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "feliz",
+        "label": "Camino feliz",
+        "focus": [
+          "send",
+          "submitted",
+          "working",
+          "completed"
+        ],
+        "note": "SendMessage crea la tarea; el turno asíncrono la lleva a COMPLETED."
+      },
+      {
+        "id": "salidas",
+        "label": "Salidas terminales",
+        "focus": [
+          "send",
+          "submitted",
+          "working",
+          "failed",
+          "canceled",
+          "rejected"
+        ],
+        "note": "REJECTED nace así cuando no hay cupo; CancelTask solo aplica a SUBMITTED o WORKING."
+      }
+    ],
+    "viewBox": [
+      1060,
+      630
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Estados"
+    },
+    {
+      "id": "cancelacion",
+      "label": "CancelTask"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "send",
+      "type": "external",
+      "label": "SendMessage",
+      "sublabel": "agente externo",
+      "lane": "main",
+      "col": 0,
+      "step": "01"
+    },
+    {
+      "id": "submitted",
+      "type": "start",
+      "label": "SUBMITTED",
+      "sublabel": "caso + fila (1 tx)",
+      "lane": "main",
+      "col": 1,
+      "step": "02"
+    },
+    {
+      "id": "working",
+      "type": "active",
+      "label": "WORKING",
+      "sublabel": "turno de solo lectura",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "CAS"
+    },
+    {
+      "id": "completed",
+      "type": "success",
+      "label": "COMPLETED",
+      "sublabel": "resultado",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "tag": "terminal"
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "FAILED",
+      "sublabel": "error del turno",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal"
+    },
+    {
+      "id": "canceled",
+      "type": "neutral",
+      "label": "CANCELED",
+      "sublabel": "CancelTask",
+      "lane": "cancelacion",
+      "col": 1,
+      "tag": "terminal"
+    },
+    {
+      "id": "rejected",
+      "type": "failure",
+      "label": "REJECTED",
+      "sublabel": "sin cupo",
+      "lane": "terminal",
+      "col": 2,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "fallar",
+      "from": "working",
+      "to": "failed",
+      "label": "error",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        372,
+        233
+      ]
+    },
+    {
+      "id": "cancelar",
+      "from": "working",
+      "to": "canceled",
+      "label": "CancelTask",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "rechazar",
+      "from": "send",
+      "to": "rejected",
+      "label": "sin cupo",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "route": "bottom-channel",
+      "channelY": 526,
+      "labelAt": [
+        220,
+        526
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "CAS en cada paso",
+      "items": [
+        "WHERE estado IN (SUBMITTED, WORKING)",
+        "CancelTask también desde SUBMITTED"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Sin reintento",
+      "items": [
+        "Hay que mandar otro SendMessage",
+        "Un reinicio deja WORKING huérfanas"
+      ]
+    }
+  ]
+}
