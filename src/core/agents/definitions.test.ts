@@ -291,6 +291,27 @@ describe("SUBAGENT_REGISTRY (Hito 5, tarea 5, ADR 44/51/52)", () => {
     expect(validador?.allowedTools).toEqual([]);
   });
 
+  it("el validador-solicitudes sabe que decide una persona autorizada distinta del solicitante y no da pasos (ADR 303)", () => {
+    const validador = getSubagentDefinition(VALIDADOR_SOLICITUDES_AGENT_ID);
+    const prompt = validador?.systemPrompt ?? "";
+
+    expect(prompt).toContain("No aprobás ni rechazás");
+    expect(prompt).toContain("persona autorizada");
+    expect(prompt).toContain("distinta de quien la pidió");
+    expect(prompt).toContain("no indiques comandos, herramientas ni pasos");
+    expect(prompt).not.toContain("/aprobar-solicitud");
+    expect(prompt).not.toContain("/rechazar-solicitud");
+    expect(prompt).not.toContain("resolver_solicitud");
+    expect(prompt).not.toContain("empleado autenticado");
+    // El rol no cambia (spec solicitud-interna-hitl, "El rol del validador no cambia").
+    expect(validador?.description).toBe(
+      "Evalúa si una solicitud interna (vacaciones o gasto) está completa y " +
+        "cumple las reglas conocidas, y emite un dictamen. No aprueba ni " +
+        "rechaza.",
+    );
+    expect(validador?.allowedTools).toEqual([]);
+  });
+
   it("keeps AGENT_REGISTRY (first-level agents) at exactly one entry — regresión de RD-2 / ADR 51", () => {
     const agents = listAgentDefinitions();
 
