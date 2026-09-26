@@ -82,11 +82,11 @@ Commit: `test(agents): exige que el validador y todo texto de agente del nucleo 
 
 ## Phase 3: Textos nuevos (GREEN)
 
-- [ ] **3.1** GREEN — `src/core/agents/definitions.ts:326-331`: reemplazar el `systemPrompt` del validador por el texto **exacto** de `design.md` §3.1. `id`, `description`, `allowedTools` y `model` no cambian.
+- [x] **3.1** *(2026-09-26: 2.1 (a) y 2.2 verdes; sólo 2.3 rojo, estable en 3 corridas. Una 1.ª corrida mostró un 2.º rojo intermitente no reproducido, ajeno al diff)* GREEN — `src/core/agents/definitions.ts:326-331`: reemplazar el `systemPrompt` del validador por el texto **exacto** de `design.md` §3.1. `id`, `description`, `allowedTools` y `model` no cambian.
 *Aceptación*: 2.1 (a) y 2.2 verdes; 2.3 sigue rojo **sólo** por la aserción de `tareaDelegada`.
 Commit: `fix(agents): el prompt del validador deja de nombrar los comandos de resolucion dados de baja en v3.10.0 (Hito v3.22, tarea 3.1)`
 
-- [ ] **3.2** GREEN — `src/core/solicitudes/crear-solicitud-interna.ts:133`: reemplazar `instruccion` por el texto **exacto** de `design.md` §3.2. `material` no cambia. (Condicionada a C2; si C2 = no, se elimina la aserción de `tareaDelegada` de 2.3 antes de 2.x y esta tarea no existe.)
+- [x] **3.2** *(2026-09-26: suite 164 archivos, 3342 tests, 5 skipped; typecheck y build verdes; el `rg` residual sólo matchea `definitions.ts:245`, doc del agente de operaciones, uso correcto de "empleado autenticado")* GREEN — `src/core/solicitudes/crear-solicitud-interna.ts:133`: reemplazar `instruccion` por el texto **exacto** de `design.md` §3.2. `material` no cambia. (Condicionada a C2; si C2 = no, se elimina la aserción de `tareaDelegada` de 2.3 antes de 2.x y esta tarea no existe.)
 *Aceptación*: suite completa verde; `npm run typecheck` y `npm run build` verdes. `MSYS_NO_PATHCONV=1 rg -n 'aprobar-solicitud|rechazar-solicitud|empleado autenticado' src/core/agents/definitions.ts src/core/solicitudes/crear-solicitud-interna.ts` sólo matchea comentarios (los limpia 4.1).
 Commit: `fix(core): la instruccion de delegacion al validador dice que decide una persona autorizada distinta del solicitante (Hito v3.22, tarea 3.2)`
 
