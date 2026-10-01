@@ -12,7 +12,7 @@ Mapa de navegación para la investigación de ocho arneses/frameworks de agentes
 - [[Opencode]] — sistema cliente/servidor Effect-TS con sesión durable V2; el mejor núcleo para envolver (9,0/14).
 - [[Hive]] — swarm Queen/Judge/Worker orientado a resultados, con HITL y verificación triangulada (9,0/14).
 - [[Codex]] — CLI de OpenAI en Rust, gobernanza de seguridad fuerte pero local y mono-usuario (5,5/14).
-- [[Claude-Code]] — CLI de Anthropic, arquetipo del asistente interactivo de terminal (4,0/14).
+- [[Claude-Code]] — CLI de Anthropic, arquetipo del asistente interactivo de terminal (3,5/14).
 
 ## Fuera de categoría (no son harness)
 

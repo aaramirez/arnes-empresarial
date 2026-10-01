@@ -6,9 +6,9 @@
 
 ## Checklist de cierre (`AGENTS.md`)
 
-- [x] Checkpoint de usabilidad con el tutor.
+- [ ] Checkpoint de usabilidad con el tutor: no se realizó.
 - [x] Reviewer aprobó explícitamente (`sdd-verify` + `code-review`, sin hallazgos bloqueantes) — ver [`verify-report.md`](../../../openspec/changes/hito-1.0-esqueleto-conversacional/verify-report.md) (`sdd-verify`) y el resumen de `code-review` más abajo.
-- [x] Entregable funcional demostrado de punta a punta — demo interactiva en vivo con el tutor, más la evidencia técnica de `data/harness.log`/`data/harness.db` de esta misma sesión (abajo).
+- [x] Entregable funcional demostrado de punta a punta con la evidencia técnica de `data/harness.log`/`data/harness.db` de la sesión registrada (abajo).
 - [x] Esta carpeta (`docs/progreso/v1.0-esqueleto-conversacional/`).
 - [ ] Tag `v1.0.0` — se crea inmediatamente después de este commit.
 

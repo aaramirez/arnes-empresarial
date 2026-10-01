@@ -2,7 +2,7 @@
 
 Arnés (harness) básico con memoria compartida para correr agentes de IA multi-turno en un ambiente empresarial, construido sobre el **Claude Agent SDK**. Proyecto de pasantía corta — diseño primero, versionado incremental, arquitectura de puertos y adaptadores.
 
-> **Estado actual:** hitos v1.0.0, v1.1.0, v1.2.0 y v1.4.0 cerrados y tageados (`v1.3.0` no tiene tag — ver la tabla de Hoja de ruta). v2.0.0 (delegación a subagentes) está en curso: las tareas de implementación ya están commiteadas en la rama `hito/v2.0-delegacion-subagentes`, pero el hito todavía no cierra — falta el pase de Reviewer sobre el hito completo, el checklist de cierre de `AGENTS.md` y el tag `v2.0.0`. Ver la sección [Hoja de ruta](#hoja-de-ruta) para el detalle por versión.
+> **Estado actual:** última versión cerrada y tageada: **v3.22.0** (validador de solicitudes sin comandos retirados en su prompt). Todos los hitos desde v1.0.0 hasta v3.22.0 tienen tag, salvo `v1.3.0` (ventas y comisiones), que nunca se tageó como tal — ver la tabla de Hoja de ruta. El detalle y la evidencia de cada hito viven en `docs/progreso/`. Las carpetas de `openspec/changes/` sin mergear son cambios sólo planificados, sin código.
 
 ## Objetivo
 
@@ -376,9 +376,11 @@ Entrega incremental en tres hitos mayores, cada uno cerrando con un tag semánti
 | v1.1.0 | ✅ cerrado | Consulta de conocimiento | Consulta de política interna, onboarding | Responde con fuente citada del vault |
 | v1.2.0 | ✅ cerrado | Bot de revisión de PRs | Revisión de PRs, incidentes de IT | Un PR real dispara revisión automática; el tablero se actualiza solo |
 | v1.3.0 | — | Ventas y comisiones | Confirmación de venta, soporte, reembolsos | Cliente confirma por web; reporte comparativo mensual |
-| v2.0.0 | 🔄 en curso | Delegación a subagentes | Bot de PRs con roles separados, HITL | Delegación interna entre roles |
-| v2.1.0 | — | Comunicación A2A saliente | Incidente coordinado, KPIs, riesgo/crédito | El agente delega en un agente externo |
-| v3.0.0 | — | Comunicación A2A entrante | Arnés invocable desde otras áreas | Cierra el objetivo específico 7 por completo |
+| v2.0.0 | ✅ cerrado | Delegación a subagentes | Bot de PRs con roles separados, HITL | Delegación interna entre roles |
+| v2.1.0 | ✅ cerrado | Escritura delegada en worktree | Bot de PRs: el Developer propone cambios | Diff aislado pendiente de aprobación humana |
+| v2.2.0 | ✅ cerrado | Comunicación A2A saliente | Incidente coordinado, KPIs, riesgo/crédito | El agente delega en un agente externo |
+| v3.0.0 | ✅ cerrado | Comunicación A2A entrante | Arnés invocable desde otras áreas | Cierra el objetivo específico 7 por completo |
+| v3.1.0 – v3.22.0 | ✅ cerrados | Skills, autorización por rol, operaciones de negocio por conversación, chat web, administración de empleados, hooks reales de turno, enmascarado de contraseña en TUI, validador de solicitudes | Ventas, reembolsos, solicitudes internas, KPIs | Un hito por tag; ver `docs/progreso/` y `git tag --list` |
 
 Plan detallado hito por hito, con estructura de datos, integraciones concretas y conceptos transversales: [`docs/Plan_Implementacion_Harness_Empresarial.md`](docs/Plan_Implementacion_Harness_Empresarial.md).
 

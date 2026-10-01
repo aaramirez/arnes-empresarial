@@ -39,14 +39,14 @@ Escala por celda: ● cumple = 1, ◐ parcial = 0,5, ○ ausente = 0.
 | [[Hive]] | ● | ◐ | ◐ | ◐ | ◐ | ● | ◐ | ● | ◐ | ◐ | ○ | ◐ | ● | ● | **9,0/14** | Empresarial |
 | Pi Agent Harness *(no tiene nota propia en este vault)* | ◐ | ● | ◐ | ◐ | ○ | ○ | ○ | ◐ | ◐ | ◐ | ◐ | ● | ○ | ◐ | **6,0/14** | Asist. dev |
 | [[Codex]] | ◐ | ◐ | ○ | ◐ | ○ | ● | ○ | ● | ◐ | ◐ | ◐ | ○ | ○ | ◐ | **5,5/14** | Asist. dev |
-| [[Claude-Code]] | ◐ | ◐ | ○ | ○ | ○ | ◐ | ○ | ● | ◐ | ○ | ○ | ○ | ○ | ◐ | **4,0/14** | Asist. dev |
+| [[Claude-Code]] | ◐ | ◐ | ○ | ○ | ○ | ◐ | ○ | ● | ◐ | ○ | ○ | ○ | ○ | ◐ | **3,5/14** | Asist. dev |
 
 > **Nota de alcance de este vault**: el documento fuente evalúa ocho proyectos, entre ellos *Pi Agent Harness* (Earendil, arquitectura hexagonal). La estructura de esta bóveda no incluye una nota individual para Pi Agent Harness — se deja el puntaje acá por completitud del cuadro, pero su detalle vive únicamente en el documento fuente HTML.
 
 ## Las tres categorías
 
 - **Categoría A — Harness de entorno empresarial** ([[DeerFlow]] 9,5 · [[Opencode]] 9,0 · [[Hive]] 9,0): nacieron con cliente/servidor, sesión durable, activación múltiple o gobernanza. Ya traen resueltas varias capas empresariales.
-- **Categoría B — Harness de asistencia al desarrollador** (Pi Agent Harness 6,0 · [[Codex]] 5,5 · [[Claude-Code]] 4,0): sesgo "un humano, un terminal, un ciclo". Excelentes como herramienta local; sin multi-tenencia, identidad delegada ni auditoría.
+- **Categoría B — Harness de asistencia al desarrollador** (Pi Agent Harness 6,0 · [[Codex]] 5,5 · [[Claude-Code]] 3,5): sesgo "un humano, un terminal, un ciclo". Excelentes como herramienta local; sin multi-tenencia, identidad delegada ni auditoría.
 - **Fuera de categoría — no son harness** ([[MEMU]] · [[OpenHands]]): no son la capa de runtime que el marco evalúa. memU resuelve C9 mejor que cualquier harness (multi-host, postgres/pgvector, scope de usuario); OpenHands Agent Canvas es solo el frontend.
 
 ## Veredicto del documento fuente

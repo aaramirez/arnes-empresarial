@@ -16,7 +16,7 @@ Claude Code es el CLI de programación con IA de Anthropic: un binario único cu
 - Dos front-ends (CLI vía `REPL.tsx` y Bridge IDE vía `bridgeMain()`) comparten el mismo núcleo: state, config, auth, permisos y QueryEngine.
 - Infraestructura transversal dominante: logging/telemetría (`logForDebugging()`, 1.186 edges) es el god node de mayor grado — la preocupación más conectada de todo el código.
 
-En el marco comparativo de la [[Matriz-Comparativa]], Claude Code queda en la categoría "asistencia al desarrollador" (4,0/14): permisos y sandbox fuertes, pero sin multi-tenencia, identidad delegada ni auditoría — el sesgo "un humano, un terminal, un ciclo".
+En el marco comparativo de la [[Matriz-Comparativa]], Claude Code queda en la categoría "asistencia al desarrollador" (3,5/14): permisos y sandbox fuertes, pero sin multi-tenencia, identidad delegada ni auditoría — el sesgo "un humano, un terminal, un ciclo".
 
 ## Relevancia para nuestro arnés
 
