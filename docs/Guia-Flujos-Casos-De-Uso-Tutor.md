@@ -2,7 +2,7 @@
 
 Guía para demostrarle al tutor empresarial **cada caso de uso de negocio** y, en cada uno, **qué archivos `.ts` se ejecutan y en qué orden**: desde la pantalla donde escribe el empleado (`App.tsx`), pasando por los archivos del backend, hasta la base de datos y de vuelta. Complementa a [`Guia-Demostracion-Pasantia.md`](Guia-Demostracion-Pasantia.md), que cubre los objetivos de la pasantía.
 
-Estado verificado contra el código de `main` en **v3.21** (2026-09-25). Todas las rutas son relativas a `src/`.
+Estado verificado contra el código de `main` en **v3.22** (2026-09-30). Todas las rutas son relativas a `src/`.
 
 **Cómo leer cada caso de uso**: *Qué demuestra* → *Precondiciones* → *Cómo ejecutarlo* (comando o prompt literal) → *Qué se espera ver* → **Archivos que se ejecutan** (diagrama + tabla en orden) → *Cómo verificarlo* → *Cuidado en la demo*.
 
@@ -411,6 +411,25 @@ flowchart TD
 
 **Componentes que se ejecutan — `/crear-empleado` sin ser administrador (paso 2)**:
 
+```mermaid
+flowchart TD
+  N0["adapters/tui/App.tsx"]
+  N1["build-on-comando-empleado.ts"]
+  N2["core/commands/comando-empleado.ts<br/>(privilegiado y requiere administrador)"]
+  N3["core/auth/sesion.ts<br/>(¿sesión vigente? sí)"]
+  N4["core/auth/autorizacion-resolucion.ts<br/>(¿administrador?)"]
+  N5["adapters/memory/repository.ts<br/>(roles_empleado: vendedor)"]
+  N6["core/logging/turn-logger.ts<br/>(comando-administrativo-no-autorizado)"]
+  N7["adapters/tui/App.tsx<br/>(muestra el rechazo)"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+```
+
 **1. `adapters/tui/App.tsx`**
 - *Qué es*: la pantalla de la terminal, un componente hecho con Ink (React para consola). Dibuja la conversación y la línea donde escribe el empleado. No contiene reglas de negocio.
 - *Qué ejecuta en este paso*: Captura `/crear-empleado nuevo ****`
@@ -764,6 +783,61 @@ flowchart TD
 
 **Componentes que se ejecutan — el empleado lo informa conversando**:
 
+```mermaid
+flowchart TD
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill venta-decision)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(rama resolver_decision_venta)"]
+  N14["core/ventas/confirmar-venta.ts<br/>(busca la venta del token)"]
+  N15["core/ventas/token-confirmacion.ts<br/>(¿token válido y venta pendiente?)"]
+  N16["core/ventas/comision.ts<br/>(comisión 10 % y período)"]
+  N17["adapters/memory/repository.ts<br/>(venta confirmada + fila en comisiones)"]
+  N18["core/operaciones/ejecutar-operacion.ts<br/>(auditoría)"]
+  N19["adapters/operaciones/index.ts"]
+  N20["Claude Agent SDK (redacta)"]
+  N21["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N22["core/turn-selector/close-turn.ts"]
+  N23["build-on-operaciones-empleado.ts"]
+  N24["adapters/web/server.ts<br/>(responde JSON)"]
+  N25["adapters/web/chat-client.ts"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+  N23 --> N24
+  N24 --> N25
+```
+
 **1. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: El empleado escribe en el chat y presiona Enviar
@@ -834,47 +908,62 @@ flowchart TD
 - *Qué ejecuta en este paso*: Elige la rama `resolver_decision_venta`
 - *Cómo sigue*: Llama a `resolverDecisionVenta` de `confirmar-venta.ts`
 
-**15. `core/ventas/confirmar-venta.ts` → `token-confirmacion.ts` → `comision.ts` → `repository.ts`**
+**15. `core/ventas/confirmar-venta.ts`**
 - *Qué es*: la regla de negocio de la decisión del cliente: confirma (con comisión) o rechaza una venta pendiente.
-- *Qué ejecuta en este paso*: Los mismos pasos que en la tabla anterior
-- *Cómo sigue*: Devuelven el resultado a `ejecutar-operacion.ts`
+- *Qué ejecuta en este paso*: Busca la venta del token (a través de `ventas-contract.ts`)
+- *Cómo sigue*: Le pasa el token y la venta a `token-confirmacion.ts`
 
-**16. `core/operaciones/ejecutar-operacion.ts`**
+**16. `core/ventas/token-confirmacion.ts`**
+- *Qué es*: las reglas del token de confirmación: cuándo vence y cuándo es válido.
+- *Qué ejecuta en este paso*: Verifica que el token exista, no esté vencido y la venta siga pendiente
+- *Cómo sigue*: Devuelve "válido" o el motivo del rechazo a `confirmar-venta.ts`
+
+**17. `core/ventas/comision.ts`**
+- *Qué es*: el cálculo de la comisión y del período (mes) al que pertenece.
+- *Qué ejecuta en este paso*: Solo si confirma: calcula la comisión (monto × 10 %, redondeada a 2 decimales) y el período (año-mes)
+- *Cómo sigue*: Devuelve monto y período a `confirmar-venta.ts`
+
+**18. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: Pasa la venta a `confirmada` **solo si seguía en `pendiente_confirmacion`** e inserta la fila en `comisiones`. Si otro lo hizo antes, no cambia nada
+- *Cómo sigue*: Devuelve si se aplicó; `confirmar-venta.ts` le devuelve el resultado a `ejecutar-operacion.ts`
+
+**19. `core/operaciones/ejecutar-operacion.ts`**
 - *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
 - *Qué ejecuta en este paso*: Registra la auditoría y arma el texto del resultado
 - *Cómo sigue*: Lo devuelve a `adapters/operaciones/index.ts`
 
-**17. `adapters/operaciones/index.ts`**
+**20. `adapters/operaciones/index.ts`**
 - *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
 - *Qué ejecuta en este paso*: Recibe el texto del resultado
 - *Cómo sigue*: Se lo devuelve al SDK como resultado de la herramienta
 
-**18. Claude Agent SDK (modelo)**
+**21. Claude Agent SDK (modelo)**
 - *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
 - *Qué ejecuta en este paso*: Redacta la respuesta final para el empleado a partir del resultado
 - *Cómo sigue*: Termina la consulta y le devuelve el control a `invoke-model.ts`
 
-**19. `core/turn-selector/invoke-model.ts`**
+**22. `core/turn-selector/invoke-model.ts`**
 - *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
 - *Qué ejecuta en este paso*: Dispara el hook `POST_TURN` (`log-post-turn-handler.ts`)
 - *Cómo sigue*: Devuelve la respuesta a `handle-turn.ts`, que llama a `close-turn.ts`
 
-**20. `core/turn-selector/close-turn.ts`**
+**23. `core/turn-selector/close-turn.ts`**
 - *Qué es*: la parte del orquestador que cierra el turno: guarda en la base la sesión del agente para poder retomarla después.
 - *Qué ejecuta en este paso*: Guarda en `sesiones_agente` (vía `repository.ts`) la sesión del SDK de este turno, para que el próximo mensaje pueda retomarla
 - *Cómo sigue*: Devuelve el control a `build-on-operaciones-empleado.ts`
 
-**21. `build-on-operaciones-empleado.ts`**
+**24. `build-on-operaciones-empleado.ts`**
 - *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
 - *Qué ejecuta en este paso*: Anota este caso en la memoria de la conversación del empleado
 - *Cómo sigue*: Devuelve la respuesta a `adapters/web/server.ts`
 
-**22. `adapters/web/server.ts`**
+**25. `adapters/web/server.ts`**
 - *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
 - *Qué ejecuta en este paso*: Responde el `POST` con un JSON que trae la respuesta del agente (o 504 si se venció el tiempo límite)
 - *Cómo sigue*: El navegador recibe la respuesta
 
-**23. `adapters/web/chat-client.ts`**
+**26. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: Muestra la respuesta del agente en el chat
 - *Cómo sigue*: Fin del turno
@@ -904,6 +993,57 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada: `
 **Qué pasa, en palabras simples**: el empleado pregunta por sus ventas; el modelo sigue la skill de consulta y llama a la operación de lectura. `ejecutar-operacion.ts` le pasa al dominio el vendedor de la sesión, así que la consulta solo puede ver las ventas de quien está logueado. No se escribe nada.
 
 **Componentes que se ejecutan**:
+
+```mermaid
+flowchart TD
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill consultar-venta)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(rama consultar_venta, vendedor de la sesión)"]
+  N14["core/ventas/consultar-venta-propia.ts<br/>(¿no existe o no es tuya?)"]
+  N15["adapters/memory/repository.ts<br/>(lee ventas, sin auditoría)"]
+  N16["core/operaciones/ejecutar-operacion.ts"]
+  N17["adapters/operaciones/index.ts"]
+  N18["Claude Agent SDK (redacta)"]
+  N19["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N20["core/turn-selector/close-turn.ts"]
+  N21["build-on-operaciones-empleado.ts"]
+  N22["adapters/web/server.ts<br/>(responde JSON)"]
+  N23["adapters/web/chat-client.ts"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+```
 
 **1. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
@@ -1244,6 +1384,57 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada co
 
 **Componentes que se ejecutan — primer mensaje (pide confirmación)**:
 
+```mermaid
+flowchart TD
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill solicitar-devolucion)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(¿ya confirmado en otro mensaje? no)"]
+  N14["core/ventas/solicitar-devolucion.ts<br/>(confirmado: false · ¿motivo? ¿es tu venta?)"]
+  N15["adapters/memory/repository.ts<br/>(lee la venta, no escribe)"]
+  N16["adapters/web/confirmacion-operaciones-store.ts<br/>(anota la confirmación pendiente, en memoria)"]
+  N17["adapters/operaciones/index.ts<br/>(resumen + pedido de confirmación)"]
+  N18["Claude Agent SDK (redacta)"]
+  N19["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N20["core/turn-selector/close-turn.ts"]
+  N21["build-on-operaciones-empleado.ts"]
+  N22["adapters/web/server.ts<br/>(responde JSON)"]
+  N23["adapters/web/chat-client.ts"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+```
+
 **1. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: El empleado escribe en el chat y presiona Enviar
@@ -1311,45 +1502,55 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada co
 
 **14. `core/operaciones/ejecutar-operacion.ts`**
 - *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
-- *Qué ejecuta en este paso*: Elige la rama `solicitar_devolucion`, lee la venta para armar el resumen y pregunta al almacén de confirmaciones si este pedido ya estaba confirmado: **no lo está**
-- *Cómo sigue*: Llama a `marcarPendiente` de `confirmacion-operaciones-store.ts`
+- *Qué ejecuta en este paso*: Elige la rama `solicitar_devolucion` y le pregunta al almacén de confirmaciones (`estaConfirmada`) si este pedido ya estaba confirmado en otro mensaje: **no lo está**
+- *Cómo sigue*: Llama a `solicitar-devolucion.ts` con `confirmado: false`, para validar todo **sin escribir**
 
-**15. `adapters/web/confirmacion-operaciones-store.ts`**
+**15. `core/ventas/solicitar-devolucion.ts`**
+- *Qué es*: la regla de devolución sin token: solo el vendedor puede pedirla y siempre queda escalada a otra persona.
+- *Qué ejecuta en este paso*: Con `confirmado: false`: valida que haya motivo, busca la venta y verifica que el empleado sea su vendedor. Si falla, devuelve `motivo_invalido`, `no_encontrada` o `no_autorizada` y no se anota nada. Si todo está bien, devuelve `requiere_confirmacion` **sin escribir en la base**
+- *Cómo sigue*: Lee la venta a través de `consulta-venta-contract.ts`, que implementa `repository.ts`
+
+**16. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: Lee la venta de `ventas`. Solo lectura
+- *Cómo sigue*: Devuelve la venta; `solicitar-devolucion.ts` responde `requiere_confirmacion` y `ejecutar-operacion.ts` llama a `marcarPendiente` de `confirmacion-operaciones-store.ts`
+
+**17. `adapters/web/confirmacion-operaciones-store.ts`**
 - *Qué es*: el almacén de confirmaciones pendientes. Guarda en memoria (no en la base) qué operación está esperando que el empleado la confirme. Hay una instancia para la TUI y otra para el chat web.
 - *Qué ejecuta en este paso*: Anota en memoria: empleado, venta, acción y **el caso de este mensaje**. No toca la base
 - *Cómo sigue*: Devuelve el control; `ejecutar-operacion.ts` devuelve el resumen con el pedido de confirmación
 
-**16. `adapters/operaciones/index.ts`**
+**18. `adapters/operaciones/index.ts`**
 - *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
 - *Qué ejecuta en este paso*: Recibe el texto del resultado
 - *Cómo sigue*: Se lo devuelve al SDK como resultado de la herramienta
 
-**17. Claude Agent SDK (modelo)**
+**19. Claude Agent SDK (modelo)**
 - *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
 - *Qué ejecuta en este paso*: Redacta la respuesta final para el empleado a partir del resultado
 - *Cómo sigue*: Termina la consulta y le devuelve el control a `invoke-model.ts`
 
-**18. `core/turn-selector/invoke-model.ts`**
+**20. `core/turn-selector/invoke-model.ts`**
 - *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
 - *Qué ejecuta en este paso*: Dispara el hook `POST_TURN` (`log-post-turn-handler.ts`)
 - *Cómo sigue*: Devuelve la respuesta a `handle-turn.ts`, que llama a `close-turn.ts`
 
-**19. `core/turn-selector/close-turn.ts`**
+**21. `core/turn-selector/close-turn.ts`**
 - *Qué es*: la parte del orquestador que cierra el turno: guarda en la base la sesión del agente para poder retomarla después.
 - *Qué ejecuta en este paso*: Guarda en `sesiones_agente` (vía `repository.ts`) la sesión del SDK de este turno, para que el próximo mensaje pueda retomarla
 - *Cómo sigue*: Devuelve el control a `build-on-operaciones-empleado.ts`
 
-**20. `build-on-operaciones-empleado.ts`**
+**22. `build-on-operaciones-empleado.ts`**
 - *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
 - *Qué ejecuta en este paso*: Anota este caso en la memoria de la conversación del empleado
 - *Cómo sigue*: Devuelve la respuesta a `adapters/web/server.ts`
 
-**21. `adapters/web/server.ts`**
+**23. `adapters/web/server.ts`**
 - *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
 - *Qué ejecuta en este paso*: Responde el `POST` con un JSON que trae la respuesta del agente (o 504 si se venció el tiempo límite)
 - *Cómo sigue*: El navegador recibe la respuesta
 
-**22. `adapters/web/chat-client.ts`**
+**24. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: Muestra la respuesta del agente en el chat
 - *Cómo sigue*: Fin del turno
@@ -1358,14 +1559,31 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada co
 
 ```mermaid
 flowchart TD
-  N0["adapters/web/chat-client.ts"]
-  N1["… mismo tramo de ida por el chat web …<br/>(se crea un caso NUEVO)"]
-  N2["core/operaciones/ejecutar-operacion.ts"]
-  N3["adapters/web/confirmacion-operaciones-store.ts<br/>(¿confirmado en otro mensaje?)"]
-  N4["core/ventas/solicitar-devolucion.ts"]
-  N5["adapters/memory/repository.ts<br/>(motivo + escalación)"]
-  N6["… mismo tramo de vuelta …"]
-  N7["adapters/web/chat-client.ts"]
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill solicitar-devolucion)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(¿confirmado en otro mensaje?)"]
+  N14["adapters/web/confirmacion-operaciones-store.ts<br/>(¿confirmado en otro mensaje? sí)"]
+  N15["core/ventas/solicitar-devolucion.ts<br/>(confirmado: true · ¿es tu venta?)"]
+  N16["adapters/memory/repository.ts<br/>(guarda el motivo y pasa la venta a reembolso_pendiente)"]
+  N17["core/operaciones/ejecutar-operacion.ts<br/>(auditoría y texto «escalada»)"]
+  N18["adapters/operaciones/index.ts"]
+  N19["Claude Agent SDK (redacta)"]
+  N20["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N21["core/turn-selector/close-turn.ts"]
+  N22["build-on-operaciones-empleado.ts"]
+  N23["adapters/web/server.ts<br/>(responde JSON)"]
+  N24["adapters/web/chat-client.ts"]
   N0 --> N1
   N1 --> N2
   N2 --> N3
@@ -1373,6 +1591,23 @@ flowchart TD
   N4 --> N5
   N5 --> N6
   N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+  N23 --> N24
 ```
 
 **1. `adapters/web/chat-client.ts`**
@@ -1534,17 +1769,33 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada co
 
 ```mermaid
 flowchart TD
-  N0["adapters/web/chat-client.ts"]
-  N1["… tramo de ida por el chat web …<br/>(caso nuevo)"]
-  N2["core/operaciones/ejecutar-operacion.ts"]
-  N3["adapters/web/confirmacion-operaciones-store.ts"]
-  N4["core/ventas/resolver-escalacion-reembolso.ts"]
-  N5["core/auth/autorizacion-resolucion.ts<br/>(¿administrador?)"]
-  N6["adapters/memory/repository.ts<br/>(roles_empleado)"]
-  N7["core/ventas/resolver-escalacion-reembolso.ts<br/>(¿es su propia venta?)"]
-  N8["adapters/memory/repository.ts<br/>(cambia estados)"]
-  N9["… tramo de vuelta …"]
-  N10["adapters/web/chat-client.ts"]
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill resolver-reembolso)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(rama resolver_reembolso)"]
+  N14["adapters/web/confirmacion-operaciones-store.ts<br/>(¿aprobado en un mensaje anterior?)"]
+  N15["core/ventas/resolver-escalacion-reembolso.ts<br/>(primer control: el rol)"]
+  N16["core/auth/autorizacion-resolucion.ts<br/>(¿administrador?)"]
+  N17["core/ventas/resolver-escalacion-reembolso.ts<br/>(segundo control: ¿es su propia venta?)"]
+  N18["adapters/memory/repository.ts<br/>(cambia estados si seguía pendiente)"]
+  N19["core/operaciones/ejecutar-operacion.ts<br/>(auditoría y texto)"]
+  N20["adapters/operaciones/index.ts"]
+  N21["Claude Agent SDK (redacta)"]
+  N22["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N23["core/turn-selector/close-turn.ts"]
+  N24["build-on-operaciones-empleado.ts"]
+  N25["adapters/web/server.ts<br/>(responde JSON)"]
+  N26["adapters/web/chat-client.ts"]
   N0 --> N1
   N1 --> N2
   N2 --> N3
@@ -1555,6 +1806,22 @@ flowchart TD
   N7 --> N8
   N8 --> N9
   N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+  N23 --> N24
+  N24 --> N25
+  N25 --> N26
 ```
 
 **1. `adapters/web/chat-client.ts`**
@@ -1786,6 +2053,63 @@ flowchart TD
 
 **Componentes que se ejecutan — conversando en el chat web**:
 
+```mermaid
+flowchart TD
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill reporte-comisiones-conversacional)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(rama consultar_reporte_comisiones)"]
+  N14["core/ventas/reporte.ts<br/>(resolverPeriodoReporte)"]
+  N15["adapters/memory/repository.ts<br/>(lee comisiones y pendientes)"]
+  N16["core/ventas/reporte.ts<br/>(agruparReporteMensual)"]
+  N17["core/operaciones/ejecutar-operacion.ts<br/>(auditoría como /reporte-comisiones)"]
+  N18["core/ventas/reporte.ts<br/>(formatearReporteMensual)"]
+  N19["core/operaciones/ejecutar-operacion.ts"]
+  N20["adapters/operaciones/index.ts"]
+  N21["Claude Agent SDK (redacta)"]
+  N22["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N23["core/turn-selector/close-turn.ts"]
+  N24["build-on-operaciones-empleado.ts"]
+  N25["adapters/web/server.ts<br/>(responde JSON)"]
+  N26["adapters/web/chat-client.ts"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+  N23 --> N24
+  N24 --> N25
+  N25 --> N26
+```
+
 **1. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: El empleado escribe en el chat y presiona Enviar
@@ -1854,71 +2178,109 @@ flowchart TD
 **14. `core/operaciones/ejecutar-operacion.ts`**
 - *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
 - *Qué ejecuta en este paso*: Elige la rama `consultar_reporte_comisiones`
-- *Cómo sigue*: Llama a las mismas funciones de `reporte.ts`
+- *Cómo sigue*: Llama a `resolverPeriodoReporte` de `core/ventas/reporte.ts`
 
-**15. `core/ventas/reporte.ts` → `repository.ts` → `reporte.ts`**
+**15. `core/ventas/reporte.ts`**
 - *Qué es*: la lógica del reporte de comisiones: valida el período, agrupa por vendedor descontando reembolsos y da formato a la tabla. Son funciones puras, fáciles de probar.
-- *Qué ejecuta en este paso*: Los mismos pasos que con el comando
-- *Cómo sigue*: Devuelven el texto a `ejecutar-operacion.ts`, que registra la auditoría
+- *Qué ejecuta en este paso*: `resolverPeriodoReporte` valida el formato `AAAA-MM` (si no se indicó período, usa el mes actual). Si es inválido, devuelve el mensaje de error y no lee nada
+- *Cómo sigue*: `ejecutar-operacion.ts` pide los datos a través de `reporte-contract.ts`, que implementa `repository.ts`
 
-**16. `core/operaciones/ejecutar-operacion.ts`**
+**16. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: Lee `comisiones` unida con el estado **actual** de cada venta, y las ventas en `reembolso_pendiente`. Solo lectura
+- *Cómo sigue*: Devuelve las filas a `ejecutar-operacion.ts`
+
+**17. `core/ventas/reporte.ts`**
+- *Qué es*: la lógica del reporte de comisiones: valida el período, agrupa por vendedor descontando reembolsos y da formato a la tabla. Son funciones puras, fáciles de probar.
+- *Qué ejecuta en este paso*: `agruparReporteMensual` descuenta las ventas `reembolsada`, ordena y calcula el TOTAL
+- *Cómo sigue*: Devuelve el reporte agrupado a `ejecutar-operacion.ts`
+
+**18. `core/operaciones/ejecutar-operacion.ts`**
+- *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
+- *Qué ejecuta en este paso*: Registra la consulta en la auditoría (vía `repository.ts`) con el mismo nombre de comando que usa la TUI, `/reporte-comisiones`
+- *Cómo sigue*: Llama a `formatearReporteMensual` de `reporte.ts`
+
+**19. `core/ventas/reporte.ts`**
+- *Qué es*: la lógica del reporte de comisiones: valida el período, agrupa por vendedor descontando reembolsos y da formato a la tabla. Son funciones puras, fáciles de probar.
+- *Qué ejecuta en este paso*: `formatearReporteMensual` arma la tabla, la leyenda y la sección de pendientes: **el mismo texto** que muestra la TUI
+- *Cómo sigue*: Devuelve el texto a `ejecutar-operacion.ts`
+
+**20. `core/operaciones/ejecutar-operacion.ts`**
 - *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
 - *Qué ejecuta en este paso*: Devuelve el texto
 - *Cómo sigue*: A `adapters/operaciones/index.ts`
 
-**17. `adapters/operaciones/index.ts`**
+**21. `adapters/operaciones/index.ts`**
 - *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
 - *Qué ejecuta en este paso*: Recibe el texto del resultado
 - *Cómo sigue*: Se lo devuelve al SDK como resultado de la herramienta
 
-**18. Claude Agent SDK (modelo)**
+**22. Claude Agent SDK (modelo)**
 - *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
 - *Qué ejecuta en este paso*: Redacta la respuesta final para el empleado a partir del resultado
 - *Cómo sigue*: Termina la consulta y le devuelve el control a `invoke-model.ts`
 
-**19. `core/turn-selector/invoke-model.ts`**
+**23. `core/turn-selector/invoke-model.ts`**
 - *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
 - *Qué ejecuta en este paso*: Dispara el hook `POST_TURN` (`log-post-turn-handler.ts`)
 - *Cómo sigue*: Devuelve la respuesta a `handle-turn.ts`, que llama a `close-turn.ts`
 
-**20. `core/turn-selector/close-turn.ts`**
+**24. `core/turn-selector/close-turn.ts`**
 - *Qué es*: la parte del orquestador que cierra el turno: guarda en la base la sesión del agente para poder retomarla después.
 - *Qué ejecuta en este paso*: Guarda en `sesiones_agente` (vía `repository.ts`) la sesión del SDK de este turno, para que el próximo mensaje pueda retomarla
 - *Cómo sigue*: Devuelve el control a `build-on-operaciones-empleado.ts`
 
-**21. `build-on-operaciones-empleado.ts`**
+**25. `build-on-operaciones-empleado.ts`**
 - *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
 - *Qué ejecuta en este paso*: Anota este caso en la memoria de la conversación del empleado
 - *Cómo sigue*: Devuelve la respuesta a `adapters/web/server.ts`
 
-**22. `adapters/web/server.ts`**
+**26. `adapters/web/server.ts`**
 - *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
 - *Qué ejecuta en este paso*: Responde el `POST` con un JSON que trae la respuesta del agente (o 504 si se venció el tiempo límite)
 - *Cómo sigue*: El navegador recibe la respuesta
 
-**23. `adapters/web/chat-client.ts`**
+**27. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: Muestra la respuesta del agente en el chat
 - *Cómo sigue*: Fin del turno
 
 **Componentes que se ejecutan — por CLI**:
 
+```mermaid
+flowchart TD
+  N0["reporte-mensual.ts<br/>(parsePeriodo --periodo)"]
+  N1["adapters/memory/db.ts<br/>(abre SQLite)"]
+  N2["adapters/memory/repository.ts<br/>(lectura directa, sin auditoría)"]
+  N3["core/ventas/reporte.ts<br/>(agrupa y formatea)"]
+  N4["reporte-mensual.ts<br/>(imprime en consola)"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+```
+
 **1. `reporte-mensual.ts`**
 - *Qué es*: el programa de línea de comandos del reporte mensual (`npm run reporte:mensual`). No necesita la TUI ni sesión.
-- *Qué ejecuta en este paso*: Lee `--periodo` de la línea de comandos
+- *Qué ejecuta en este paso*: `parsePeriodo` (función propia del CLI, no `resolverPeriodoReporte`) lee `--periodo` y valida el formato `AAAA-MM`. Sin la opción, usa el mes actual; si es inválido, imprime el uso y termina
 - *Cómo sigue*: Abre la base con `adapters/memory/db.ts`
 
 **2. `adapters/memory/db.ts`**
 - *Qué es*: el adaptador que abre el archivo SQLite y aplica las migraciones pendientes.
-- *Qué ejecuta en este paso*: Abre SQLite en `HARNESS_DB_PATH`
-- *Cómo sigue*: Devuelve la conexión
+- *Qué ejecuta en este paso*: Abre SQLite en `HARNESS_DB_PATH` (o en la ruta por defecto si no está definida)
+- *Cómo sigue*: Devuelve la conexión a `reporte-mensual.ts`
 
-**3. `core/ventas/reporte.ts` → `repository.ts` → `reporte.ts`**
+**3. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: `reporte-mensual.ts` llama **directo** a `listComisionesPorPeriodo` y `listVentasEnReembolsoPendiente`. Solo lectura y **sin auditoría**: el CLI no tiene empleado ni sesión
+- *Cómo sigue*: Devuelve las filas a `reporte-mensual.ts`
+
+**4. `core/ventas/reporte.ts`**
 - *Qué es*: la lógica del reporte de comisiones: valida el período, agrupa por vendedor descontando reembolsos y da formato a la tabla. Son funciones puras, fáciles de probar.
-- *Qué ejecuta en este paso*: Los mismos pasos que con el comando
-- *Cómo sigue*: Devuelven el texto
+- *Qué ejecuta en este paso*: `agruparReporteMensual` y `formatearReporteMensual`: las **mismas** funciones que usan la TUI y el chat web, por eso el texto es idéntico
+- *Cómo sigue*: Devuelve el texto a `reporte-mensual.ts`
 
-**4. `reporte-mensual.ts`**
+**5. `reporte-mensual.ts`**
 - *Qué es*: el programa de línea de comandos del reporte mensual (`npm run reporte:mensual`). No necesita la TUI ni sesión.
 - *Qué ejecuta en este paso*: Imprime el reporte en la consola
 - *Cómo sigue*: Fin
@@ -1957,6 +2319,71 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada:
 **Qué pasa, en palabras simples**: el empleado pide vacaciones conversando; el dominio de solicitudes valida el tipo y guarda la solicitud pendiente. Para resolverla, un administrador la aprueba en dos mensajes, y el dominio controla que tenga el rol y que no sea su propia solicitud. Cancelar solo puede hacerlo el dueño.
 
 **Componentes que se ejecutan — crear la solicitud (paso 1)**:
+
+```mermaid
+flowchart TD
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill solicitud-interna)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(rama crear_solicitud_interna)"]
+  N14["core/solicitudes/crear-solicitud-interna.ts<br/>(¿vacaciones o gasto?)"]
+  N15["adapters/memory/repository.ts<br/>(inserta la solicitud, pendiente)"]
+  N16["core/solicitudes/crear-solicitud-interna.ts<br/>(delega al validador)"]
+  N17["core/turn-selector/dispatch-delegation.ts<br/>(registra la delegación)"]
+  N18["adapters/memory/repository.ts<br/>(fila en delegaciones)"]
+  N19["core/turn-selector/invoke-model.ts<br/>(sub-agente, sin sesión ni herramientas)"]
+  N20["Claude Agent SDK (sub-agente validador)<br/>(escribe el dictamen)"]
+  N21["core/turn-selector/dispatch-delegation.ts<br/>(completa la delegación)"]
+  N22["core/solicitudes/crear-solicitud-interna.ts<br/>(adjunta el dictamen, sigue pendiente)"]
+  N23["core/operaciones/ejecutar-operacion.ts<br/>(auditoría y texto con el dictamen)"]
+  N24["adapters/operaciones/index.ts"]
+  N25["Claude Agent SDK (redacta)"]
+  N26["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N27["core/turn-selector/close-turn.ts"]
+  N28["build-on-operaciones-empleado.ts"]
+  N29["adapters/web/server.ts<br/>(responde JSON)"]
+  N30["adapters/web/chat-client.ts"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+  N23 --> N24
+  N24 --> N25
+  N25 --> N26
+  N26 --> N27
+  N27 --> N28
+  N28 --> N29
+  N29 --> N30
+```
 
 **1. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
@@ -2036,49 +2463,141 @@ En el **chat web** (`http://localhost:<WEB_PORT>/chat`), con sesión iniciada:
 **16. `adapters/memory/repository.ts`**
 - *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
 - *Qué ejecuta en este paso*: Inserta la solicitud en `solicitudes_internas`, pendiente
-- *Cómo sigue*: Devuelve el id; el resultado vuelve a `ejecutar-operacion.ts`
+- *Cómo sigue*: Devuelve el id a `crear-solicitud-interna.ts`, que todavía no terminó: falta el dictamen del validador
 
-**17. `core/operaciones/ejecutar-operacion.ts`**
+**17. `core/solicitudes/crear-solicitud-interna.ts`**
+- *Qué es*: la regla de alta de solicitudes internas: valida el tipo, guarda la solicitud pendiente y le pide un dictamen al sub-agente validador.
+- *Qué ejecuta en este paso*: Registra `solicitud-creada` y delega la evaluación al sub-agente `validador-solicitudes`. Le manda **solo** el tipo y el detalle, nunca quién la pidió ni otras solicitudes
+- *Cómo sigue*: Llama a `despacharDelegacion` de `core/turn-selector/dispatch-delegation.ts`
+
+**18. `core/turn-selector/dispatch-delegation.ts`**
+- *Qué es*: el despachador de delegaciones a sub-agentes: registra cada delegación en la base antes y después de invocar al sub-agente. La delegación tiene un solo nivel: ningún sub-agente puede delegar a otro.
+- *Qué ejecuta en este paso*: Busca el sub-agente en el registro de `core/agents/definitions.ts`, arma la tarea delegada (rol, instrucción, tipo y detalle) y registra `delegacion-iniciada`
+- *Cómo sigue*: Guarda la delegación en la base vía `repository.ts`
+
+**19. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: Inserta la fila en `delegaciones`, **antes** de invocar al sub-agente
+- *Cómo sigue*: `dispatch-delegation.ts` llama a la función `invocar` que armó `main.ts`
+
+**20. `core/turn-selector/invoke-model.ts`**
+- *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
+- *Qué ejecuta en este paso*: Invoca al sub-agente `validador-solicitudes` con un caso propio, **sin retomar ninguna sesión** y sin herramientas (`allowedTools` vacío). Dispara los hooks `PRE_TURN` y `POST_TURN` como en cualquier turno
+- *Cómo sigue*: Llama a `query()` del **Claude Agent SDK** con la tarea delegada
+
+**21. Claude Agent SDK (sub-agente validador)**
+- *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
+- *Qué ejecuta en este paso*: El modelo, con el prompt del validador, evalúa si la solicitud está completa y escribe un dictamen. No aprueba ni rechaza, y su prompt le prohíbe indicar comandos, herramientas o pasos (ADR 303)
+- *Cómo sigue*: Devuelve el dictamen a `invoke-model.ts`, que lo devuelve a `dispatch-delegation.ts`
+
+**22. `core/turn-selector/dispatch-delegation.ts`**
+- *Qué es*: el despachador de delegaciones a sub-agentes: registra cada delegación en la base antes y después de invocar al sub-agente. La delegación tiene un solo nivel: ningún sub-agente puede delegar a otro.
+- *Qué ejecuta en este paso*: Completa la fila de `delegaciones` con el resultado (vía `repository.ts`) y registra `delegacion-completada`
+- *Cómo sigue*: Devuelve el dictamen a `crear-solicitud-interna.ts`
+
+**23. `core/solicitudes/crear-solicitud-interna.ts`**
+- *Qué es*: la regla de alta de solicitudes internas: valida el tipo, guarda la solicitud pendiente y le pide un dictamen al sub-agente validador.
+- *Qué ejecuta en este paso*: Adjunta el dictamen a la solicitud (vía `repository.ts`) **sin cambiar su estado**: sigue pendiente. Registra `solicitud-validada`. Si el validador falló, registra `solicitud-validacion-fallida` y la solicitud queda creada igual, sin dictamen
+- *Cómo sigue*: Devuelve la solicitud a `ejecutar-operacion.ts`
+
+**24. `core/operaciones/ejecutar-operacion.ts`**
 - *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
-- *Qué ejecuta en este paso*: Registra la auditoría y arma el texto
+- *Qué ejecuta en este paso*: Registra la auditoría y arma el texto «Solicitud X creada (caso Y). Dictamen: …», con el dictamen tal cual lo escribió el validador
 - *Cómo sigue*: Lo devuelve a `adapters/operaciones/index.ts`
 
-**18. `adapters/operaciones/index.ts`**
+**25. `adapters/operaciones/index.ts`**
 - *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
 - *Qué ejecuta en este paso*: Recibe el texto del resultado
 - *Cómo sigue*: Se lo devuelve al SDK como resultado de la herramienta
 
-**19. Claude Agent SDK (modelo)**
+**26. Claude Agent SDK (modelo)**
 - *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
 - *Qué ejecuta en este paso*: Redacta la respuesta final para el empleado a partir del resultado
 - *Cómo sigue*: Termina la consulta y le devuelve el control a `invoke-model.ts`
 
-**20. `core/turn-selector/invoke-model.ts`**
+**27. `core/turn-selector/invoke-model.ts`**
 - *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
 - *Qué ejecuta en este paso*: Dispara el hook `POST_TURN` (`log-post-turn-handler.ts`)
 - *Cómo sigue*: Devuelve la respuesta a `handle-turn.ts`, que llama a `close-turn.ts`
 
-**21. `core/turn-selector/close-turn.ts`**
+**28. `core/turn-selector/close-turn.ts`**
 - *Qué es*: la parte del orquestador que cierra el turno: guarda en la base la sesión del agente para poder retomarla después.
 - *Qué ejecuta en este paso*: Guarda en `sesiones_agente` (vía `repository.ts`) la sesión del SDK de este turno, para que el próximo mensaje pueda retomarla
 - *Cómo sigue*: Devuelve el control a `build-on-operaciones-empleado.ts`
 
-**22. `build-on-operaciones-empleado.ts`**
+**29. `build-on-operaciones-empleado.ts`**
 - *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
 - *Qué ejecuta en este paso*: Anota este caso en la memoria de la conversación del empleado
 - *Cómo sigue*: Devuelve la respuesta a `adapters/web/server.ts`
 
-**23. `adapters/web/server.ts`**
+**30. `adapters/web/server.ts`**
 - *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
 - *Qué ejecuta en este paso*: Responde el `POST` con un JSON que trae la respuesta del agente (o 504 si se venció el tiempo límite)
 - *Cómo sigue*: El navegador recibe la respuesta
 
-**24. `adapters/web/chat-client.ts`**
+**31. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
 - *Qué ejecuta en este paso*: Muestra la respuesta del agente en el chat
 - *Cómo sigue*: Fin del turno
 
 **Componentes que se ejecutan — aprobar (paso 3, segundo mensaje)**:
+
+```mermaid
+flowchart TD
+  N0["Navegador: adapters/web/chat-client.ts"]
+  N1["adapters/web/server.ts<br/>(POST /operaciones)"]
+  N2["adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+  N3["adapters/web/payloads.ts"]
+  N4["adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+  N5["build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+  N6["core/turn-selector/handle-turn.ts"]
+  N7["core/turn-selector/resolve-turn.ts"]
+  N8["core/turn-selector/assemble-context.ts"]
+  N9["core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+  N10["Claude Agent SDK (modelo)<br/>(skill resolver-solicitud)"]
+  N11["adapters/operaciones/index.ts"]
+  N12["core/operaciones/validar-operacion.ts"]
+  N13["core/operaciones/ejecutar-operacion.ts<br/>(rama resolver_solicitud)"]
+  N14["adapters/web/confirmacion-operaciones-store.ts<br/>(¿se pidió en un mensaje anterior?)"]
+  N15["core/solicitudes/resolver-solicitud-interna.ts<br/>(aprobar exige administrador)"]
+  N16["core/auth/autorizacion-resolucion.ts<br/>(¿administrador?)"]
+  N17["core/solicitudes/resolver-solicitud-interna.ts<br/>(¿es su propia solicitud?)"]
+  N18["adapters/memory/repository.ts<br/>(cambia el estado si seguía pendiente)"]
+  N19["core/operaciones/ejecutar-operacion.ts<br/>(auditoría y texto)"]
+  N20["adapters/operaciones/index.ts"]
+  N21["Claude Agent SDK (redacta)"]
+  N22["core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+  N23["core/turn-selector/close-turn.ts"]
+  N24["build-on-operaciones-empleado.ts"]
+  N25["adapters/web/server.ts<br/>(responde JSON)"]
+  N26["adapters/web/chat-client.ts"]
+  N0 --> N1
+  N1 --> N2
+  N2 --> N3
+  N3 --> N4
+  N4 --> N5
+  N5 --> N6
+  N6 --> N7
+  N7 --> N8
+  N8 --> N9
+  N9 --> N10
+  N10 --> N11
+  N11 --> N12
+  N12 --> N13
+  N13 --> N14
+  N14 --> N15
+  N15 --> N16
+  N16 --> N17
+  N17 --> N18
+  N18 --> N19
+  N19 --> N20
+  N20 --> N21
+  N21 --> N22
+  N22 --> N23
+  N23 --> N24
+  N24 --> N25
+  N25 --> N26
+```
 
 **1. `adapters/web/chat-client.ts`**
 - *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
@@ -2223,7 +2742,7 @@ Consultar (paso 2) sigue el mismo tramo de ida con la skill `consultar-solicitud
 sqlite3 -readonly data\demo.db "SELECT id, tipo, estado, solicitante_id FROM solicitudes_internas ORDER BY created_at DESC LIMIT 3"
 ```
 
-Log: `solicitud-creada`, `solicitud-aprobada`, `solicitud-autoaprobacion-rechazada`.
+Log: `solicitud-creada` → `delegacion-iniciada` → `delegacion-completada` → `solicitud-validada` al crear (o `solicitud-validacion-fallida` si el validador falla); `solicitud-aprobada` o `solicitud-autoaprobacion-rechazada` al resolver.
 
 **Cuidado**: no demostrar "reclamo de comisión": la skill lo ofrece, pero `crear-solicitud-interna.ts` solo acepta `vacaciones` y `gasto`, así que termina en `tipo_desconocido`. Es una inconsistencia conocida.
 
@@ -2715,7 +3234,7 @@ flowchart TD
 
 1. TUI, como `admin`: `/crear-empleado vendedor2 clave-v2`.
 2. Chat web: entrar como `vendedor2`.
-3. Chat web: registrar una venta (CU-02) y confirmarla (CU-03).
+3. Chat web, como `vendedor2`: registrar una venta (CU-02) y, **en un mensaje nuevo**, informar que el cliente la confirmó (CU-03, variante conversando): `El cliente de la venta con token <token> confirmó la compra por teléfono.`
 4. TUI, como `admin`: `/reporte-comisiones`. **Esperado**: aparece la comisión de esa venta.
 
 **Qué se espera ver**: el empleado creado en la TUI entra al chat web, y la venta del chat web aparece en el reporte de la TUI.
@@ -2723,6 +3242,149 @@ flowchart TD
 **Qué pasa, en palabras simples**: los dos canales tienen sus propios archivos de entrada, pero todos terminan escribiendo y leyendo en el mismo `repository.ts` y la misma base. Por eso un empleado creado en la TUI puede entrar al chat web, y una venta del chat web aparece en el reporte de la TUI.
 
 **Componentes que se ejecutan**:
+
+```mermaid
+flowchart TD
+  subgraph P1["Paso 1 · TUI: /crear-empleado"]
+    S1["1. adapters/tui/App.tsx<br/>→ build-on-comando-empleado.ts<br/>→ core/commands/comando-empleado.ts<br/>(/crear-empleado)"]
+    S2["2. core/auth/autorizacion-resolucion.ts<br/>(¿admin es administrador?)"]
+    S3["3. adapters/crypto/password.ts<br/>(hash scrypt de la clave)"]
+    S4["4. adapters/memory/repository.ts<br/>(inserta en credenciales_empleado)"]
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+  end
+  subgraph P2["Paso 2 · Chat web: login de vendedor2"]
+    S5["5. adapters/web/server.ts<br/>(POST /login)"]
+    S6["6. build-on-login-http.ts<br/>→ core/auth/login.ts<br/>→ repository.ts<br/>→ password.ts<br/>(valida la clave)"]
+    S5 --> S6
+  end
+  subgraph P3a["Paso 3a · Chat web: registrar la venta (CU-02)"]
+    S7["7. adapters/web/chat-client.ts"]
+    S8["8. adapters/web/server.ts<br/>(POST /operaciones)"]
+    S9["9. adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+    S10["10. adapters/web/payloads.ts"]
+    S11["11. adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+    S12["12. build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+    S13["13. core/turn-selector/handle-turn.ts"]
+    S14["14. core/turn-selector/resolve-turn.ts"]
+    S15["15. core/turn-selector/assemble-context.ts"]
+    S16["16. core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+    S17["17. Claude Agent SDK (modelo)<br/>(skill registrar-venta-conversacional)"]
+    S18["18. adapters/operaciones/index.ts"]
+    S19["19. core/operaciones/validar-operacion.ts"]
+    S20["20. core/operaciones/ejecutar-operacion.ts<br/>(rama registrar_venta)"]
+    S21["21. core/ventas/registrar-venta.ts<br/>(genera el token)"]
+    S22["22. core/ventas/token-confirmacion.ts<br/>(calcula el vencimiento)"]
+    S23["23. core/ventas/registrar-venta.ts<br/>(venta pendiente_confirmacion)"]
+    S24["24. adapters/memory/repository.ts<br/>(guarda vendedor, caso y venta)"]
+    S25["25. build-on-venta.ts<br/>→ core/turn-selector/dispatch-delegation-a2a.ts<br/>→ adapters/a2a/client.ts<br/>(sólo si monto ≥ 5000)"]
+    S26["26. adapters/notificaciones/index.ts"]
+    S27["27. adapters/notificaciones/email-client.ts"]
+    S28["28. core/operaciones/ejecutar-operacion.ts<br/>(auditoría y texto)"]
+    S29["29. adapters/operaciones/index.ts"]
+    S30["30. Claude Agent SDK (redacta)"]
+    S31["31. core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+    S32["32. core/turn-selector/close-turn.ts"]
+    S33["33. build-on-operaciones-empleado.ts"]
+    S34["34. adapters/web/server.ts<br/>(responde JSON)"]
+    S35["35. adapters/web/chat-client.ts"]
+    S7 --> S8
+    S8 --> S9
+    S9 --> S10
+    S10 --> S11
+    S11 --> S12
+    S12 --> S13
+    S13 --> S14
+    S14 --> S15
+    S15 --> S16
+    S16 --> S17
+    S17 --> S18
+    S18 --> S19
+    S19 --> S20
+    S20 --> S21
+    S21 --> S22
+    S22 --> S23
+    S23 --> S24
+    S24 --> S25
+    S25 --> S26
+    S26 --> S27
+    S27 --> S28
+    S28 --> S29
+    S29 --> S30
+    S30 --> S31
+    S31 --> S32
+    S32 --> S33
+    S33 --> S34
+    S34 --> S35
+  end
+  subgraph P3b["Paso 3b · Chat web: informar la confirmación (CU-03)"]
+    S36["36. adapters/web/chat-client.ts"]
+    S37["37. adapters/web/server.ts<br/>(POST /operaciones)"]
+    S38["38. adapters/web/sesion-empleado-store.ts<br/>(valida el token)"]
+    S39["39. adapters/web/payloads.ts"]
+    S40["40. adapters/web/server.ts<br/>(confirmaciones y memoria del empleado)"]
+    S41["41. build-on-operaciones-empleado.ts<br/>(caso nuevo y herramientas del turno)"]
+    S42["42. core/turn-selector/handle-turn.ts"]
+    S43["43. core/turn-selector/resolve-turn.ts"]
+    S44["44. core/turn-selector/assemble-context.ts"]
+    S45["45. core/turn-selector/invoke-model.ts<br/>(hook PRE_TURN)"]
+    S46["46. Claude Agent SDK (modelo)<br/>(skill venta-decision)"]
+    S47["47. adapters/operaciones/index.ts"]
+    S48["48. core/operaciones/validar-operacion.ts"]
+    S49["49. core/operaciones/ejecutar-operacion.ts<br/>(rama resolver_decision_venta)"]
+    S50["50. core/ventas/confirmar-venta.ts<br/>(busca la venta del token)"]
+    S51["51. core/ventas/token-confirmacion.ts<br/>(¿token válido y venta pendiente?)"]
+    S52["52. core/ventas/comision.ts<br/>(comisión 10 % y período)"]
+    S53["53. adapters/memory/repository.ts<br/>(venta confirmada + fila en comisiones)"]
+    S54["54. core/operaciones/ejecutar-operacion.ts<br/>(auditoría y texto)"]
+    S55["55. adapters/operaciones/index.ts"]
+    S56["56. Claude Agent SDK (redacta)"]
+    S57["57. core/turn-selector/invoke-model.ts<br/>(hook POST_TURN)"]
+    S58["58. core/turn-selector/close-turn.ts"]
+    S59["59. build-on-operaciones-empleado.ts"]
+    S60["60. adapters/web/server.ts<br/>(responde JSON)"]
+    S61["61. adapters/web/chat-client.ts"]
+    S36 --> S37
+    S37 --> S38
+    S38 --> S39
+    S39 --> S40
+    S40 --> S41
+    S41 --> S42
+    S42 --> S43
+    S43 --> S44
+    S44 --> S45
+    S45 --> S46
+    S46 --> S47
+    S47 --> S48
+    S48 --> S49
+    S49 --> S50
+    S50 --> S51
+    S51 --> S52
+    S52 --> S53
+    S53 --> S54
+    S54 --> S55
+    S55 --> S56
+    S56 --> S57
+    S57 --> S58
+    S58 --> S59
+    S59 --> S60
+    S60 --> S61
+  end
+  subgraph P4["Paso 4 · TUI: /reporte-comisiones"]
+    S62["62. adapters/tui/App.tsx<br/>→ build-on-comando-empleado.ts<br/>→ core/ventas/reporte.ts<br/>→ repository.ts<br/>(/reporte-comisiones)"]
+  end
+  S4 ==>|"después"| S5
+  S6 ==>|"después"| S7
+  S35 ==>|"mensaje nuevo"| S36
+  S61 ==>|"después"| S62
+  DB[("una sola base SQLite<br/>(la misma para la TUI y el chat web)")]
+  S4 -.->|"inserta la credencial"| DB
+  S6 -.->|"lee la misma credencial"| DB
+  S24 -.->|"guarda vendedor, caso y venta"| DB
+  S53 -.->|"venta confirmada + fila en comisiones"| DB
+  S62 -.->|"lee las comisiones, incluida la del chat web"| DB
+```
 
 **1. `adapters/tui/App.tsx` → `build-on-comando-empleado.ts` → `core/commands/comando-empleado.ts`**
 - *Qué es*: la pantalla de la terminal, un componente hecho con Ink (React para consola). Dibuja la conversación y la línea donde escribe el empleado. No contiene reglas de negocio.
@@ -2754,17 +3416,282 @@ flowchart TD
 - *Qué ejecuta en este paso*: Validan la clave contra **la misma** tabla que escribió la TUI
 - *Cómo sigue*: Crean la sesión web en `adapters/web/sesion-empleado-store.ts` y devuelven un token al navegador
 
-**7. `adapters/web/server.ts`**
+**7. `adapters/web/chat-client.ts`**
+- *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
+- *Qué ejecuta en este paso*: Paso 3a, registrar la venta: El empleado escribe en el chat y presiona Enviar
+- *Cómo sigue*: Hace `fetch` a `POST /operaciones` con el cuerpo JSON `{ consulta }` y el encabezado `Authorization: Bearer <token>` que recibió al iniciar sesión
+
+**8. `adapters/web/server.ts`**
 - *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
-- *Qué ejecuta en este paso*: Paso 3: recibe `POST /operaciones` con el token
-- *Cómo sigue*: Valida la sesión en `sesion-empleado-store.ts` y llama a `build-on-operaciones-empleado.ts`, **el mismo archivo** que usa la TUI
+- *Qué ejecuta en este paso*: Recibe el `POST /operaciones` y lee el cuerpo de la petición
+- *Cómo sigue*: Le pide a `sesion-empleado-store.ts` la sesión que corresponde al token
 
-**8. `build-on-operaciones-empleado.ts` → … → `registrar-venta.ts` / `confirmar-venta.ts` → `repository.ts`**
+**9. `adapters/web/sesion-empleado-store.ts`**
+- *Qué es*: el almacén de sesiones del chat web. Guarda en memoria, por token, la sesión de cada empleado que inició sesión en el navegador. Es independiente de la sesión de la TUI.
+- *Qué ejecuta en este paso*: Busca el token y verifica con `core/auth/sesion.ts` que la sesión no haya vencido
+- *Cómo sigue*: Devuelve la sesión (con el id del empleado) al servidor; si no hay sesión válida, el servidor responde 401 y termina
+
+**10. `adapters/web/payloads.ts`**
+- *Qué es*: el validador de los cuerpos JSON que llegan al servidor web: revisa que cada pedido tenga la forma esperada antes de procesarlo.
+- *Qué ejecuta en este paso*: Valida que el JSON tenga la forma `{ consulta }`
+- *Cómo sigue*: Devuelve el mensaje validado al servidor; si es inválido, el servidor responde 400
+
+**11. `adapters/web/server.ts`**
+- *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
+- *Qué ejecuta en este paso*: Toma la ranura de confirmaciones **de ese empleado** (`confirmacion-operaciones-store.ts`, instancia web) y la memoria de conversación **de ese token** (`conversacion-empleado-store.ts`)
+- *Cómo sigue*: Llama a `onOperacionesEmpleado` (el manejador que armó `build-on-operaciones-empleado.ts`) con el mensaje, la sesión, las confirmaciones y la memoria, con un tiempo límite
+
+**12. `build-on-operaciones-empleado.ts`**
 - *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
-- *Qué ejecuta en este paso*: La venta recorre los mismos archivos que en CU-02 y CU-03
-- *Cómo sigue*: Queda guardada en la misma base
+- *Qué ejecuta en este paso*: Crea un **caso nuevo** para este mensaje (vía `repository.ts`), arma el prompt, toma el agente de operaciones de `core/agents/definitions.ts` y crea las herramientas del turno: `adapters/operaciones/index.ts` (con la sesión guardada adentro, así el modelo nunca tiene que decir quién es el empleado) y `adapters/knowledge/index.ts`
+- *Cómo sigue*: Llama a `handleTurn` de `handle-turn.ts` con el caso, el prompt, el agente y las herramientas
 
-**9. `adapters/tui/App.tsx` → `build-on-comando-empleado.ts` → `core/ventas/reporte.ts` → `repository.ts`**
+**13. `core/turn-selector/handle-turn.ts`**
+- *Qué es*: el orquestador de turnos del núcleo (bloque "Selector de Turno" del arc42). Ejecuta siempre los mismos pasos en orden: elegir agente, armar contexto, invocar al modelo y cerrar el turno.
+- *Qué ejecuta en este paso*: Orquesta el turno en pasos fijos
+- *Cómo sigue*: Llama a `resolve-turn.ts`
+
+**14. `core/turn-selector/resolve-turn.ts`**
+- *Qué es*: la parte del orquestador que decide qué agente atiende el turno entre los candidatos que recibió.
+- *Qué ejecuta en este paso*: Confirma qué agente atiende el turno
+- *Cómo sigue*: Devuelve el agente a `handle-turn.ts`, que llama a `assemble-context.ts`
+
+**15. `core/turn-selector/assemble-context.ts`**
+- *Qué es*: la parte del orquestador que arma el contexto: busca en la base la sesión anterior del agente para que la conversación continúe con memoria.
+- *Qué ejecuta en este paso*: Busca en `sesiones_agente` (vía `repository.ts`) la sesión del SDK del mensaje anterior de esta conversación: así el agente **recuerda** lo que se habló
+- *Cómo sigue*: Devuelve el id de sesión a retomar; `handle-turn.ts` llama a `invoke-model.ts`
+
+**16. `core/turn-selector/invoke-model.ts`**
+- *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
+- *Qué ejecuta en este paso*: Dispara el hook `PRE_TURN` en `core/hooks/hook-engine.ts` (que ejecuta `log-pre-turn-handler.ts`) y obtiene la lista de skills de `core/skills/skills-habilitadas.ts`
+- *Cómo sigue*: Llama a `query()` del **Claude Agent SDK** con el agente, las skills, las herramientas y la sesión a retomar
+
+**17. Claude Agent SDK (modelo)**
+- *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
+- *Qué ejecuta en este paso*: Lee la skill `registrar-venta-conversacional` y verifica que estén cliente, email, plan, monto y nombre y decide llamar a la herramienta `operacion_negocio` con la operación `registrar_venta`
+- *Cómo sigue*: El SDK ejecuta el manejador de la herramienta que `adapters/operaciones/index.ts` registró con `createSdkMcpServer`
+
+**18. `adapters/operaciones/index.ts`**
+- *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
+- *Qué ejecuta en este paso*: Recibe los argumentos que armó el modelo
+- *Cómo sigue*: Se los pasa a `validarOperacion`
+
+**19. `core/operaciones/validar-operacion.ts`**
+- *Qué es*: el validador del núcleo: revisa campo por campo que los datos que armó el modelo tengan la forma exacta que espera cada operación.
+- *Qué ejecuta en este paso*: Valida estrictamente campos y tipos. Si algo falta o sobra, devuelve el error al modelo **sin ejecutar nada**
+- *Cómo sigue*: Devuelve la operación validada; `adapters/operaciones/index.ts` llama a `ejecutarOperacion` con la sesión del turno
+
+**20. `core/operaciones/ejecutar-operacion.ts`**
+- *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
+- *Qué ejecuta en este paso*: Elige la rama `registrar_venta` y fija el vendedor con el id **de la sesión**
+- *Cómo sigue*: Llama a `registrarVenta` de `registrar-venta.ts` con los datos y las herramientas que necesita (acceso a datos, notificador, reloj, generador de tokens)
+
+**21. `core/ventas/registrar-venta.ts`**
+- *Qué es*: la regla de negocio de alta de ventas: crea la venta pendiente, dispara el aviso al cliente y, si corresponde, la consulta de riesgo.
+- *Qué ejecuta en este paso*: Genera el token de confirmación
+- *Cómo sigue*: Le pide a `token-confirmacion.ts` la fecha de vencimiento
+
+**22. `core/ventas/token-confirmacion.ts`**
+- *Qué es*: las reglas del token de confirmación: cuándo vence y cuándo es válido.
+- *Qué ejecuta en este paso*: Calcula cuándo vence el token
+- *Cómo sigue*: Devuelve la fecha a `registrar-venta.ts`
+
+**23. `core/ventas/registrar-venta.ts`**
+- *Qué es*: la regla de negocio de alta de ventas: crea la venta pendiente, dispara el aviso al cliente y, si corresponde, la consulta de riesgo.
+- *Qué ejecuta en este paso*: Arma la venta en estado `pendiente_confirmacion`
+- *Cómo sigue*: La manda a guardar a través del contrato `ventas-contract.ts`, que implementa `repository.ts`
+
+**24. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: En **una sola transacción** inserta o actualiza el vendedor, crea el caso y crea la venta
+- *Cómo sigue*: Devuelve los ids a `registrar-venta.ts`
+
+**25. `build-on-venta.ts` → `core/turn-selector/dispatch-delegation-a2a.ts` → `adapters/a2a/client.ts`**
+- *Qué es*: archivo de cableado del dominio de ventas: conecta el link de confirmación del cliente y la consulta de riesgo con el núcleo.
+- *Qué ejecuta en este paso*: **Solo si el monto es ≥ 5000** y el A2A saliente está activo: registran y envían una consulta a `riesgo-credito`
+- *Cómo sigue*: `registrar-venta.ts` la lanza **sin esperar** la respuesta: la venta nunca se bloquea
+
+**26. `adapters/notificaciones/index.ts`**
+- *Qué es*: el adaptador de notificaciones: implementa el contrato de aviso al cliente que define el núcleo.
+- *Qué ejecuta en este paso*: Recibe el pedido de avisarle al cliente (el contrato está en `ventas-contract.ts`)
+- *Cómo sigue*: Llama a `email-client.ts`
+
+**27. `adapters/notificaciones/email-client.ts`**
+- *Qué es*: el cliente HTTP del proveedor de correo.
+- *Qué ejecuta en este paso*: Envía el email con el link por HTTP al proveedor de correo. Si no hay proveedor configurado, lo omite sin fallar
+- *Cómo sigue*: Devuelve si se envió; `registrar-venta.ts` devuelve el resultado a `ejecutar-operacion.ts`
+
+**28. `core/operaciones/ejecutar-operacion.ts`**
+- *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
+- *Qué ejecuta en este paso*: Registra la acción en la auditoría y arma el texto "Venta registrada …"
+- *Cómo sigue*: Devuelve el texto a `adapters/operaciones/index.ts`
+
+**29. `adapters/operaciones/index.ts`**
+- *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
+- *Qué ejecuta en este paso*: Recibe el texto del resultado
+- *Cómo sigue*: Se lo devuelve al SDK como resultado de la herramienta
+
+**30. Claude Agent SDK (modelo)**
+- *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
+- *Qué ejecuta en este paso*: Redacta la respuesta final para el empleado a partir del resultado
+- *Cómo sigue*: Termina la consulta y le devuelve el control a `invoke-model.ts`
+
+**31. `core/turn-selector/invoke-model.ts`**
+- *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
+- *Qué ejecuta en este paso*: Dispara el hook `POST_TURN` (`log-post-turn-handler.ts`)
+- *Cómo sigue*: Devuelve la respuesta a `handle-turn.ts`, que llama a `close-turn.ts`
+
+**32. `core/turn-selector/close-turn.ts`**
+- *Qué es*: la parte del orquestador que cierra el turno: guarda en la base la sesión del agente para poder retomarla después.
+- *Qué ejecuta en este paso*: Guarda en `sesiones_agente` (vía `repository.ts`) la sesión del SDK de este turno, para que el próximo mensaje pueda retomarla
+- *Cómo sigue*: Devuelve el control a `build-on-operaciones-empleado.ts`
+
+**33. `build-on-operaciones-empleado.ts`**
+- *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
+- *Qué ejecuta en este paso*: Anota este caso en la memoria de la conversación del empleado
+- *Cómo sigue*: Devuelve la respuesta a `adapters/web/server.ts`
+
+**34. `adapters/web/server.ts`**
+- *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
+- *Qué ejecuta en este paso*: Responde el `POST` con un JSON que trae la respuesta del agente (o 504 si se venció el tiempo límite)
+- *Cómo sigue*: El navegador recibe la respuesta
+
+**35. `adapters/web/chat-client.ts`**
+- *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
+- *Qué ejecuta en este paso*: Muestra la respuesta del agente en el chat
+- *Cómo sigue*: Fin del turno
+
+**36. `adapters/web/chat-client.ts`**
+- *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
+- *Qué ejecuta en este paso*: Paso 3b, en un mensaje nuevo, informar que el cliente confirmó: El empleado escribe en el chat y presiona Enviar
+- *Cómo sigue*: Hace `fetch` a `POST /operaciones` con el cuerpo JSON `{ consulta }` y el encabezado `Authorization: Bearer <token>` que recibió al iniciar sesión
+
+**37. `adapters/web/server.ts`**
+- *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
+- *Qué ejecuta en este paso*: Recibe el `POST /operaciones` y lee el cuerpo de la petición
+- *Cómo sigue*: Le pide a `sesion-empleado-store.ts` la sesión que corresponde al token
+
+**38. `adapters/web/sesion-empleado-store.ts`**
+- *Qué es*: el almacén de sesiones del chat web. Guarda en memoria, por token, la sesión de cada empleado que inició sesión en el navegador. Es independiente de la sesión de la TUI.
+- *Qué ejecuta en este paso*: Busca el token y verifica con `core/auth/sesion.ts` que la sesión no haya vencido
+- *Cómo sigue*: Devuelve la sesión (con el id del empleado) al servidor; si no hay sesión válida, el servidor responde 401 y termina
+
+**39. `adapters/web/payloads.ts`**
+- *Qué es*: el validador de los cuerpos JSON que llegan al servidor web: revisa que cada pedido tenga la forma esperada antes de procesarlo.
+- *Qué ejecuta en este paso*: Valida que el JSON tenga la forma `{ consulta }`
+- *Cómo sigue*: Devuelve el mensaje validado al servidor; si es inválido, el servidor responde 400
+
+**40. `adapters/web/server.ts`**
+- *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
+- *Qué ejecuta en este paso*: Toma la ranura de confirmaciones **de ese empleado** (`confirmacion-operaciones-store.ts`, instancia web) y la memoria de conversación **de ese token** (`conversacion-empleado-store.ts`)
+- *Cómo sigue*: Llama a `onOperacionesEmpleado` (el manejador que armó `build-on-operaciones-empleado.ts`) con el mensaje, la sesión, las confirmaciones y la memoria, con un tiempo límite
+
+**41. `build-on-operaciones-empleado.ts`**
+- *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
+- *Qué ejecuta en este paso*: Crea un **caso nuevo** para este mensaje (vía `repository.ts`), arma el prompt, toma el agente de operaciones de `core/agents/definitions.ts` y crea las herramientas del turno: `adapters/operaciones/index.ts` (con la sesión guardada adentro, así el modelo nunca tiene que decir quién es el empleado) y `adapters/knowledge/index.ts`
+- *Cómo sigue*: Llama a `handleTurn` de `handle-turn.ts` con el caso, el prompt, el agente y las herramientas
+
+**42. `core/turn-selector/handle-turn.ts`**
+- *Qué es*: el orquestador de turnos del núcleo (bloque "Selector de Turno" del arc42). Ejecuta siempre los mismos pasos en orden: elegir agente, armar contexto, invocar al modelo y cerrar el turno.
+- *Qué ejecuta en este paso*: Orquesta el turno en pasos fijos
+- *Cómo sigue*: Llama a `resolve-turn.ts`
+
+**43. `core/turn-selector/resolve-turn.ts`**
+- *Qué es*: la parte del orquestador que decide qué agente atiende el turno entre los candidatos que recibió.
+- *Qué ejecuta en este paso*: Confirma qué agente atiende el turno
+- *Cómo sigue*: Devuelve el agente a `handle-turn.ts`, que llama a `assemble-context.ts`
+
+**44. `core/turn-selector/assemble-context.ts`**
+- *Qué es*: la parte del orquestador que arma el contexto: busca en la base la sesión anterior del agente para que la conversación continúe con memoria.
+- *Qué ejecuta en este paso*: Busca en `sesiones_agente` (vía `repository.ts`) la sesión del SDK del mensaje anterior de esta conversación: así el agente **recuerda** lo que se habló
+- *Cómo sigue*: Devuelve el id de sesión a retomar; `handle-turn.ts` llama a `invoke-model.ts`
+
+**45. `core/turn-selector/invoke-model.ts`**
+- *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
+- *Qué ejecuta en este paso*: Dispara el hook `PRE_TURN` en `core/hooks/hook-engine.ts` (que ejecuta `log-pre-turn-handler.ts`) y obtiene la lista de skills de `core/skills/skills-habilitadas.ts`
+- *Cómo sigue*: Llama a `query()` del **Claude Agent SDK** con el agente, las skills, las herramientas y la sesión a retomar
+
+**46. Claude Agent SDK (modelo)**
+- *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
+- *Qué ejecuta en este paso*: Lee la skill `venta-decision` y decide llamar a la herramienta `operacion_negocio` con la operación `resolver_decision_venta`
+- *Cómo sigue*: El SDK ejecuta el manejador de la herramienta que `adapters/operaciones/index.ts` registró con `createSdkMcpServer`
+
+**47. `adapters/operaciones/index.ts`**
+- *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
+- *Qué ejecuta en este paso*: Recibe los argumentos que armó el modelo
+- *Cómo sigue*: Se los pasa a `validarOperacion`
+
+**48. `core/operaciones/validar-operacion.ts`**
+- *Qué es*: el validador del núcleo: revisa campo por campo que los datos que armó el modelo tengan la forma exacta que espera cada operación.
+- *Qué ejecuta en este paso*: Valida estrictamente campos y tipos. Si algo falta o sobra, devuelve el error al modelo **sin ejecutar nada**
+- *Cómo sigue*: Devuelve la operación validada; `adapters/operaciones/index.ts` llama a `ejecutarOperacion` con la sesión del turno
+
+**49. `core/operaciones/ejecutar-operacion.ts`**
+- *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
+- *Qué ejecuta en este paso*: Elige la rama `resolver_decision_venta`
+- *Cómo sigue*: Llama a `resolverDecisionVenta` de `confirmar-venta.ts`
+
+**50. `core/ventas/confirmar-venta.ts`**
+- *Qué es*: la regla de negocio de la decisión del cliente: confirma (con comisión) o rechaza una venta pendiente.
+- *Qué ejecuta en este paso*: Busca la venta del token (a través de `ventas-contract.ts`)
+- *Cómo sigue*: Le pasa el token y la venta a `token-confirmacion.ts`
+
+**51. `core/ventas/token-confirmacion.ts`**
+- *Qué es*: las reglas del token de confirmación: cuándo vence y cuándo es válido.
+- *Qué ejecuta en este paso*: Verifica que el token exista, no esté vencido y la venta siga pendiente
+- *Cómo sigue*: Devuelve "válido" o el motivo del rechazo a `confirmar-venta.ts`
+
+**52. `core/ventas/comision.ts`**
+- *Qué es*: el cálculo de la comisión y del período (mes) al que pertenece.
+- *Qué ejecuta en este paso*: Solo si confirma: calcula la comisión (monto × 10 %, redondeada a 2 decimales) y el período (año-mes)
+- *Cómo sigue*: Devuelve monto y período a `confirmar-venta.ts`
+
+**53. `adapters/memory/repository.ts`**
+- *Qué es*: el adaptador de base de datos (bloque "Memoria Compartida" del arc42). Implementa todos los contratos del núcleo con consultas SQL sobre SQLite, incluida la auditoría.
+- *Qué ejecuta en este paso*: Pasa la venta a `confirmada` **solo si seguía en `pendiente_confirmacion`** e inserta la fila en `comisiones`. Si otro lo hizo antes, no cambia nada
+- *Cómo sigue*: Devuelve si se aplicó; `confirmar-venta.ts` le devuelve el resultado a `ejecutar-operacion.ts`
+
+**54. `core/operaciones/ejecutar-operacion.ts`**
+- *Qué es*: el despachador de operaciones del núcleo. Tiene una rama por cada una de las 13 operaciones; en cada una aplica permisos, confirmación en dos mensajes y auditoría, y llama al archivo de dominio que corresponde.
+- *Qué ejecuta en este paso*: Registra la auditoría y arma el texto del resultado
+- *Cómo sigue*: Lo devuelve a `adapters/operaciones/index.ts`
+
+**55. `adapters/operaciones/index.ts`**
+- *Qué es*: el adaptador de la herramienta `operacion_negocio`. Es un servidor MCP que se crea para cada turno con la sesión del empleado guardada adentro; es la única puerta del modelo hacia las operaciones de negocio.
+- *Qué ejecuta en este paso*: Recibe el texto del resultado
+- *Cómo sigue*: Se lo devuelve al SDK como resultado de la herramienta
+
+**56. Claude Agent SDK (modelo)**
+- *Qué es*: el motor de agentes de Anthropic (librería `@anthropic-ai/claude-agent-sdk`). Envía el pedido al modelo Claude, le ofrece las herramientas y las skills, y ejecuta las herramientas que el modelo decide usar. Es la única parte donde decide la IA.
+- *Qué ejecuta en este paso*: Redacta la respuesta final para el empleado a partir del resultado
+- *Cómo sigue*: Termina la consulta y le devuelve el control a `invoke-model.ts`
+
+**57. `core/turn-selector/invoke-model.ts`**
+- *Qué es*: la parte del orquestador que habla con el Claude Agent SDK. Traduce la definición del agente a las opciones del SDK y dispara los hooks antes y después del turno.
+- *Qué ejecuta en este paso*: Dispara el hook `POST_TURN` (`log-post-turn-handler.ts`)
+- *Cómo sigue*: Devuelve la respuesta a `handle-turn.ts`, que llama a `close-turn.ts`
+
+**58. `core/turn-selector/close-turn.ts`**
+- *Qué es*: la parte del orquestador que cierra el turno: guarda en la base la sesión del agente para poder retomarla después.
+- *Qué ejecuta en este paso*: Guarda en `sesiones_agente` (vía `repository.ts`) la sesión del SDK de este turno, para que el próximo mensaje pueda retomarla
+- *Cómo sigue*: Devuelve el control a `build-on-operaciones-empleado.ts`
+
+**59. `build-on-operaciones-empleado.ts`**
+- *Qué es*: el preparador de conversaciones. Es un archivo de cableado que, para cada mensaje, crea el caso y le arma al agente su prompt y sus herramientas. Lo usan la TUI y el chat web por igual.
+- *Qué ejecuta en este paso*: Anota este caso en la memoria de la conversación del empleado
+- *Cómo sigue*: Devuelve la respuesta a `adapters/web/server.ts`
+
+**60. `adapters/web/server.ts`**
+- *Qué es*: el servidor HTTP del chat web, sin framework (módulo `node:http` de Node). Atiende el login, los mensajes, el link del cliente y la página del chat.
+- *Qué ejecuta en este paso*: Responde el `POST` con un JSON que trae la respuesta del agente (o 504 si se venció el tiempo límite)
+- *Cómo sigue*: El navegador recibe la respuesta
+
+**61. `adapters/web/chat-client.ts`**
+- *Qué es*: el código JavaScript del chat que corre en el navegador del empleado. Lo sirve el propio servidor web junto con la página (`chat-page.ts`). Guarda el token de sesión y envía cada mensaje al servidor.
+- *Qué ejecuta en este paso*: Muestra la respuesta del agente en el chat
+- *Cómo sigue*: Fin del turno
+
+**62. `adapters/tui/App.tsx` → `build-on-comando-empleado.ts` → `core/ventas/reporte.ts` → `repository.ts`**
 - *Qué es*: la pantalla de la terminal, un componente hecho con Ink (React para consola). Dibuja la conversación y la línea donde escribe el empleado. No contiene reglas de negocio.
 - *Qué ejecuta en este paso*: Paso 4: el reporte lee las comisiones, incluida la que generó el chat web
 - *Cómo sigue*: La TUI la muestra
